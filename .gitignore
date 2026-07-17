@@ -1,0 +1,9 @@
+# build output
+/raglit
+/cmd/raglit/raglit
+
+# local index homes / sqlite artifacts
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+/raglit-home/
