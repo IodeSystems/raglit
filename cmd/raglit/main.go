@@ -9,6 +9,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -31,6 +32,10 @@ func main() {
 		err = runSearch(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "pagify":
+		err = runPagify(os.Args[2:])
+	case "ocr":
+		err = runOcr(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -49,15 +54,23 @@ func usage() {
 	fmt.Fprint(os.Stderr, `raglit — local BM25 document index (SQLite FTS5)
 
 usage:
-  raglit index  --db idx.sqlite FILE|DIR...   ingest text/markdown files
-  raglit search --db idx.sqlite [-n N] "query"
-  raglit serve  --db idx.sqlite [-n N]         stdio MCP server (search tool)
+  raglit index  [--home DIR] FILE|DIR...    ingest text/markdown (+ PDFs via OCR)
+  raglit search [--home DIR] [-n N] "query"
+  raglit serve  [--home DIR] [-n N]          stdio MCP server (search tool)
+  raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
+  raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
 
 flags:
-  --home  index home dir (default $RAGLIT_HOME or ~/local/raglit); holds
-          index.sqlite + originals/ + pages/
-  --db    raw index file path (overrides --home; skips originals storage)
-  -n      search/serve: max (default) results
+  --home       index home dir (default $RAGLIT_HOME or ~/local/raglit); holds
+               index.sqlite + originals/ + pages/
+  --db         raw index file path (overrides --home; skips originals storage)
+  -n           search/serve: max (default) results
+  --llm-url    vision model base URL (default https://llm.iodesystems.com)
+  --llm-model  vision model id (default ternary-bonsai-27b)
+  --llm-key    API key (or $RAGLIT_LLM_KEY)
+
+PDF indexing extracts embedded page images (pure-Go; image/scanned PDFs only)
+and OCRs each page through the vision model, indexing text with real page nums.
 `)
 }
 
@@ -82,6 +95,7 @@ func addStoreFlags(fs *flag.FlagSet) func() (*raglit.Store, error) {
 func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	openStore := addStoreFlags(fs)
+	newLLM := addLLMFlags(fs) // only used when PDFs are present
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("index: no files/dirs given")
@@ -103,7 +117,7 @@ func runIndex(args []string) error {
 				if err != nil {
 					return err
 				}
-				if !d.IsDir() && isText(p) {
+				if !d.IsDir() && (isText(p) || isPDF(p)) {
 					files = append(files, p)
 				}
 				return nil
@@ -116,8 +130,23 @@ func runIndex(args []string) error {
 		}
 	}
 
+	ctx := context.Background()
+	var ocr *raglit.OCR // built lazily on the first PDF
 	n := 0
 	for _, p := range files {
+		if isPDF(p) {
+			if ocr == nil {
+				ocr = raglit.NewOCR(newLLM())
+			}
+			pages, err := store.IngestPDF(ctx, ocr, p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  skip %s: %v\n", p, err)
+				continue
+			}
+			fmt.Printf("indexed %s (%d page(s) OCR'd)\n", p, pages)
+			n++
+			continue
+		}
 		doc, err := readDoc(p)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  skip %s: %v\n", p, err)

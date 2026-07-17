@@ -55,7 +55,8 @@ finder := raglit.NewFinder(s)                       // → agent.DocFinder
 - ✅ **Lexical core** — FTS5 BM25 index/search + `agent.DocFinder`.
 - ✅ **MCP `serve`** — search exposed as an MCP tool; output feeds both the
   explicit channel and agentkit's proactive-notify (`ragnotify`).
-- ◻ **PDF → OCR** — pagify (pure-Go pdfcpu, image-PDFs) + vision-LLM OCR via
-  agentkit's multimodal `llm` client → feeds the same index.
+- ✅ **PDF → OCR** — `pagify` (pure-Go pdfcpu, image/scanned PDFs) + `ocr`
+  (vision-LLM via agentkit's multimodal `llm` client) → feeds the same index.
+  `index` handles PDFs end-to-end; page images persist under `pages/`.
 - ◻ **Vectors (opt-in)** — sqlite-vec or a custom NSW sidecar, only if BM25
   lexical recall proves insufficient. Measured, not assumed.

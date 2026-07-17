@@ -56,7 +56,18 @@ func (h Home) Ensure() error {
 // deterministic function of the doc path (hash-prefixed to avoid basename
 // collisions across directories), so no DB column is needed to find it back.
 func (h Home) OriginalPath(docPath string) string {
-	sum := sha256.Sum256([]byte(docPath))
-	name := hex.EncodeToString(sum[:4]) + "-" + filepath.Base(docPath)
-	return filepath.Join(h.OriginalsDir(), name)
+	return filepath.Join(h.OriginalsDir(), tag(docPath))
+}
+
+// PageDir is the per-document subdirectory of pages/ that holds its page
+// images. Deterministic from the doc path, like OriginalPath.
+func (h Home) PageDir(docPath string) string {
+	return filepath.Join(h.PagesDir(), tag(docPath))
+}
+
+// tag builds a collision-safe, deterministic name from a path: an 8-hex prefix
+// of its sha256 plus the basename.
+func tag(path string) string {
+	sum := sha256.Sum256([]byte(path))
+	return hex.EncodeToString(sum[:4]) + "-" + filepath.Base(path)
 }

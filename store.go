@@ -18,10 +18,12 @@
 package raglit
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -210,6 +212,44 @@ func (s *Store) storeOriginal(docPath string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// IngestPDF pagifies an image/scanned PDF, OCRs each page through ocr, and
+// indexes the transcribed text with real page numbers (one fragment per page).
+// Page images are written under the home's pages/ dir when the store has a home
+// (so they persist for re-OCR/inspection), else to a temp dir that is cleaned
+// up. Returns the number of pages indexed. A page whose OCR is blank is skipped.
+func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, error) {
+	outDir := ""
+	if s.withHome {
+		outDir = s.home.PageDir(pdfPath)
+	} else {
+		tmp, err := os.MkdirTemp("", "raglit-pages-")
+		if err != nil {
+			return 0, err
+		}
+		defer os.RemoveAll(tmp)
+		outDir = tmp
+	}
+	pages, err := Pagify(pdfPath, outDir)
+	if err != nil {
+		return 0, err
+	}
+	doc := Document{Path: pdfPath, Title: filepath.Base(pdfPath)}
+	for _, p := range pages {
+		text, err := ocr.Page(ctx, p)
+		if err != nil {
+			return 0, err
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		doc.Fragments = append(doc.Fragments, Fragment{Page: p.Page, Ord: 0, Text: text})
+	}
+	if err := s.Ingest(doc); err != nil {
+		return 0, err
+	}
+	return len(doc.Fragments), nil
 }
 
 // Hit is one BM25-ranked fragment. Score is normalized so HIGHER is better
