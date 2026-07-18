@@ -24,21 +24,29 @@ type contextDiscoverer interface {
 }
 
 const (
-	segPromptOverheadTokens = 400 // ~the segmentation instruction + JSON scaffolding
-	defaultWindowChars      = 8000 // ~2k tokens: a safe window when discovery is unavailable
-	charsPerToken           = 4
+	segPromptOverheadTokens = 400   // ~the segmentation instruction + JSON scaffolding
+	defaultWindowChars      = 8000  // ~2k tokens: a safe window when discovery is unavailable
+	maxWindowChars          = 24000 // ~6k tokens: latency cap — a bigger window doesn't buy
+	//                                 much and makes each segment call slow (prompt time
+	//                                 grows with size), independent of the model's context.
+	charsPerToken = 4
 )
 
 // windowCharsFor turns a discovered context-token count into a window size in
-// CHARACTERS, budgeting for the prompt and the model's echoed output (÷2), with
-// a 20% safety margin.
+// CHARACTERS, budgeting for the prompt and the model's echoed output (÷2, since
+// segmentation re-emits the text), with a 20% safety margin — then clamped to
+// maxWindowChars so a large context doesn't produce slow, unwieldy windows.
 func windowCharsFor(ctxTokens int) int {
 	usable := (ctxTokens - segPromptOverheadTokens) / 2
 	if usable < 256 {
 		usable = 256
 	}
 	usable = usable * 8 / 10
-	return usable * charsPerToken
+	chars := usable * charsPerToken
+	if chars > maxWindowChars {
+		chars = maxWindowChars
+	}
+	return chars
 }
 
 // ResolveWindowChars returns the text window size (chars) for a model, using the
