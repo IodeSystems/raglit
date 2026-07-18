@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/iodesystems/agentkit/ragnotify"
@@ -27,12 +28,18 @@ func TestServeOutput_ParsedByRagnotify(t *testing.T) {
 		t.Fatalf("search: %v (%d hits)", err, len(hits))
 	}
 
-	payload, err := hitsJSON(hits)
+	// The serve `search` tool renders hits via taggedHits (index-tagged, but the
+	// same doc_id/title/score/snippet shape ragnotify.ParseHits consumes).
+	ih := make([]indexedHit, len(hits))
+	for i, h := range hits {
+		ih[i] = indexedHit{index: "default", hit: h}
+	}
+	payload, err := json.Marshal(taggedHits(ih))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	parsed, err := ragnotify.ParseHits(payload)
+	parsed, err := ragnotify.ParseHits(string(payload))
 	if err != nil {
 		t.Fatalf("ragnotify could not parse raglit output: %v\npayload: %s", err, payload)
 	}

@@ -122,15 +122,21 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db, path: path}, nil
 }
 
-// OpenHome opens the index inside a Home layout (creating the layout if absent)
-// and enables original-file storage: ingesting a document whose Path is a real
-// file copies it into <home>/originals/. Use this for the CLI; use Open for a
-// raw path or an in-memory test index.
+// OpenHome opens the home's primary ("default") index. Use Open for a raw path
+// or an in-memory test index; OpenIndex for a named index within the home.
 func OpenHome(home Home) (*Store, error) {
+	return OpenIndex(home, "default")
+}
+
+// OpenIndex opens a NAMED index within a home (sharing its originals/pages), so
+// one home can hold several indexes. "default" (or "") is the home's primary
+// index.sqlite; any other name is index-<name>.sqlite. Created if absent.
+// Ingesting a doc whose Path is a real file copies it into <home>/originals/.
+func OpenIndex(home Home, name string) (*Store, error) {
 	if err := home.Ensure(); err != nil {
 		return nil, err
 	}
-	s, err := Open(home.IndexPath())
+	s, err := Open(home.indexPath(name))
 	if err != nil {
 		return nil, err
 	}

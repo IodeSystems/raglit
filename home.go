@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Home is raglit's on-disk layout: everything for one index under one
@@ -33,8 +34,33 @@ func DefaultHome() Home {
 	return Home("raglit-home")
 }
 
-// IndexPath is the SQLite index file inside the home.
+// IndexPath is the home's primary (default) SQLite index file.
 func (h Home) IndexPath() string { return filepath.Join(string(h), "index.sqlite") }
+
+// indexPath is the sqlite path for a named index within the home: "default"
+// (or "") → index.sqlite; any other name → index-<name>.sqlite.
+func (h Home) indexPath(name string) string {
+	if n := normalizeIndexName(name); n != "default" {
+		return filepath.Join(string(h), "index-"+n+".sqlite")
+	}
+	return h.IndexPath()
+}
+
+// normalizeIndexName lowercases and strips a name to [a-z0-9_-], so a name from
+// an MCP tool argument can't traverse the filesystem. Empty → "default".
+func normalizeIndexName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "default"
+	}
+	return b.String()
+}
 
 // ConfigPath is the model-connection config (base URL, token, model ids).
 func (h Home) ConfigPath() string { return filepath.Join(string(h), "config.json") }

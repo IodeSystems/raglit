@@ -60,12 +60,29 @@ jobs:  done=3 running=1 pending=8 failed=0  (42.0/min)
 
 ## MCP tools (`raglit serve`)
 
-- `search` — BM25/index search, returns ranked fragments.
-- `ingest` — queue a URL for lazy ingestion (returns a job id).
-- `index_status` — documents/fragments, job counts, rate, and per-item ETAs.
+One server hosts a SET of named indexes (`index.sqlite` = `default`,
+`index-<name>.sqlite` for the rest, all under one home).
+
+- `search` — ranked fragments. `index` selects one or a comma-separated set;
+  omit it to search **all** (RRF-merged, each hit tagged with its `index`).
+- `ingest` — queue a URL for lazy ingestion into an `index` (default `default`,
+  created on demand).
+- `index_status` — counts / rate / ETAs for an `index`; omit to aggregate all.
+- `list_indexes` — the indexes with their document/fragment counts.
 
 `search` output matches agentkit's `ragnotify.ParseHits`, so one server drives
-both the model's explicit searches and agentkit's proactive pings.
+both the model's explicit searches and agentkit's proactive (live-watch) pings.
+**Index selection for the live watch:** the finder searches all indexes by
+default; scope it by setting `ragnotify.MCPFinder` `Opts.ExtraArgs` to
+`{"index": "a,b"}`.
+
+## Fragment sizing
+
+Fragments target ~500 words (a coherent subsection). The segmenter binds small
+related units together to reach the floor — below it, a hit lacks the context to
+concept-chain; a soft ceiling stops one fragment swallowing a document.
+Oversized matches are surfaced to an agent as pointer notifications (fetch on
+demand), so no summarization pass is needed.
 
 ## Home layout
 

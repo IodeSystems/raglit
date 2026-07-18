@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/iodesystems/raglit"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -12,129 +16,284 @@ import (
 
 const version = "0.1.0"
 
-// runServe exposes the index as a stdio MCP server with one `search` tool. Any
-// MCP client (Claude Desktop, agentkit's mcpmgr) can spawn it. The result JSON
-// is deliberately the shape ragnotify.ParseHits already consumes
-// (hits[].doc_id/title/score/snippet), so the SAME server drives BOTH channels:
-// the model calls search explicitly, AND agentkit wraps it in a DocFinder for
-// proactive pings — no second integration.
+// runServe exposes the home's indexes as a stdio MCP server. It hosts a SET of
+// named indexes (Slice G): search defaults to ALL of them (RRF-merged, each hit
+// tagged with its index), ingest targets one, and index_status/list_indexes
+// report across them. The search result shape stays what ragnotify.ParseHits
+// consumes, so one server still drives both the explicit tool and the proactive
+// (live-watch) channel — an agent scopes the watch by passing `index`.
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	_, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
 	defLimit := fs.Int("n", 8, "default max results")
 	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
 	fs.Parse(args)
 
-	store, err := openStore()
+	reg, err := raglit.OpenRegistry(homeOf())
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer reg.Close()
 	lf.resolve(homeOf())
 	if *embed {
 		if err := lf.requireEmbed(); err != nil {
 			return err
 		}
-		store.SetEmbedder(lf.embedder())
+		reg.SetEmbedder(lf.embedder())
 	}
 
-	// Background worker drains the lazy ingest queue. A configured model gives it
-	// PDF OCR + LLM text/code segmentation; without one, text is blank-line split
-	// and PDF jobs fail gracefully.
+	// One background loop drains every index's queue round-robin (per-index
+	// workers cached). A configured model gives PDF OCR + LLM text segmentation.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go buildWorker(store, lf, homeOf()).Run(ctx)
+	go runIndexWorkers(ctx, reg, lf, homeOf())
 
 	s := server.NewMCPServer("raglit", version)
 	s.AddTool(
 		mcp.NewTool("search",
 			mcp.WithDescription(
-				"Search the local document index (BM25 over document:page:fragment). "+
-					"Returns ranked fragments as JSON {hits:[{doc_id,title,page,score,snippet}]}, "+
-					"best first. doc_id is the source path — cite it or fetch the file for full text."),
+				"Search the document index(es). Returns ranked fragments as JSON "+
+					"{hits:[{index,doc_id,title,page,score,snippet}]}, best first. `index` "+
+					"selects one index or a comma-separated set; omit it to search ALL "+
+					"(results merged with reciprocal-rank fusion, each hit tagged by index)."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language or keyword query")),
+			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
 			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
 		),
-		searchHandler(store, *defLimit),
+		searchHandler(reg, *defLimit),
 	)
 	s.AddTool(
 		mcp.NewTool("ingest",
 			mcp.WithDescription(
-				"Queue a URL for ingestion into the index (LAZY — returns immediately with a "+
-					"job id; a background worker fetches + indexes it). Supports file://<path> "+
-					"and http(s)://... ; PDFs are OCR'd if a vision model is configured. Poll "+
-					"index_status for progress."),
+				"Queue a URL for LAZY ingestion into an index (returns a job id; a background "+
+					"worker fetches + segments + indexes it). file://<path> or http(s)://... ; "+
+					"PDFs are OCR'd when a vision model is configured. `index` names the target "+
+					"index (default \"default\", created if new). Poll index_status."),
 			mcp.WithString("url", mcp.Required(), mcp.Description("file://<path> or http(s)://<url>")),
+			mcp.WithString("index", mcp.Description("target index (default \"default\")")),
 			mcp.WithString("title", mcp.Description("optional document title")),
 		),
-		ingestHandler(store),
+		ingestHandler(reg),
 	)
 	s.AddTool(
 		mcp.NewTool("index_status",
 			mcp.WithDescription(
-				"Report index + ingest-queue status as JSON: documents/fragments indexed, "+
-					"done/running/pending/failed job counts, a recent processing rate (jobs/min), "+
-					"and pending items each with an ETA (seconds)."),
+				"Report index + ingest-queue status as JSON: documents/fragments, "+
+					"done/running/pending/failed job counts, a recent rate (jobs/min), and "+
+					"pending items each with an ETA. `index` selects one; omit to aggregate all."),
+			mcp.WithString("index", mcp.Description("index name; empty = aggregate all")),
 		),
-		statusHandler(store),
+		statusHandler(reg),
+	)
+	s.AddTool(
+		mcp.NewTool("list_indexes",
+			mcp.WithDescription("List the available indexes with their document/fragment counts (JSON)."),
+		),
+		listHandler(reg),
 	)
 	return server.ServeStdio(s)
 }
 
-func ingestHandler(store *raglit.Store) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		url, err := req.RequireString("url")
-		if err != nil {
-			return mcp.NewToolResultError("url is required"), nil
+// runIndexWorkers drains every index's queue, round-robin, caching one worker
+// per index. New indexes (created via ingest) are picked up on the next round.
+func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home) {
+	workers := map[string]*raglit.Worker{}
+	for ctx.Err() == nil {
+		did := false
+		for _, name := range reg.Names() {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			w := workers[name]
+			if w == nil {
+				w = buildWorker(st, lf, home)
+				workers[name] = w
+			}
+			if processed, _ := w.ProcessOne(ctx); processed {
+				did = true
+			}
 		}
-		id, err := store.Enqueue(url, req.GetString("title", ""))
-		if err != nil {
-			return mcp.NewToolResultErrorFromErr("enqueue", err), nil
+		if !did {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
-		b, _ := json.Marshal(map[string]any{"job_id": id, "state": "pending", "url": url})
-		return mcp.NewToolResultText(string(b)), nil
 	}
 }
 
-func statusHandler(store *raglit.Store) server.ToolHandlerFunc {
-	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		st, err := store.IndexStatus()
-		if err != nil {
-			return mcp.NewToolResultErrorFromErr("status", err), nil
-		}
-		b, err := json.Marshal(st)
-		if err != nil {
-			return mcp.NewToolResultErrorFromErr("encode", err), nil
-		}
-		return mcp.NewToolResultText(string(b)), nil
+// selectIndexes resolves the `index` argument to a concrete set of names: empty
+// → all; else the comma-separated list (unknown names simply return nothing).
+func selectIndexes(reg *raglit.Registry, arg string) []string {
+	arg = strings.TrimSpace(arg)
+	if arg == "" || arg == "all" {
+		return reg.Names()
 	}
+	var out []string
+	for _, n := range strings.Split(arg, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
-func searchHandler(store *raglit.Store, defLimit int) server.ToolHandlerFunc {
+func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
 	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		q, err := req.RequireString("query")
 		if err != nil {
 			return mcp.NewToolResultError("query is required"), nil
 		}
-		hits, err := store.Search(q, req.GetInt("limit", defLimit))
-		if err != nil {
-			return mcp.NewToolResultErrorFromErr("search failed", err), nil
+		limit := req.GetInt("limit", defLimit)
+		names := selectIndexes(reg, req.GetString("index", ""))
+
+		// Search each selected index; over-fetch, then RRF-merge across indexes.
+		lists := map[string][]raglit.Hit{}
+		for _, name := range names {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			hits, err := st.Search(q, limit*2)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("search", err), nil
+			}
+			lists[name] = hits
 		}
-		b, err := hitsJSON(hits)
+		merged := rrfMerge(lists, limit)
+
+		b, err := json.Marshal(taggedHits(merged))
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("encode", err), nil
 		}
-		return mcp.NewToolResultText(b), nil
+		return mcp.NewToolResultText(string(b)), nil
 	}
 }
 
-// hitsJSON renders search hits as the wire shape both consumers read: the model
-// reads it directly, and agentkit's ragnotify.ParseHits parses it for the
-// proactive channel (hits[].doc_id/title/score/snippet). Kept separate from the
-// MCP plumbing so the contract is unit-testable against ParseHits.
-func hitsJSON(hits []raglit.Hit) (string, error) {
+func ingestHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		url, err := req.RequireString("url")
+		if err != nil {
+			return mcp.NewToolResultError("url is required"), nil
+		}
+		name := req.GetString("index", "default")
+		st, err := reg.Get(name)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("open index", err), nil
+		}
+		id, err := st.Enqueue(url, req.GetString("title", ""))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("enqueue", err), nil
+		}
+		b, _ := json.Marshal(map[string]any{"job_id": id, "index": name, "state": "pending", "url": url})
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func statusHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		names := selectIndexes(reg, req.GetString("index", ""))
+		var agg raglit.Status
+		for _, name := range names {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			s, err := st.IndexStatus()
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("status", err), nil
+			}
+			agg.Documents += s.Documents
+			agg.Fragments += s.Fragments
+			agg.Done += s.Done
+			agg.Running += s.Running
+			agg.Pending += s.Pending
+			agg.Failed += s.Failed
+			if s.RatePerMin > agg.RatePerMin {
+				agg.RatePerMin = s.RatePerMin
+			}
+			agg.Items = append(agg.Items, s.Items...)
+		}
+		b, err := json.Marshal(agg)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func listHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		type idx struct {
+			Name      string `json:"name"`
+			Documents int    `json:"documents"`
+			Fragments int    `json:"fragments"`
+		}
+		out := struct {
+			Indexes []idx `json:"indexes"`
+		}{Indexes: []idx{}}
+		for _, name := range reg.Names() {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			s, _ := st.IndexStatus()
+			out.Indexes = append(out.Indexes, idx{name, s.Documents, s.Fragments})
+		}
+		b, _ := json.Marshal(out)
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// indexedHit pairs a hit with the index it came from.
+type indexedHit struct {
+	index string
+	hit   raglit.Hit
+}
+
+// rrfMerge fuses the per-index ranked lists into one, reciprocal-rank fusion
+// (scale-free, so cross-index scores needn't be comparable), best first.
+func rrfMerge(lists map[string][]raglit.Hit, limit int) []indexedHit {
+	const k = 60.0
+	type acc struct {
+		ih    indexedHit
+		score float64
+	}
+	m := map[string]*acc{}
+	for idx, hits := range lists {
+		for rank, h := range hits {
+			key := fmt.Sprintf("%s\x00%d", idx, h.ID)
+			a := m[key]
+			if a == nil {
+				a = &acc{ih: indexedHit{idx, h}}
+				m[key] = a
+			}
+			a.score += 1.0 / (k + float64(rank))
+		}
+	}
+	out := make([]*acc, 0, len(m))
+	for _, a := range m {
+		out = append(out, a)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	res := make([]indexedHit, len(out))
+	for i, a := range out {
+		res[i] = a.ih
+	}
+	return res
+}
+
+// taggedHits renders merged hits in the ragnotify.ParseHits shape, plus an
+// `index` tag per hit.
+func taggedHits(hits []indexedHit) any {
 	type outHit struct {
+		Index   string  `json:"index"`
 		DocID   string  `json:"doc_id"`
 		Title   string  `json:"title"`
 		Page    int     `json:"page"`
@@ -144,16 +303,16 @@ func hitsJSON(hits []raglit.Hit) (string, error) {
 	out := struct {
 		Hits []outHit `json:"hits"`
 	}{Hits: []outHit{}}
-	for _, h := range hits {
+	for _, ih := range hits {
+		h := ih.hit
 		title := h.Title
 		if title == "" {
 			title = h.Path
 		}
 		out.Hits = append(out.Hits, outHit{
-			DocID: h.Path, Title: title, Page: h.Page,
+			Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 			Score: h.Score, Snippet: clip(oneLine(h.Text), 300),
 		})
 	}
-	b, err := json.Marshal(out)
-	return string(b), err
+	return out
 }

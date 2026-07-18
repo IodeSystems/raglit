@@ -109,6 +109,7 @@ and OCRs each page via the vision model. --embed adds nomic vectors; search
 func addStoreFlags(fs *flag.FlagSet) (open func() (*raglit.Store, error), homeOf func() raglit.Home) {
 	home := fs.String("home", "", "index home dir (default $RAGLIT_HOME or ~/local/raglit)")
 	db := fs.String("db", "", "raw index file path (overrides --home)")
+	index := fs.String("index", "default", "index name within the home (multi-index)")
 	homeOf = func() raglit.Home {
 		if *home != "" {
 			return raglit.Home(*home)
@@ -119,7 +120,7 @@ func addStoreFlags(fs *flag.FlagSet) (open func() (*raglit.Store, error), homeOf
 		if *db != "" {
 			return raglit.Open(*db)
 		}
-		return raglit.OpenHome(homeOf())
+		return raglit.OpenIndex(homeOf(), *index)
 	}
 	return open, homeOf
 }
