@@ -280,17 +280,18 @@ func (s *Store) storeOriginal(docPath string) error {
 	return out.Close()
 }
 
-// IngestPDF pagifies an image/scanned PDF, OCRs each page through ocr, and
-// indexes the transcribed text with real page numbers (one fragment per page).
-// Page images are written under the home's pages/ dir when the store has a home
-// (so they persist for re-OCR/inspection), else to a temp dir that is cleaned
-// up. Returns the number of pages indexed. A page whose OCR is blank is skipped.
+// IngestPDF pagifies an image/scanned PDF and indexes it via LLM segmentation:
+// the vision model (ocr's client) reads each page image and carves coherent
+// fragments, with open fragments stitched across page boundaries and vectors
+// embedded concurrently. Page images are written under the home's pages/ dir
+// when the store has a home, else a temp dir. Returns the number of fragments
+// indexed.
 func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, error) {
 	return s.ingestPDF(ctx, ocr, pdfPath, pdfPath, filepath.Base(pdfPath))
 }
 
 // ingestPDF is IngestPDF with the document identity (docPath, title) decoupled
-// from the file on disk (filePath) — so a queued URL job can OCR a temp file
+// from the file on disk (filePath) — so a queued URL job can process a temp file
 // while keeping the URL as the stable document key.
 func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, title string) (int, error) {
 	outDir := ""
@@ -308,21 +309,11 @@ func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, titl
 	if err != nil {
 		return 0, err
 	}
-	doc := Document{Path: docPath, Title: title}
+	units := make([]ingestUnit, 0, len(pages))
 	for _, p := range pages {
-		text, err := ocr.Page(ctx, p)
-		if err != nil {
-			return 0, err
-		}
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
-		doc.Fragments = append(doc.Fragments, Fragment{Page: p.Page, Ord: 0, Text: text})
+		units = append(units, ingestUnit{page: p.Page, mime: p.Mime, data: p.Data})
 	}
-	if err := s.Ingest(ctx, doc); err != nil {
-		return 0, err
-	}
-	return len(doc.Fragments), nil
+	return s.ingestUnits(ctx, NewSegmenter(ocr.Client), docPath, title, units)
 }
 
 // Hit is one BM25-ranked fragment. Score is normalized so HIGHER is better

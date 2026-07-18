@@ -186,7 +186,7 @@ func runIndex(args []string) error {
 				fmt.Fprintf(os.Stderr, "  skip %s: %v\n", p, err)
 				continue
 			}
-			fmt.Printf("indexed %s (%d page(s) OCR'd)\n", p, pages)
+			fmt.Printf("indexed %s (%d fragment(s))\n", p, pages)
 			n++
 			continue
 		}

@@ -203,6 +203,15 @@ func (a *Assembler) nextOrd(page int) int {
 	return o
 }
 
+// OpenText is the current open (deferred) fragment's text, or "" — passed to the
+// next unit's segmentation as continuation context.
+func (a *Assembler) OpenText() string {
+	if a.open != nil {
+		return a.open.text
+	}
+	return ""
+}
+
 // Feed processes one unit's segmentation. page is the unit's page number (0 for
 // text windows, or a running window index).
 func (a *Assembler) Feed(page int, r SegResult) error {
