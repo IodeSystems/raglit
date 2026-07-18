@@ -142,9 +142,11 @@ func segPrompt(openText string) string {
 
 Rules:
 - Carry the content faithfully (transcribe an image exactly; keep code verbatim).
-- Group into COHERENT, reasonably-sized fragments. Bind small related units
-  together (e.g. several short functions, a cluster of list items). Do NOT emit
-  tiny atomic fragments; split only at strong semantic boundaries.
+- Group into COHERENT fragments of roughly 400-800 words. Bind small related
+  units together (e.g. several short functions, a cluster of list items) to reach
+  that size. Do NOT emit tiny atomic fragments; a block under ~300 words should
+  almost always be merged with an adjacent one. Split only at strong semantic
+  boundaries.
 - If the FIRST fragment continues the OPEN FRAGMENT below, set continues_previous
   to true and make fragments[0] ONLY the continuation text (do not repeat the
   open fragment). If there is no open fragment, continues_previous must be false.`
@@ -180,10 +182,24 @@ func extractJSON(s string) string {
 // CLOSED fragment; the open fragment is finalized only when a later fragment
 // replaces it or Close() is called — so a fragment spanning a page/window break
 // is merged, and the open fragment is never embedded prematurely.
+// Fragment size floor/ceiling (chars ≈ 6/word). MinChars enforces a ~500-word
+// floor by absorbing sub-floor sibling fragments into the open one; MaxChars
+// stops that absorption so one fragment can't swallow a whole document. A hit
+// below the floor loses its surrounding context (concept-chaining); above the
+// ceiling, injection is handled by pointer notifications (fetch on demand), not
+// by inlining the body — so no summarization pass is needed.
+const (
+	defaultMinFragmentChars = 3000 // ~500 words
+	defaultMaxFragmentChars = 9000 // ~1500 words
+)
+
 type Assembler struct {
 	sink func(page, ord int, text string) error
 	open *openFragment
 	ord  map[int]int
+	// MinChars: absorb sub-floor siblings up to this size (0 disables the floor).
+	// MaxChars: never absorb past this.
+	MinChars, MaxChars int
 }
 
 type openFragment struct {
@@ -194,7 +210,12 @@ type openFragment struct {
 // NewAssembler builds an Assembler; sink finalizes a closed fragment
 // (e.g. insert row + hand to the embed pipeline).
 func NewAssembler(sink func(page, ord int, text string) error) *Assembler {
-	return &Assembler{sink: sink, ord: map[int]int{}}
+	return &Assembler{
+		sink:     sink,
+		ord:      map[int]int{},
+		MinChars: defaultMinFragmentChars,
+		MaxChars: defaultMaxFragmentChars,
+	}
 }
 
 func (a *Assembler) nextOrd(page int) int {
@@ -216,20 +237,32 @@ func (a *Assembler) OpenText() string {
 // text windows, or a running window index).
 func (a *Assembler) Feed(page int, r SegResult) error {
 	for i, f := range r.Fragments {
-		if strings.TrimSpace(f.Text) == "" {
+		text := strings.TrimSpace(f.Text)
+		if text == "" {
 			continue
 		}
-		if i == 0 && a.open != nil && r.ContinuesPrevious {
-			// Extend the open fragment (it keeps its original start page/ord).
-			a.open.text += "\n\n" + f.Text
+		if a.open == nil {
+			a.open = &openFragment{text: text, page: page, ord: a.nextOrd(page)}
 			continue
 		}
-		if a.open != nil {
-			if err := a.sink(a.open.page, a.open.ord, a.open.text); err != nil {
-				return err
-			}
+		// Continuation: the model says this first fragment continues the open one
+		// (a mid-fragment span across the unit boundary). It keeps the open
+		// fragment's start page/ord.
+		if i == 0 && r.ContinuesPrevious {
+			a.open.text += "\n\n" + text
+			continue
 		}
-		a.open = &openFragment{text: f.Text, page: page, ord: a.nextOrd(page)}
+		// Size floor: absorb a sub-floor sibling instead of emitting a tiny
+		// fragment, as long as we stay under the ceiling.
+		if a.MinChars > 0 && len(a.open.text) < a.MinChars && len(a.open.text)+len(text) <= a.MaxChars {
+			a.open.text += "\n\n" + text
+			continue
+		}
+		// The open fragment clears the floor (or absorbing would overflow) → close it.
+		if err := a.sink(a.open.page, a.open.ord, a.open.text); err != nil {
+			return err
+		}
+		a.open = &openFragment{text: text, page: page, ord: a.nextOrd(page)}
 	}
 	return nil
 }

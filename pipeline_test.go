@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -10,10 +11,13 @@ func TestIngestUnits_SegmentedWithContinuationAndEmbed(t *testing.T) {
 	s.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
 	ctx := context.Background()
 
+	// Fragments padded past the size floor so each stands alone (isolating the
+	// continuation behavior from the small-sibling merge).
+	pad := " " + strings.Repeat("lorem ipsum dolor sit amet ", 200)
 	// Two "page" units. Page 2's first fragment continues page 1's open (funcB).
 	sg := NewSegmenter(&scriptChatter{replies: []string{
-		`{"continues_previous":false,"fragments":[{"text":"funcA mints a token"},{"text":"funcB rotates the refresh token"}]}`,
-		`{"continues_previous":true,"fragments":[{"text":"and revokes the old one"},{"text":"funcC flips the load balancer"}]}`,
+		`{"continues_previous":false,"fragments":[{"text":"funcA mints a token` + pad + `"},{"text":"funcB rotates the refresh token` + pad + `"}]}`,
+		`{"continues_previous":true,"fragments":[{"text":"and revokes the old one` + pad + `"},{"text":"funcC flips the load balancer` + pad + `"}]}`,
 	}})
 
 	units := []ingestUnit{

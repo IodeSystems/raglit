@@ -79,6 +79,7 @@ func TestAssembler_DefersAndMergesOpenFragment(t *testing.T) {
 		got = append(got, sunk{page, ord, text})
 		return nil
 	})
+	a.MinChars = 0 // test pure continuation, not the size floor
 
 	// Page 1: [A, B]. A closes; B is the open (deferred) fragment.
 	if err := a.Feed(1, SegResult{Fragments: []Segment{{Text: "A"}, {Text: "B"}}}); err != nil {
@@ -117,11 +118,51 @@ func TestAssembler_NonContinuationClosesOpen(t *testing.T) {
 		texts = append(texts, text)
 		return nil
 	})
+	a.MinChars = 0 // pure continuation, not the size floor
 	a.Feed(1, SegResult{Fragments: []Segment{{Text: "P"}}})           // P open
 	a.Feed(2, SegResult{ContinuesPrevious: false, Fragments: []Segment{{Text: "Q"}}}) // P closes, Q open
 	a.Close()
 	if len(texts) != 2 || texts[0] != "P" || texts[1] != "Q" {
 		t.Fatalf("non-continuation should keep P and Q separate: %v", texts)
+	}
+}
+
+// The size floor: sub-floor sibling fragments are absorbed into the open one
+// (up to the ceiling) rather than emitted as tiny fragments — so a hit always
+// carries enough context to concept-chain.
+func TestAssembler_SizeFloorMergesSmallSiblings(t *testing.T) {
+	var got []string
+	a := NewAssembler(func(_, _ int, text string) error {
+		got = append(got, text)
+		return nil
+	})
+	a.MinChars = 10 // floor
+	a.MaxChars = 30 // ceiling
+
+	// Three small siblings on one unit: "aaa","bbb","ccc" (3 chars each). The
+	// first two merge toward the floor; the third keeps absorbing (still < 30).
+	a.Feed(1, SegResult{Fragments: []Segment{{Text: "aaa"}, {Text: "bbb"}, {Text: "ccc"}}})
+	a.Close()
+	if len(got) != 1 {
+		t.Fatalf("small siblings should merge into one fragment, got %d: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "aaa") || !strings.Contains(got[0], "ccc") {
+		t.Fatalf("merged fragment lost content: %q", got[0])
+	}
+}
+
+func TestAssembler_CeilingStopsAbsorption(t *testing.T) {
+	var got []string
+	a := NewAssembler(func(_, _ int, text string) error {
+		got = append(got, text)
+		return nil
+	})
+	a.MinChars = 100 // floor high...
+	a.MaxChars = 12  // ...but ceiling low: absorbing a second block would overflow
+	a.Feed(1, SegResult{Fragments: []Segment{{Text: "eight888"}, {Text: "nine99999"}}})
+	a.Close()
+	if len(got) != 2 {
+		t.Fatalf("ceiling should stop absorption → 2 fragments, got %d: %v", len(got), got)
 	}
 }
 
