@@ -40,10 +40,18 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "index":
 		err = runIndex(os.Args[2:])
+	case "ingest":
+		err = runIngest(os.Args[2:])
+	case "status":
+		err = runStatus(os.Args[2:])
+	case "work":
+		err = runWork(os.Args[2:])
 	case "search":
 		err = runSearch(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "demo":
+		err = runDemo(os.Args[2:])
 	case "pagify":
 		err = runPagify(os.Args[2:])
 	case "ocr":
@@ -67,9 +75,13 @@ func usage() {
 
 usage:
   raglit init   [--home DIR]                 configure endpoint + models (wizard)
-  raglit index  [--home DIR] [--embed] FILE|DIR...   ingest text/markdown (+ PDFs via OCR)
+  raglit demo                                self-contained offline tour
+  raglit index  [--home DIR] [--embed] FILE|DIR...   ingest local files (+ PDFs via OCR)
+  raglit ingest [--home DIR] [--now] URL...  queue URL(s) for lazy ingest (file://, http(s)://)
+  raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit
+  raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"
-  raglit serve  [--home DIR] [-n N]          stdio MCP server (search tool)
+  raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
 

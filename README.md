@@ -24,17 +24,48 @@ lets you pick a **vision model** (image in → text, for PDF OCR) and an
 **embedding model** (text in → vector). Written to `<home>/config.json`;
 `--llm-*` flags override it per command.
 
+Try it with zero setup:
+
+```
+raglit demo
+```
+
 ## Use
 
 ```
-raglit index  [--home DIR] [--embed] FILE|DIR...   ingest text/markdown (+ PDFs)
+raglit index  [--home DIR] [--embed] FILE|DIR...   ingest local files (+ PDFs)
+raglit ingest [--home DIR] [--now] URL...   queue URL(s): file://<path>, http(s)://...
+raglit work   [--home DIR] [--embed]        drain the ingest queue once
+raglit status [--home DIR]                  index + queue status
 raglit search [--home DIR] [--mode M] [-n N] "query"   M = bm25 | vec | hybrid
-raglit serve  [--home DIR] [-n N]           stdio MCP server (search tool)
+raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server
 ```
 
-`serve` exposes one `search` tool returning `{hits:[{doc_id,title,page,score,
-snippet}]}` — the shape agentkit's `ragnotify.ParseHits` consumes, so one server
-drives BOTH the model's explicit searches and agentkit's proactive pings.
+## Lazy ingest + status
+
+`ingest` (and the MCP `ingest` tool) is **lazy**: it queues a URL and returns a
+job id immediately. A worker — the background of `serve`, or a one-shot
+`raglit work` — fetches and indexes each job (`file://` local, `http(s)://`
+remote; PDFs OCR'd when a vision model is configured). Because it's queued, you
+can ask for progress:
+
+```
+$ raglit status
+index: 12 document(s), 48 fragment(s)
+jobs:  done=3 running=1 pending=8 failed=0  (42.0/min)
+  running  #4 http://…/spec.pdf   (eta ~1s)
+  pending  #5 file:///docs/a.md   (eta ~3s)
+  …
+```
+
+## MCP tools (`raglit serve`)
+
+- `search` — BM25/index search, returns ranked fragments.
+- `ingest` — queue a URL for lazy ingestion (returns a job id).
+- `index_status` — documents/fragments, job counts, rate, and per-item ETAs.
+
+`search` output matches agentkit's `ragnotify.ParseHits`, so one server drives
+both the model's explicit searches and agentkit's proactive pings.
 
 ## Home layout
 

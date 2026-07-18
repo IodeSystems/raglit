@@ -20,8 +20,10 @@ const version = "0.1.0"
 // proactive pings — no second integration.
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	openStore, _ := addStoreFlags(fs)
+	openStore, homeOf := addStoreFlags(fs)
+	lf := addLLMFlags(fs)
 	defLimit := fs.Int("n", 8, "default max results")
+	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
 	fs.Parse(args)
 
 	store, err := openStore()
@@ -29,6 +31,23 @@ func runServe(args []string) error {
 		return err
 	}
 	defer store.Close()
+	lf.resolve(homeOf())
+	if *embed {
+		if err := lf.requireEmbed(); err != nil {
+			return err
+		}
+		store.SetEmbedder(lf.embedder())
+	}
+
+	// Background worker drains the lazy ingest queue. A vision model (if
+	// configured) lets it OCR PDF jobs; without one, PDF jobs fail gracefully.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ocr *raglit.OCR
+	if *lf.visionModel != "" {
+		ocr = raglit.NewOCR(lf.visionClient())
+	}
+	go (&raglit.Worker{Store: store, OCR: ocr}).Run(ctx)
 
 	s := server.NewMCPServer("raglit", version)
 	s.AddTool(
@@ -42,7 +61,57 @@ func runServe(args []string) error {
 		),
 		searchHandler(store, *defLimit),
 	)
+	s.AddTool(
+		mcp.NewTool("ingest",
+			mcp.WithDescription(
+				"Queue a URL for ingestion into the index (LAZY — returns immediately with a "+
+					"job id; a background worker fetches + indexes it). Supports file://<path> "+
+					"and http(s)://... ; PDFs are OCR'd if a vision model is configured. Poll "+
+					"index_status for progress."),
+			mcp.WithString("url", mcp.Required(), mcp.Description("file://<path> or http(s)://<url>")),
+			mcp.WithString("title", mcp.Description("optional document title")),
+		),
+		ingestHandler(store),
+	)
+	s.AddTool(
+		mcp.NewTool("index_status",
+			mcp.WithDescription(
+				"Report index + ingest-queue status as JSON: documents/fragments indexed, "+
+					"done/running/pending/failed job counts, a recent processing rate (jobs/min), "+
+					"and pending items each with an ETA (seconds)."),
+		),
+		statusHandler(store),
+	)
 	return server.ServeStdio(s)
+}
+
+func ingestHandler(store *raglit.Store) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		url, err := req.RequireString("url")
+		if err != nil {
+			return mcp.NewToolResultError("url is required"), nil
+		}
+		id, err := store.Enqueue(url, req.GetString("title", ""))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("enqueue", err), nil
+		}
+		b, _ := json.Marshal(map[string]any{"job_id": id, "state": "pending", "url": url})
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func statusHandler(store *raglit.Store) server.ToolHandlerFunc {
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		st, err := store.IndexStatus()
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("status", err), nil
+		}
+		b, err := json.Marshal(st)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
 }
 
 func searchHandler(store *raglit.Store, defLimit int) server.ToolHandlerFunc {

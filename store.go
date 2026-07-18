@@ -87,6 +87,18 @@ CREATE TABLE IF NOT EXISTS fragment_vectors (
   dim         INTEGER NOT NULL,
   vec         BLOB NOT NULL   -- little-endian float32, L2-normalized
 );
+CREATE TABLE IF NOT EXISTS ingest_jobs (
+  id          INTEGER PRIMARY KEY,
+  url         TEXT NOT NULL,
+  title       TEXT NOT NULL DEFAULT '',
+  state       TEXT NOT NULL DEFAULT 'pending',  -- pending | running | done | error
+  error       TEXT NOT NULL DEFAULT '',
+  fragments   INTEGER NOT NULL DEFAULT 0,
+  enqueued_at INTEGER NOT NULL,
+  started_at  INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ingest_jobs_state ON ingest_jobs(state, id);
 `
 
 // Open opens (creating if needed) a raglit index at path. Use ":memory:" for a
@@ -274,9 +286,16 @@ func (s *Store) storeOriginal(docPath string) error {
 // (so they persist for re-OCR/inspection), else to a temp dir that is cleaned
 // up. Returns the number of pages indexed. A page whose OCR is blank is skipped.
 func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, error) {
+	return s.ingestPDF(ctx, ocr, pdfPath, pdfPath, filepath.Base(pdfPath))
+}
+
+// ingestPDF is IngestPDF with the document identity (docPath, title) decoupled
+// from the file on disk (filePath) — so a queued URL job can OCR a temp file
+// while keeping the URL as the stable document key.
+func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, title string) (int, error) {
 	outDir := ""
 	if s.withHome {
-		outDir = s.home.PageDir(pdfPath)
+		outDir = s.home.PageDir(docPath)
 	} else {
 		tmp, err := os.MkdirTemp("", "raglit-pages-")
 		if err != nil {
@@ -285,11 +304,11 @@ func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, e
 		defer os.RemoveAll(tmp)
 		outDir = tmp
 	}
-	pages, err := Pagify(pdfPath, outDir)
+	pages, err := Pagify(filePath, outDir)
 	if err != nil {
 		return 0, err
 	}
-	doc := Document{Path: pdfPath, Title: filepath.Base(pdfPath)}
+	doc := Document{Path: docPath, Title: title}
 	for _, p := range pages {
 		text, err := ocr.Page(ctx, p)
 		if err != nil {
