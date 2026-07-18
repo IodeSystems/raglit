@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +64,50 @@ func TestLive_PDFOCRPipeline(t *testing.T) {
 		t.Fatalf("OCR'd text not searchable (model transcribed something unexpected)")
 	}
 	t.Logf("OCR→index→search OK: page %d text = %q", hits[0].Page, hits[0].Text)
+}
+
+// TestLive_SegmentCode checks the segmenter against the real small model: does
+// it return schema-valid fragments for a code window (via the fix-loop), and is
+// the content preserved? Guarded by RAGLIT_LIVE.
+func TestLive_SegmentCode(t *testing.T) {
+	if os.Getenv("RAGLIT_LIVE") == "" {
+		t.Skip("set RAGLIT_LIVE=1 (and RAGLIT_LLM_KEY) to run live segmentation")
+	}
+	base := envOr("RAGLIT_LLM_URL", "https://llm.iodesystems.com")
+	model := envOr("RAGLIT_LLM_MODEL", "ternary-bonsai-27b")
+	client := llm.NewClient(base, os.Getenv("RAGLIT_LLM_KEY"), model)
+
+	const code = `package auth
+
+// newAccessToken mints a short-lived access token for the session.
+func newAccessToken(s *Session) (string, error) {
+	return sign(s.ID, 15*time.Minute)
+}
+
+// rotateRefresh issues a fresh refresh token and invalidates the old one.
+func rotateRefresh(s *Session) (string, error) {
+	s.RefreshGen++
+	return sign(s.ID, 30*24*time.Hour)
+}`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	r, err := NewSegmenter(client).SegmentText(ctx, code, "")
+	if err != nil {
+		t.Fatalf("segment: %v", err)
+	}
+	if len(r.Fragments) == 0 {
+		t.Fatal("no fragments")
+	}
+	joined := ""
+	for i, f := range r.Fragments {
+		t.Logf("fragment %d (%d chars): %.80s…", i, len(f.Text), f.Text)
+		joined += f.Text
+	}
+	// Content preserved (not lost to a bad parse/fallback dropping text).
+	if !strings.Contains(joined, "rotateRefresh") || !strings.Contains(joined, "newAccessToken") {
+		t.Errorf("segmentation dropped code content: %q", joined)
+	}
 }
 
 // renderTextPDF draws phrase onto a white PNG (real TTF, large enough for OCR)
