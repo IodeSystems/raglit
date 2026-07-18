@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/iodesystems/agentkit/ragnotify"
@@ -16,7 +17,7 @@ func TestServeOutput_ParsedByRagnotify(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.Ingest(raglit.Document{Path: "auth.md", Title: "Auth", Fragments: []raglit.Fragment{
+	if err := s.Ingest(context.Background(), raglit.Document{Path: "auth.md", Title: "Auth", Fragments: []raglit.Fragment{
 		{Page: 3, Ord: 0, Text: "the refresh token rotates on each use"},
 	}}); err != nil {
 		t.Fatal(err)

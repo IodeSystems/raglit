@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,7 +42,7 @@ func TestOpenHome_StoresOriginals(t *testing.T) {
 		}
 	}
 
-	if err := s.Ingest(Document{Path: src, Title: "notes", Fragments: []Fragment{
+	if err := s.Ingest(context.Background(), Document{Path: src, Title: "notes", Fragments: []Fragment{
 		{Ord: 0, Text: "alpha bravo"},
 	}}); err != nil {
 		t.Fatal(err)
@@ -58,7 +59,7 @@ func TestOpenHome_StoresOriginals(t *testing.T) {
 	}
 
 	// A synthetic doc (Path not a real file) ingests fine and stores nothing.
-	if err := s.Ingest(Document{Path: "virtual://x", Fragments: []Fragment{{Text: "echo"}}}); err != nil {
+	if err := s.Ingest(context.Background(), Document{Path: "virtual://x", Fragments: []Fragment{{Text: "echo"}}}); err != nil {
 		t.Fatalf("synthetic ingest should not error: %v", err)
 	}
 	if _, err := os.Stat(home.OriginalPath("virtual://x")); !os.IsNotExist(err) {

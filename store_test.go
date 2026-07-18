@@ -17,11 +17,11 @@ func openMem(t *testing.T) *Store {
 
 func TestIngestAndSearch_BM25Ranks(t *testing.T) {
 	s := openMem(t)
-	must(t, s.Ingest(Document{Path: "auth.md", Title: "Auth", Fragments: []Fragment{
+	must(t, s.Ingest(context.Background(), Document{Path: "auth.md", Title: "Auth", Fragments: []Fragment{
 		{Page: 1, Ord: 0, Text: "Access tokens expire; the refresh token rotates on each use."},
 		{Page: 1, Ord: 1, Text: "Unrelated note about invoicing and billing."},
 	}}))
-	must(t, s.Ingest(Document{Path: "deploy.md", Title: "Deploy", Fragments: []Fragment{
+	must(t, s.Ingest(context.Background(), Document{Path: "deploy.md", Title: "Deploy", Fragments: []Fragment{
 		{Page: 1, Ord: 0, Text: "Blue-green deploy; rollback flips the load balancer."},
 	}}))
 
@@ -44,14 +44,14 @@ func TestIngestAndSearch_BM25Ranks(t *testing.T) {
 func TestReingestIsIdempotent(t *testing.T) {
 	s := openMem(t)
 	doc := Document{Path: "a.md", Fragments: []Fragment{{Text: "hello world foo"}}}
-	must(t, s.Ingest(doc))
-	must(t, s.Ingest(doc)) // same path again — must replace, not duplicate
+	must(t, s.Ingest(context.Background(), doc))
+	must(t, s.Ingest(context.Background(), doc)) // same path again — must replace, not duplicate
 	hits, _ := s.Search("hello", 10)
 	if len(hits) != 1 {
 		t.Fatalf("reingest duplicated fragments: got %d hits, want 1", len(hits))
 	}
 	// Changed content converges (old fragment gone).
-	must(t, s.Ingest(Document{Path: "a.md", Fragments: []Fragment{{Text: "totally different"}}}))
+	must(t, s.Ingest(context.Background(), Document{Path: "a.md", Fragments: []Fragment{{Text: "totally different"}}}))
 	if h, _ := s.Search("hello", 10); len(h) != 0 {
 		t.Fatalf("stale fragment survived reingest: %+v", h)
 	}
@@ -62,7 +62,7 @@ func TestReingestIsIdempotent(t *testing.T) {
 
 func TestSearch_ToleratesPunctuationAndOperators(t *testing.T) {
 	s := openMem(t)
-	must(t, s.Ingest(Document{Path: "x.md", Fragments: []Fragment{{Text: "what's the plan for a-b testing"}}}))
+	must(t, s.Ingest(context.Background(), Document{Path: "x.md", Fragments: []Fragment{{Text: "what's the plan for a-b testing"}}}))
 	// Raw FTS5 would choke on the apostrophe / hyphen / bare OR; ftsQuery quotes.
 	for _, q := range []string{"what's", "a-b testing", "plan OR nothing"} {
 		if _, err := s.Search(q, 5); err != nil {
@@ -74,7 +74,7 @@ func TestSearch_ToleratesPunctuationAndOperators(t *testing.T) {
 func TestFinder_CollapsesToBestPerDoc(t *testing.T) {
 	s := openMem(t)
 	// Two fragments in ONE doc both match — Finder must emit ONE DocHit.
-	must(t, s.Ingest(Document{Path: "auth.md", Title: "Auth", Fragments: []Fragment{
+	must(t, s.Ingest(context.Background(), Document{Path: "auth.md", Title: "Auth", Fragments: []Fragment{
 		{Page: 1, Ord: 0, Text: "token refresh flow"},
 		{Page: 2, Ord: 0, Text: "token expiry and refresh again"},
 	}}))

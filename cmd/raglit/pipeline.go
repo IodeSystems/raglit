@@ -12,20 +12,35 @@ import (
 	"github.com/iodesystems/raglit"
 )
 
-// addLLMFlags registers the vision-model connection flags and returns a builder.
-// Defaults target bonsai (llm.iodesystems.com / gemma-4-12b); the key comes from
-// --llm-key or $RAGLIT_LLM_KEY.
-func addLLMFlags(fs *flag.FlagSet) func() *llm.Client {
-	url := fs.String("llm-url", "https://llm.iodesystems.com", "vision model base URL")
-	model := fs.String("llm-model", "ternary-bonsai-27b", "vision model id (must accept images)")
-	key := fs.String("llm-key", "", "API key (or $RAGLIT_LLM_KEY)")
-	return func() *llm.Client {
-		k := *key
-		if k == "" {
-			k = os.Getenv("RAGLIT_LLM_KEY")
-		}
-		return llm.NewClient(*url, k, *model)
+// llmFlags holds the shared model-connection flags. One endpoint + key, two
+// models: a vision model for OCR and an embedding model for vectors. Defaults
+// target bonsai (llm.iodesystems.com); key from --llm-key or $RAGLIT_LLM_KEY.
+type llmFlags struct {
+	url, key, visionModel, embedModel *string
+}
+
+func addLLMFlags(fs *flag.FlagSet) *llmFlags {
+	return &llmFlags{
+		url:         fs.String("llm-url", "https://llm.iodesystems.com", "model base URL"),
+		key:         fs.String("llm-key", "", "API key (or $RAGLIT_LLM_KEY)"),
+		visionModel: fs.String("llm-model", "ternary-bonsai-27b", "vision model id (OCR)"),
+		embedModel:  fs.String("embed-model", "nomic-embed-text", "embedding model id (vectors)"),
 	}
+}
+
+func (f *llmFlags) apiKey() string {
+	if *f.key != "" {
+		return *f.key
+	}
+	return os.Getenv("RAGLIT_LLM_KEY")
+}
+
+func (f *llmFlags) visionClient() *llm.Client {
+	return llm.NewClient(*f.url, f.apiKey(), *f.visionModel)
+}
+
+func (f *llmFlags) embedder() *raglit.Embedder {
+	return raglit.NewEmbedder(llm.NewClient(*f.url, f.apiKey(), *f.embedModel), *f.embedModel)
 }
 
 // runPagify extracts page images from image/scanned PDFs.
@@ -54,12 +69,12 @@ func runPagify(args []string) error {
 // separated by a form feed), for piping / inspection.
 func runOcr(args []string) error {
 	fs := flag.NewFlagSet("ocr", flag.ExitOnError)
-	newLLM := addLLMFlags(fs)
+	lf := addLLMFlags(fs)
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("ocr: no image files given")
 	}
-	ocr := raglit.NewOCR(newLLM())
+	ocr := raglit.NewOCR(lf.visionClient())
 	for _, img := range fs.Args() {
 		data, err := os.ReadFile(img)
 		if err != nil {

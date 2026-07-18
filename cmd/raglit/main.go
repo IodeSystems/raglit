@@ -54,23 +54,27 @@ func usage() {
 	fmt.Fprint(os.Stderr, `raglit — local BM25 document index (SQLite FTS5)
 
 usage:
-  raglit index  [--home DIR] FILE|DIR...    ingest text/markdown (+ PDFs via OCR)
-  raglit search [--home DIR] [-n N] "query"
+  raglit index  [--home DIR] [--embed] FILE|DIR...   ingest text/markdown (+ PDFs via OCR)
+  raglit search [--home DIR] [--mode M] [-n N] "query"
   raglit serve  [--home DIR] [-n N]          stdio MCP server (search tool)
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
 
 flags:
-  --home       index home dir (default $RAGLIT_HOME or ~/local/raglit); holds
-               index.sqlite + originals/ + pages/
-  --db         raw index file path (overrides --home; skips originals storage)
-  -n           search/serve: max (default) results
-  --llm-url    vision model base URL (default https://llm.iodesystems.com)
-  --llm-model  vision model id (default ternary-bonsai-27b)
-  --llm-key    API key (or $RAGLIT_LLM_KEY)
+  --home        index home dir (default $RAGLIT_HOME or ~/local/raglit); holds
+                index.sqlite + originals/ + pages/
+  --db          raw index file path (overrides --home; skips originals storage)
+  -n            search/serve: max (default) results
+  --embed       index: also embed fragments for vector/hybrid search
+  --mode        search: bm25 (default) | vec | hybrid  (vec/hybrid need --embed'd index)
+  --llm-url     model base URL (default https://llm.iodesystems.com)
+  --llm-model   vision model id (default ternary-bonsai-27b)
+  --embed-model embedding model id (default nomic-embed-text)
+  --llm-key     API key (or $RAGLIT_LLM_KEY)
 
 PDF indexing extracts embedded page images (pure-Go; image/scanned PDFs only)
-and OCRs each page through the vision model, indexing text with real page nums.
+and OCRs each page via the vision model. --embed adds nomic vectors; search
+--mode hybrid fuses BM25 + cosine with reciprocal-rank fusion.
 `)
 }
 
@@ -95,7 +99,8 @@ func addStoreFlags(fs *flag.FlagSet) func() (*raglit.Store, error) {
 func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	openStore := addStoreFlags(fs)
-	newLLM := addLLMFlags(fs) // only used when PDFs are present
+	lf := addLLMFlags(fs) // vision model for PDFs; embed model when --embed
+	embed := fs.Bool("embed", false, "also embed fragments for vector/hybrid search")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("index: no files/dirs given")
@@ -105,6 +110,9 @@ func runIndex(args []string) error {
 		return err
 	}
 	defer store.Close()
+	if *embed {
+		store.SetEmbedder(lf.embedder())
+	}
 
 	var files []string
 	for _, root := range fs.Args() {
@@ -136,7 +144,7 @@ func runIndex(args []string) error {
 	for _, p := range files {
 		if isPDF(p) {
 			if ocr == nil {
-				ocr = raglit.NewOCR(newLLM())
+				ocr = raglit.NewOCR(lf.visionClient())
 			}
 			pages, err := store.IngestPDF(ctx, ocr, p)
 			if err != nil {
@@ -152,7 +160,7 @@ func runIndex(args []string) error {
 			fmt.Fprintf(os.Stderr, "  skip %s: %v\n", p, err)
 			continue
 		}
-		if err := store.Ingest(doc); err != nil {
+		if err := store.Ingest(ctx, doc); err != nil {
 			return err
 		}
 		fmt.Printf("indexed %s (%d fragments)\n", p, len(doc.Fragments))
@@ -165,7 +173,9 @@ func runIndex(args []string) error {
 func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
 	openStore := addStoreFlags(fs)
+	lf := addLLMFlags(fs)
 	limit := fs.Int("n", 10, "max results")
+	mode := fs.String("mode", "bm25", "bm25 | vec | hybrid (vec/hybrid need embeddings)")
 	fs.Parse(args)
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if query == "" {
@@ -177,7 +187,20 @@ func runSearch(args []string) error {
 	}
 	defer store.Close()
 
-	hits, err := store.Search(query, *limit)
+	ctx := context.Background()
+	var hits []raglit.Hit
+	switch *mode {
+	case "bm25":
+		hits, err = store.Search(query, *limit)
+	case "vec":
+		store.SetEmbedder(lf.embedder())
+		hits, err = store.VecSearch(ctx, query, *limit)
+	case "hybrid":
+		store.SetEmbedder(lf.embedder())
+		hits, err = store.HybridSearch(ctx, query, *limit)
+	default:
+		return fmt.Errorf("search: unknown --mode %q (bm25|vec|hybrid)", *mode)
+	}
 	if err != nil {
 		return err
 	}

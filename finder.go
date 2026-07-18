@@ -29,7 +29,7 @@ func NewFinder(s *Store) *Finder { return &Finder{Store: s} }
 // Find implements agent.DocFinder: it searches the joined conversation text and
 // returns one DocHit per matched document (best fragment wins). DocID is the
 // document path — stable, and what a fetch tool would use to pull the full doc.
-func (f *Finder) Find(_ context.Context, texts []string) ([]agent.DocHit, error) {
+func (f *Finder) Find(ctx context.Context, texts []string) ([]agent.DocHit, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 20
@@ -38,7 +38,14 @@ func (f *Finder) Find(_ context.Context, texts []string) ([]agent.DocHit, error)
 	if query == "" {
 		return nil, nil
 	}
-	hits, err := f.Store.Search(query, limit)
+	// Hybrid (BM25 + vectors) when the store has an embedder; lexical otherwise.
+	var hits []Hit
+	var err error
+	if f.Store.embedder != nil {
+		hits, err = f.Store.HybridSearch(ctx, query, limit)
+	} else {
+		hits, err = f.Store.Search(query, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -58,5 +58,8 @@ finder := raglit.NewFinder(s)                       // → agent.DocFinder
 - ✅ **PDF → OCR** — `pagify` (pure-Go pdfcpu, image/scanned PDFs) + `ocr`
   (vision-LLM via agentkit's multimodal `llm` client) → feeds the same index.
   `index` handles PDFs end-to-end; page images persist under `pages/`.
-- ◻ **Vectors (opt-in)** — sqlite-vec or a custom NSW sidecar, only if BM25
-  lexical recall proves insufficient. Measured, not assumed.
+- ✅ **Vectors (opt-in)** — `index --embed` embeds fragments via nomic
+  (stored as sqlite BLOBs); `search --mode vec` (brute-force cosine) and
+  `--mode hybrid` (BM25 + cosine, reciprocal-rank fusion). Pure-Go, no vector
+  extension. A custom NSW sidecar is the escalation only if a linear scan gets
+  slow — measured, not assumed.

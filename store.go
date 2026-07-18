@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,10 +38,15 @@ type Store struct {
 	path     string
 	home     Home
 	withHome bool
+	embedder *Embedder // nil → lexical only; set for vector/hybrid search
 }
 
 // Path is the index file path (or ":memory:").
 func (s *Store) Path() string { return s.path }
+
+// SetEmbedder enables vector search: fragments are embedded on Ingest and
+// VecSearch/HybridSearch become available. nil disables it.
+func (s *Store) SetEmbedder(e *Embedder) { s.embedder = e }
 
 // schema is the whole index: metadata tables + an FTS5 mirror kept in sync by
 // triggers (external-content pattern — the fts table stores only the index, not
@@ -76,6 +82,11 @@ CREATE TRIGGER IF NOT EXISTS fragments_au AFTER UPDATE ON fragments BEGIN
   INSERT INTO fragments_fts(fragments_fts, rowid, text) VALUES ('delete', old.id, old.text);
   INSERT INTO fragments_fts(rowid, text) VALUES (new.id, new.text);
 END;
+CREATE TABLE IF NOT EXISTS fragment_vectors (
+  fragment_id INTEGER PRIMARY KEY REFERENCES fragments(id) ON DELETE CASCADE,
+  dim         INTEGER NOT NULL,
+  vec         BLOB NOT NULL   -- little-endian float32, L2-normalized
+);
 `
 
 // Open opens (creating if needed) a raglit index at path. Use ":memory:" for a
@@ -137,7 +148,7 @@ type Document struct {
 // Re-ingesting the same Path is idempotent: the doc's old fragments are dropped
 // and replaced, so re-running an index over a changed file converges rather
 // than duplicating. Empty-text fragments are skipped.
-func (s *Store) Ingest(doc Document) error {
+func (s *Store) Ingest(ctx context.Context, doc Document) error {
 	if doc.Path == "" {
 		return fmt.Errorf("raglit: ingest: empty path")
 	}
@@ -157,7 +168,8 @@ func (s *Store) Ingest(doc Document) error {
 	if err := tx.QueryRow(`SELECT id FROM documents WHERE path=?`, doc.Path).Scan(&docID); err != nil {
 		return fmt.Errorf("raglit: doc id: %w", err)
 	}
-	// Replace-on-reingest: drop old fragments (triggers clean the fts mirror).
+	// Replace-on-reingest: drop old fragments (triggers clean the fts mirror;
+	// FK cascade drops their vectors).
 	if _, err := tx.Exec(`DELETE FROM fragments WHERE doc_id=?`, docID); err != nil {
 		return fmt.Errorf("raglit: clear fragments: %w", err)
 	}
@@ -166,16 +178,58 @@ func (s *Store) Ingest(doc Document) error {
 		return err
 	}
 	defer ins.Close()
+	type frag struct {
+		id   int64
+		text string
+	}
+	var frags []frag
 	for _, f := range doc.Fragments {
 		if strings.TrimSpace(f.Text) == "" {
 			continue
 		}
-		if _, err := ins.Exec(docID, f.Page, f.Ord, f.Text); err != nil {
+		res, err := ins.Exec(docID, f.Page, f.Ord, f.Text)
+		if err != nil {
 			return fmt.Errorf("raglit: insert fragment: %w", err)
 		}
+		id, _ := res.LastInsertId()
+		frags = append(frags, frag{id, f.Text})
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+
+	// Vector tier (opt-in): embed the fresh fragments and store their vectors.
+	// Done AFTER commit so the network round-trip doesn't hold the write tx.
+	if s.embedder != nil && len(frags) > 0 {
+		texts := make([]string, len(frags))
+		for i, f := range frags {
+			texts[i] = f.text
+		}
+		vecs, err := s.embedder.EmbedDocs(ctx, texts)
+		if err != nil {
+			return fmt.Errorf("raglit: embed fragments: %w", err)
+		}
+		vtx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer vtx.Rollback() //nolint:errcheck
+		vins, err := vtx.Prepare(`INSERT INTO fragment_vectors(fragment_id, dim, vec) VALUES(?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer vins.Close()
+		for i, f := range frags {
+			if i >= len(vecs) {
+				break
+			}
+			if _, err := vins.Exec(f.id, len(vecs[i]), encodeVec(vecs[i])); err != nil {
+				return fmt.Errorf("raglit: store vector: %w", err)
+			}
+		}
+		if err := vtx.Commit(); err != nil {
+			return err
+		}
 	}
 	// Keep a copy of the source so the index is self-contained (a home store
 	// only; skipped for synthetic docs whose Path isn't a real file).
@@ -246,7 +300,7 @@ func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, e
 		}
 		doc.Fragments = append(doc.Fragments, Fragment{Page: p.Page, Ord: 0, Text: text})
 	}
-	if err := s.Ingest(doc); err != nil {
+	if err := s.Ingest(ctx, doc); err != nil {
 		return 0, err
 	}
 	return len(doc.Fragments), nil
@@ -256,6 +310,7 @@ func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, e
 // (the opposite of SQLite's raw bm25(), which returns more-negative for better
 // matches) — matching agentkit's DocHit.Score convention.
 type Hit struct {
+	ID    int64 // fragment id (stable key for fusing rankings)
 	Path  string
 	Title string
 	Page  int
@@ -277,7 +332,7 @@ func (s *Store) Search(query string, limit int) ([]Hit, error) {
 		limit = 10
 	}
 	rows, err := s.db.Query(
-		`SELECT d.path, d.title, f.page, f.ord, f.text, bm25(fragments_fts) AS score
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, bm25(fragments_fts) AS score
 		 FROM fragments_fts
 		 JOIN fragments f ON f.id = fragments_fts.rowid
 		 JOIN documents d ON d.id = f.doc_id
@@ -292,13 +347,109 @@ func (s *Store) Search(query string, limit int) ([]Hit, error) {
 	for rows.Next() {
 		var h Hit
 		var bm25 float64
-		if err := rows.Scan(&h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &bm25); err != nil {
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &bm25); err != nil {
 			return nil, err
 		}
 		h.Score = -bm25 // flip so higher = better
 		hits = append(hits, h)
 	}
 	return hits, rows.Err()
+}
+
+// VecSearch embeds the query and ranks fragments by cosine similarity, best
+// first. Brute-force: it scans every stored vector (fine for a local corpus;
+// see embed.go). Requires SetEmbedder. Score is cosine in [-1,1] (higher =
+// better). Fragments without a vector (indexed before embeddings were enabled)
+// are invisible to this search.
+func (s *Store) VecSearch(ctx context.Context, query string, limit int) ([]Hit, error) {
+	if s.embedder == nil {
+		return nil, fmt.Errorf("raglit: VecSearch needs an embedder (SetEmbedder)")
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	qv, err := s.embedder.EmbedQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, fv.vec
+		 FROM fragment_vectors fv
+		 JOIN fragments f ON f.id = fv.fragment_id
+		 JOIN documents d ON d.id = f.doc_id`)
+	if err != nil {
+		return nil, fmt.Errorf("raglit: vecsearch: %w", err)
+	}
+	defer rows.Close()
+	var hits []Hit
+	for rows.Next() {
+		var h Hit
+		var blob []byte
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &blob); err != nil {
+			return nil, err
+		}
+		h.Score = float64(dot(qv, decodeVec(blob)))
+		hits = append(hits, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits, nil
+}
+
+// HybridSearch fuses BM25 and vector rankings with Reciprocal Rank Fusion
+// (RRF) — the standard, score-scale-agnostic combiner: a fragment's fused score
+// is the sum over each ranked list of 1/(rrfK + rank). It over-fetches from
+// each side, so a fragment strong on either signal surfaces. Requires an
+// embedder. Returns up to limit fragments, best fused first.
+func (s *Store) HybridSearch(ctx context.Context, query string, limit int) ([]Hit, error) {
+	if s.embedder == nil {
+		return nil, fmt.Errorf("raglit: HybridSearch needs an embedder (SetEmbedder)")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	pool := limit * 4
+	lex, err := s.Search(query, pool)
+	if err != nil {
+		return nil, err
+	}
+	vec, err := s.VecSearch(ctx, query, pool)
+	if err != nil {
+		return nil, err
+	}
+	const rrfK = 60.0
+	fused := map[int64]*Hit{}
+	score := map[int64]float64{}
+	add := func(list []Hit) {
+		for rank, h := range list {
+			if _, ok := fused[h.ID]; !ok {
+				hc := h
+				fused[h.ID] = &hc
+			}
+			score[h.ID] += 1.0 / (rrfK + float64(rank))
+		}
+	}
+	add(lex)
+	add(vec)
+
+	out := make([]Hit, 0, len(fused))
+	for id, h := range fused {
+		h.Score = score[id]
+		out = append(out, *h)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // ftsQuery turns arbitrary user text into a safe FTS5 MATCH expression: each
