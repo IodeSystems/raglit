@@ -61,6 +61,25 @@ raglit demo                          offline, self-contained tour
 `--home DIR` picks the index home; `--index NAME` selects a named index within
 it (default `default`).
 
+## Daemon mode
+
+For big or ongoing ingests, run a daemon that owns the index and the background
+workers; other invocations call into it over HTTP instead of touching the
+SQLite files (no contention, and remote-capable):
+
+```sh
+raglit daemon --addr 127.0.0.1:7420        # long-running: workers + HTTP API
+
+# point any command at it (or set RAGLIT_DAEMON=http://host:7420)
+raglit ingest --daemon http://127.0.0.1:7420 ./my-project
+raglit search --daemon http://127.0.0.1:7420 "rollback procedure"
+raglit status --daemon http://127.0.0.1:7420
+```
+
+Endpoints: `GET /health`, `GET /indexes`, `POST /ingest`, `GET /search`,
+`GET /status`. The daemon reads local paths from its OWN filesystem (share it,
+or use `http(s)://` targets); bind to localhost — there's no auth yet.
+
 ## For agents (agentkit)
 
 raglit's `search` output is exactly the shape agentkit's `ragnotify.ParseHits`
@@ -96,7 +115,5 @@ it wholesale.
 
 ## Roadmap
 
-- ◻ Daemon mode — a long-running `serve` that other invocations call into
-  (remote ingest/search), so large ingests run in the background and CLIs don't
-  contend on the index file.
+- ◻ Daemon auth + remote file upload (today: localhost, shared-FS or URL targets).
 - ◻ Vector reranking; opt-in summaries for oversized fragments.

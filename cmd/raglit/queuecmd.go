@@ -74,6 +74,7 @@ func runIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	openStore, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
+	daemon := addDaemonFlag(fs)
 	title := fs.String("title", "", "document title (single-URL convenience)")
 	now := fs.Bool("now", false, "also process the queue now (don't wait for a serve worker)")
 	embed := fs.Bool("embed", false, "with --now: embed ingested fragments")
@@ -81,16 +82,23 @@ func runIngest(args []string) error {
 	if fs.NArg() == 0 {
 		return fmt.Errorf("ingest: nothing given (a folder, file, file://<path>, or http(s)://...)")
 	}
+
+	targets, err := expandIngestTargets(fs.Args())
+	if err != nil {
+		return err
+	}
+
+	// Client mode: hand off to a running daemon instead of touching the files.
+	if *daemon != "" {
+		return daemonIngest(*daemon, targets, fs.Lookup("index").Value.String(), *title)
+	}
+
 	store, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	targets, err := expandIngestTargets(fs.Args())
-	if err != nil {
-		return err
-	}
 	for _, u := range targets {
 		id, err := store.Enqueue(u, *title)
 		if err != nil {
@@ -151,7 +159,11 @@ func runWork(args []string) error {
 func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	openStore, _ := addStoreFlags(fs)
+	daemon := addDaemonFlag(fs)
 	fs.Parse(args)
+	if *daemon != "" {
+		return daemonStatusPrint(*daemon, fs.Lookup("index").Value.String())
+	}
 	store, err := openStore()
 	if err != nil {
 		return err
@@ -161,13 +173,18 @@ func runStatus(args []string) error {
 	return nil
 }
 
-// printStatus renders a Status to stdout.
+// printStatus renders a store's Status to stdout.
 func printStatus(store *raglit.Store) {
 	st, err := store.IndexStatus()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: %v\n", err)
 		return
 	}
+	renderStatus(st)
+}
+
+// renderStatus prints a Status value (shared by the local + daemon paths).
+func renderStatus(st raglit.Status) {
 	fmt.Printf("index: %d document(s), %d fragment(s)\n", st.Documents, st.Fragments)
 	fmt.Printf("jobs:  done=%d running=%d pending=%d failed=%d", st.Done, st.Running, st.Pending, st.Failed)
 	if st.RatePerMin > 0 {

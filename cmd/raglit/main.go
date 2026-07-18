@@ -50,6 +50,8 @@ func main() {
 		err = runSearch(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "daemon":
+		err = runDaemon(os.Args[2:])
 	case "demo":
 		err = runDemo(os.Args[2:])
 	case "pagify":
@@ -82,6 +84,8 @@ usage:
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"
   raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
+  raglit daemon [--home DIR] [--addr :7420] [--embed]   HTTP daemon (ingest/search/status)
+  # add --daemon URL (or $RAGLIT_DAEMON) to ingest/search/status to call a daemon
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
 
@@ -195,6 +199,7 @@ func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
 	openStore, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
+	daemon := addDaemonFlag(fs)
 	limit := fs.Int("n", 10, "max results")
 	mode := fs.String("mode", "bm25", "bm25 | vec | hybrid (vec/hybrid need embeddings)")
 	fs.Parse(args)
@@ -202,6 +207,12 @@ func runSearch(args []string) error {
 	if query == "" {
 		return fmt.Errorf("search: empty query")
 	}
+
+	// Client mode: query a running daemon.
+	if *daemon != "" {
+		return daemonSearchPrint(*daemon, query, fs.Lookup("index").Value.String(), *mode, *limit)
+	}
+
 	store, err := openStore()
 	if err != nil {
 		return err
