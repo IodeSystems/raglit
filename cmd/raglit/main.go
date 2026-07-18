@@ -21,11 +21,23 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
+		// No command: run the setup wizard if this home isn't initialized yet,
+		// otherwise show usage. (raglit is unusable until `init` writes config.)
+		if !raglit.Inited(raglit.DefaultHome()) {
+			fmt.Fprintln(os.Stderr, "raglit is not configured yet — starting setup.")
+			if err := runInit(nil); err != nil {
+				fmt.Fprintf(os.Stderr, "raglit: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		usage()
 		os.Exit(2)
 	}
 	var err error
 	switch os.Args[1] {
+	case "init":
+		err = runInit(os.Args[2:])
 	case "index":
 		err = runIndex(os.Args[2:])
 	case "search":
@@ -54,6 +66,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `raglit — local BM25 document index (SQLite FTS5)
 
 usage:
+  raglit init   [--home DIR]                 configure endpoint + models (wizard)
   raglit index  [--home DIR] [--embed] FILE|DIR...   ingest text/markdown (+ PDFs via OCR)
   raglit search [--home DIR] [--mode M] [-n N] "query"
   raglit serve  [--home DIR] [-n N]          stdio MCP server (search tool)
@@ -81,24 +94,27 @@ and OCRs each page via the vision model. --embed adds nomic vectors; search
 // addStoreFlags registers --home/--db on fs and returns an opener to call after
 // fs.Parse. --db (raw path) wins if set; otherwise --home (or the default home)
 // is used, which also stores ingested originals.
-func addStoreFlags(fs *flag.FlagSet) func() (*raglit.Store, error) {
+func addStoreFlags(fs *flag.FlagSet) (open func() (*raglit.Store, error), homeOf func() raglit.Home) {
 	home := fs.String("home", "", "index home dir (default $RAGLIT_HOME or ~/local/raglit)")
 	db := fs.String("db", "", "raw index file path (overrides --home)")
-	return func() (*raglit.Store, error) {
+	homeOf = func() raglit.Home {
+		if *home != "" {
+			return raglit.Home(*home)
+		}
+		return raglit.DefaultHome()
+	}
+	open = func() (*raglit.Store, error) {
 		if *db != "" {
 			return raglit.Open(*db)
 		}
-		h := raglit.DefaultHome()
-		if *home != "" {
-			h = raglit.Home(*home)
-		}
-		return raglit.OpenHome(h)
+		return raglit.OpenHome(homeOf())
 	}
+	return open, homeOf
 }
 
 func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
-	openStore := addStoreFlags(fs)
+	openStore, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs) // vision model for PDFs; embed model when --embed
 	embed := fs.Bool("embed", false, "also embed fragments for vector/hybrid search")
 	fs.Parse(args)
@@ -110,7 +126,11 @@ func runIndex(args []string) error {
 		return err
 	}
 	defer store.Close()
+	lf.resolve(homeOf())
 	if *embed {
+		if err := lf.requireEmbed(); err != nil {
+			return err
+		}
 		store.SetEmbedder(lf.embedder())
 	}
 
@@ -144,6 +164,9 @@ func runIndex(args []string) error {
 	for _, p := range files {
 		if isPDF(p) {
 			if ocr == nil {
+				if err := lf.requireVision(); err != nil {
+					return err
+				}
 				ocr = raglit.NewOCR(lf.visionClient())
 			}
 			pages, err := store.IngestPDF(ctx, ocr, p)
@@ -172,7 +195,7 @@ func runIndex(args []string) error {
 
 func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
-	openStore := addStoreFlags(fs)
+	openStore, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
 	limit := fs.Int("n", 10, "max results")
 	mode := fs.String("mode", "bm25", "bm25 | vec | hybrid (vec/hybrid need embeddings)")
@@ -192,12 +215,17 @@ func runSearch(args []string) error {
 	switch *mode {
 	case "bm25":
 		hits, err = store.Search(query, *limit)
-	case "vec":
+	case "vec", "hybrid":
+		lf.resolve(homeOf())
+		if err := lf.requireEmbed(); err != nil {
+			return err
+		}
 		store.SetEmbedder(lf.embedder())
-		hits, err = store.VecSearch(ctx, query, *limit)
-	case "hybrid":
-		store.SetEmbedder(lf.embedder())
-		hits, err = store.HybridSearch(ctx, query, *limit)
+		if *mode == "vec" {
+			hits, err = store.VecSearch(ctx, query, *limit)
+		} else {
+			hits, err = store.HybridSearch(ctx, query, *limit)
+		}
 	default:
 		return fmt.Errorf("search: unknown --mode %q (bm25|vec|hybrid)", *mode)
 	}

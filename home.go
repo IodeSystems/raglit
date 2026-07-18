@@ -36,6 +36,9 @@ func DefaultHome() Home {
 // IndexPath is the SQLite index file inside the home.
 func (h Home) IndexPath() string { return filepath.Join(string(h), "index.sqlite") }
 
+// ConfigPath is the model-connection config (base URL, token, model ids).
+func (h Home) ConfigPath() string { return filepath.Join(string(h), "config.json") }
+
 // OriginalsDir holds copies of ingested source files.
 func (h Home) OriginalsDir() string { return filepath.Join(string(h), "originals") }
 

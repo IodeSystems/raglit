@@ -20,7 +20,7 @@ const version = "0.1.0"
 // proactive pings — no second integration.
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	openStore := addStoreFlags(fs)
+	openStore, _ := addStoreFlags(fs)
 	defLimit := fs.Int("n", 8, "default max results")
 	fs.Parse(args)
 

@@ -10,11 +10,25 @@ so a local index drops straight into agentkit's proactive-retrieval seam
 (`agent.FinderPreparer`) and MCP tool bridge — the same interface a remote
 service satisfies. Start local, scale out by swapping the impl, no rewrite.
 
+## Setup
+
+raglit is unusable until it knows an endpoint. Run the wizard (also what a
+no-arg `raglit` launches when unconfigured):
+
+```
+raglit init
+```
+
+It asks for an OpenAI-compatible base URL + token, queries `/v1/models`, and
+lets you pick a **vision model** (image in → text, for PDF OCR) and an
+**embedding model** (text in → vector). Written to `<home>/config.json`;
+`--llm-*` flags override it per command.
+
 ## Use
 
 ```
-raglit index  [--home DIR] FILE|DIR...   ingest text/markdown
-raglit search [--home DIR] [-n N] "query"   BM25-ranked fragments
+raglit index  [--home DIR] [--embed] FILE|DIR...   ingest text/markdown (+ PDFs)
+raglit search [--home DIR] [--mode M] [-n N] "query"   M = bm25 | vec | hybrid
 raglit serve  [--home DIR] [-n N]           stdio MCP server (search tool)
 ```
 
