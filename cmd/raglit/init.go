@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iodesystems/agentkit/llm"
 	"github.com/iodesystems/raglit"
 )
 
@@ -63,8 +64,33 @@ func runInit(args []string) error {
 		embed = ask(r, "embedding model id (text in → vector)", "")
 	}
 
+	// Context window. Blank → a smart default (fine for any large-context model,
+	// since the window is output-reliability-capped). A number sets it. "probe"
+	// auto-detects by blowing the limit — only works on servers that REJECT an
+	// over-long prompt (tolerant proxies like bonsai don't, so just leave it
+	// blank there).
+	var ctxTokens int
+	ans := ask(r, "context window tokens (blank = smart default; a number; or 'probe')", "")
+	switch {
+	case ans == "":
+		// smart default
+	case strings.EqualFold(ans, "probe"):
+		fmt.Println("probing context (sends growing prompts until one is rejected)…")
+		pctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+		n, perr := llm.NewClient(base, key, vision).DiscoverContext(pctx)
+		cancel()
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "  probe failed (%v) — using smart default\n", perr)
+		} else {
+			ctxTokens = n
+			fmt.Printf("  discovered %d tokens\n", n)
+		}
+	default:
+		fmt.Sscanf(ans, "%d", &ctxTokens)
+	}
+
 	if err := raglit.SaveConfig(home, raglit.Config{
-		BaseURL: base, APIKey: key, VisionModel: vision, EmbedModel: embed,
+		BaseURL: base, APIKey: key, VisionModel: vision, EmbedModel: embed, ContextTokens: ctxTokens,
 	}); err != nil {
 		return err
 	}

@@ -19,8 +19,11 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home) *raglit.Wo
 		client := lf.visionClient()
 		w.OCR = raglit.NewOCR(client)
 		w.Segmenter = raglit.NewSegmenter(client)
-		w.ResolveWindow = func(ctx context.Context) int {
-			return raglit.ResolveWindowChars(ctx, client, home)
+		// Window from --context-tokens if given, else config-or-smart-default.
+		if *lf.contextTokens > 0 {
+			w.WindowChars = raglit.WindowCharsFor(*lf.contextTokens)
+		} else {
+			w.WindowChars = raglit.WindowCharsForHome(home)
 		}
 	}
 	return w

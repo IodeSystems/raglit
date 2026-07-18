@@ -95,6 +95,7 @@ flags:
   --llm-url     model base URL (default https://llm.iodesystems.com)
   --llm-model   vision model id (default ternary-bonsai-27b)
   --embed-model embedding model id (default nomic-embed-text)
+  --context-tokens  known model context window (e.g. 256000); 0 = config/probe
   --llm-key     API key (or $RAGLIT_LLM_KEY)
 
 PDF indexing extracts embedded page images (pure-Go; image/scanned PDFs only)

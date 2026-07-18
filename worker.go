@@ -20,12 +20,10 @@ type Worker struct {
 	OCR *OCR
 	// Segmenter, if set, LLM-segments TEXT/code jobs (windowed to WindowChars)
 	// instead of blank-line splitting — the "very good at code" path. nil → the
-	// dependency-free blank-line fallback (fully offline).
+	// dependency-free blank-line fallback (fully offline). WindowChars comes from
+	// config/default (see WindowCharsForHome); 0 → a safe default.
 	Segmenter   *Segmenter
 	WindowChars int
-	// ResolveWindow, if set, lazily computes WindowChars on the first text job
-	// (so a context probe doesn't block worker startup) and caches it.
-	ResolveWindow func(ctx context.Context) int
 	// Fetcher overrides URL resolution (tests). nil → Fetch (file://, http(s)://).
 	Fetcher func(ctx context.Context, url string) (Fetched, error)
 	// IdlePoll is how long Run waits when the queue is empty. Default 500ms.
@@ -126,9 +124,6 @@ func (w *Worker) ingest(ctx context.Context, job *Job) (int, error) {
 	}
 
 	if w.Segmenter != nil {
-		if w.WindowChars == 0 && w.ResolveWindow != nil {
-			w.WindowChars = w.ResolveWindow(ctx)
-		}
 		return w.Store.ingestText(ctx, w.Segmenter, job.URL, title, string(f.Data), w.WindowChars)
 	}
 	// Offline fallback: blank-line paragraph split.

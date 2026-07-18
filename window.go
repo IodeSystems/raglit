@@ -9,34 +9,35 @@ import (
 //
 // A file too big for the model's context is fed in ordered WINDOWS; the
 // Assembler's cross-unit continuation stitches any fragment split at a window
-// boundary, so windows don't need clean semantic cuts. Two sizing facts drive
-// the window:
+// boundary, so windows don't need clean semantic cuts. The model ECHOES the text
+// back as segmented fragments, so input AND output both live in the context
+// window → usable input ≈ (ctx − prompt) / 2.
 //
-//   - The model ECHOES the text back as segmented fragments, so input AND output
-//     both live in the context window → usable input ≈ (ctx − prompt) / 2.
-//   - We never know the true context a priori, so we DISCOVER it by probing
-//     (llm.DiscoverContext) and cache it — never by compacting to fit.
-
-// contextDiscoverer is the sliver of *llm.Client windowing needs (probe the
-// model's context). An interface so it's testable without a network.
-type contextDiscoverer interface {
-	DiscoverContext(ctx context.Context) (int, error)
-}
+// The window size comes from config (ContextTokens, set in the wizard) or a
+// SMART DEFAULT — not a per-ingest probe. Because maxWindowChars caps the window
+// for output reliability, any context ≥ ~40k tokens yields the SAME window, so
+// the exact number rarely matters; the probe (llm.DiscoverContext, an opt-in
+// wizard step) is only useful for a genuinely small-context model.
 
 const (
-	segPromptOverheadTokens = 400   // ~the segmentation instruction + JSON scaffolding
-	defaultWindowChars      = 8000  // ~2k tokens: a safe window when discovery is unavailable
-	maxWindowChars          = 24000 // ~6k tokens: latency cap — a bigger window doesn't buy
-	//                                 much and makes each segment call slow (prompt time
-	//                                 grows with size), independent of the model's context.
+	segPromptOverheadTokens = 400    // ~the segmentation instruction + JSON scaffolding
+	defaultContextTokens    = 131072 // smart default when config leaves it unset (see above)
+	maxWindowChars          = 64000  // ~16k tokens. NOT a context or latency limit (a large
+	//                                 context — bonsai is 256k — leaves ample headroom, and
+	//                                 total latency is dominated by output tokens, ~constant
+	//                                 across window sizes). It bounds how much a SMALL model
+	//                                 is asked to re-emit as one structured blob before it
+	//                                 drifts/repeats. Most files fit in one window at this
+	//                                 size → better coherence than boundary-stitching.
 	charsPerToken = 4
 )
 
-// windowCharsFor turns a discovered context-token count into a window size in
-// CHARACTERS, budgeting for the prompt and the model's echoed output (÷2, since
-// segmentation re-emits the text), with a 20% safety margin — then clamped to
-// maxWindowChars so a large context doesn't produce slow, unwieldy windows.
-func windowCharsFor(ctxTokens int) int {
+// WindowCharsFor turns a context-token count into a window size in CHARACTERS,
+// budgeting for the prompt and the model's echoed output (÷2, since segmentation
+// re-emits the text), with a 20% safety margin — then clamped to maxWindowChars
+// (an output-reliability bound, not a context bound). Exported so a caller with
+// a known context (e.g. --context-tokens) can size windows without probing.
+func WindowCharsFor(ctxTokens int) int {
 	usable := (ctxTokens - segPromptOverheadTokens) / 2
 	if usable < 256 {
 		usable = 256
@@ -49,22 +50,16 @@ func windowCharsFor(ctxTokens int) int {
 	return chars
 }
 
-// ResolveWindowChars returns the text window size (chars) for a model, using the
-// home's cached ContextTokens when present, else probing d once and caching the
-// result. On any probe failure it falls back to defaultWindowChars (nil error) —
-// discovery is an optimization, not a hard dependency.
-func ResolveWindowChars(ctx context.Context, d contextDiscoverer, home Home) int {
+// WindowCharsForHome returns the text window size (chars) for a home: its
+// configured ContextTokens if set, else the smart default. No probing — set the
+// context in the wizard (or --context-tokens) for a small-context model.
+func WindowCharsForHome(home Home) int {
 	cfg, _, _ := LoadConfig(home)
-	if cfg.ContextTokens > 0 {
-		return windowCharsFor(cfg.ContextTokens)
+	c := cfg.ContextTokens
+	if c <= 0 {
+		c = defaultContextTokens
 	}
-	n, err := d.DiscoverContext(ctx)
-	if err != nil || n <= 0 {
-		return defaultWindowChars
-	}
-	cfg.ContextTokens = n
-	_ = SaveConfig(home, cfg) // best-effort cache
-	return windowCharsFor(n)
+	return WindowCharsFor(c)
 }
 
 // textWindows splits text into windows of at most maxChars, breaking at line

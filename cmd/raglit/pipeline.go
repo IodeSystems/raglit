@@ -18,14 +18,16 @@ import (
 // an OpenAI-standard fallback for the URL), so explicit flags override config.
 type llmFlags struct {
 	url, key, visionModel, embedModel *string
+	contextTokens                     *int
 }
 
 func addLLMFlags(fs *flag.FlagSet) *llmFlags {
 	return &llmFlags{
-		url:         fs.String("llm-url", "", "model base URL (default: config, else OpenAI)"),
-		key:         fs.String("llm-key", "", "API key (default: config or $RAGLIT_LLM_KEY)"),
-		visionModel: fs.String("llm-model", "", "vision model id (default: config)"),
-		embedModel:  fs.String("embed-model", "", "embedding model id (default: config)"),
+		url:           fs.String("llm-url", "", "model base URL (default: config, else OpenAI)"),
+		key:           fs.String("llm-key", "", "API key (default: config or $RAGLIT_LLM_KEY)"),
+		visionModel:   fs.String("llm-model", "", "vision model id (default: config)"),
+		embedModel:    fs.String("embed-model", "", "embedding model id (default: config)"),
+		contextTokens: fs.Int("context-tokens", 0, "known model context window (tokens); 0 = config/probe"),
 	}
 }
 
