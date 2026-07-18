@@ -77,7 +77,7 @@ usage:
   raglit init   [--home DIR]                 configure endpoint + models (wizard)
   raglit demo                                self-contained offline tour
   raglit index  [--home DIR] [--embed] FILE|DIR...   ingest local files (+ PDFs via OCR)
-  raglit ingest [--home DIR] [--now] URL...  queue URL(s) for lazy ingest (file://, http(s)://)
+  raglit ingest [--home DIR] [--now] TARGET...  queue folders/files/URLs (file://, http(s)://)
   raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"

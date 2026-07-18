@@ -1,127 +1,102 @@
 # raglit
 
-A local, composable document RAG index. One portable **SQLite** file is the
-whole index; **FTS5** gives BM25 lexical ranking built in, so "BM25" and the
-`document:page:fragment` store collapse into a single **pure-Go** dependency
-(`modernc.org/sqlite`, no CGo → single static binary).
+A local document RAG index you can stand up in one command. Point it at a
+folder, ask questions, or hand it to an agent as an MCP tool. One portable
+SQLite file is the whole index — pure-Go, single static binary, no services to
+run.
 
-Built on [agentkit](../agentkit): raglit's search implements `agent.DocFinder`,
-so a local index drops straight into agentkit's proactive-retrieval seam
-(`agent.FinderPreparer`) and MCP tool bridge — the same interface a remote
-service satisfies. Start local, scale out by swapping the impl, no rewrite.
+## Quickstart
 
-## Setup
+```sh
+# build
+go install github.com/iodesystems/raglit/cmd/raglit@latest
 
-raglit is unusable until it knows an endpoint. Run the wizard (also what a
-no-arg `raglit` launches when unconfigured):
-
-```
+# 1. one-time setup — pick an OpenAI-compatible endpoint + models (a wizard)
 raglit init
+
+# 2. ingest a folder (code, markdown, text; PDFs get OCR'd)
+raglit ingest ./my-project --now
+
+# 3. ask
+raglit search "how does the auth token refresh work?"
 ```
 
-It asks for an OpenAI-compatible base URL + token, queries `/v1/models`, and
-lets you pick a **vision model** (image in → text, for PDF OCR) and an
-**embedding model** (text in → vector). Written to `<home>/config.json`;
-`--llm-*` flags override it per command.
+That's it. `init` asks for a base URL + API key and lists the endpoint's models
+so you can pick a chat/vision model and an embedding model; everything else uses
+sensible defaults (you never pass model flags again). The index lives in
+`~/local/raglit` by default.
 
-Try it with zero setup:
+> No endpoint handy? Every offline piece works without one:
+> `raglit demo` runs a self-contained tour, and text ingest falls back to a
+> dependency-free splitter when no model is configured.
 
-```
-raglit demo
-```
+## What it does
 
-## Use
+- **Ingest** folders, files, or URLs (`file://`, `http(s)://`) — lazily (queued)
+  or with `--now`. Text/code is segmented by the model into coherent, ~500-word
+  fragments (functions bound with their docs, not atomised); PDFs are OCR'd page
+  by page with cross-page stitching.
+- **Search** — BM25 (`--mode bm25`, default), vectors (`--mode vec`), or hybrid
+  RRF (`--mode hybrid`). Results are precise citations: document → page →
+  fragment.
+- **Serve** — expose the index(es) to any MCP client (Claude Desktop, agentkit):
 
-```
-raglit index  [--home DIR] [--embed] FILE|DIR...   ingest local files (+ PDFs)
-raglit ingest [--home DIR] [--now] URL...   queue URL(s): file://<path>, http(s)://...
-raglit work   [--home DIR] [--embed]        drain the ingest queue once
-raglit status [--home DIR]                  index + queue status
-raglit search [--home DIR] [--mode M] [-n N] "query"   M = bm25 | vec | hybrid
-raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server
-```
+  ```sh
+  raglit serve
+  ```
 
-## Lazy ingest + status
+  Tools: `search`, `ingest`, `index_status`, `list_indexes`.
 
-`ingest` (and the MCP `ingest` tool) is **lazy**: it queues a URL and returns a
-job id immediately. A worker — the background of `serve`, or a one-shot
-`raglit work` — fetches and indexes each job (`file://` local, `http(s)://`
-remote; PDFs OCR'd when a vision model is configured). Because it's queued, you
-can ask for progress:
+## Commands
 
 ```
-$ raglit status
-index: 12 document(s), 48 fragment(s)
-jobs:  done=3 running=1 pending=8 failed=0  (42.0/min)
-  running  #4 http://…/spec.pdf   (eta ~1s)
-  pending  #5 file:///docs/a.md   (eta ~3s)
-  …
+raglit init                          configure endpoint + models (wizard)
+raglit ingest TARGET... [--now]      queue folders / files / URLs (lazy; --now drains)
+raglit search "query" [--mode M]     M = bm25 | vec | hybrid
+raglit status                        documents/fragments, queue progress, rate, ETAs
+raglit serve                         stdio MCP server
+raglit demo                          offline, self-contained tour
 ```
 
-## MCP tools (`raglit serve`)
+`--home DIR` picks the index home; `--index NAME` selects a named index within
+it (default `default`).
 
-One server hosts a SET of named indexes (`index.sqlite` = `default`,
-`index-<name>.sqlite` for the rest, all under one home).
+## For agents (agentkit)
 
-- `search` — ranked fragments. `index` selects one or a comma-separated set;
-  omit it to search **all** (RRF-merged, each hit tagged with its `index`).
-- `ingest` — queue a URL for lazy ingestion into an `index` (default `default`,
-  created on demand).
-- `index_status` — counts / rate / ETAs for an `index`; omit to aggregate all.
-- `list_indexes` — the indexes with their document/fragment counts.
+raglit's `search` output is exactly the shape agentkit's `ragnotify.ParseHits`
+consumes, so one `raglit serve` drives both a model's explicit searches **and**
+agentkit's proactive "live-watch" pings (the finder scopes which indexes it
+watches via `Opts.ExtraArgs {"index": ...}` — all by default). raglit's
+`agent.DocFinder` also plugs straight into a Session's `FinderPreparer`.
 
-`search` output matches agentkit's `ragnotify.ParseHits`, so one server drives
-both the model's explicit searches and agentkit's proactive (live-watch) pings.
-**Index selection for the live watch:** the finder searches all indexes by
-default; scope it by setting `ragnotify.MCPFinder` `Opts.ExtraArgs` to
-`{"index": "a,b"}`.
+## How it's built
 
-## Fragment sizing
-
-Fragments target ~500 words (a coherent subsection). The segmenter binds small
-related units together to reach the floor — below it, a hit lacks the context to
-concept-chain; a soft ceiling stops one fragment swallowing a document.
-Oversized matches are surfaced to an agent as pointer notifications (fetch on
-demand), so no summarization pass is needed.
+- **SQLite FTS5** gives BM25 + the document:page:fragment index in one pure-Go
+  dependency (`modernc.org/sqlite`, no CGo). Vectors are stored as BLOBs, cosine
+  brute-forced (fine for a local corpus).
+- **LLM segmentation** (via [agentkit](https://github.com/iodesystems/agentkit))
+  turns pages/text into coherent fragments with a schema-validated fix-loop and
+  a safe fallback; an open fragment is carried across page/window boundaries and
+  embedded only once it's resolved.
+- **Multi-index** — one home holds several named indexes; `serve` searches all
+  (RRF-merged, tagged) or a scoped subset.
 
 ## Home layout
 
-Everything for one index lives under a single home directory, so it's a portable
-unit you can copy, back up, or delete wholesale. Default `$RAGLIT_HOME`, else
-`~/local/raglit`; override with `--home`, or point at a raw index file with
-`--db` (skips originals storage).
-
 ```
-<home>/
-  index.sqlite   the FTS5 index (documents:pages:fragments)
-  originals/      copies of ingested sources — the index stays self-contained
-  pages/          page images for OCR (populated by the PDF pipeline)
+~/local/raglit/            (or $RAGLIT_HOME, or --home)
+  config.json              endpoint + model settings (from `raglit init`)
+  index.sqlite             the default index (index-<name>.sqlite for others)
+  originals/               copies of ingested sources
+  pages/                   page images for OCR
 ```
 
-```go
-s, _ := raglit.Open("idx.sqlite")
-s.Ingest(raglit.Document{Path: "auth.md", Title: "Auth", Fragments: []raglit.Fragment{
-    {Page: 1, Ord: 0, Text: "Access tokens expire; the refresh token rotates."},
-}})
-hits, _ := s.Search("token refresh", 10)          // BM25, best first
-finder := raglit.NewFinder(s)                       // → agent.DocFinder
-```
-
-## Grain
-
-`documents → fragments(page, ord, text)`. A fragment is one indexable unit; page
-+ ord locate it back in the source, so a hit is a precise citation.
+Everything for an index is under one directory — copy it, back it up, or delete
+it wholesale.
 
 ## Roadmap
 
-- ✅ **Lexical core** — FTS5 BM25 index/search + `agent.DocFinder`.
-- ✅ **MCP `serve`** — search exposed as an MCP tool; output feeds both the
-  explicit channel and agentkit's proactive-notify (`ragnotify`).
-- ✅ **PDF → OCR** — `pagify` (pure-Go pdfcpu, image/scanned PDFs) + `ocr`
-  (vision-LLM via agentkit's multimodal `llm` client) → feeds the same index.
-  `index` handles PDFs end-to-end; page images persist under `pages/`.
-- ✅ **Vectors (opt-in)** — `index --embed` embeds fragments via nomic
-  (stored as sqlite BLOBs); `search --mode vec` (brute-force cosine) and
-  `--mode hybrid` (BM25 + cosine, reciprocal-rank fusion). Pure-Go, no vector
-  extension. A custom NSW sidecar is the escalation only if a linear scan gets
-  slow — measured, not assumed.
+- ◻ Daemon mode — a long-running `serve` that other invocations call into
+  (remote ingest/search), so large ingests run in the background and CLIs don't
+  contend on the index file.
+- ◻ Vector reranking; opt-in summaries for oversized fragments.

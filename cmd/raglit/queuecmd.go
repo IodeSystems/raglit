@@ -5,9 +5,48 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/iodesystems/raglit"
 )
+
+// expandIngestTargets turns ingest args into a flat list of ingestable targets:
+// a URL (file://, http(s)://) passes through; a local directory is walked for
+// text/PDF files; a local file becomes its absolute path. So `ingest ./repo`
+// queues every source file under repo.
+func expandIngestTargets(args []string) ([]string, error) {
+	var out []string
+	for _, a := range args {
+		if strings.Contains(a, "://") { // a URL
+			out = append(out, a)
+			continue
+		}
+		fi, err := os.Stat(a)
+		if err != nil {
+			return nil, err
+		}
+		if fi.IsDir() {
+			err = filepath.WalkDir(a, func(p string, d os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if !d.IsDir() && (isText(p) || isPDF(p)) {
+					abs, _ := filepath.Abs(p)
+					out = append(out, abs)
+				}
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			abs, _ := filepath.Abs(a)
+			out = append(out, abs)
+		}
+	}
+	return out, nil
+}
 
 // buildWorker wires a Worker with OCR (PDF) + LLM segmentation (text/code) when a
 // model is configured; text-window sizing is resolved lazily on the first text
@@ -40,7 +79,7 @@ func runIngest(args []string) error {
 	embed := fs.Bool("embed", false, "with --now: embed ingested fragments")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
-		return fmt.Errorf("ingest: no URLs given (file://<path> or http(s)://...)")
+		return fmt.Errorf("ingest: nothing given (a folder, file, file://<path>, or http(s)://...)")
 	}
 	store, err := openStore()
 	if err != nil {
@@ -48,13 +87,18 @@ func runIngest(args []string) error {
 	}
 	defer store.Close()
 
-	for _, url := range fs.Args() {
-		id, err := store.Enqueue(url, *title)
+	targets, err := expandIngestTargets(fs.Args())
+	if err != nil {
+		return err
+	}
+	for _, u := range targets {
+		id, err := store.Enqueue(u, *title)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("queued #%d  %s\n", id, url)
+		fmt.Printf("queued #%d  %s\n", id, u)
 	}
+	fmt.Printf("queued %d item(s)\n", len(targets))
 
 	if *now {
 		lf.resolve(homeOf())
