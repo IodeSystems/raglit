@@ -89,8 +89,12 @@ func runInit(args []string) error {
 		fmt.Sscanf(ans, "%d", &ctxTokens)
 	}
 
+	// Default index — the one commands use when no --index is given.
+	defIndex := ask(r, "default index name", "default")
+
 	if err := raglit.SaveConfig(home, raglit.Config{
-		BaseURL: base, APIKey: key, VisionModel: vision, EmbedModel: embed, ContextTokens: ctxTokens,
+		BaseURL: base, APIKey: key, VisionModel: vision, EmbedModel: embed,
+		ContextTokens: ctxTokens, DefaultIndex: defIndex,
 	}); err != nil {
 		return err
 	}

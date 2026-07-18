@@ -59,7 +59,8 @@ raglit demo                          offline, self-contained tour
 ```
 
 `--home DIR` picks the index home; `--index NAME` selects a named index within
-it (default `default`).
+it. With no `--index`, commands use the config's `default_index` (set in the
+wizard), falling back to `default`.
 
 ## Daemon mode
 

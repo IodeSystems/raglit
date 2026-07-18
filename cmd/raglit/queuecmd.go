@@ -90,7 +90,7 @@ func runIngest(args []string) error {
 
 	// Client mode: hand off to a running daemon instead of touching the files.
 	if *daemon != "" {
-		return daemonIngest(*daemon, targets, fs.Lookup("index").Value.String(), *title)
+		return daemonIngest(*daemon, targets, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *title)
 	}
 
 	store, err := openStore()
@@ -158,11 +158,11 @@ func runWork(args []string) error {
 // runStatus prints the index + queue status.
 func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	openStore, _ := addStoreFlags(fs)
+	openStore, homeOf := addStoreFlags(fs)
 	daemon := addDaemonFlag(fs)
 	fs.Parse(args)
 	if *daemon != "" {
-		return daemonStatusPrint(*daemon, fs.Lookup("index").Value.String())
+		return daemonStatusPrint(*daemon, resolveIndexName(fs.Lookup("index").Value.String(), homeOf))
 	}
 	store, err := openStore()
 	if err != nil {

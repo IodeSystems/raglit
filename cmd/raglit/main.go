@@ -114,7 +114,7 @@ and OCRs each page via the vision model. --embed adds nomic vectors; search
 func addStoreFlags(fs *flag.FlagSet) (open func() (*raglit.Store, error), homeOf func() raglit.Home) {
 	home := fs.String("home", "", "index home dir (default $RAGLIT_HOME or ~/local/raglit)")
 	db := fs.String("db", "", "raw index file path (overrides --home)")
-	index := fs.String("index", "default", "index name within the home (multi-index)")
+	index := fs.String("index", "", "index name (default: config default_index, else 'default')")
 	homeOf = func() raglit.Home {
 		if *home != "" {
 			return raglit.Home(*home)
@@ -125,9 +125,21 @@ func addStoreFlags(fs *flag.FlagSet) (open func() (*raglit.Store, error), homeOf
 		if *db != "" {
 			return raglit.Open(*db)
 		}
-		return raglit.OpenIndex(homeOf(), *index)
+		return raglit.OpenIndex(homeOf(), resolveIndexName(*index, homeOf))
 	}
 	return open, homeOf
+}
+
+// resolveIndexName picks the effective index: an explicit --index wins, else the
+// home's config default_index, else "default".
+func resolveIndexName(flagVal string, homeOf func() raglit.Home) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if cfg, _, _ := raglit.LoadConfig(homeOf()); cfg.DefaultIndex != "" {
+		return cfg.DefaultIndex
+	}
+	return "default"
 }
 
 func runIndex(args []string) error {
@@ -210,7 +222,7 @@ func runSearch(args []string) error {
 
 	// Client mode: query a running daemon.
 	if *daemon != "" {
-		return daemonSearchPrint(*daemon, query, fs.Lookup("index").Value.String(), *mode, *limit)
+		return daemonSearchPrint(*daemon, query, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *mode, *limit)
 	}
 
 	store, err := openStore()

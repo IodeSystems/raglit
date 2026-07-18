@@ -18,6 +18,9 @@ type Config struct {
 	// ContextTokens caches the model's discovered context window (see window.go)
 	// so text/code ingestion doesn't re-probe it every run. 0 = not yet probed.
 	ContextTokens int `json:"context_tokens,omitempty"`
+	// DefaultIndex is the index used when a command gives no --index. Empty →
+	// "default". Set it in the wizard to make one named index your working default.
+	DefaultIndex string `json:"default_index,omitempty"`
 }
 
 // LoadConfig reads the home's config. exists is false (with nil error) when the
