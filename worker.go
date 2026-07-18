@@ -18,6 +18,14 @@ type Worker struct {
 	// OCR ingests PDF jobs. nil → a PDF job fails with a clear message (a text
 	// corpus needs no vision model).
 	OCR *OCR
+	// Segmenter, if set, LLM-segments TEXT/code jobs (windowed to WindowChars)
+	// instead of blank-line splitting — the "very good at code" path. nil → the
+	// dependency-free blank-line fallback (fully offline).
+	Segmenter   *Segmenter
+	WindowChars int
+	// ResolveWindow, if set, lazily computes WindowChars on the first text job
+	// (so a context probe doesn't block worker startup) and caches it.
+	ResolveWindow func(ctx context.Context) int
 	// Fetcher overrides URL resolution (tests). nil → Fetch (file://, http(s)://).
 	Fetcher func(ctx context.Context, url string) (Fetched, error)
 	// IdlePoll is how long Run waits when the queue is empty. Default 500ms.
@@ -117,6 +125,13 @@ func (w *Worker) ingest(ctx context.Context, job *Job) (int, error) {
 		return w.Store.ingestPDF(ctx, w.OCR, job.URL, tmp.Name(), title)
 	}
 
+	if w.Segmenter != nil {
+		if w.WindowChars == 0 && w.ResolveWindow != nil {
+			w.WindowChars = w.ResolveWindow(ctx)
+		}
+		return w.Store.ingestText(ctx, w.Segmenter, job.URL, title, string(f.Data), w.WindowChars)
+	}
+	// Offline fallback: blank-line paragraph split.
 	doc := Document{Path: job.URL, Title: title, Fragments: TextFragments(f.Data)}
 	if err := w.Store.Ingest(ctx, doc); err != nil {
 		return 0, err

@@ -39,15 +39,12 @@ func runServe(args []string) error {
 		store.SetEmbedder(lf.embedder())
 	}
 
-	// Background worker drains the lazy ingest queue. A vision model (if
-	// configured) lets it OCR PDF jobs; without one, PDF jobs fail gracefully.
+	// Background worker drains the lazy ingest queue. A configured model gives it
+	// PDF OCR + LLM text/code segmentation; without one, text is blank-line split
+	// and PDF jobs fail gracefully.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var ocr *raglit.OCR
-	if *lf.visionModel != "" {
-		ocr = raglit.NewOCR(lf.visionClient())
-	}
-	go (&raglit.Worker{Store: store, OCR: ocr}).Run(ctx)
+	go buildWorker(store, lf, homeOf()).Run(ctx)
 
 	s := server.NewMCPServer("raglit", version)
 	s.AddTool(

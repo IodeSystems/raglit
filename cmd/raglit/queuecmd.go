@@ -9,6 +9,23 @@ import (
 	"github.com/iodesystems/raglit"
 )
 
+// buildWorker wires a Worker with OCR (PDF) + LLM segmentation (text/code) when a
+// model is configured; text-window sizing is resolved lazily on the first text
+// job (probing + caching the model's context). No model → offline blank-line text
+// + PDF-fails-gracefully.
+func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home) *raglit.Worker {
+	w := &raglit.Worker{Store: store}
+	if *lf.visionModel != "" {
+		client := lf.visionClient()
+		w.OCR = raglit.NewOCR(client)
+		w.Segmenter = raglit.NewSegmenter(client)
+		w.ResolveWindow = func(ctx context.Context) int {
+			return raglit.ResolveWindowChars(ctx, client, home)
+		}
+	}
+	return w
+}
+
 // runIngest enqueues URLs for lazy ingestion. With --now it also drains the
 // queue synchronously (fetch + index) instead of leaving it for a serve worker.
 func runIngest(args []string) error {
@@ -44,11 +61,7 @@ func runIngest(args []string) error {
 			}
 			store.SetEmbedder(lf.embedder())
 		}
-		var ocr *raglit.OCR
-		if *lf.visionModel != "" {
-			ocr = raglit.NewOCR(lf.visionClient())
-		}
-		n, err := (&raglit.Worker{Store: store, OCR: ocr}).Drain(context.Background())
+		n, err := buildWorker(store, lf, homeOf()).Drain(context.Background())
 		if err != nil {
 			return err
 		}
@@ -78,11 +91,7 @@ func runWork(args []string) error {
 		}
 		store.SetEmbedder(lf.embedder())
 	}
-	var ocr *raglit.OCR
-	if *lf.visionModel != "" {
-		ocr = raglit.NewOCR(lf.visionClient())
-	}
-	n, err := (&raglit.Worker{Store: store, OCR: ocr}).Drain(context.Background())
+	n, err := buildWorker(store, lf, homeOf()).Drain(context.Background())
 	if err != nil {
 		return err
 	}

@@ -15,6 +15,9 @@ type Config struct {
 	APIKey      string `json:"api_key"`
 	VisionModel string `json:"vision_model"`
 	EmbedModel  string `json:"embed_model"`
+	// ContextTokens caches the model's discovered context window (see window.go)
+	// so text/code ingestion doesn't re-probe it every run. 0 = not yet probed.
+	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
 // LoadConfig reads the home's config. exists is false (with nil error) when the

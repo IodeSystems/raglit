@@ -146,6 +146,9 @@ func runIndex(args []string) error {
 		store.SetEmbedder(lf.embedder())
 	}
 
+	// Local index goes through the SAME pipeline as URL ingest: enqueue each
+	// file, then drain now. That gives local files the LLM segmentation (text +
+	// code) and PDF OCR + concurrent embed — one code path, no duplicate splitter.
 	var files []string
 	for _, root := range fs.Args() {
 		fi, err := os.Stat(root)
@@ -169,39 +172,20 @@ func runIndex(args []string) error {
 			files = append(files, root)
 		}
 	}
-
-	ctx := context.Background()
-	var ocr *raglit.OCR // built lazily on the first PDF
-	n := 0
 	for _, p := range files {
-		if isPDF(p) {
-			if ocr == nil {
-				if err := lf.requireVision(); err != nil {
-					return err
-				}
-				ocr = raglit.NewOCR(lf.visionClient())
-			}
-			pages, err := store.IngestPDF(ctx, ocr, p)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s: %v\n", p, err)
-				continue
-			}
-			fmt.Printf("indexed %s (%d fragment(s))\n", p, pages)
-			n++
-			continue
-		}
-		doc, err := readDoc(p)
+		abs, err := filepath.Abs(p)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "  skip %s: %v\n", p, err)
-			continue
-		}
-		if err := store.Ingest(ctx, doc); err != nil {
 			return err
 		}
-		fmt.Printf("indexed %s (%d fragments)\n", p, len(doc.Fragments))
-		n++
+		if _, err := store.Enqueue(abs, ""); err != nil {
+			return err
+		}
 	}
-	fmt.Printf("done: %d document(s) → %s\n", n, store.Path())
+	n, err := buildWorker(store, lf, homeOf()).Drain(context.Background())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("indexed %d file(s) → %s\n", n, store.Path())
 	return nil
 }
 
@@ -256,25 +240,6 @@ func runSearch(args []string) error {
 		fmt.Printf("%d. [%.3f] %s\n   %s\n", i+1, h.Score, loc, clip(oneLine(h.Text), 160))
 	}
 	return nil
-}
-
-// readDoc reads a text/markdown file and splits it into fragments on blank
-// lines (paragraph grain). Pageless (page 0) — PDFs will carry real pages.
-func readDoc(path string) (raglit.Document, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return raglit.Document{}, err
-	}
-	doc := raglit.Document{Path: path, Title: filepath.Base(path)}
-	ord := 0
-	for _, block := range strings.Split(string(b), "\n\n") {
-		if strings.TrimSpace(block) == "" {
-			continue
-		}
-		doc.Fragments = append(doc.Fragments, raglit.Fragment{Ord: ord, Text: strings.TrimSpace(block)})
-		ord++
-	}
-	return doc, nil
 }
 
 func isText(p string) bool {
