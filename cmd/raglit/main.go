@@ -58,6 +58,8 @@ func main() {
 		err = runPagify(os.Args[2:])
 	case "ocr":
 		err = runOcr(os.Args[2:])
+	case "doctor":
+		err = runDoctor(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -88,6 +90,7 @@ usage:
   # add --daemon URL (or $RAGLIT_DAEMON) to ingest/search/status to call a daemon
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
+  raglit doctor [--home DIR]                 OCR readiness: cheap engine + vision endpoint
 
 flags:
   --home        index home dir (default $RAGLIT_HOME or ~/local/raglit); holds
