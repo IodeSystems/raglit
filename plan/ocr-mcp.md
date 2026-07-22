@@ -142,9 +142,12 @@ tier for free.
   missing VLM. Tests + live MCP stdio smoke (tool advertised, real PNG ran the
   whole pipeline to the designed graceful error). tesseract still absent here, so
   a live successful transcription awaits S3 (install) or a VLM run.
-- ◐ **S3 — install ergonomics.** No-root tesseract install done + recorded (below);
-  a `raglit doctor` command (report tesseract/paddle presence + install command)
-  is still open, optional.
+- ✅ **S3 — install ergonomics** (2026-07-22, `7da5186`). No-root tesseract install
+  done + recorded (below). `raglit doctor` reports OCR readiness — cheap engine
+  (tesseract `--version` / paddleocr reachability), vision endpoint reachability,
+  and a verdict (full cascade / VLM-only / cheap-only / unavailable), with the
+  exact install hint when tesseract is missing. Validated live across three
+  configs (healthy, bad tesseract_bin, unreachable paddleocr).
 
 ### Live validation (2026-07-22) — both tiers end-to-end via the MCP `ocr` tool
 
@@ -155,6 +158,11 @@ image, driven through `raglit serve` over stdio:
 - **VLM** (`cheap_engine: none`, `vision_model: ternary-bonsai-27b`,
   `base_url: http://127.0.0.1:8111/v1`): routed to corrallm's bonsai vision model,
   `engine:"vision"`, exact text, ~12s.
+- **escalation (the whole cascade in one call)**: a wave-warped scan tesseract
+  garbled to "The Visiah mel hese pl ge9rd4ed Seal toy" (conf 0.33) — the gate
+  tripped, escalated to bonsai, which returned the correct "The vision model
+  rescued this degraded scan today", tagged `engine:"vision"`. Cheap→gate→VLM
+  rescue, proven end-to-end (~8s).
 
 ### No-root tesseract install (Ubuntu 24.04, no sudo) — the "difficult" path
 
