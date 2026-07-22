@@ -67,6 +67,9 @@ func (o *OCR) PageWithEngine(ctx context.Context, img PageImage) (text, engine s
 // visionPage is the VLM transcription: agentkit's multimodal llm.Message — a
 // text instruction + the page as an inline image part.
 func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
+	if o.Client == nil {
+		return "", fmt.Errorf("raglit: ocr page %d needs the vision model but none is configured", img.Page)
+	}
 	prompt := o.Prompt
 	if prompt == "" {
 		prompt = defaultOCRPrompt

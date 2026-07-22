@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,19 @@ func Pagify(pdfPath, outDir string) ([]PageImage, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return pagify(f, outDir)
+}
+
+// PagifyBytes extracts embedded page images from an in-memory image/scanned PDF
+// — the MCP tool's rasterization path, so a caller can pass PDF bytes without a
+// temp file. Same semantics as Pagify with an empty outDir (no files written).
+func PagifyBytes(pdf []byte) ([]PageImage, error) {
+	return pagify(bytes.NewReader(pdf), "")
+}
+
+// pagify is the shared core: extract embedded page images from a PDF read via rs,
+// optionally also writing each to outDir.
+func pagify(rs io.ReadSeeker, outDir string) ([]PageImage, error) {
 	if outDir != "" {
 		if err := os.MkdirAll(outDir, 0o755); err != nil {
 			return nil, err
@@ -68,7 +82,7 @@ func Pagify(pdfPath, outDir string) ([]PageImage, error) {
 		return nil
 	}
 
-	if err := api.ExtractImages(f, nil, digest, model.NewDefaultConfiguration()); err != nil {
+	if err := api.ExtractImages(rs, nil, digest, model.NewDefaultConfiguration()); err != nil {
 		return nil, fmt.Errorf("raglit: pagify: %w", err)
 	}
 	if len(pages) == 0 {
