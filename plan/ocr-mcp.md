@@ -133,8 +133,15 @@ tier for free.
   tesseract isn't installed on this box, so a live tesseract run is deferred; its
   absence exercises the tested error-degrades-to-VLM path. Zero-value config keeps
   the old VLM-only behavior.
-- ◻ **S2 — MCP `ocr` tool.** In-memory Pagify; register the tool in serve.go;
-  paged-text JSON. Checkpoint the exact tool I/O schema with the user first.
+- ✅ **S2 — MCP `ocr` tool** (2026-07-21, `90534e6`). I/O confirmed with the user:
+  in `{path?|data?, mime?}`, out `{pages:[{page,text,engine}], engines:{<e>:n}}`.
+  `PagifyBytes` (in-memory rasterization, shared core with Pagify); `ocrtool.go`
+  (`loadDoc`, `docIsPDF` via mime/ext/%PDF magic, `ocrDocument` = PDF→pages or
+  single image → cascade, `buildToolOCR` offers the tool only when a vision model
+  and/or cheap engine exists); registered in serve.go; `visionPage` nil-guards a
+  missing VLM. Tests + live MCP stdio smoke (tool advertised, real PNG ran the
+  whole pipeline to the designed graceful error). tesseract still absent here, so
+  a live successful transcription awaits S3 (install) or a VLM run.
 - ◻ **S3 (opt) — install ergonomics.** `raglit doctor` / README for installing
   tesseract or a paddle docker; clear message when `cheap_engine` is set but the
   binary/URL is unreachable (degrade to VLM, don't fail).
