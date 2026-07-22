@@ -123,13 +123,16 @@ tier for free.
 
 ## 5. Phased build
 
-- ◻ **S1 — cascade core (lib).** Port `gibberish.go`; add `PageEngine` +
-  `TesseractEngine` + `PaddleEngine`; refactor `OCR.Page` into the cascade; config
-  plumbing. Tests: gibberish suite (port) + cascade with stub engines (clean→cheap,
-  garbled→VLM, empty→empty, cheap-error→VLM). No MCP change; ingest inherits it.
-  **next**: confirm the `PageEngine`/`PageOCR` names before porting.
-  **risks**: tesseract confidence/tsv parsing is fiddly — coarse confidence is
-  fine for the gate; the lexical test carries the "confident garbage" case.
+- ✅ **S1 — cascade core (lib)** (2026-07-21, `2ed812f`). `ocrengine.go`
+  (`PageEngine` + `PageOCR`; `TesseractEngine` exec+TSV parse; `PaddleEngine`
+  ported; `BuildPageEngine`), `gibberish.go` (ported, stdlib-only), `ocr.go`
+  cascade (`PageWithEngine`, cheap trusted unless gibberish, never drops a page,
+  reports the engine tag), `config.go` `OCRConfig`, `attachCheapOCR` wiring the
+  ingest worker + `ocr` CLI (bad knob → warn + degrade, not fail). Tests: gibberish
+  suite, cascade (5 stub cases), `BuildPageEngine`, TSV parse — all green. Note:
+  tesseract isn't installed on this box, so a live tesseract run is deferred; its
+  absence exercises the tested error-degrades-to-VLM path. Zero-value config keeps
+  the old VLM-only behavior.
 - ◻ **S2 — MCP `ocr` tool.** In-memory Pagify; register the tool in serve.go;
   paged-text JSON. Checkpoint the exact tool I/O schema with the user first.
 - ◻ **S3 (opt) — install ergonomics.** `raglit doctor` / README for installing
