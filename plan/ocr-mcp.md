@@ -142,9 +142,42 @@ tier for free.
   missing VLM. Tests + live MCP stdio smoke (tool advertised, real PNG ran the
   whole pipeline to the designed graceful error). tesseract still absent here, so
   a live successful transcription awaits S3 (install) or a VLM run.
-- ◻ **S3 (opt) — install ergonomics.** `raglit doctor` / README for installing
-  tesseract or a paddle docker; clear message when `cheap_engine` is set but the
-  binary/URL is unreachable (degrade to VLM, don't fail).
+- ◐ **S3 — install ergonomics.** No-root tesseract install done + recorded (below);
+  a `raglit doctor` command (report tesseract/paddle presence + install command)
+  is still open, optional.
+
+### Live validation (2026-07-22) — both tiers end-to-end via the MCP `ocr` tool
+
+Closes the live gap S1/S2 left (tesseract wasn't installed). Same clean text
+image, driven through `raglit serve` over stdio:
+
+- **cheap** (`cheap_engine: tesseract`): `engine:"tesseract"`, exact text, no VLM.
+- **VLM** (`cheap_engine: none`, `vision_model: ternary-bonsai-27b`,
+  `base_url: http://127.0.0.1:8111/v1`): routed to corrallm's bonsai vision model,
+  `engine:"vision"`, exact text, ~12s.
+
+### No-root tesseract install (Ubuntu 24.04, no sudo) — the "difficult" path
+
+sudo needs a password here, so apt-install isn't available. Extract the debs into
+a user prefix instead (all other deps are already system libs):
+
+```
+PREFIX=/home/nthalk/local/opt/tesseract
+cd $tmp && apt-get download tesseract-ocr tesseract-ocr-eng libtesseract5 liblept5
+for d in *.deb; do dpkg-deb -x "$d" "$PREFIX"; done
+# wrapper on PATH so `tesseract` just works (bundles libtesseract+liblept, tessdata):
+cat > ~/local/bin/tesseract <<EOF
+#!/bin/sh
+export LD_LIBRARY_PATH="$PREFIX/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH"
+export TESSDATA_PREFIX="$PREFIX/usr/share/tesseract-ocr/5/tessdata"
+exec "$PREFIX/usr/bin/tesseract" "\$@"
+EOF
+chmod +x ~/local/bin/tesseract
+```
+
+Result: tesseract 5.3.4, `eng` langdata, on PATH — so raglit's default
+`tesseract_bin` resolves with no config. A proper `sudo apt-get install
+tesseract-ocr tesseract-ocr-eng` is the clean path if root is available.
 
 ## 6. Open / deferred
 
