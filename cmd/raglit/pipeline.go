@@ -59,6 +59,28 @@ func (f *llmFlags) visionClient() *llm.Client {
 	return llm.NewClient(*f.url, *f.key, *f.visionModel)
 }
 
+// attachCheapOCR enables the cascade's cheap first-pass engine on an OCR from the
+// home's config (config.OCR). A misconfigured engine degrades to VLM-only with a
+// warning rather than failing — a bad OCR knob must not break ingestion.
+func attachCheapOCR(ocr *raglit.OCR, home raglit.Home) {
+	if ocr == nil {
+		return
+	}
+	cfg, _, err := raglit.LoadConfig(home)
+	if err != nil {
+		return
+	}
+	eng, err := raglit.BuildPageEngine(cfg.OCR)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "raglit: %v — OCR falling back to vision-only\n", err)
+		return
+	}
+	if eng != nil {
+		ocr.Cheap = eng
+		ocr.Gate = cfg.OCR.Gibberish
+	}
+}
+
 func (f *llmFlags) embedder() *raglit.Embedder {
 	return raglit.NewEmbedder(llm.NewClient(*f.url, *f.key, *f.embedModel), *f.embedModel)
 }
@@ -113,6 +135,7 @@ func runOcr(args []string) error {
 		return err
 	}
 	ocr := raglit.NewOCR(lf.visionClient())
+	attachCheapOCR(ocr, home)
 	for _, img := range fs.Args() {
 		data, err := os.ReadFile(img)
 		if err != nil {

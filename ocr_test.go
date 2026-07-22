@@ -12,11 +12,13 @@ import (
 type stubChatter struct {
 	sawImage bool
 	sawText  bool
+	called   bool // Chat was invoked (the cascade reached the VLM)
 	dataURI  string
 	reply    string
 }
 
 func (s *stubChatter) Chat(_ context.Context, msgs []llm.Message, _ []llm.ToolDef) (string, []llm.ToolCall, error) {
+	s.called = true
 	for _, m := range msgs {
 		for _, p := range m.Parts {
 			switch p.Type {

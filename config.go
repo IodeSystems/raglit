@@ -21,6 +21,21 @@ type Config struct {
 	// DefaultIndex is the index used when a command gives no --index. Empty →
 	// "default". Set it in the wizard to make one named index your working default.
 	DefaultIndex string `json:"default_index,omitempty"`
+	// OCR configures the cheap first-pass tier of the OCR cascade. Zero value →
+	// VLM-only (every page transcribed by the vision model).
+	OCR OCRConfig `json:"ocr,omitempty"`
+}
+
+// OCRConfig selects and tunes the cheap first-pass OCR engine. The cascade tries
+// this engine before the vision model and escalates only when the page looks
+// like gibberish (see ocr.go, gibberish.go). CheapEngine="none" (the default)
+// disables the cheap tier — the cascade is then VLM-only.
+type OCRConfig struct {
+	CheapEngine   string          `json:"cheap_engine,omitempty"`   // "none" | "tesseract" | "paddleocr"
+	PaddleURL     string          `json:"paddle_url,omitempty"`     // sidecar base URL when cheap_engine=paddleocr
+	TesseractBin  string          `json:"tesseract_bin,omitempty"`  // tesseract binary; "" → "tesseract"
+	TesseractLang string          `json:"tesseract_lang,omitempty"` // -l language; "" → "eng"
+	Gibberish     GibberishConfig `json:"gibberish,omitempty"`      // gate overrides; zero → precision-biased defaults
 }
 
 // LoadConfig reads the home's config. exists is false (with nil error) when the

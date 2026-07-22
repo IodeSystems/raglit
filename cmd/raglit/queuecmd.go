@@ -57,6 +57,7 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home) *raglit.Wo
 	if *lf.visionModel != "" {
 		client := lf.visionClient()
 		w.OCR = raglit.NewOCR(client)
+		attachCheapOCR(w.OCR, home)
 		w.Segmenter = raglit.NewSegmenter(client)
 		// Window from --context-tokens if given, else config-or-smart-default.
 		if *lf.contextTokens > 0 {
