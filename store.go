@@ -300,24 +300,12 @@ func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, e
 // from the file on disk (filePath) — so a queued URL job can process a temp file
 // while keeping the URL as the stable document key.
 func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, title string) (int, error) {
-	outDir := ""
-	if s.withHome {
-		outDir = s.home.PageDir(docPath)
-	} else {
-		tmp, err := os.MkdirTemp("", "raglit-pages-")
-		if err != nil {
-			return 0, err
-		}
-		defer os.RemoveAll(tmp)
-		outDir = tmp
-	}
-	pages, err := Pagify(filePath, outDir)
+	// Per-page hybrid: text-layer pages become text units (free, exact), scanned
+	// pages become image units for the OCR path. Replaces the old Pagify-only path,
+	// which saw no text layer and failed on born-digital PDFs (ErrNoPageImages).
+	units, err := pdfUnits(ctx, filePath)
 	if err != nil {
 		return 0, err
-	}
-	units := make([]ingestUnit, 0, len(pages))
-	for _, p := range pages {
-		units = append(units, ingestUnit{page: p.Page, mime: p.Mime, data: p.Data})
 	}
 	return s.ingestUnits(ctx, NewSegmenter(ocr.Client), docPath, title, units)
 }

@@ -81,6 +81,21 @@ func runDoctor(args []string) error {
 		fmt.Printf("  ✗ unknown cheap_engine %q (want none|tesseract|paddleocr)\n", cfg.OCR.CheapEngine)
 	}
 
+	// Format extractors (the router's external tools).
+	fmt.Println("\nformat extractors:")
+	if raglit.HavePoppler() {
+		fmt.Println("  ✓ poppler (pdftotext + pdftoppm) — PDF text layer + page rasterization")
+	} else {
+		fmt.Println("  ✗ poppler missing — born-digital PDFs can't extract their text layer")
+		fmt.Println("     install:  sudo apt-get install poppler-utils   (no sudo? deb-extract, see plan)")
+	}
+	if raglit.HavePandoc() {
+		fmt.Println("  ✓ pandoc — office/markup (docx, odt, epub, html, pptx) → text")
+	} else {
+		fmt.Println("  · pandoc missing — office/markup formats won't be extracted (optional)")
+		fmt.Println("     install:  sudo apt-get install pandoc")
+	}
+
 	// Verdict — which tiers are live.
 	fmt.Println("\nverdict:")
 	switch {

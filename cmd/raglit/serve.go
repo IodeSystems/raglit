@@ -92,26 +92,26 @@ func runServe(args []string) error {
 		),
 		listHandler(reg),
 	)
-	// OCR tool: image/PDF bytes → paged text, via the cheap→gibberish→VLM cascade.
-	// Offered only when something can OCR (a vision model and/or a cheap engine is
-	// configured); otherwise it would fail every call, so it is omitted.
-	if ocr := buildToolOCR(lf, homeOf()); ocr != nil {
-		s.AddTool(
-			mcp.NewTool("ocr",
-				mcp.WithDescription(
-					"OCR a document to paged text. Give `path` (file://… or a local path) OR "+
-						"base64 `data` (+ optional `mime`). A PDF is rasterized to its embedded "+
-						"page images; anything else is treated as one image. Returns JSON "+
-						"{pages:[{page,text,engine}], engines:{<engine>:count}} where engine is the "+
-						"cheap engine's name when its result passed the gibberish gate, else "+
-						"\"vision\". Owns rasterization + engine routing — the caller just sends bytes."),
-				mcp.WithString("path", mcp.Description("file://<path> or a local path to a PDF/image")),
-				mcp.WithString("data", mcp.Description("base64-encoded document bytes (alternative to path)")),
-				mcp.WithString("mime", mcp.Description("content type hint, e.g. application/pdf or image/png")),
-			),
-			ocrHandler(ocr),
-		)
-	}
+	// ocr tool: any document → paged text, via the format router (extract.go).
+	// A PDF uses its text layer where present and OCRs the scanned pages; office/
+	// markup goes through pandoc; images run the OCR cascade; text is read. Useful
+	// even with no vision model (text-layer / pandoc / plain paths).
+	s.AddTool(
+		mcp.NewTool("ocr",
+			mcp.WithDescription(
+				"Extract a document to paged text. Give `path` (file://… or a local path) OR "+
+					"base64 `data` (+ optional `mime`). Handles PDF (text layer where present, "+
+					"OCR the scanned pages), office/markup (docx, odt, epub, html, pptx via "+
+					"pandoc), images (OCR), and plain text. Returns JSON "+
+					"{pages:[{page,text,engine}], engines:{<engine>:count}} where engine is "+
+					"\"text\" (text layer / pandoc / plain), the cheap OCR engine's name, or "+
+					"\"vision\". Owns format detection + extraction — the caller just sends bytes."),
+			mcp.WithString("path", mcp.Description("file://<path> or a local path to a document")),
+			mcp.WithString("data", mcp.Description("base64-encoded document bytes (alternative to path)")),
+			mcp.WithString("mime", mcp.Description("content type hint, e.g. application/pdf, image/png, or a docx type")),
+		),
+		ocrHandler(buildToolOCR(lf, homeOf())),
+	)
 	return server.ServeStdio(s)
 }
 

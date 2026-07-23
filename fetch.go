@@ -13,9 +13,10 @@ import (
 
 // Fetched is the raw content behind an ingest URL, plus enough to route it.
 type Fetched struct {
-	Data  []byte
-	Title string // basename, for the document title
-	IsPDF bool   // route to OCR vs plain-text fragmenting
+	Data        []byte
+	Title       string // basename, for the document title
+	IsPDF       bool   // route to OCR vs plain-text fragmenting
+	ContentType string // HTTP Content-Type, for format routing (empty for local files)
 }
 
 // maxFetchBytes caps a single fetch so a runaway URL can't exhaust memory.
@@ -89,8 +90,9 @@ func fetchHTTP(ctx context.Context, rawURL string) (Fetched, error) {
 		title = rawURL
 	}
 	return Fetched{
-		Data:  data,
-		Title: title,
-		IsPDF: strings.Contains(ct, "application/pdf") || strings.EqualFold(filepath.Ext(u.Path), ".pdf"),
+		Data:        data,
+		Title:       title,
+		IsPDF:       strings.Contains(ct, "application/pdf") || strings.EqualFold(filepath.Ext(u.Path), ".pdf"),
+		ContentType: ct,
 	}, nil
 }

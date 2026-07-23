@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -106,32 +107,78 @@ func (w *Worker) ingest(ctx context.Context, job *Job) (int, error) {
 		title = f.Title
 	}
 
+	// Route by document kind (extract.go): a PDF runs the text-layer/OCR hybrid,
+	// an office/markup file goes through pandoc, an image through OCR, and anything
+	// else is treated as text.
+	kind := ClassifyDoc(job.URL, f.ContentType)
 	if f.IsPDF {
+		kind = KindPDF
+	}
+	switch kind {
+	case KindPDF:
 		if w.OCR == nil {
 			return 0, fmt.Errorf("pdf ingest needs a vision model — configure one (raglit init) and serve with OCR")
 		}
-		tmp, err := os.CreateTemp("", "raglit-*.pdf")
+		path, cleanup, err := writeTemp(f.Data, ".pdf")
 		if err != nil {
 			return 0, err
 		}
-		defer os.Remove(tmp.Name())
-		if _, err := tmp.Write(f.Data); err != nil {
-			tmp.Close()
+		defer cleanup()
+		return w.Store.ingestPDF(ctx, w.OCR, job.URL, path, title)
+
+	case KindImage:
+		if w.OCR == nil {
+			return 0, fmt.Errorf("image ingest needs a vision model — configure one (raglit init) and serve with OCR")
+		}
+		mime := mimeForExt(filepath.Ext(job.URL))
+		units := []ingestUnit{{page: 1, mime: mime, data: f.Data}}
+		return w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), job.URL, title, units)
+
+	case KindOffice:
+		path, cleanup, err := writeTemp(f.Data, strings.ToLower(filepath.Ext(job.URL)))
+		if err != nil {
 			return 0, err
 		}
-		tmp.Close()
-		return w.Store.ingestPDF(ctx, w.OCR, job.URL, tmp.Name(), title)
+		defer cleanup()
+		text, err := PandocText(ctx, path)
+		if err != nil {
+			return 0, err
+		}
+		return w.ingestPlainText(ctx, job.URL, title, []byte(text))
 	}
 
+	// KindText / KindUnknown: read as text.
+	return w.ingestPlainText(ctx, job.URL, title, f.Data)
+}
+
+// ingestPlainText segments text with the LLM segmenter when configured, else
+// falls back to a blank-line paragraph split (fully offline).
+func (w *Worker) ingestPlainText(ctx context.Context, url, title string, data []byte) (int, error) {
 	if w.Segmenter != nil {
-		return w.Store.ingestText(ctx, w.Segmenter, job.URL, title, string(f.Data), w.WindowChars)
+		return w.Store.ingestText(ctx, w.Segmenter, url, title, string(data), w.WindowChars)
 	}
-	// Offline fallback: blank-line paragraph split.
-	doc := Document{Path: job.URL, Title: title, Fragments: TextFragments(f.Data)}
+	doc := Document{Path: url, Title: title, Fragments: TextFragments(data)}
 	if err := w.Store.Ingest(ctx, doc); err != nil {
 		return 0, err
 	}
 	return len(doc.Fragments), nil
+}
+
+// writeTemp materializes bytes to a temp file with the given extension (external
+// tools — pandoc, poppler — read files and detect format by extension), and
+// returns a cleanup func.
+func writeTemp(data []byte, ext string) (path string, cleanup func(), err error) {
+	f, err := os.CreateTemp("", "raglit-*"+ext)
+	if err != nil {
+		return "", func() {}, err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", func() {}, err
+	}
+	f.Close()
+	return f.Name(), func() { os.Remove(f.Name()) }, nil
 }
 
 // TextFragments splits raw text/markdown into fragments on blank lines
