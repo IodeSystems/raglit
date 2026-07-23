@@ -187,6 +187,25 @@ Result: tesseract 5.3.4, `eng` langdata, on PATH — so raglit's default
 `tesseract_bin` resolves with no config. A proper `sudo apt-get install
 tesseract-ocr tesseract-ocr-eng` is the clean path if root is available.
 
+- ✅ **S4 — format router** (2026-07-23, `b2bbb05`). "Cascade all the way down":
+  each source picks the cheapest extractor. `extract.go` — `ClassifyDoc`
+  (pdf/image/office/text), `pdfUnits` = per-page hybrid (pdftotext text layer →
+  text unit; else pdftoppm-rasterize → image unit for OCR), `PandocText` for
+  office/markup, `ExtractPaged` (the ocr tool's core over any format).
+  `store.ingestPDF` now uses the hybrid (born-digital works, no VLM);
+  `worker.ingest` routes by kind; `fetch` exposes ContentType; the `ocr` tool is
+  rewritten over `ExtractPaged` and offered even with no vision model; `doctor`
+  reports poppler + pandoc. Live: born-digital PDF + HTML + real docx → engine
+  "text" (no OCR); a hybrid PDF → p1 "text", p2 "tesseract"; poppler was already
+  installed, pandoc installed no-root (deb-extract). **Correction to S1**: the
+  cheap OCR cascade is used by the `ocr` tool and the PDF-rasterized pages, NOT by
+  ingest's SegmentImage (which sends the image straight to the VLM to OCR+segment
+  in one call). The earlier "ingest inherits the cascade" note was wrong.
+
+  Deferred within S4: offline born-digital ingest (born-digital PDF text still
+  goes through the LLM segmenter; a blank-line offline path would let it index
+  with zero LLM). ClassifyDoc unknown → treated as text.
+
 ## 6. Open / deferred
 
 - **Cheap-engine provisioning** (S3): the user asked whether raglit should offer
