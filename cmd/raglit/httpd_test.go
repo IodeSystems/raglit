@@ -81,6 +81,17 @@ func TestGatDaemon_Surface(t *testing.T) {
 	}
 }
 
+// TestGatDaemon_IngestOptionalFields guards that a POST /ingest with only
+// `targets` (no index/title) is accepted — huma marks body fields required by
+// default, so these must be tagged omitempty.
+func TestGatDaemon_IngestOptionalFields(t *testing.T) {
+	srv, _ := gatTestServer(t)
+	body := httpPostJSON(t, srv.URL+"/ingest", `{"targets":["file:///x.md"]}`)
+	if !strings.Contains(body, `"queued":1`) {
+		t.Fatalf("ingest without index/title: %s", body)
+	}
+}
+
 func TestGatDaemon_JobControlPOST(t *testing.T) {
 	srv, reg := gatTestServer(t)
 	st, _ := reg.Get("default")

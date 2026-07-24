@@ -12,12 +12,12 @@ The concrete roadmap, in order. Expands items #1 and #2 below.
       to the daemon's gat HTTP surface. (Still TODO: make init offer to write a
       client-only config, and skip creating local index/originals/pages when
       daemon_url is set — see P5.)
-- [ ] **Multi-config daemon with scoped storage.** (P5) One daemon serves many
-      clients/indexes; storage is scoped per index under a daemon-owned root
-      (e.g. `~/.raglit/indexes/<index>`). The daemon is the single writer + single
-      LLM caller (coordinates queueing + corrallm fair-share). The gat daemon (P2)
-      + the migrated Store (P3) are the foundation; what remains is the storage
-      ROOT + per-index resolution (today it's one home/registry).
+- [x] **Multi-config daemon with scoped storage.** DONE (P5). `raglit httpd` uses
+      `OpenScopedRegistry(root)` — each index its own Home at
+      `<root>/indexes/<name>/` (default root `$RAGLIT_ROOT` / `~/.raglit`), the
+      single daemon owning storage + workers + LLM. `--home` still selects the
+      single-home layout for back-compat. (Remaining tail: client-only `init` that
+      writes `daemon_url` and skips creating local index bytes.)
 - [ ] **Branch storage** (versioned indexes): a client (e.g. a git worktree) can
       branch an index off a parent; the branch stores only its diffs vs parent,
       resolved branch-over-parent on read (copy-on-write at document grain).

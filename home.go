@@ -39,6 +39,21 @@ func DefaultHome() Home {
 // is project-local like git: one .raglit/ per project, found from any subdir.
 const ProjectHomeName = ".raglit"
 
+// DefaultRoot is the DAEMON's storage root — $RAGLIT_ROOT, else ~/.raglit — under
+// which each index is scoped at indexes/<name>/ (its own Home: index.sqlite +
+// originals/ + pages/). This is the multi-index server layout (OpenScopedRegistry),
+// distinct from a project Home (a single embedded index). The daemon's own config
+// (endpoint + models) lives at <root>/config.json.
+func DefaultRoot() string {
+	if r := os.Getenv("RAGLIT_ROOT"); r != "" {
+		return r
+	}
+	if u, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(u, ".raglit")
+	}
+	return ".raglit-root"
+}
+
 // DiscoverHome resolves the home for a command given no explicit --home: the
 // nearest ancestor .raglit/ (walking up from the cwd), else DefaultHome()
 // ($RAGLIT_HOME, else ~/local/raglit). `raglit init` instead writes ./.raglit

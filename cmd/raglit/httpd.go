@@ -27,19 +27,20 @@ import (
 
 func runHttpd(args []string) error {
 	fs := flag.NewFlagSet("httpd", flag.ExitOnError)
-	_, homeOf := addStoreFlags(fs)
+	homeFlag := fs.String("home", "", "single-home index dir (back-compat; overrides --root)")
+	rootFlag := fs.String("root", "", "scoped storage root (default $RAGLIT_ROOT or ~/.raglit); each index at <root>/indexes/<name>")
 	lf := addLLMFlags(fs)
 	addr := fs.String("addr", defaultDaemonAddr, "listen address")
 	defLimit := fs.Int("n", 8, "default search results")
 	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
 	fs.Parse(args)
 
-	reg, err := raglit.OpenRegistry(homeOf())
+	reg, cfgHome, err := openDaemonRegistry(*homeFlag, *rootFlag)
 	if err != nil {
 		return err
 	}
 	defer reg.Close()
-	lf.resolve(homeOf())
+	lf.resolve(cfgHome) // daemon config (endpoint + models) from the home / root
 	if *embed {
 		if err := lf.requireEmbed(); err != nil {
 			return err
@@ -48,15 +49,33 @@ func runHttpd(args []string) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runIndexWorkers(ctx, reg, lf, homeOf())
+	go runIndexWorkers(ctx, reg, lf, cfgHome)
 
-	handler, err := buildGatHandler(reg, lf, homeOf(), *defLimit)
+	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "raglit httpd (gat) on http://%s (home %s)\n", *addr, homeOf())
+	fmt.Fprintf(os.Stderr, "raglit httpd (gat) on http://%s (storage %s)\n", *addr, cfgHome)
 	fmt.Fprintf(os.Stderr, "  REST + review UI: http://%s/   OpenAPI: /openapi.json   GraphQL: /graphql\n", *addr)
 	return (&http.Server{Addr: *addr, Handler: handler}).ListenAndServe()
+}
+
+// openDaemonRegistry opens the daemon's index registry: an explicit --home is the
+// single-home layout (back-compat, e.g. a project .raglit/); otherwise scoped
+// storage under --root (default DefaultRoot()), where each index is its own Home
+// at <root>/indexes/<name>. Returns the registry plus the Home to read the
+// daemon's own config (endpoint + models) from — the home, or <root>/config.json.
+func openDaemonRegistry(homeFlag, rootFlag string) (*raglit.Registry, raglit.Home, error) {
+	if homeFlag != "" {
+		reg, err := raglit.OpenRegistry(raglit.Home(homeFlag))
+		return reg, raglit.Home(homeFlag), err
+	}
+	root := rootFlag
+	if root == "" {
+		root = raglit.DefaultRoot()
+	}
+	reg, err := raglit.OpenScopedRegistry(root)
+	return reg, raglit.Home(root), err
 }
 
 // buildGatHandler wires the chi router: humachi API + gat gateway (all JSON
@@ -236,8 +255,8 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 type ingestIn struct {
 	Body struct {
 		Targets []string `json:"targets"`
-		Index   string   `json:"index"`
-		Title   string   `json:"title"`
+		Index   string   `json:"index,omitempty"`
+		Title   string   `json:"title,omitempty"`
 	}
 }
 type ingestOut struct {
@@ -557,9 +576,9 @@ func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (
 
 type ocrToolIn struct {
 	Body struct {
-		Path string `json:"path"`
-		Data string `json:"data"`
-		Mime string `json:"mime"`
+		Path string `json:"path,omitempty"`
+		Data string `json:"data,omitempty"`
+		Mime string `json:"mime,omitempty"`
 	}
 }
 type ocrToolOut struct {

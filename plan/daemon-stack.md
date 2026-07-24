@@ -80,8 +80,21 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
   - Verified: serveclient_test.go (client handlers over an httptest gat daemon:
     list_indexes/status/search/list_documents/get_document/ingest) + live MCP
     stdio smoke (`serve --daemon` → all tools return the daemon's data).
-- ◻ **P5 — scoped storage** (item #2): daemon owns per-index storage under its
-  own root (`~/.raglit/indexes/<index>`); client holds config only.
+- ✅ **P5 — scoped storage** (item #2). `OpenScopedRegistry(root)`: each index is
+  its OWN Home under `<root>/indexes/<name>/` (own index.sqlite + originals/ +
+  pages/), fully isolated — vs the single-home layout (sqlite siblings) kept for
+  embedded/project use. `raglit.DefaultRoot()` = `$RAGLIT_ROOT` else `~/.raglit`;
+  daemon config at `<root>/config.json`.
+  - `raglit httpd`: `--root` (default DefaultRoot(), scoped) with `--home` as an
+    explicit single-home override (back-compat, e.g. the dogfood `.raglit`).
+    `openDaemonRegistry` picks the layout; config + workers read from the root/home.
+  - Fixed: huma marks body fields required by default → POST /ingest needed
+    `title`; `index`/`title` (+ ocr path/data/mime) are now `omitempty`.
+  - Verified: registry_test.go (per-index dirs + isolation), httpd_test.go
+    (ingest optional fields), and live scoped daemon (proj-a/proj-b/default each
+    their own indexes/<name>/index.sqlite; `invoice` isolated to proj-b).
+  - Legacy stdlib `daemon`/`review` still single-home (being retired). Client-only
+    `init` (write daemon_url, skip local index bytes) still TODO — small UX piece.
 - ◻ **P6 — branch storage** (item #3): branch-off-parent (diff layers, COW at
   document grain), delete-branch, list-branches (age + last-access) — needs
   per-branch created_at + last_accessed_at.

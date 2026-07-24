@@ -7,6 +7,55 @@ import (
 	"testing"
 )
 
+func TestScopedRegistry_PerIndexIsolation(t *testing.T) {
+	root := t.TempDir()
+	reg, err := OpenScopedRegistry(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	ctx := context.Background()
+
+	a, err := reg.Get("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := reg.Get("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Ingest(ctx, Document{Path: "file:///a.md", Fragments: []Fragment{{Text: "zebra content in alpha"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Ingest(ctx, Document{Path: "file:///b.md", Fragments: []Fragment{{Text: "walrus content in beta"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each index is its own scoped Home on disk (own index.sqlite + originals/pages).
+	for _, name := range []string{"alpha", "beta"} {
+		for _, sub := range []string{"index.sqlite", "originals", "pages"} {
+			if _, err := os.Stat(filepath.Join(root, "indexes", name, sub)); err != nil {
+				t.Fatalf("scoped %s/%s missing: %v", name, sub, err)
+			}
+		}
+	}
+	// Isolation: a token unique to alpha ("zebra") is invisible in beta.
+	if h, _ := a.Search("zebra", 5); len(h) != 1 {
+		t.Fatalf("alpha should find its own content: %d hits", len(h))
+	}
+	if h, _ := b.Search("zebra", 5); len(h) != 0 {
+		t.Fatalf("beta must not see alpha's content: %d hits", len(h))
+	}
+	// Names lists both scoped indexes plus the implicit default.
+	names := map[string]bool{}
+	for _, n := range reg.Names() {
+		names[n] = true
+	}
+	if !names["alpha"] || !names["beta"] || !names["default"] {
+		t.Fatalf("Names = %v, want alpha+beta+default", reg.Names())
+	}
+}
+
 func TestRegistry_NamedIndexesAreSeparate(t *testing.T) {
 	home := Home(filepath.Join(t.TempDir(), "h"))
 	reg, err := OpenRegistry(home)

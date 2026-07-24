@@ -1,30 +1,52 @@
 package raglit
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 )
 
-// Registry manages the set of NAMED indexes in one home. Each index is its own
-// sqlite file sharing the home's originals/ and pages/: "default" is
-// index.sqlite, any other name is index-<name>.sqlite. A serve process opens a
-// Registry so its search/ingest/status tools can target — or fan out across —
-// several indexes (Slice G).
+// Registry manages a SET of named indexes. Two storage layouts:
+//
+//   - single-home (OpenRegistry): all indexes live in one Home as sibling sqlite
+//     files sharing its originals/ + pages/ — "default" is index.sqlite, any other
+//     name is index-<name>.sqlite. This is the embedded/project layout.
+//   - scoped (OpenScopedRegistry): each index is its OWN Home under
+//     <root>/indexes/<name>/ (own index.sqlite + originals/ + pages/), fully
+//     isolated. This is the DAEMON's multi-index layout — and the substrate for
+//     branch storage (a branch is a scoped store layered over a parent).
 type Registry struct {
-	home     Home
-	mu       sync.Mutex
-	stores   map[string]*Store
-	embedder *Embedder
+	home       Home   // single-home mode
+	scopedRoot string // scoped mode: indexes at <scopedRoot>/indexes/<name>; "" = single-home
+	mu         sync.Mutex
+	stores     map[string]*Store
+	embedder   *Embedder
 }
 
-// OpenRegistry prepares a registry over a home (creating the layout).
+// OpenRegistry prepares a single-home registry (all indexes as sqlite siblings
+// in one home).
 func OpenRegistry(home Home) (*Registry, error) {
 	if err := home.Ensure(); err != nil {
 		return nil, err
 	}
 	return &Registry{home: home, stores: map[string]*Store{}}, nil
+}
+
+// OpenScopedRegistry prepares a registry whose indexes are each their own Home
+// under <root>/indexes/<name>/ — the daemon's scoped, per-index storage.
+func OpenScopedRegistry(root string) (*Registry, error) {
+	if err := os.MkdirAll(filepath.Join(root, "indexes"), 0o755); err != nil {
+		return nil, fmt.Errorf("raglit: create scoped root: %w", err)
+	}
+	return &Registry{scopedRoot: root, stores: map[string]*Store{}}, nil
+}
+
+// indexHome is the scoped Home for a named index (scoped mode only).
+func (r *Registry) indexHome(name string) Home {
+	return Home(filepath.Join(r.scopedRoot, "indexes", name))
 }
 
 // SetEmbedder makes every index (already open or opened later) embed on ingest.
@@ -45,7 +67,14 @@ func (r *Registry) Get(name string) (*Store, error) {
 	if s, ok := r.stores[name]; ok {
 		return s, nil
 	}
-	s, err := OpenIndex(r.home, name)
+	var s *Store
+	var err error
+	if r.scopedRoot != "" {
+		// Each index is its own Home's primary index (index.sqlite).
+		s, err = OpenHome(r.indexHome(name))
+	} else {
+		s, err = OpenIndex(r.home, name)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +89,16 @@ func (r *Registry) Get(name string) (*Store, error) {
 // opened this session, sorted.
 func (r *Registry) Names() []string {
 	set := map[string]bool{"default": true}
-	if entries, err := os.ReadDir(string(r.home)); err == nil {
+	if r.scopedRoot != "" {
+		// Scoped: each subdir of <root>/indexes/ is an index.
+		if entries, err := os.ReadDir(filepath.Join(r.scopedRoot, "indexes")); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					set[e.Name()] = true
+				}
+			}
+		}
+	} else if entries, err := os.ReadDir(string(r.home)); err == nil {
 		for _, e := range entries {
 			n := e.Name()
 			if strings.HasPrefix(n, "index-") && strings.HasSuffix(n, ".sqlite") {
