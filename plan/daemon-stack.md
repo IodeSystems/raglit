@@ -32,13 +32,22 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
   (`internal/db/roundtrip_test.go`): plain typed queries AND a metaquery Builder
   + `ApplyFilters` + `mqsqlite.Scan` run on modernc. Regenerate: `sqlc generate`
   (needs the plugin built: `make -C ../sqlc-go-codegen-metaquery bin/…`).
-- ◻ **P2 — huma daemon**: chi + humachi + huma operations (OpenAPI at
-  /openapi.json). Port every current endpoint (health/indexes/ingest/search/
-  status/documents/doc/jobs+retry/cancel/page-image/reocr) + the missing MCP
-  parity ones (list_documents/get_document/ocr). Plain huma REST; drop gwag/gat
-  unless GraphQL/gRPC is wanted. **next**: stand up the server package over the
-  existing Store first, then swap reads to `internal/db`. **risk**: keep the
-  running review UI working during the swap.
+- ◐ **P2 — gat multi-protocol daemon** (DECISION: gwag/gat, not plain huma —
+  REST + in-process GraphQL + gRPC off one port, per the other iode services).
+  - ✅ skeleton up + proven: `httpd/` package — chi + humachi + `gat.New` →
+    `gat.Register` → `gat.RegisterHuma(api,g,"")`. Serves REST `/api/health`,
+    OpenAPI `/openapi.json`, GraphQL `/graphql` (httpd/server_test.go via
+    httptest). gwag v1.1.0-rc.7 via replace ../gwag; huma v2.39.0; chi v5.3.1.
+    No NATS needed (gat embedded mode). gRPC is one extra `gat.RegisterGRPC(
+    router,g,"")` after RegisterHuma when wanted.
+  - ◻ **next**: port endpoints as gat handlers `func(ctx,*In)(*Out,error)` over
+    the Store + `internal/db`: health✓, then indexes/ingest/search/status/
+    documents/doc/jobs(+retry/cancel)/page-image/reocr + MCP-parity
+    list_documents/get_document/ocr. Jobs/documents lists use metaquery Builders
+    (ApplyFilters/Pagination); search uses raw FTS. Expose Store's *sql.DB
+    (add `Store.SQLDB()`), share one connection (single writer).
+  - **risk**: keep the running stdlib review UI working until the gat daemon
+    reaches parity, then switch `raglit daemon`/`review` over.
 - ◻ **P3 — migrate Store internals to internal/db** (queue/review/docget/stages
   → generated queries; unify `store.go` schema const with `sql/schema.sql` via
   `//go:embed` — currently DUPLICATED, keep in sync until then). FTS/vec stay raw.
