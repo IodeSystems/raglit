@@ -104,7 +104,11 @@ func runIngest(args []string) error {
 		return err
 	}
 	if dURL != "" {
-		return daemonIngest(dURL, targets, nsIndex(ns, resolveIndexName(fs.Lookup("index").Value.String(), homeOf)), *title)
+		idx, err := nsWriteIndex(ns, projectShared(homeOf), resolveIndexName(fs.Lookup("index").Value.String(), homeOf))
+		if err != nil {
+			return err
+		}
+		return daemonIngest(dURL, targets, idx, *title)
 	}
 
 	store, err := openStore()

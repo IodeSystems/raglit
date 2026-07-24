@@ -49,14 +49,32 @@ func TestNSReadSelector(t *testing.T) {
 	}{
 		{"acme", nil, "", "acme__*"},
 		{"acme", []string{"shared"}, "", "acme__*,shared__*"},
-		{"acme", []string{"shared", "acme"}, "all", "acme__*,shared__*"}, // own filtered from shared
-		{"acme", []string{"shared"}, "code", "acme__code"},               // explicit → private only
+		{"acme", []string{"shared", "acme"}, "all", "acme__*,shared__*"},    // own filtered from shared
+		{"acme", []string{"shared"}, "code", "acme__code"},                  // bare → private
+		{"acme", []string{"shared"}, "shared:handbook", "shared__handbook"}, // addressed shared index
+		{"acme", []string{"shared"}, "shared:*", "shared__*"},               // whole shared namespace
+		{"acme", []string{"shared"}, "acme:code", "acme__code"},             // own by name
+		{"acme", []string{"shared"}, "code,shared:handbook", "acme__code,shared__handbook"},
+		{"acme", []string{"shared"}, "other:secret", nsUnmatchable}, // unreachable → nothing
+		{"acme", nil, "shared:handbook", nsUnmatchable},             // shared not declared
 		{"", []string{"shared"}, "", ""},
 	}
 	for _, c := range cases {
 		if got := nsReadSelector(c.ns, c.shared, c.sel); got != c.want {
 			t.Errorf("nsReadSelector(%q,%v,%q) = %q, want %q", c.ns, c.shared, c.sel, got, c.want)
 		}
+	}
+}
+
+func TestNSWriteIndex(t *testing.T) {
+	if got, err := nsWriteIndex("acme", []string{"shared"}, "code"); err != nil || got != "acme__code" {
+		t.Errorf("bare write = %q,%v", got, err)
+	}
+	if got, err := nsWriteIndex("acme", []string{"shared"}, "shared:handbook"); err != nil || got != "shared__handbook" {
+		t.Errorf("shared write = %q,%v", got, err)
+	}
+	if _, err := nsWriteIndex("acme", []string{"shared"}, "other:x"); err == nil {
+		t.Error("writing to an unreachable namespace should error")
 	}
 }
 

@@ -16,7 +16,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+
+	"github.com/iodesystems/raglit"
 )
 
 // nsSep separates the project namespace from the local index name in a daemon
@@ -55,26 +58,95 @@ func nsSelector(ns, sel string) string {
 	return strings.Join(parts, ",")
 }
 
-// nsReadSelector maps a local READ selector to a daemon selector that spans this
-// project plus its shared namespaces. An explicit selection stays private (each
-// name prefixed with the project ns). The "all" case (empty/"all") becomes
-// "<ns>__*" plus "<shared>__*" for each shared namespace — so shared docs indexed
-// once (e.g. under a "shared" project) are searched from every project that opts
-// in. ns=="" (embedded) returns the selector unchanged.
+// nsUnmatchable is a selector that matches no index (a wildcard whose prefix
+// can't occur in a normalized [a-z0-9_-] index name). Used when an explicit
+// selection resolves to nothing allowed, so it yields zero hits rather than
+// falling through to the daemon's "empty = all".
+const nsUnmatchable = "\x00*"
+
+// nsResolveToken maps one index token to a daemon index name, honoring
+// "<namespace>:<local>" addressing:
+//
+//	"code"            → "<own>__code"           (bare → this project)
+//	"shared:handbook" → "shared__handbook"      (if "shared" is own or declared shared)
+//	"shared:*"        → "shared__*"             (every index in that namespace)
+//	"other:secret"    → rejected (ok=false)     (namespace not addressable here)
+//
+// Restricting the namespace to the project itself or its declared `shared`
+// entries preserves isolation — a project can't reach an arbitrary project's
+// indexes by guessing "<name>:<index>". ns=="" (embedded) passes the token
+// through unchanged.
+func nsResolveToken(ownNS string, shared []string, token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if ownNS == "" {
+		return token, true
+	}
+	nsPart, local, addressed := strings.Cut(token, ":")
+	if !addressed {
+		return ownNS + nsSep + raglit.NormalizeIndexName(token), true
+	}
+	tgt := raglit.NormalizeIndexName(nsPart)
+	if tgt != ownNS && !containsStr(shared, tgt) {
+		return "", false
+	}
+	if strings.TrimSpace(local) == "*" {
+		return tgt + nsSep + "*", true
+	}
+	return tgt + nsSep + raglit.NormalizeIndexName(local), true
+}
+
+// nsWriteIndex resolves a single write target (ingest), erroring if the token
+// addresses a namespace this project may not reach.
+func nsWriteIndex(ownNS string, shared []string, token string) (string, error) {
+	d, ok := nsResolveToken(ownNS, shared, token)
+	if !ok {
+		return "", fmt.Errorf("index %q: namespace not addressable from this project (own project or a `shared` entry only)", token)
+	}
+	return d, nil
+}
+
+// nsReadSelector maps a local READ selector to a daemon selector spanning this
+// project plus its shared namespaces. Empty/"all" → "<ns>__*" plus "<shared>__*"
+// for each shared namespace. An explicit selection is a comma-separated list of
+// tokens, each resolved via nsResolveToken ("<ns>:<local>" addressing allowed for
+// own + shared); tokens naming an unreachable namespace are dropped, and if none
+// survive the selector matches nothing (never "all"). ns=="" returns sel as-is.
 func nsReadSelector(ns string, shared []string, sel string) string {
 	if ns == "" {
 		return strings.TrimSpace(sel)
 	}
-	if s := strings.TrimSpace(sel); s != "" && s != "all" {
-		return nsSelector(ns, s) // explicit → private to this project
+	s := strings.TrimSpace(sel)
+	if s == "" || s == "all" {
+		parts := []string{ns + nsSep + "*"}
+		for _, sh := range shared { // shared is pre-normalized (see projectShared)
+			if sh != "" && sh != ns {
+				parts = append(parts, sh+nsSep+"*")
+			}
+		}
+		return strings.Join(parts, ",")
 	}
-	parts := []string{ns + nsSep + "*"}
-	for _, s := range shared { // shared is pre-normalized (see projectShared)
-		if s != "" && s != ns {
-			parts = append(parts, s+nsSep+"*")
+	var parts []string
+	for _, tok := range strings.Split(s, ",") {
+		if tok = strings.TrimSpace(tok); tok == "" {
+			continue
+		}
+		if d, ok := nsResolveToken(ns, shared, tok); ok {
+			parts = append(parts, d)
 		}
 	}
+	if len(parts) == 0 {
+		return nsUnmatchable // explicit selection, nothing reachable → no hits
+	}
 	return strings.Join(parts, ",")
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // nsStrip removes the "<ns>__" prefix from a daemon index name for display.

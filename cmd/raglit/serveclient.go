@@ -40,8 +40,12 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			if err != nil {
 				return mcp.NewToolResultError("url is required"), nil
 			}
+			idx, err := nsWriteIndex(ns, shared, req.GetString("index", ""))
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("ingest", err), nil
+			}
 			b, err := daemonPostJSON(base, "/ingest", map[string]any{
-				"targets": []string{u}, "index": nsIndex(ns, req.GetString("index", "")), "title": req.GetString("title", ""),
+				"targets": []string{u}, "index": idx, "title": req.GetString("title", ""),
 			})
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("ingest", err), nil

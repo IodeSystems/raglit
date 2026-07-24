@@ -104,7 +104,9 @@ raglit demo                          offline, self-contained tour
 `--home DIR` overrides the index home (default: nearest `./.raglit` walking up,
 else `$RAGLIT_HOME`, else `~/local/raglit`); `--index NAME` selects a named index
 within it. With no `--index`, commands use the config's `default_index` (set in
-the wizard), falling back to `default`.
+the wizard), falling back to `default`. On the shared daemon, `--index NAME` is
+this project's own index; `--index <namespace>:<index>` addresses a reachable
+namespace (your project or a `shared` one).
 
 ## Configured sources (`raglit sync`)
 
@@ -172,9 +174,13 @@ overrides it, and `--embedded`/`--db` (single-session, in-process) need none. Th
 **Shared docs** (`shared`): common material — a home `~/doc`, a team handbook — is
 indexed **once** under its own project (say `shared`), and other projects opt into
 reading it by listing that namespace in their config. A project's "search all"
-then spans its own indexes **plus** each shared namespace; writes (ingest, branch)
-still target the project only, and shared hits keep their `shared__` tag so you
-can see where they came from. No duplication per project.
+then spans its own indexes **plus** each shared namespace, and shared hits keep
+their `shared__` tag so you can see where they came from. No duplication per
+project. Address one specific index in a reachable namespace with
+**`--index <namespace>:<index>`** (e.g. `--index shared:handbook`) — for reads and
+for writes (so a project can contribute to a `shared` corpus); a bare `--index`
+name is always this project's own, and an unreachable namespace is refused (writes
+error, reads return nothing). Branches stay project-only.
 
 ```jsonc
 // ~/doc, indexed once:  raglit --home ~/.raglit-shared ingest ~/doc   (project "shared")
