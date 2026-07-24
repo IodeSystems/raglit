@@ -25,6 +25,15 @@ func (c *failAfterChatter) Chat(_ context.Context, _ []llm.Message, _ []llm.Tool
 	return "", nil, context.DeadlineExceeded // stand-in for "LLM unreachable"
 }
 
+// okChatter always returns the same transcription — a stand-in vision OCR so the
+// pages escalate to the llm-seg path (where a mid-document segmenter failure can
+// happen); the searchable fragment text comes from the SEGMENTER, not this.
+type okChatter struct{ text string }
+
+func (c *okChatter) Chat(_ context.Context, _ []llm.Message, _ []llm.ToolDef) (string, []llm.ToolCall, error) {
+	return c.text, nil, nil
+}
+
 // TestIngestUnits_FailedReingestKeepsPriorVersion is the torn-write regression:
 // a reingest whose LLM call fails on a later unit must leave the PRIOR indexed
 // document completely intact — not a half-updated / partially-cleared one.
@@ -39,11 +48,14 @@ func TestIngestUnits_FailedReingestKeepsPriorVersion(t *testing.T) {
 		`{"continues_previous":false,"fragments":[{"text":"alpha original` + pad + `"}]}`,
 		`{"continues_previous":false,"fragments":[{"text":"beta original` + pad + `"}]}`,
 	}})
+	// Image units so both pages escalate to the VLM (llm-seg), the only path where
+	// a mid-document segmenter failure is possible.
+	ocr := NewOCR(&okChatter{text: "page source"})
 	units := []ingestUnit{
-		{page: 1, text: "alpha source"},
-		{page: 2, text: "beta source"},
+		{page: 1, mime: "image/png", data: []byte("img1")},
+		{page: 2, mime: "image/png", data: []byte("img2")},
 	}
-	if n, err := s.ingestUnits(ctx, ok, nil, "doc.pdf", "Doc", units, nil); err != nil || n != 2 {
+	if n, _, err := s.ingestUnits(ctx, ok, ocr, "doc.pdf", "Doc", units, FragConfig{}, nil); err != nil || n != 2 {
 		t.Fatalf("first ingest: n=%d err=%v (want 2, nil)", n, err)
 	}
 	fragsBefore := countRows(t, s, `SELECT COUNT(*) FROM fragments`)
@@ -58,7 +70,7 @@ func TestIngestUnits_FailedReingestKeepsPriorVersion(t *testing.T) {
 	dying := NewSegmenter(&failAfterChatter{replies: []string{
 		`{"continues_previous":false,"fragments":[{"text":"alpha REPLACED` + pad + `"}]}`,
 	}})
-	if _, err := s.ingestUnits(ctx, dying, nil, "doc.pdf", "Doc", units, nil); err == nil {
+	if _, _, err := s.ingestUnits(ctx, dying, ocr, "doc.pdf", "Doc", units, FragConfig{}, nil); err == nil {
 		t.Fatal("reingest with a mid-way LLM failure should error")
 	}
 

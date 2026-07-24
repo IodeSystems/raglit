@@ -18,6 +18,18 @@ type Config struct {
 	// ContextTokens caches the model's discovered context window (see window.go)
 	// so text/code ingestion doesn't re-probe it every run. 0 = not yet probed.
 	ContextTokens int `json:"context_tokens,omitempty"`
+	// EmbedLimitChars caps a fragment's size to what the embed model accepts as one
+	// input — probed once and stored (like ContextTokens), so the deterministic
+	// fragmenter's ceiling is bounded by the model, not by taste. 0 = not probed
+	// (the fragmenter falls back to FragWindow uncapped).
+	EmbedLimitChars int `json:"embed_limit_chars,omitempty"`
+	// FragWindow / FragStride / FragFloor tune the deterministic overlapping-window
+	// text fragmenter (chars). 0 → defaults (9000 / 6000 / 3000). window > stride
+	// gives the overlap; floor folds a short tail. They feed frag_recipe, so a
+	// change marks the affected documents for reprocessing.
+	FragWindow int `json:"frag_window,omitempty"`
+	FragStride int `json:"frag_stride,omitempty"`
+	FragFloor  int `json:"frag_floor,omitempty"`
 	// DefaultIndex is the index used when a command gives no --index. Empty →
 	// "default". Set it in the wizard to make one named index your working default.
 	DefaultIndex string `json:"default_index,omitempty"`
@@ -95,6 +107,10 @@ type OCRConfig struct {
 	TesseractBin  string          `json:"tesseract_bin,omitempty"`  // tesseract binary; "" → "tesseract"
 	TesseractLang string          `json:"tesseract_lang,omitempty"` // -l language; "" → "eng"
 	Gibberish     GibberishConfig `json:"gibberish,omitempty"`      // gate overrides; zero → precision-biased defaults
+	// DescribeFigures escalates born-digital PDF pages that carry an embedded image
+	// to the VLM so their figures are described inline (§3a figure gate). OFF by
+	// default: it forces those pages onto the vision/llm-seg path (costly).
+	DescribeFigures bool `json:"describe_figures,omitempty"`
 }
 
 // LoadConfig reads the home's config. exists is false (with nil error) when the

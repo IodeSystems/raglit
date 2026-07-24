@@ -157,10 +157,10 @@ func TestWorker_DedupSkipsUnchangedContent(t *testing.T) {
 		return jobs[0]
 	}
 
-	// 1) first ingest: real work (offline split), fragments indexed.
+	// 1) first ingest: real work (deterministic overlap), fragments indexed.
 	j1 := drain()
-	if j1.Mode != "offline" || j1.Fragments == 0 {
-		t.Fatalf("first ingest = %+v, want offline with fragments", j1)
+	if j1.Mode != "text-overlap" || j1.Fragments == 0 {
+		t.Fatalf("first ingest = %+v, want text-overlap with fragments", j1)
 	}
 	frags := func() int { st, _ := s.IndexStatus(); return st.Fragments }
 	before := frags()

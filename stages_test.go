@@ -43,7 +43,8 @@ func TestWorker_Stages_OfflineMode(t *testing.T) {
 	defer s.Close()
 	_, id := enqueueFile(t, s, "code.go", "package x\n\nfunc A(){}\n\nfunc B(){}")
 
-	// No Segmenter → the dependency-free offline split.
+	// No model → text still takes the deterministic overlap fragmenter (text never
+	// needs a model).
 	if _, err := (&Worker{Store: s}).ProcessOne(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -52,8 +53,8 @@ func TestWorker_Stages_OfflineMode(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].State != "done" {
 		t.Fatalf("job = %+v, want one done job", jobs)
 	}
-	if jobs[0].Mode != "offline" {
-		t.Fatalf("mode = %q, want offline", jobs[0].Mode)
+	if jobs[0].Mode != "text-overlap" {
+		t.Fatalf("mode = %q, want text-overlap", jobs[0].Mode)
 	}
 	// A code/text file → fragments directly, no OCR: fetch → extract → segment → commit.
 	got := stageNames(t, s, id)
@@ -66,31 +67,34 @@ func TestWorker_Stages_OfflineMode(t *testing.T) {
 			t.Fatalf("stages = %v, want %v", got, want)
 		}
 	}
-	// The segment stage is tagged offline.
+	// The segment stage is tagged with the deterministic fragmenter.
 	stages, _ := s.JobStages(id)
-	if seg := stages[2]; seg.Name != "segment" || seg.Engine != "offline" {
-		t.Fatalf("segment stage = %+v, want engine offline", seg)
+	if seg := stages[2]; seg.Name != "segment" || seg.Engine != "text-overlap" {
+		t.Fatalf("segment stage = %+v, want engine text-overlap", seg)
 	}
 }
 
-func TestWorker_Stages_LLMMode(t *testing.T) {
+// TestWorker_Stages_TextIgnoresSegmenter verifies §4: configuring a Segmenter does
+// NOT pull text onto the LLM path — text is always the deterministic fragmenter,
+// the model only kicks in when a page escalates to the VLM.
+func TestWorker_Stages_TextIgnoresSegmenter(t *testing.T) {
 	s, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	_, id := enqueueFile(t, s, "notes.md", "some prose that the segmenter will chunk")
+	_, id := enqueueFile(t, s, "notes.md", "some prose that no segmenter should chunk")
 
 	w := &Worker{Store: s, Segmenter: NewSegmenter(&scriptChatter{replies: []string{
-		`{"continues_previous":false,"fragments":[{"text":"one coherent chunk of prose"}]}`,
+		`{"continues_previous":false,"fragments":[{"text":"the segmenter must NOT run for text"}]}`,
 	}})}
 	if _, err := w.ProcessOne(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
 	jobs, _ := s.Jobs("all", 10)
-	if jobs[0].Mode != "llm" {
-		t.Fatalf("mode = %q, want llm", jobs[0].Mode)
+	if jobs[0].Mode != "text-overlap" {
+		t.Fatalf("mode = %q, want text-overlap (segmenter must not touch text)", jobs[0].Mode)
 	}
 	stages, _ := s.JobStages(id)
 	var seg *JobStage
@@ -99,8 +103,8 @@ func TestWorker_Stages_LLMMode(t *testing.T) {
 			seg = &stages[i]
 		}
 	}
-	if seg == nil || seg.Engine != "llm" || seg.State != "done" {
-		t.Fatalf("segment stage = %+v, want engine llm done", seg)
+	if seg == nil || seg.Engine != "text-overlap" || seg.State != "done" {
+		t.Fatalf("segment stage = %+v, want engine text-overlap done", seg)
 	}
 }
 
@@ -120,7 +124,7 @@ func TestIngestUnits_OCRSplit_RecordsEngine(t *testing.T) {
 	sl := s.NewStageLog(id)
 
 	units := []ingestUnit{{page: 1, mime: "image/png", data: []byte{0x89, 'P', 'N', 'G'}}}
-	n, err := s.ingestUnits(ctx, sg, ocr, "scan.png", "Scan", units, sl)
+	n, _, err := s.ingestUnits(ctx, sg, ocr, "scan.png", "Scan", units, FragConfig{}, sl)
 	if err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}

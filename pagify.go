@@ -91,6 +91,29 @@ func pagify(rs io.ReadSeeker, outDir string) ([]PageImage, error) {
 	return pages, nil
 }
 
+// pagesWithImages reports which 1-based pages of a PDF carry an embedded image
+// XObject (born-digital figure detection for the opt-in figure gate, extract.go).
+// Uses pdfcpu, already a dependency. Best-effort: an unreadable PDF returns the
+// error and callers treat that as "no figure pages".
+func pagesWithImages(pdfPath string) (map[int]bool, error) {
+	f, err := os.Open(pdfPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	pages := map[int]bool{}
+	collect := func(img model.Image, _ bool, _ int) error {
+		if img.PageNr > 0 {
+			pages[img.PageNr] = true
+		}
+		return nil
+	}
+	if err := api.ExtractImages(f, nil, collect, model.NewDefaultConfiguration()); err != nil {
+		return nil, fmt.Errorf("raglit: pagesWithImages: %w", err)
+	}
+	return pages, nil
+}
+
 func mimeForExt(ext string) string {
 	switch strings.ToLower(strings.TrimPrefix(ext, ".")) {
 	case "png":

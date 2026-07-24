@@ -98,6 +98,32 @@ func runInit(args []string) error {
 		fmt.Sscanf(ans, "%d", &ctxTokens)
 	}
 
+	// Embed input limit. Caps a fragment's size to what the embed model accepts as
+	// one input, so the deterministic fragmenter's ceiling is bounded by the model,
+	// not by taste. Blank → leave uncapped (fall back to the fragmenter window); a
+	// number sets it; "probe" grows inputs until the endpoint rejects one (only
+	// works where the server REJECTS an over-long input).
+	var embedLimit int
+	if embed != "" {
+		ans := ask(r, "embed input limit (chars) (blank = uncapped; a number; or 'probe')", "")
+		switch {
+		case ans == "":
+		case strings.EqualFold(ans, "probe"):
+			fmt.Println("probing embed limit (sends growing inputs until one is rejected)…")
+			pctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+			n, perr := raglit.NewEmbedder(llm.NewClient(base, key, embed), embed).DiscoverEmbedLimit(pctx)
+			cancel()
+			if perr != nil {
+				fmt.Fprintf(os.Stderr, "  probe failed (%v) — leaving uncapped\n", perr)
+			} else {
+				embedLimit = n
+				fmt.Printf("  accepted up to %d chars\n", n)
+			}
+		default:
+			fmt.Sscanf(ans, "%d", &embedLimit)
+		}
+	}
+
 	// Project name — namespaces this project's indexes on the shared daemon, so
 	// two projects both using "default" don't collide. Required to start a
 	// daemon-routed client. Default: the project directory's name.
@@ -112,7 +138,8 @@ func runInit(args []string) error {
 
 	if err := raglit.SaveConfig(home, raglit.Config{
 		BaseURL: base, APIKey: key, VisionModel: vision, EmbedModel: embed,
-		ContextTokens: ctxTokens, DefaultIndex: defIndex, Project: project, Shared: shared,
+		ContextTokens: ctxTokens, EmbedLimitChars: embedLimit,
+		DefaultIndex: defIndex, Project: project, Shared: shared,
 	}); err != nil {
 		return err
 	}

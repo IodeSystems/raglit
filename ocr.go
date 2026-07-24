@@ -30,6 +30,12 @@ type OCR struct {
 	Prompt string          // transcription instruction; "" → defaultOCRPrompt
 	Cheap  PageEngine      // optional cheap first pass; nil → VLM-only
 	Gate   GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
+	// DescribeFigures is the FIGURE gate (§3a): a born-digital PDF page carrying an
+	// embedded image is rasterized to the VLM even when its text layer is clean, so
+	// its diagrams get described. Orthogonal to the gibberish gate (which judges
+	// TEXT quality); OFF by default because it flips such pages to the (costly)
+	// vision path and thus to llm-seg.
+	DescribeFigures bool
 }
 
 // NewOCR wraps a Chatter (an *llm.Client) as an OCR transcriber. The cheap tier
@@ -74,6 +80,11 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 	if prompt == "" {
 		prompt = defaultOCRPrompt
 	}
+	// While the VLM is transcribing, have it also DESCRIBE figures inline (§3a):
+	// the description lands in the page text, flows into fragments, and indexes as
+	// searchable text — no new infrastructure. A described diagram beats an
+	// invisible one; this is why a page reaches the VLM at all.
+	prompt += figureInstruction
 	msg := llm.Message{Role: "user", Parts: []llm.ContentPart{
 		llm.TextPart(prompt),
 		llm.ImageData(img.Mime, img.Data),

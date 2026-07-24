@@ -80,7 +80,7 @@ const pdfTextThreshold = 24
 //
 // Without poppler it falls back to embedded-image extraction (Pagify), which
 // cannot see a text layer — so born-digital PDFs then still fail (ErrNoPageImages).
-func pdfUnits(ctx context.Context, pdfPath string) ([]ingestUnit, error) {
+func pdfUnits(ctx context.Context, pdfPath string, describeFigures bool) ([]ingestUnit, error) {
 	if !HavePoppler() {
 		pages, err := Pagify(pdfPath, "")
 		if err != nil {
@@ -96,10 +96,17 @@ func pdfUnits(ctx context.Context, pdfPath string) ([]ingestUnit, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Figure gate (§3a, opt-in): a text-layer page that also carries an embedded
+	// image is rasterized to the VLM so its figures get described, even though its
+	// text is clean. Detection is pdfcpu's embedded-image list (born-digital only).
+	var figurePages map[int]bool
+	if describeFigures {
+		figurePages, _ = pagesWithImages(pdfPath) // best-effort; nil on error → no escalation
+	}
 	units := make([]ingestUnit, 0, len(texts))
 	for i, t := range texts {
 		page := i + 1
-		if len(strings.TrimSpace(t)) >= pdfTextThreshold {
+		if len(strings.TrimSpace(t)) >= pdfTextThreshold && !figurePages[page] {
 			units = append(units, ingestUnit{page: page, text: t})
 			continue
 		}
@@ -164,7 +171,7 @@ type PageText struct {
 func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error) {
 	switch ClassifyDoc(path, "") {
 	case KindPDF:
-		units, err := pdfUnits(ctx, path)
+		units, err := pdfUnits(ctx, path, ocr != nil && ocr.DescribeFigures)
 		if err != nil {
 			return nil, err
 		}

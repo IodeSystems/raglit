@@ -14,7 +14,7 @@ ON CONFLICT(path) DO UPDATE SET title=excluded.title, added_at=excluded.added_at
 RETURNING id;
 
 -- name: ListDocumentSummaries :many
-SELECT d.id, d.path, d.title, d.added_at,
+SELECT d.id, d.path, d.title, d.added_at, d.frag_mode,
        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id) AS fragments
 FROM documents d ORDER BY d.added_at DESC;
 
@@ -31,13 +31,13 @@ SELECT COUNT(*) AS n FROM fragments;
 DELETE FROM fragments WHERE doc_id = ?;
 
 -- name: InsertFragment :one
-INSERT INTO fragments(doc_id, page, ord, text) VALUES(?, ?, ?, ?) RETURNING id;
+INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off) VALUES(?, ?, ?, ?, ?, ?) RETURNING id;
 
 -- name: ListFragmentTextByPage :many
 SELECT text FROM fragments WHERE doc_id = ? AND page = ? ORDER BY ord;
 
 -- name: ListFragmentsForDoc :many
-SELECT page, ord, text FROM fragments WHERE doc_id = ? ORDER BY page, ord;
+SELECT page, ord, text, start_off, end_off FROM fragments WHERE doc_id = ? ORDER BY page, ord;
 
 -- ===== fragment_vectors =====
 -- name: InsertVector :exec
@@ -135,7 +135,29 @@ SELECT content_hash FROM documents WHERE path = ?;
 -- name: SetDocumentHash :exec
 UPDATE documents SET content_hash = ? WHERE path = ?;
 
+-- name: SetDocumentFrag :exec
+UPDATE documents SET frag_mode = ?, frag_recipe = ? WHERE id = ?;
+
+-- name: GetDocumentFrag :one
+SELECT frag_mode, frag_recipe FROM documents WHERE id = ?;
+
 -- name: ExportFragments :many
-SELECT f.page, f.ord, f.text, fv.vec
+SELECT f.page, f.ord, f.text, f.start_off, f.end_off, fv.vec
 FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 WHERE f.doc_id = ? ORDER BY f.page, f.ord;
+
+-- ===== media (figures explained into fragments) =====
+-- name: InsertMedia :exec
+INSERT INTO media(doc_id, page, ord, kind, image_path, bbox, description, fragment_id)
+VALUES(?,?,?,?,?,?,?,?);
+
+-- name: DeleteMediaByDoc :exec
+DELETE FROM media WHERE doc_id = ?;
+
+-- name: ListMediaByDoc :many
+SELECT page, ord, kind, image_path, bbox, description, fragment_id
+FROM media WHERE doc_id = ? ORDER BY page, ord;
+
+-- name: ListMediaByFragment :many
+SELECT page, ord, kind, image_path, bbox, description
+FROM media WHERE fragment_id = ? ORDER BY ord;

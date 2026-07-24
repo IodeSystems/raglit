@@ -20,13 +20,15 @@ func TestIngestUnits_SegmentedWithContinuationAndEmbed(t *testing.T) {
 		`{"continues_previous":true,"fragments":[{"text":"and revokes the old one` + pad + `"},{"text":"funcC flips the load balancer` + pad + `"}]}`,
 	}})
 
-	// Text units (a born-digital PDF's text-layer pages): segmented directly, no
-	// OCR. The OCR-split path (image → ocr → segment) is covered by atomic_test.go.
+	// Image units so the pages escalate to the VLM (llm-seg) — the path the
+	// Assembler's cross-page continuation lives on. (Text units take the
+	// deterministic overlap fragmenter, no segmenter; covered separately.)
+	ocr := NewOCR(&okChatter{text: "page text"})
 	units := []ingestUnit{
-		{page: 1, text: "raw text of page one"},
-		{page: 2, text: "raw text of page two"},
+		{page: 1, mime: "image/png", data: []byte("img1")},
+		{page: 2, mime: "image/png", data: []byte("img2")},
 	}
-	n, err := s.ingestUnits(ctx, sg, nil, "doc.pdf", "Doc", units, nil)
+	n, _, err := s.ingestUnits(ctx, sg, ocr, "doc.pdf", "Doc", units, FragConfig{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +71,8 @@ func TestIngestUnits_NoEmbedderStillIndexes(t *testing.T) {
 	sg := NewSegmenter(&scriptChatter{replies: []string{
 		`{"continues_previous":false,"fragments":[{"text":"only fragment here"}]}`,
 	}})
-	n, err := s.ingestUnits(context.Background(), sg, nil, "d", "", []ingestUnit{{page: 1, text: "raw"}}, nil)
+	ocr := NewOCR(&okChatter{text: "page text"})
+	n, _, err := s.ingestUnits(context.Background(), sg, ocr, "d", "", []ingestUnit{{page: 1, mime: "image/png", data: []byte("img")}}, FragConfig{}, nil)
 	if err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}

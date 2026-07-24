@@ -54,30 +54,34 @@ func TestWindowCharsForHome_ConfigOrDefault(t *testing.T) {
 	}
 }
 
-func TestIngestText_WindowsAndSegments(t *testing.T) {
+func TestIngestText_DeterministicOverlap(t *testing.T) {
 	s := openMem(t)
-	sc := &scriptChatter{replies: []string{
-		`{"continues_previous":false,"fragments":[{"text":"first window content AAAA"}]}`,
-		`{"continues_previous":false,"fragments":[{"text":"second window content BBBB"}]}`,
-	}}
-	sg := NewSegmenter(sc)
-	// maxChars=6 → two windows ("AAAA\n", "BBBB\n"), so two segment calls.
-	n, err := s.ingestText(context.Background(), sg, "code.go", "Code", "AAAA\nBBBB\n", 6, nil)
+	// Long enough to span several small windows; small FragConfig forces overlap.
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = strings.Repeat("word ", 6)
+	}
+	text := strings.Join(lines, "\n")
+	fc := FragConfig{Window: 120, Stride: 80, Floor: 30}
+
+	n, mode, err := s.ingestText(context.Background(), "code.txt", "Code", text, fc, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sc.calls != 2 {
-		t.Fatalf("expected 2 windows segmented, got %d calls", sc.calls)
+	if mode != "text-overlap" {
+		t.Fatalf("mode = %q, want text-overlap", mode)
 	}
-	// Both windows' tiny fragments are below the size floor → merged into one.
-	if n != 1 {
-		t.Fatalf("sub-floor windows should merge into 1 fragment, got %d", n)
+	if n < 2 {
+		t.Fatalf("long text should split into multiple overlapping fragments, got %d", n)
 	}
-	// ...and the merged fragment still contains both windows' content.
-	if h, _ := s.Search("AAAA", 5); len(h) == 0 {
-		t.Fatal("first window content not searchable")
+
+	// Fragments carry source offsets, and get_document reassembles the source
+	// EXACTLY ONCE despite the overlap.
+	doc, err := s.DocText("code.txt", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if h, _ := s.Search("BBBB", 5); len(h) == 0 {
-		t.Fatal("second window content not searchable")
+	if doc.Text != text {
+		t.Fatalf("reassembly not exact:\n got %q\nwant %q", doc.Text, text)
 	}
 }

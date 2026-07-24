@@ -122,6 +122,10 @@ func migrate(db *sql.DB) error {
 	cols := []struct{ table, col, def string }{
 		{"ingest_jobs", "mode", "TEXT NOT NULL DEFAULT ''"},
 		{"documents", "content_hash", "TEXT NOT NULL DEFAULT ''"},
+		{"documents", "frag_mode", "TEXT NOT NULL DEFAULT ''"},
+		{"documents", "frag_recipe", "TEXT NOT NULL DEFAULT ''"},
+		{"fragments", "start_off", "INTEGER NOT NULL DEFAULT 0"},
+		{"fragments", "end_off", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
@@ -312,21 +316,22 @@ func (s *Store) storeOriginal(docPath string) error {
 // when the store has a home, else a temp dir. Returns the number of fragments
 // indexed.
 func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, error) {
-	return s.ingestPDF(ctx, ocr, pdfPath, pdfPath, filepath.Base(pdfPath), nil)
+	n, _, err := s.ingestPDF(ctx, ocr, pdfPath, pdfPath, filepath.Base(pdfPath), FragConfig{}, nil)
+	return n, err
 }
 
 // ingestPDF is IngestPDF with the document identity (docPath, title) decoupled
 // from the file on disk (filePath) — so a queued URL job can process a temp file
 // while keeping the URL as the stable document key. sl records the extract stage
 // (and the downstream ocr/segment/embed/commit stages via ingestUnits).
-func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, title string, sl *StageLog) (int, error) {
+func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, title string, fc FragConfig, sl *StageLog) (int, string, error) {
 	// Per-page hybrid: text-layer pages become text units (free, exact), scanned
 	// pages become image units for the OCR path. Replaces the old Pagify-only path,
 	// which saw no text layer and failed on born-digital PDFs (ErrNoPageImages).
-	units, err := pdfUnits(ctx, filePath)
+	units, err := pdfUnits(ctx, filePath, ocr.DescribeFigures)
 	if err != nil {
 		sl.Fail("extract", "pdf", err)
-		return 0, err
+		return 0, "", err
 	}
 	imgPages := 0
 	for _, u := range units {
@@ -335,7 +340,7 @@ func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, titl
 		}
 	}
 	sl.Done("extract", "pdf", fmt.Sprintf("%d page(s): %d text-layer, %d scanned", len(units), len(units)-imgPages, imgPages))
-	return s.ingestUnits(ctx, NewSegmenter(ocr.Client), ocr, docPath, title, units, sl)
+	return s.ingestUnits(ctx, NewSegmenter(ocr.Client), ocr, docPath, title, units, fc, sl)
 }
 
 // Hit is one BM25-ranked fragment. Score is normalized so HIGHER is better

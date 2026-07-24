@@ -568,6 +568,7 @@ type findDocRow struct {
 	Fragments int    `json:"fragments"`
 	Pages     int    `json:"pages"`
 	Vision    int    `json:"vision"`
+	FragMode  string `json:"frag_mode"`
 }
 type findDocumentsIn struct {
 	Name  string `query:"name"`
@@ -599,7 +600,7 @@ func findDocumentsOp(reg *raglit.Registry) func(context.Context, *findDocumentsI
 				}
 				out.Body.Documents = append(out.Body.Documents, findDocRow{
 					Index: idx, Path: d.Path, Title: d.Title,
-					Fragments: d.Fragments, Pages: d.Pages, Vision: d.Vision,
+					Fragments: d.Fragments, Pages: d.Pages, Vision: d.Vision, FragMode: d.FragMode,
 				})
 			}
 		}

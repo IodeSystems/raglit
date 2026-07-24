@@ -6,6 +6,8 @@
 package db
 
 import (
+	"database/sql"
+
 	"github.com/iodesystems/sqlc-go-codegen-metaquery/metaquery"
 )
 
@@ -124,6 +126,22 @@ func WrapDeleteFragmentsByDoc(docID int64) *metaquery.Builder {
 	return metaquery.Wrap(&MetaDeleteFragmentsByDoc, docID)
 }
 
+var MetaDeleteMediaByDoc = metaquery.Query{
+	Name:    "DeleteMediaByDoc",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `DELETE FROM media WHERE doc_id = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapDeleteMediaByDoc returns a metaquery.Builder over MetaDeleteMediaByDoc, pre-bound with typed arguments.
+func WrapDeleteMediaByDoc(docID int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaDeleteMediaByDoc, docID)
+}
+
 var MetaDeleteOcrPagesByDoc = metaquery.Query{
 	Name:    "DeleteOcrPagesByDoc",
 	Cmd:     ":exec",
@@ -190,13 +208,15 @@ var MetaExportFragments = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT f.page, f.ord, f.text, fv.vec
+	SQL: `SELECT f.page, f.ord, f.text, f.start_off, f.end_off, fv.vec
 FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 WHERE f.doc_id = ? ORDER BY f.page, f.ord`,
 	Columns: []metaquery.Column{
 		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
 		{Name: "ord", OriginalName: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
 		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "fragments"},
+		{Name: "start_off", OriginalName: "start_off", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
+		{Name: "end_off", OriginalName: "end_off", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
 		{Name: "vec", OriginalName: "vec", GoType: "[]byte", DBType: "BLOB", Table: "fragment_vectors"},
 	},
 	Args: []metaquery.Arg{
@@ -215,15 +235,19 @@ func WrapExportFragments(docID int64) *metaquery.Builder {
 
 // ExportFragmentsCols gives typed, name-safe access to ExportFragments's output columns.
 var ExportFragmentsCols = struct {
-	Page metaquery.IntCol
-	Ord  metaquery.IntCol
-	Text metaquery.TextCol
-	Vec  metaquery.BytesCol
+	Page     metaquery.IntCol
+	Ord      metaquery.IntCol
+	Text     metaquery.TextCol
+	StartOff metaquery.IntCol
+	EndOff   metaquery.IntCol
+	Vec      metaquery.BytesCol
 }{
-	Page: metaquery.NewIntCol("page"),
-	Ord:  metaquery.NewIntCol("ord"),
-	Text: metaquery.NewTextCol("text"),
-	Vec:  metaquery.NewBytesCol("vec"),
+	Page:     metaquery.NewIntCol("page"),
+	Ord:      metaquery.NewIntCol("ord"),
+	Text:     metaquery.NewTextCol("text"),
+	StartOff: metaquery.NewIntCol("start_off"),
+	EndOff:   metaquery.NewIntCol("end_off"),
+	Vec:      metaquery.NewBytesCol("vec"),
 }
 
 var MetaFailJob = metaquery.Query{
@@ -278,6 +302,35 @@ var GetDocumentByPathCols = struct {
 	Path:    metaquery.NewTextCol("path"),
 	Title:   metaquery.NewTextCol("title"),
 	AddedAt: metaquery.NewIntCol("added_at"),
+}
+
+var MetaGetDocumentFrag = metaquery.Query{
+	Name:    "GetDocumentFrag",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT frag_mode, frag_recipe FROM documents WHERE id = ?`,
+	Columns: []metaquery.Column{
+		{Name: "frag_mode", OriginalName: "frag_mode", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
+		{Name: "frag_recipe", OriginalName: "frag_recipe", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapGetDocumentFrag returns a metaquery.Builder over MetaGetDocumentFrag, pre-bound with typed arguments.
+func WrapGetDocumentFrag(id int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaGetDocumentFrag, id)
+}
+
+// GetDocumentFragCols gives typed, name-safe access to GetDocumentFrag's output columns.
+var GetDocumentFragCols = struct {
+	FragMode   metaquery.TextCol
+	FragRecipe metaquery.TextCol
+}{
+	FragMode:   metaquery.NewTextCol("frag_mode"),
+	FragRecipe: metaquery.NewTextCol("frag_recipe"),
 }
 
 var MetaGetDocumentHash = metaquery.Query{
@@ -429,7 +482,7 @@ var MetaInsertFragment = metaquery.Query{
 	Cmd:     ":one",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL:     `INSERT INTO fragments(doc_id, page, ord, text) VALUES(?, ?, ?, ?) RETURNING id`,
+	SQL:     `INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off) VALUES(?, ?, ?, ?, ?, ?) RETURNING id`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64"},
 	},
@@ -438,13 +491,15 @@ var MetaInsertFragment = metaquery.Query{
 		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
 		{Position: 3, Name: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true},
 		{Position: 4, Name: "text", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 5, Name: "start_off", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 6, Name: "end_off", GoType: "int64", DBType: "INTEGER", NotNull: true},
 	},
 	Table: &metaquery.Table{Name: "fragments"},
 }
 
 // WrapInsertFragment returns a metaquery.Builder over MetaInsertFragment, pre-bound with typed arguments.
 func WrapInsertFragment(arg InsertFragmentParams) *metaquery.Builder {
-	return metaquery.Wrap(&MetaInsertFragment, arg.DocID, arg.Page, arg.Ord, arg.Text)
+	return metaquery.Wrap(&MetaInsertFragment, arg.DocID, arg.Page, arg.Ord, arg.Text, arg.StartOff, arg.EndOff)
 }
 
 // InsertFragmentCols gives typed, name-safe access to InsertFragment's output columns.
@@ -452,6 +507,31 @@ var InsertFragmentCols = struct {
 	ID metaquery.IntCol
 }{
 	ID: metaquery.NewIntCol("id"),
+}
+
+var MetaInsertMedia = metaquery.Query{
+	Name:    "InsertMedia",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `INSERT INTO media(doc_id, page, ord, kind, image_path, bbox, description, fragment_id)
+VALUES(?,?,?,?,?,?,?,?)`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 4, Name: "kind", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 5, Name: "image_path", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 6, Name: "bbox", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 7, Name: "description", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 8, Name: "fragment_id", GoType: "sql.NullInt64", DBType: "INTEGER"},
+	},
+	Table: &metaquery.Table{Name: "media"},
+}
+
+// WrapInsertMedia returns a metaquery.Builder over MetaInsertMedia, pre-bound with typed arguments.
+func WrapInsertMedia(arg InsertMediaParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaInsertMedia, arg.DocID, arg.Page, arg.Ord, arg.Kind, arg.ImagePath, arg.Bbox, arg.Description, arg.FragmentID)
 }
 
 var MetaInsertStage = metaquery.Query{
@@ -602,7 +682,7 @@ var MetaListDocumentSummaries = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT d.id, d.path, d.title, d.added_at,
+	SQL: `SELECT d.id, d.path, d.title, d.added_at, d.frag_mode,
        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id) AS fragments
 FROM documents d ORDER BY d.added_at DESC`,
 	Columns: []metaquery.Column{
@@ -610,6 +690,7 @@ FROM documents d ORDER BY d.added_at DESC`,
 		{Name: "path", OriginalName: "path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
 		{Name: "title", OriginalName: "title", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
 		{Name: "added_at", OriginalName: "added_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "documents"},
+		{Name: "frag_mode", OriginalName: "frag_mode", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
 		{Name: "fragments", OriginalName: "fragments", GoType: "int64", DBType: "integer", NotNull: true},
 	},
 }
@@ -629,12 +710,14 @@ var ListDocumentSummariesCols = struct {
 	Path      metaquery.TextCol
 	Title     metaquery.TextCol
 	AddedAt   metaquery.IntCol
+	FragMode  metaquery.TextCol
 	Fragments metaquery.IntCol
 }{
 	ID:        metaquery.NewIntCol("id"),
 	Path:      metaquery.NewTextCol("path"),
 	Title:     metaquery.NewTextCol("title"),
 	AddedAt:   metaquery.NewIntCol("added_at"),
+	FragMode:  metaquery.NewTextCol("frag_mode"),
 	Fragments: metaquery.NewIntCol("fragments"),
 }
 
@@ -674,11 +757,13 @@ var MetaListFragmentsForDoc = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL:     `SELECT page, ord, text FROM fragments WHERE doc_id = ? ORDER BY page, ord`,
+	SQL:     `SELECT page, ord, text, start_off, end_off FROM fragments WHERE doc_id = ? ORDER BY page, ord`,
 	Columns: []metaquery.Column{
 		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
 		{Name: "ord", OriginalName: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
 		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "fragments"},
+		{Name: "start_off", OriginalName: "start_off", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
+		{Name: "end_off", OriginalName: "end_off", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
 	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
@@ -696,13 +781,17 @@ func WrapListFragmentsForDoc(docID int64) *metaquery.Builder {
 
 // ListFragmentsForDocCols gives typed, name-safe access to ListFragmentsForDoc's output columns.
 var ListFragmentsForDocCols = struct {
-	Page metaquery.IntCol
-	Ord  metaquery.IntCol
-	Text metaquery.TextCol
+	Page     metaquery.IntCol
+	Ord      metaquery.IntCol
+	Text     metaquery.TextCol
+	StartOff metaquery.IntCol
+	EndOff   metaquery.IntCol
 }{
-	Page: metaquery.NewIntCol("page"),
-	Ord:  metaquery.NewIntCol("ord"),
-	Text: metaquery.NewTextCol("text"),
+	Page:     metaquery.NewIntCol("page"),
+	Ord:      metaquery.NewIntCol("ord"),
+	Text:     metaquery.NewTextCol("text"),
+	StartOff: metaquery.NewIntCol("start_off"),
+	EndOff:   metaquery.NewIntCol("end_off"),
 }
 
 var MetaListJobStages = metaquery.Query{
@@ -799,6 +888,101 @@ var ListJobsCols = struct {
 	EnqueuedAt: metaquery.NewIntCol("enqueued_at"),
 	StartedAt:  metaquery.NewIntCol("started_at"),
 	FinishedAt: metaquery.NewIntCol("finished_at"),
+}
+
+var MetaListMediaByDoc = metaquery.Query{
+	Name:    "ListMediaByDoc",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT page, ord, kind, image_path, bbox, description, fragment_id
+FROM media WHERE doc_id = ? ORDER BY page, ord`,
+	Columns: []metaquery.Column{
+		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "media"},
+		{Name: "ord", OriginalName: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "media"},
+		{Name: "kind", OriginalName: "kind", GoType: "string", DBType: "TEXT", NotNull: true, Table: "media"},
+		{Name: "image_path", OriginalName: "image_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "media"},
+		{Name: "bbox", OriginalName: "bbox", GoType: "string", DBType: "TEXT", NotNull: true, Table: "media"},
+		{Name: "description", OriginalName: "description", GoType: "string", DBType: "TEXT", NotNull: true, Table: "media"},
+		{Name: "fragment_id", OriginalName: "fragment_id", GoType: "sql.NullInt64", DBType: "INTEGER", Table: "media"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WARNING: ListMediaByDoc ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListMediaByDoc returns a metaquery.Builder over MetaListMediaByDoc, pre-bound with typed arguments.
+func WrapListMediaByDoc(docID int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaListMediaByDoc, docID)
+}
+
+// ListMediaByDocCols gives typed, name-safe access to ListMediaByDoc's output columns.
+var ListMediaByDocCols = struct {
+	Page        metaquery.IntCol
+	Ord         metaquery.IntCol
+	Kind        metaquery.TextCol
+	ImagePath   metaquery.TextCol
+	Bbox        metaquery.TextCol
+	Description metaquery.TextCol
+	FragmentID  metaquery.AnyCol
+}{
+	Page:        metaquery.NewIntCol("page"),
+	Ord:         metaquery.NewIntCol("ord"),
+	Kind:        metaquery.NewTextCol("kind"),
+	ImagePath:   metaquery.NewTextCol("image_path"),
+	Bbox:        metaquery.NewTextCol("bbox"),
+	Description: metaquery.NewTextCol("description"),
+	FragmentID:  metaquery.NewAnyCol("fragment_id"),
+}
+
+var MetaListMediaByFragment = metaquery.Query{
+	Name:    "ListMediaByFragment",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT page, ord, kind, image_path, bbox, description
+FROM media WHERE fragment_id = ? ORDER BY ord`,
+	Columns: []metaquery.Column{
+		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "media"},
+		{Name: "ord", OriginalName: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "media"},
+		{Name: "kind", OriginalName: "kind", GoType: "string", DBType: "TEXT", NotNull: true, Table: "media"},
+		{Name: "image_path", OriginalName: "image_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "media"},
+		{Name: "bbox", OriginalName: "bbox", GoType: "string", DBType: "TEXT", NotNull: true, Table: "media"},
+		{Name: "description", OriginalName: "description", GoType: "string", DBType: "TEXT", NotNull: true, Table: "media"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "fragment_id", GoType: "sql.NullInt64", DBType: "INTEGER"},
+	},
+}
+
+// WARNING: ListMediaByFragment ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListMediaByFragment returns a metaquery.Builder over MetaListMediaByFragment, pre-bound with typed arguments.
+func WrapListMediaByFragment(fragmentID sql.NullInt64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaListMediaByFragment, fragmentID)
+}
+
+// ListMediaByFragmentCols gives typed, name-safe access to ListMediaByFragment's output columns.
+var ListMediaByFragmentCols = struct {
+	Page        metaquery.IntCol
+	Ord         metaquery.IntCol
+	Kind        metaquery.TextCol
+	ImagePath   metaquery.TextCol
+	Bbox        metaquery.TextCol
+	Description metaquery.TextCol
+}{
+	Page:        metaquery.NewIntCol("page"),
+	Ord:         metaquery.NewIntCol("ord"),
+	Kind:        metaquery.NewTextCol("kind"),
+	ImagePath:   metaquery.NewTextCol("image_path"),
+	Bbox:        metaquery.NewTextCol("bbox"),
+	Description: metaquery.NewTextCol("description"),
 }
 
 var MetaListOcrPagesByDoc = metaquery.Query{
@@ -972,6 +1156,24 @@ WHERE id=? AND state IN ('error','done')`,
 // WrapRetryJob returns a metaquery.Builder over MetaRetryJob, pre-bound with typed arguments.
 func WrapRetryJob(id int64) *metaquery.Builder {
 	return metaquery.Wrap(&MetaRetryJob, id)
+}
+
+var MetaSetDocumentFrag = metaquery.Query{
+	Name:    "SetDocumentFrag",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `UPDATE documents SET frag_mode = ?, frag_recipe = ? WHERE id = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "frag_mode", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "frag_recipe", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 3, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapSetDocumentFrag returns a metaquery.Builder over MetaSetDocumentFrag, pre-bound with typed arguments.
+func WrapSetDocumentFrag(arg SetDocumentFragParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaSetDocumentFrag, arg.FragMode, arg.FragRecipe, arg.ID)
 }
 
 var MetaSetDocumentHash = metaquery.Query{

@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 )
 
 const cancelJob = `-- name: CancelJob :execrows
@@ -83,6 +84,15 @@ func (q *Queries) DeleteFragmentsByDoc(ctx context.Context, docID int64) error {
 	return err
 }
 
+const deleteMediaByDoc = `-- name: DeleteMediaByDoc :exec
+DELETE FROM media WHERE doc_id = ?
+`
+
+func (q *Queries) DeleteMediaByDoc(ctx context.Context, docID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteMediaByDoc, docID)
+	return err
+}
+
 const deleteOcrPagesByDoc = `-- name: DeleteOcrPagesByDoc :exec
 DELETE FROM ocr_pages WHERE doc_id = ?
 `
@@ -120,16 +130,18 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) (int64, 
 }
 
 const exportFragments = `-- name: ExportFragments :many
-SELECT f.page, f.ord, f.text, fv.vec
+SELECT f.page, f.ord, f.text, f.start_off, f.end_off, fv.vec
 FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 WHERE f.doc_id = ? ORDER BY f.page, f.ord
 `
 
 type ExportFragmentsRow struct {
-	Page int64  `db:"page" derived:"fragments.page" json:"page"`
-	Ord  int64  `db:"ord" derived:"fragments.ord" json:"ord"`
-	Text string `db:"text" derived:"fragments.text" json:"text"`
-	Vec  []byte `db:"vec" derived:"fragment_vectors.vec" json:"vec"`
+	Page     int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord      int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text     string `db:"text" derived:"fragments.text" json:"text"`
+	StartOff int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
+	EndOff   int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
+	Vec      []byte `db:"vec" derived:"fragment_vectors.vec" json:"vec"`
 }
 
 func (q *Queries) ExportFragments(ctx context.Context, docID int64) ([]ExportFragmentsRow, error) {
@@ -145,6 +157,8 @@ func (q *Queries) ExportFragments(ctx context.Context, docID int64) ([]ExportFra
 			&i.Page,
 			&i.Ord,
 			&i.Text,
+			&i.StartOff,
+			&i.EndOff,
 			&i.Vec,
 		); err != nil {
 			return nil, err
@@ -199,6 +213,22 @@ func (q *Queries) GetDocumentByPath(ctx context.Context, path string) (GetDocume
 		&i.Title,
 		&i.AddedAt,
 	)
+	return i, err
+}
+
+const getDocumentFrag = `-- name: GetDocumentFrag :one
+SELECT frag_mode, frag_recipe FROM documents WHERE id = ?
+`
+
+type GetDocumentFragRow struct {
+	FragMode   string `db:"frag_mode" derived:"documents.frag_mode" json:"frag_mode"`
+	FragRecipe string `db:"frag_recipe" derived:"documents.frag_recipe" json:"frag_recipe"`
+}
+
+func (q *Queries) GetDocumentFrag(ctx context.Context, id int64) (GetDocumentFragRow, error) {
+	row := q.db.QueryRowContext(ctx, getDocumentFrag, id)
+	var i GetDocumentFragRow
+	err := row.Scan(&i.FragMode, &i.FragRecipe)
 	return i, err
 }
 
@@ -278,14 +308,16 @@ func (q *Queries) GetPageImagePath(ctx context.Context, arg GetPageImagePathPara
 }
 
 const insertFragment = `-- name: InsertFragment :one
-INSERT INTO fragments(doc_id, page, ord, text) VALUES(?, ?, ?, ?) RETURNING id
+INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off) VALUES(?, ?, ?, ?, ?, ?) RETURNING id
 `
 
 type InsertFragmentParams struct {
-	DocID int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
-	Page  int64  `db:"page" derived:"fragments.page" json:"page"`
-	Ord   int64  `db:"ord" derived:"fragments.ord" json:"ord"`
-	Text  string `db:"text" derived:"fragments.text" json:"text"`
+	DocID    int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
+	Page     int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord      int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text     string `db:"text" derived:"fragments.text" json:"text"`
+	StartOff int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
+	EndOff   int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
 }
 
 func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) (int64, error) {
@@ -294,10 +326,43 @@ func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) 
 		arg.Page,
 		arg.Ord,
 		arg.Text,
+		arg.StartOff,
+		arg.EndOff,
 	)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const insertMedia = `-- name: InsertMedia :exec
+INSERT INTO media(doc_id, page, ord, kind, image_path, bbox, description, fragment_id)
+VALUES(?,?,?,?,?,?,?,?)
+`
+
+type InsertMediaParams struct {
+	DocID       int64         `db:"doc_id" derived:"media.doc_id" json:"doc_id"`
+	Page        int64         `db:"page" derived:"media.page" json:"page"`
+	Ord         int64         `db:"ord" derived:"media.ord" json:"ord"`
+	Kind        string        `db:"kind" derived:"media.kind" json:"kind"`
+	ImagePath   string        `db:"image_path" derived:"media.image_path" json:"image_path"`
+	Bbox        string        `db:"bbox" derived:"media.bbox" json:"bbox"`
+	Description string        `db:"description" derived:"media.description" json:"description"`
+	FragmentID  sql.NullInt64 `db:"fragment_id" derived:"media.fragment_id" json:"fragment_id"`
+}
+
+// ===== media (figures explained into fragments) =====
+func (q *Queries) InsertMedia(ctx context.Context, arg InsertMediaParams) error {
+	_, err := q.db.ExecContext(ctx, insertMedia,
+		arg.DocID,
+		arg.Page,
+		arg.Ord,
+		arg.Kind,
+		arg.ImagePath,
+		arg.Bbox,
+		arg.Description,
+		arg.FragmentID,
+	)
+	return err
 }
 
 const insertStage = `-- name: InsertStage :exec
@@ -449,7 +514,7 @@ func (q *Queries) ListDocumentPaths(ctx context.Context) ([]string, error) {
 }
 
 const listDocumentSummaries = `-- name: ListDocumentSummaries :many
-SELECT d.id, d.path, d.title, d.added_at,
+SELECT d.id, d.path, d.title, d.added_at, d.frag_mode,
        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id) AS fragments
 FROM documents d ORDER BY d.added_at DESC
 `
@@ -459,6 +524,7 @@ type ListDocumentSummariesRow struct {
 	Path      string `db:"path" derived:"documents.path" json:"path"`
 	Title     string `db:"title" derived:"documents.title" json:"title"`
 	AddedAt   int64  `db:"added_at" derived:"documents.added_at" json:"added_at"`
+	FragMode  string `db:"frag_mode" derived:"documents.frag_mode" json:"frag_mode"`
 	Fragments int64  `db:"fragments" json:"fragments"`
 }
 
@@ -476,6 +542,7 @@ func (q *Queries) ListDocumentSummaries(ctx context.Context) ([]ListDocumentSumm
 			&i.Path,
 			&i.Title,
 			&i.AddedAt,
+			&i.FragMode,
 			&i.Fragments,
 		); err != nil {
 			return nil, err
@@ -524,13 +591,15 @@ func (q *Queries) ListFragmentTextByPage(ctx context.Context, arg ListFragmentTe
 }
 
 const listFragmentsForDoc = `-- name: ListFragmentsForDoc :many
-SELECT page, ord, text FROM fragments WHERE doc_id = ? ORDER BY page, ord
+SELECT page, ord, text, start_off, end_off FROM fragments WHERE doc_id = ? ORDER BY page, ord
 `
 
 type ListFragmentsForDocRow struct {
-	Page int64  `db:"page" derived:"fragments.page" json:"page"`
-	Ord  int64  `db:"ord" derived:"fragments.ord" json:"ord"`
-	Text string `db:"text" derived:"fragments.text" json:"text"`
+	Page     int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord      int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text     string `db:"text" derived:"fragments.text" json:"text"`
+	StartOff int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
+	EndOff   int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
 }
 
 func (q *Queries) ListFragmentsForDoc(ctx context.Context, docID int64) ([]ListFragmentsForDocRow, error) {
@@ -542,7 +611,13 @@ func (q *Queries) ListFragmentsForDoc(ctx context.Context, docID int64) ([]ListF
 	var items []ListFragmentsForDocRow
 	for rows.Next() {
 		var i ListFragmentsForDocRow
-		if err := rows.Scan(&i.Page, &i.Ord, &i.Text); err != nil {
+		if err := rows.Scan(
+			&i.Page,
+			&i.Ord,
+			&i.Text,
+			&i.StartOff,
+			&i.EndOff,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -624,6 +699,96 @@ func (q *Queries) ListJobs(ctx context.Context) ([]IngestJob, error) {
 			&i.EnqueuedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMediaByDoc = `-- name: ListMediaByDoc :many
+SELECT page, ord, kind, image_path, bbox, description, fragment_id
+FROM media WHERE doc_id = ? ORDER BY page, ord
+`
+
+type ListMediaByDocRow struct {
+	Page        int64         `db:"page" derived:"media.page" json:"page"`
+	Ord         int64         `db:"ord" derived:"media.ord" json:"ord"`
+	Kind        string        `db:"kind" derived:"media.kind" json:"kind"`
+	ImagePath   string        `db:"image_path" derived:"media.image_path" json:"image_path"`
+	Bbox        string        `db:"bbox" derived:"media.bbox" json:"bbox"`
+	Description string        `db:"description" derived:"media.description" json:"description"`
+	FragmentID  sql.NullInt64 `db:"fragment_id" derived:"media.fragment_id" json:"fragment_id"`
+}
+
+func (q *Queries) ListMediaByDoc(ctx context.Context, docID int64) ([]ListMediaByDocRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMediaByDoc, docID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMediaByDocRow
+	for rows.Next() {
+		var i ListMediaByDocRow
+		if err := rows.Scan(
+			&i.Page,
+			&i.Ord,
+			&i.Kind,
+			&i.ImagePath,
+			&i.Bbox,
+			&i.Description,
+			&i.FragmentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMediaByFragment = `-- name: ListMediaByFragment :many
+SELECT page, ord, kind, image_path, bbox, description
+FROM media WHERE fragment_id = ? ORDER BY ord
+`
+
+type ListMediaByFragmentRow struct {
+	Page        int64  `db:"page" derived:"media.page" json:"page"`
+	Ord         int64  `db:"ord" derived:"media.ord" json:"ord"`
+	Kind        string `db:"kind" derived:"media.kind" json:"kind"`
+	ImagePath   string `db:"image_path" derived:"media.image_path" json:"image_path"`
+	Bbox        string `db:"bbox" derived:"media.bbox" json:"bbox"`
+	Description string `db:"description" derived:"media.description" json:"description"`
+}
+
+func (q *Queries) ListMediaByFragment(ctx context.Context, fragmentID sql.NullInt64) ([]ListMediaByFragmentRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMediaByFragment, fragmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMediaByFragmentRow
+	for rows.Next() {
+		var i ListMediaByFragmentRow
+		if err := rows.Scan(
+			&i.Page,
+			&i.Ord,
+			&i.Kind,
+			&i.ImagePath,
+			&i.Bbox,
+			&i.Description,
 		); err != nil {
 			return nil, err
 		}
@@ -814,6 +979,21 @@ func (q *Queries) RetryJob(ctx context.Context, id int64) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setDocumentFrag = `-- name: SetDocumentFrag :exec
+UPDATE documents SET frag_mode = ?, frag_recipe = ? WHERE id = ?
+`
+
+type SetDocumentFragParams struct {
+	FragMode   string `db:"frag_mode" derived:"documents.frag_mode" json:"frag_mode"`
+	FragRecipe string `db:"frag_recipe" derived:"documents.frag_recipe" json:"frag_recipe"`
+	ID         int64  `db:"id" derived:"documents.id" json:"id"`
+}
+
+func (q *Queries) SetDocumentFrag(ctx context.Context, arg SetDocumentFragParams) error {
+	_, err := q.db.ExecContext(ctx, setDocumentFrag, arg.FragMode, arg.FragRecipe, arg.ID)
+	return err
 }
 
 const setDocumentHash = `-- name: SetDocumentHash :exec

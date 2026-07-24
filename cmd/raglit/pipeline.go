@@ -70,6 +70,7 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home) {
 	if err != nil {
 		return
 	}
+	ocr.DescribeFigures = cfg.OCR.DescribeFigures
 	eng, err := raglit.BuildPageEngine(cfg.OCR)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "raglit: %v — OCR falling back to vision-only\n", err)

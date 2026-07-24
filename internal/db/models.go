@@ -4,20 +4,28 @@
 
 package db
 
+import (
+	"database/sql"
+)
+
 type Document struct {
 	ID          int64  `db:"id" derived:"documents.id" json:"id"`
 	Path        string `db:"path" derived:"documents.path" json:"path"`
 	Title       string `db:"title" derived:"documents.title" json:"title"`
 	AddedAt     int64  `db:"added_at" derived:"documents.added_at" json:"added_at"`
 	ContentHash string `db:"content_hash" derived:"documents.content_hash" json:"content_hash"`
+	FragMode    string `db:"frag_mode" derived:"documents.frag_mode" json:"frag_mode"`
+	FragRecipe  string `db:"frag_recipe" derived:"documents.frag_recipe" json:"frag_recipe"`
 }
 
 type Fragment struct {
-	ID    int64  `db:"id" derived:"fragments.id" json:"id"`
-	DocID int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
-	Page  int64  `db:"page" derived:"fragments.page" json:"page"`
-	Ord   int64  `db:"ord" derived:"fragments.ord" json:"ord"`
-	Text  string `db:"text" derived:"fragments.text" json:"text"`
+	ID       int64  `db:"id" derived:"fragments.id" json:"id"`
+	DocID    int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
+	Page     int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord      int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text     string `db:"text" derived:"fragments.text" json:"text"`
+	StartOff int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
+	EndOff   int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
 }
 
 type FragmentVector struct {
@@ -52,6 +60,18 @@ type JobStage struct {
 	State  string `db:"state" derived:"job_stages.state" json:"state"`
 	Detail string `db:"detail" derived:"job_stages.detail" json:"detail"`
 	At     int64  `db:"at" derived:"job_stages.at" json:"at"`
+}
+
+type Medium struct {
+	ID          int64         `db:"id" derived:"media.id" json:"id"`
+	DocID       int64         `db:"doc_id" derived:"media.doc_id" json:"doc_id"`
+	Page        int64         `db:"page" derived:"media.page" json:"page"`
+	Ord         int64         `db:"ord" derived:"media.ord" json:"ord"`
+	Kind        string        `db:"kind" derived:"media.kind" json:"kind"`
+	ImagePath   string        `db:"image_path" derived:"media.image_path" json:"image_path"`
+	Bbox        string        `db:"bbox" derived:"media.bbox" json:"bbox"`
+	Description string        `db:"description" derived:"media.description" json:"description"`
+	FragmentID  sql.NullInt64 `db:"fragment_id" derived:"media.fragment_id" json:"fragment_id"`
 }
 
 type OcrPage struct {

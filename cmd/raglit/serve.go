@@ -138,7 +138,7 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 		mcp.NewTool("list_documents",
 			mcp.WithDescription(
 				"List indexed documents (filenames/paths) with their fragment/page counts as JSON "+
-					"{documents:[{index,path,title,fragments,pages,vision}]}. `name` filters to documents "+
+					"{documents:[{index,path,title,fragments,pages,vision,frag_mode}]}. `name` filters to documents "+
 					"whose path or title contains that substring (case-insensitive). `index` selects one "+
 					"index or a comma-separated set; omit to list across ALL. Use this to find a document, "+
 					"then get_document to read its text."),
@@ -366,6 +366,7 @@ func listDocumentsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 			Fragments int    `json:"fragments"`
 			Pages     int    `json:"pages"`
 			Vision    int    `json:"vision"`
+			FragMode  string `json:"frag_mode"`
 		}
 		out := struct {
 			Documents []docOut `json:"documents"`
@@ -386,7 +387,7 @@ func listDocumentsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 				}
 				out.Documents = append(out.Documents, docOut{
 					Index: idx, Path: d.Path, Title: d.Title,
-					Fragments: d.Fragments, Pages: d.Pages, Vision: d.Vision,
+					Fragments: d.Fragments, Pages: d.Pages, Vision: d.Vision, FragMode: d.FragMode,
 				})
 			}
 		}

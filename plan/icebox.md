@@ -112,3 +112,36 @@ branch — so we can diff/merge index state along a branch like code.
 
 **Note:** the existing `isolation: worktree` idea (agents in fresh git
 worktrees) is the code side; this is its index-state analogue.
+
+## 3. Fragmenters: specialized splitters, image embeddings, an eval harness
+
+Deferred out of `plan/fragmenters.md` (design agreed 2026-07-24) so the two
+shipping paths — deterministic overlapping blocks for text, LLM segmentation
+only for documents a VLM already transcribed — can land first.
+
+- **Specialized fragmenters.** Markdown headings with breadcrumb prefixes on
+  each fragment (the retrieval win the LLM path doesn't even attempt). Code via
+  poly-lsp `symbols.FileSymbols` — symbol path + class + doc-comment span +
+  `BodyStartLine` are ready-made atoms with titles attached. BLOCKED on
+  poly-lsp's daemon (see its `plan/plan.md`): raglit builds CGO_ENABLED=0 and
+  tree-sitter needs cgo, so a socket is the only import-free way in.
+- **Image embeddings / a second vector space.** `fragment_vectors` is
+  `PRIMARY KEY(fragment_id)`, one vector, one space (`sql/schema.sql:33`). Text
+  and CLIP-style image vectors are different spaces; cosine across them is
+  meaningless. Needs either a table per space fused with the RRF search already
+  uses across indexes, or a shared multimodal space whose text tower embeds the
+  query. Inline VLM figure DESCRIPTIONS (tier (a) in fragmenters.md) capture
+  most of the value first, as text, with no schema change.
+- **Eval harness.** A fixed query set with known-relevant documents, scored
+  recall@k / MRR across fragmenter modes. Until it exists, every fragmenter
+  choice here is taste, including the ones already decided.
+- **Versioned fragmentations for A/B.** Keep two fragmentations of a document
+  side by side to compare retrieval. Considered and explicitly not wanted yet
+  (USER, 2026-07-24): reprocessing replaces a document atomically, which is the
+  simpler contract. Revisit if fragmenter tuning ever needs a controlled
+  comparison on real corpora rather than an eval set.
+- **OCR-text cache layer.** Cache page TEXT separately from fragments so a
+  stride change re-splits without re-OCRing. Not needed for correctness —
+  reprocessing runs the whole pipeline by decision (fragmenters.md §4a) — and
+  only pays off for vision-transcribed documents. Same shape as the vector/
+  fragment cache split noted above.

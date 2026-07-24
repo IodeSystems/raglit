@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	gen "github.com/iodesystems/raglit/internal/db"
@@ -102,35 +103,91 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 		return DocContent{}, err
 	}
 
-	// Group fragments into pages, preserving order.
-	curPage := int64(-1)
-	var buf []string
-	flush := func() {
-		if curPage >= 0 {
-			out.Pages = append(out.Pages, DocPageText{Page: int(curPage), Text: strings.Join(buf, pageSep)})
-		}
-		buf = nil
-	}
+	// text-overlap documents have overlapping fragments (a plain join would repeat
+	// every overlap region), so reassemble from their [start,end) spans; llm-seg /
+	// synthetic documents have no spans (0/0) and join directly.
+	offsetMode := false
 	for _, r := range res.Data {
-		if r.Page != curPage {
-			flush()
-			curPage = r.Page
+		if r.EndOff > r.StartOff {
+			offsetMode = true
+			break
 		}
-		buf = append(buf, r.Text)
 	}
-	flush()
-
-	parts := make([]string, len(out.Pages))
-	for i, p := range out.Pages {
-		parts[i] = p.Text
+	if offsetMode {
+		out.Pages, out.Text = reassembleOffsets(res.Data)
+	} else {
+		// Group fragments into pages, preserving order; join with pageSep.
+		curPage := int64(-1)
+		var buf []string
+		flush := func() {
+			if curPage >= 0 {
+				out.Pages = append(out.Pages, DocPageText{Page: int(curPage), Text: strings.Join(buf, pageSep)})
+			}
+			buf = nil
+		}
+		for _, r := range res.Data {
+			if r.Page != curPage {
+				flush()
+				curPage = r.Page
+			}
+			buf = append(buf, r.Text)
+		}
+		flush()
+		parts := make([]string, len(out.Pages))
+		for i, p := range out.Pages {
+			parts[i] = p.Text
+		}
+		out.Text = strings.Join(parts, pageSep)
 	}
-	out.Text = strings.Join(parts, pageSep)
 	if maxChars > 0 && len(out.Text) > maxChars {
 		out.Text = out.Text[:maxChars]
 		out.Truncated = true
 		out.Pages = capPages(out.Pages, maxChars)
 	}
 	return out, nil
+}
+
+// reassembleOffsets reconstructs an overlapping-window document exactly ONCE from
+// its fragments' [start,end) source spans: fragments are walked in offset order,
+// and only the bytes past the running high-water mark are appended, so shared
+// overlap regions are not repeated. Each run of bytes is attributed to its
+// fragment's page (the page it started on). Returns the per-page texts and the
+// full de-overlapped blob (which equals the original source text).
+func reassembleOffsets(rows []gen.ListFragmentsForDocRow) ([]DocPageText, string) {
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].StartOff < rows[j].StartOff })
+	var full strings.Builder
+	var pages []DocPageText
+	var pageBuf strings.Builder
+	curPage := int64(-1)
+	flush := func() {
+		if curPage >= 0 {
+			pages = append(pages, DocPageText{Page: int(curPage), Text: pageBuf.String()})
+		}
+		pageBuf.Reset()
+	}
+	covered := int64(0) // highest source offset written so far
+	for _, r := range rows {
+		if r.EndOff <= covered {
+			continue // fully covered by an earlier fragment
+		}
+		off := int64(0)
+		if covered > r.StartOff {
+			off = covered - r.StartOff // skip the shared prefix
+		}
+		if off < 0 || int(off) > len(r.Text) {
+			continue
+		}
+		seg := r.Text[off:]
+		if r.Page != curPage {
+			flush()
+			curPage = r.Page
+		}
+		pageBuf.WriteString(seg)
+		full.WriteString(seg)
+		covered = r.EndOff
+	}
+	flush()
+	return pages, full.String()
 }
 
 // capPages cuts a page array to the same maxChars budget as the joined Text

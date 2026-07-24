@@ -2,7 +2,9 @@ package raglit
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	gen "github.com/iodesystems/raglit/internal/db"
@@ -35,9 +37,12 @@ type ingestUnit struct {
 func (u ingestUnit) isImage() bool { return len(u.data) > 0 }
 
 // stagedFrag is a finalized fragment held in memory until the atomic swap.
+// startOff/endOff are the half-open source span (text-overlap path); 0/0 on the
+// llm-seg path, where a fragment is model-emitted text and not a span.
 type stagedFrag struct {
-	page, ord int
-	text      string
+	page, ord        int
+	startOff, endOff int
+	text             string
 }
 
 // stagedPage is a page's provenance held in memory until the atomic swap.
@@ -47,100 +52,100 @@ type stagedPage struct {
 	imgPath string
 }
 
-// ingestUnits runs the per-unit pipeline and commits the result atomically.
-// STAGES (recorded via sl, which may be nil): an IMAGE unit is first OCR'd to
-// text by the cascade (cheap→gate→VLM, ocr required) — that's the "ocr" task,
-// tagged with the real engine per page — and THEN segmented as text; a TEXT unit
-// (born-digital PDF page / text window) skips ocr and is segmented directly.
-// Segmentation ("segment", engine "llm") turns page text into fragments,
-// embedding ("embed") runs concurrently, and everything is swapped in under one
-// transaction ("commit"). Returns the number of fragments indexed. ocr may be
-// nil when no unit is an image.
-func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPath, title string, units []ingestUnit, sl *StageLog) (int, error) {
-	var frags []stagedFrag
+// stagedMedia is a figure explained into a fragment, anchored by the fragment's
+// index in the staged slice (its id doesn't exist until the swap).
+type stagedMedia struct {
+	fragIdx     int
+	page, ord   int
+	kind        string
+	imagePath   string
+	bbox        string
+	description string
+}
+
+// FragConfig tunes the deterministic text fragmenter and identifies the per-
+// document fragmentation recipe. Window/Stride/Floor are 0 → defaults; EmbedLimit
+// caps the window by the embed model's input limit (0 → uncapped); FigurePrompt
+// is the figure-description prompt version, folded into frag_recipe so a prompt
+// change marks affected documents stale.
+type FragConfig struct {
+	Window, Stride, Floor int
+	EmbedLimit            int
+	FigurePrompt          int
+}
+
+// fragMode names: text-overlap (deterministic windows) vs llm-seg (a VLM already
+// transcribed a page, so the model segments too).
+const (
+	fragModeOverlap = "text-overlap"
+	fragModeLLM     = "llm-seg"
+)
+
+// fragRecipe hashes ONLY the fragmentation inputs for a document — deliberately
+// narrower than the pool recipe (which also mixes in the embed model + OCR
+// engine) — so it answers "which documents need re-fragmenting after a stride
+// change" without dragging in unrelated model swaps.
+func fragRecipe(mode string, window, stride, floor, figPrompt int) string {
+	if mode == fragModeLLM {
+		return HashHex([]byte(fmt.Sprintf("mode=%s|fig=%d", mode, figPrompt)))
+	}
+	return HashHex([]byte(fmt.Sprintf("mode=%s|w=%d|s=%d|f=%d|fig=%d", mode, window, stride, floor, figPrompt)))
+}
+
+// resolvedPage is one unit's text after OCR, plus its page number.
+type resolvedPage struct {
+	page int
+	text string
+}
+
+// ingestUnits runs the per-document pipeline and commits atomically. It resolves
+// every unit to text FIRST (image units run the cheap→gate→VLM OCR cascade, the
+// "ocr" task, tagged with the real engine per page), then makes ONE per-document
+// fragmenter choice: if any page escalated to the VLM the document is LLM-
+// segmented as a whole (fragMode "llm-seg", segment.go); otherwise the
+// deterministic overlapping-window fragmenter runs ("text-overlap", fragment.go)
+// — text needs no model. Embedding ("embed") runs concurrently with segmentation,
+// and fragments + vectors + provenance + media are swapped in under one
+// transaction ("commit"). ocr may be nil when no unit is an image; sg may be nil
+// when no page will escalate (pure text).
+func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPath, title string, units []ingestUnit, fc FragConfig, sl *StageLog) (int, string, error) {
+	// Phase 1: resolve every unit to text + provenance. The vision escalation is
+	// what decides the fragmenter, so it must be known before segmenting — one
+	// pass over the page engines, which pipeline already tallies.
+	var pages []resolvedPage
 	var provenance []stagedPage
 	ocrEngines := map[string]int{}
-
-	// Concurrent embed pipeline (only when a store has an embedder). It embeds
-	// finalized fragments while later units segment, but holds the vectors in
-	// memory (keyed by fragment index) — they're written in the final swap, not
-	// as they're produced.
-	var embedCh chan embedItem
-	var embedDone chan embedResult
-	if s.embedder != nil {
-		embedCh = make(chan embedItem, 64)
-		embedDone = make(chan embedResult, 1)
-		go runStagedEmbed(ctx, s.embedder, embedCh, embedDone)
-	}
-
-	a := NewAssembler(func(page, ord int, text string) error {
-		idx := len(frags)
-		frags = append(frags, stagedFrag{page: page, ord: ord, text: text})
-		if embedCh != nil {
-			embedCh <- embedItem{idx: idx, text: text}
-		}
-		return nil
-	})
-
-	// failPhase drains the embed goroutine (so it exits) and records the stage
-	// where ingestion failed, returning the error unchanged.
-	failPhase := func(phase, engine string, err error) error {
-		if embedCh != nil {
-			close(embedCh)
-			<-embedDone
-			embedCh = nil
-		}
-		sl.Fail(phase, engine, err)
-		return err
-	}
-
-	segErr := func() error {
-		for _, u := range units {
-			open := a.OpenText()
-			text := u.text
-			// Stage 1 (image units only): OCR the page image to text.
-			if u.isImage() {
-				if ocr == nil {
-					return failPhase("ocr", "", fmt.Errorf("page %d is an image but no OCR is configured", u.page))
-				}
-				t, engine, err := ocr.PageWithEngine(ctx, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
-				if err != nil {
-					return failPhase("ocr", engine, err)
-				}
-				text = t
-				ocrEngines[engine]++
-				// Save the page image + record provenance with the REAL cascade engine
-				// (tesseract/paddleocr/vision), so review shows which pages escalated.
-				// The image write is idempotent (deterministic path); the ocr_pages row
-				// is written in the atomic swap.
-				imgPath := ""
-				if p, e := s.savePageImage(docPath, u.page, u.mime, u.data); e == nil {
-					imgPath = p
-				}
-				provenance = append(provenance, stagedPage{page: u.page, engine: engine, imgPath: imgPath})
-			} else if u.page >= 1 {
-				// A born-digital / text-layer page: no OCR, engine "text".
-				provenance = append(provenance, stagedPage{page: u.page, engine: "text"})
+	sawVision := false
+	for _, u := range units {
+		text := u.text
+		if u.isImage() {
+			if ocr == nil {
+				sl.Fail("ocr", "", fmt.Errorf("page %d is an image but no OCR is configured", u.page))
+				return 0, "", fmt.Errorf("page %d is an image but no OCR is configured", u.page)
 			}
-			// Stage 2: segment the (possibly OCR'd) page text into fragments.
-			r, err := sg.SegmentText(ctx, text, open)
+			t, engine, err := ocr.PageWithEngine(ctx, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
 			if err != nil {
-				return failPhase("segment", "llm", err)
+				sl.Fail("ocr", engine, err)
+				return 0, "", err
 			}
-			if err := a.Feed(u.page, r); err != nil {
-				return failPhase("segment", "llm", err)
+			text = t
+			ocrEngines[engine]++
+			if engine == "vision" {
+				sawVision = true
 			}
+			// Save the page image + record provenance with the REAL cascade engine
+			// (tesseract/paddleocr/vision), so review shows which pages escalated.
+			imgPath := ""
+			if p, e := s.savePageImage(docPath, u.page, u.mime, u.data); e == nil {
+				imgPath = p
+			}
+			provenance = append(provenance, stagedPage{page: u.page, engine: engine, imgPath: imgPath})
+		} else if u.page >= 1 {
+			// A born-digital / text-layer page: no OCR, engine "text".
+			provenance = append(provenance, stagedPage{page: u.page, engine: "text"})
 		}
-		if err := a.Close(); err != nil {
-			return failPhase("segment", "llm", err)
-		}
-		return nil
-	}()
-	if segErr != nil {
-		return 0, segErr // prior version untouched; nothing was written
+		pages = append(pages, resolvedPage{page: u.page, text: text})
 	}
-
-	// Record the ocr + segment tasks now that they've completed.
 	if len(ocrEngines) > 0 {
 		n := 0
 		for _, c := range ocrEngines {
@@ -148,46 +153,155 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		}
 		sl.Done("ocr", engineSummary(ocrEngines), fmt.Sprintf("%d page(s)", n))
 	}
-	sl.Done("segment", "llm", fmt.Sprintf("%d fragment(s)", len(frags)))
 
-	// Drain the embed pipeline before committing.
+	// Concurrent embed pipeline (only when a store has an embedder). It embeds
+	// finalized fragments while later units segment, holding the vectors in memory
+	// (keyed by fragment index) — written in the final swap, not as produced.
+	var embedCh chan embedItem
+	var embedDone chan embedResult
+	if s.embedder != nil {
+		embedCh = make(chan embedItem, 64)
+		embedDone = make(chan embedResult, 1)
+		go runStagedEmbed(ctx, s.embedder, embedCh, embedDone)
+	}
+	var frags []stagedFrag
+	sink := func(f stagedFrag) {
+		idx := len(frags)
+		frags = append(frags, f)
+		if embedCh != nil {
+			embedCh <- embedItem{idx: idx, text: f.text}
+		}
+	}
+	drainEmbed := func() {
+		if embedCh != nil {
+			close(embedCh)
+			<-embedDone
+			embedCh = nil
+		}
+	}
+
+	// Phase 2: the per-document fragmenter choice.
+	window, stride, floor := ResolveFragParams(fc.Window, fc.Stride, fc.Floor, fc.EmbedLimit)
+	fragMode := fragModeOverlap
+	if sawVision && sg != nil {
+		fragMode = fragModeLLM
+		if err := segmentLLM(ctx, sg, pages, sink); err != nil {
+			drainEmbed()
+			sl.Fail("segment", "llm", err)
+			return 0, "", err
+		}
+		sl.Done("segment", "llm", fmt.Sprintf("%d fragment(s)", len(frags)))
+	} else {
+		fragmentOverlap(pages, window, stride, floor, sink)
+		sl.Done("segment", fragModeOverlap, fmt.Sprintf("%d fragment(s)", len(frags)))
+	}
+
+	// Phase 3: drain the embed pipeline, then swap the whole document in.
 	var vecs map[int][]float32
 	if embedCh != nil {
 		close(embedCh)
 		res := <-embedDone
+		embedCh = nil
 		if res.err != nil {
 			sl.Fail("embed", "", res.err)
-			return 0, res.err
+			return 0, "", res.err
 		}
 		vecs = res.vecs
 		sl.Done("embed", "vectors", fmt.Sprintf("%d vector(s)", len(vecs)))
 	}
 
-	if err := s.commitDoc(docPath, title, frags, provenance, vecs); err != nil {
+	media := extractMedia(frags, provenance)
+	recipe := fragRecipe(fragMode, window, stride, floor, fc.FigurePrompt)
+	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs); err != nil {
 		sl.Fail("commit", "", err)
-		return 0, err
+		return 0, "", err
 	}
 	sl.Done("commit", "", "")
-	return len(frags), nil
+	return len(frags), fragMode, nil
+}
+
+// segmentLLM runs the LLM segmenter over the resolved page texts, stitching the
+// open fragment across page boundaries (Assembler). Fragments carry no source
+// offsets (they are model-emitted text). page attribution is the start page.
+func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, sink func(stagedFrag)) error {
+	a := NewAssembler(func(page, ord int, text string) error {
+		sink(stagedFrag{page: page, ord: ord, text: text})
+		return nil
+	})
+	for _, p := range pages {
+		open := a.OpenText()
+		r, err := sg.SegmentText(ctx, p.text, open)
+		if err != nil {
+			return err
+		}
+		if err := a.Feed(p.page, r); err != nil {
+			return err
+		}
+	}
+	return a.Close()
+}
+
+// fragmentOverlap runs the deterministic windower over the document's concatenated
+// page text. Pages are joined with pageSep into one source string (so
+// get_document reassembles it exactly from the fragments' offsets); each fragment
+// is attributed to the page its start offset falls in, and carries its [start,end)
+// span into that source.
+func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(stagedFrag)) {
+	type pspan struct{ page, start int }
+	var b strings.Builder
+	var spans []pspan
+	for i, p := range pages {
+		if i > 0 {
+			b.WriteString(pageSep)
+		}
+		spans = append(spans, pspan{page: p.page, start: b.Len()})
+		b.WriteString(p.text)
+	}
+	src := b.String()
+	pageForOffset := func(off int) int {
+		page := 0
+		for _, sp := range spans {
+			if off >= sp.start {
+				page = sp.page
+			} else {
+				break
+			}
+		}
+		return page
+	}
+	ordByPage := map[int]int{}
+	for _, of := range OverlapFragments(src, window, stride, floor) {
+		page := pageForOffset(of.Start)
+		ord := ordByPage[page]
+		ordByPage[page] = ord + 1
+		sink(stagedFrag{page: page, ord: ord, startOff: of.Start, endOff: of.End, text: of.Text})
+	}
 }
 
 // commitDoc swaps a freshly-built document into the index in ONE transaction:
-// upsert the document, drop its prior fragments/vectors/provenance (FK cascade
-// drops vectors; FTS triggers clean the mirror), then insert the new fragments
-// (capturing their ids for vectors), vectors, and page provenance. All-or-nothing
+// upsert the document + its fragmentation recipe, drop its prior
+// fragments/vectors/provenance/media (FK cascade drops vectors + media; FTS
+// triggers clean the mirror), then insert the new fragments (capturing their ids
+// for vectors + media), vectors, page provenance, and media rows. All-or-nothing
 // — search never observes a half-updated document.
-func (s *Store) commitDoc(docPath, title string, frags []stagedFrag, provenance []stagedPage, vecs map[int][]float32) error {
+func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []stagedFrag, provenance []stagedPage, media []stagedMedia, vecs map[int][]float32) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after Commit
-	q := gq(tx) // generated queries bound to this tx
+	q := gq(tx)         // generated queries bound to this tx
 
 	docID, err := q.UpsertDocument(ctx, gen.UpsertDocumentParams{Path: docPath, Title: title, AddedAt: time.Now().UnixNano()})
 	if err != nil {
 		return fmt.Errorf("raglit: commit doc: %w", err)
+	}
+	if err := q.SetDocumentFrag(ctx, gen.SetDocumentFragParams{FragMode: fragMode, FragRecipe: fragRecipe, ID: docID}); err != nil {
+		return fmt.Errorf("raglit: set frag mode: %w", err)
+	}
+	if err := q.DeleteMediaByDoc(ctx, docID); err != nil {
+		return err
 	}
 	if err := q.DeleteFragmentsByDoc(ctx, docID); err != nil {
 		return err
@@ -195,11 +309,16 @@ func (s *Store) commitDoc(docPath, title string, frags []stagedFrag, provenance 
 	if err := q.DeleteOcrPagesByDoc(ctx, docID); err != nil {
 		return err
 	}
+	fragIDs := make([]int64, len(frags))
 	for i, f := range frags {
-		fid, err := q.InsertFragment(ctx, gen.InsertFragmentParams{DocID: docID, Page: int64(f.page), Ord: int64(f.ord), Text: f.text})
+		fid, err := q.InsertFragment(ctx, gen.InsertFragmentParams{
+			DocID: docID, Page: int64(f.page), Ord: int64(f.ord), Text: f.text,
+			StartOff: int64(f.startOff), EndOff: int64(f.endOff),
+		})
 		if err != nil {
 			return fmt.Errorf("raglit: insert fragment: %w", err)
 		}
+		fragIDs[i] = fid
 		if v := vecs[i]; len(v) > 0 {
 			if err := q.InsertVector(ctx, gen.InsertVectorParams{FragmentID: fid, Dim: int64(len(v)), Vec: encodeVec(v)}); err != nil {
 				return fmt.Errorf("raglit: store vector: %w", err)
@@ -209,6 +328,18 @@ func (s *Store) commitDoc(docPath, title string, frags []stagedFrag, provenance 
 	for _, p := range provenance {
 		if err := q.UpsertOcrPage(ctx, gen.UpsertOcrPageParams{DocID: docID, Page: int64(p.page), Engine: p.engine, ImagePath: p.imgPath}); err != nil {
 			return err
+		}
+	}
+	for _, m := range media {
+		var fid sql.NullInt64
+		if m.fragIdx >= 0 && m.fragIdx < len(fragIDs) {
+			fid = sql.NullInt64{Int64: fragIDs[m.fragIdx], Valid: true}
+		}
+		if err := q.InsertMedia(ctx, gen.InsertMediaParams{
+			DocID: docID, Page: int64(m.page), Ord: int64(m.ord), Kind: m.kind,
+			ImagePath: m.imagePath, Bbox: m.bbox, Description: m.description, FragmentID: fid,
+		}); err != nil {
+			return fmt.Errorf("raglit: insert media: %w", err)
 		}
 	}
 	return tx.Commit()

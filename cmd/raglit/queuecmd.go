@@ -53,25 +53,32 @@ func expandIngestTargets(args []string) ([]string, error) {
 // job (probing + caching the model's context). No model → offline blank-line text
 // + PDF-fails-gracefully.
 func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *raglit.Pool) *raglit.Worker {
+	cfg, _, _ := raglit.LoadConfig(home)
 	w := &raglit.Worker{Store: store}
+	// Deterministic text fragmenter params (config-or-default), with the fragment
+	// ceiling capped by the embed model's probed input limit.
+	w.Frag = raglit.FragConfig{
+		Window:       cfg.FragWindow,
+		Stride:       cfg.FragStride,
+		Floor:        cfg.FragFloor,
+		EmbedLimit:   cfg.EmbedLimitChars,
+		FigurePrompt: raglit.FigurePromptVersion(),
+	}
 	if *lf.visionModel != "" {
 		client := lf.visionClient()
 		w.OCR = raglit.NewOCR(client)
 		attachCheapOCR(w.OCR, home)
+		// Only used when a page escalates to the VLM (llm-seg); text never does.
 		w.Segmenter = raglit.NewSegmenter(client)
-		// Window from --context-tokens if given, else config-or-smart-default.
-		if *lf.contextTokens > 0 {
-			w.WindowChars = raglit.WindowCharsFor(*lf.contextTokens)
-		} else {
-			w.WindowChars = raglit.WindowCharsForHome(home)
-		}
 	}
 	// Cross-index pool (daemon only): key ingest work by (recipe, file). The
-	// recipe is the models + config that shape the output, so alt models reprocess.
+	// recipe is the models + config that shape the output — including the
+	// fragmenter (§5) — so alt models OR a stride change reprocess.
 	if pool != nil {
 		w.Pool = pool
-		cfg, _, _ := raglit.LoadConfig(home)
-		recipe := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|win=%d", *lf.visionModel, *lf.embedModel, cfg.OCR.CheapEngine, w.WindowChars)
+		fw, fs, ff := raglit.ResolveFragParams(cfg.FragWindow, cfg.FragStride, cfg.FragFloor, cfg.EmbedLimitChars)
+		recipe := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d",
+			*lf.visionModel, *lf.embedModel, cfg.OCR.CheapEngine, fw, fs, ff, raglit.FigurePromptVersion())
 		w.RecipeHash = raglit.HashHex([]byte(recipe))
 	}
 	return w

@@ -56,9 +56,10 @@ type DocSummary struct {
 	Path      string         `json:"path"`
 	Title     string         `json:"title"`
 	Fragments int            `json:"fragments"`
-	Pages     int            `json:"pages"`    // OCR-tracked pages (page ≥ 1)
-	Vision    int            `json:"vision"`   // pages that used the VLM
-	Engines   map[string]int `json:"engines"`  // engine → page count
+	Pages     int            `json:"pages"`     // OCR-tracked pages (page ≥ 1)
+	Vision    int            `json:"vision"`    // pages that used the VLM
+	FragMode  string         `json:"frag_mode"` // how it was fragmented: text-overlap | llm-seg
+	Engines   map[string]int `json:"engines"`   // engine → page count
 	AddedAt   int64          `json:"added_at"`
 }
 
@@ -72,7 +73,7 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	}
 	out := make([]DocSummary, len(rows))
 	for i, r := range rows {
-		ds := DocSummary{Path: r.Path, Title: r.Title, Fragments: int(r.Fragments), AddedAt: r.AddedAt, Engines: map[string]int{}}
+		ds := DocSummary{Path: r.Path, Title: r.Title, Fragments: int(r.Fragments), FragMode: r.FragMode, AddedAt: r.AddedAt, Engines: map[string]int{}}
 		// Per-doc engine breakdown (a second pass keeps the query simple).
 		ec, err := s.q.OcrEngineCountsByDoc(ctx, r.ID)
 		if err != nil {

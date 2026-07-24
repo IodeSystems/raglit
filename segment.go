@@ -10,13 +10,13 @@ import (
 	"github.com/iodesystems/agentkit/llm"
 )
 
-// LLM-driven fragmentation.
+// LLM-driven fragmentation — the llm-seg path, used ONLY for a document a VLM
+// already transcribed (see pipeline.go's per-document choice). Text takes the
+// deterministic windower (fragment.go) instead.
 //
-// Instead of splitting text on blank lines (crude) or storing a whole OCR'd
-// page as one blob, the model READS a unit — a page image, or a window of
-// text/code — and returns coherent retrieval fragments PLUS whether the first
-// fragment continues an "open" fragment carried over from the previous unit.
-// One code path, two modalities (image vs text): only the content part differs.
+// The model READS a unit's text (a VLM-OCR'd page) and returns coherent retrieval
+// fragments PLUS whether the first continues an "open" fragment carried over from
+// the previous unit.
 //
 // Two invariants make this safe on a small model:
 //   - Output is schema-validated (agent.SchemaValidator over an emit_fragments
@@ -64,7 +64,7 @@ func fragmentsToolDef() llm.ToolDef {
 // Segmenter runs schema-validated LLM segmentation with a fix-loop.
 type Segmenter struct {
 	Client     Chatter
-	MaxRetries int             // JSON fix-loop attempts after the first try (default 2)
+	MaxRetries int // JSON fix-loop attempts after the first try (default 2)
 	validator  *agent.SchemaValidator
 }
 
@@ -75,16 +75,6 @@ func NewSegmenter(c Chatter) *Segmenter {
 		MaxRetries: 2,
 		validator:  agent.NewSchemaValidator([]llm.ToolDef{fragmentsToolDef()}),
 	}
-}
-
-// SegmentImage segments a page image (PDF/scanned). openText is the carried-over
-// open fragment (empty on the first unit).
-func (sg *Segmenter) SegmentImage(ctx context.Context, mime string, data []byte, openText string) (SegResult, error) {
-	parts := []llm.ContentPart{
-		llm.TextPart(segPrompt(openText)),
-		llm.ImageData(mime, data),
-	}
-	return sg.run(ctx, parts, "") // image fallback = the model's raw last output
 }
 
 // SegmentText segments a window of text/code.

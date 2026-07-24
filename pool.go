@@ -24,12 +24,15 @@ import (
 // key, so it reprocesses; a retry with the same recipe reuses. Document grain,
 // not fragment grain.
 
-// PooledFragment is one cached fragment: its text and (optional) vector.
+// PooledFragment is one cached fragment: its text, source span, and (optional)
+// vector.
 type PooledFragment struct {
-	Page int       `json:"page"`
-	Ord  int       `json:"ord"`
-	Text string    `json:"text"`
-	Vec  []float32 `json:"vec,omitempty"`
+	Page     int       `json:"page"`
+	Ord      int       `json:"ord"`
+	StartOff int       `json:"start_off,omitempty"`
+	EndOff   int       `json:"end_off,omitempty"`
+	Text     string    `json:"text"`
+	Vec      []float32 `json:"vec,omitempty"`
 }
 
 // PooledPage is one cached page's provenance. Image is an absolute source path on
@@ -41,10 +44,15 @@ type PooledPage struct {
 }
 
 // PooledDoc is a fully-processed document: the reusable output of one ingest.
+// Media rows are NOT serialized — they are recomputed on reuse from the pooled
+// fragments' [FIGURE: ...] markers + restored page images (extractMedia), which
+// reproduces them exactly.
 type PooledDoc struct {
-	Title     string           `json:"title"`
-	Fragments []PooledFragment `json:"fragments"`
-	Pages     []PooledPage     `json:"pages"`
+	Title      string           `json:"title"`
+	FragMode   string           `json:"frag_mode,omitempty"`
+	FragRecipe string           `json:"frag_recipe,omitempty"`
+	Fragments  []PooledFragment `json:"fragments"`
+	Pages      []PooledPage     `json:"pages"`
 }
 
 const poolSchema = `
@@ -157,7 +165,7 @@ func (p *Pool) Put(recipeHash, fileHash string, doc PooledDoc) error {
 type PoolStats struct {
 	Entries int   `json:"entries"` // cached (recipe, file) documents
 	Files   int   `json:"files"`   // distinct source files (pool-pages dirs)
-	Bytes   int64 `json:"bytes"`    // total cached-payload bytes (the GC budget basis)
+	Bytes   int64 `json:"bytes"`   // total cached-payload bytes (the GC budget basis)
 }
 
 // Stats reports the pool's size. Bytes counts both the cached payloads (fragments
@@ -317,12 +325,15 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 		return PooledDoc{}, err
 	}
 	out := PooledDoc{Title: doc.Title}
+	if fr, err := s.q.GetDocumentFrag(ctx, doc.ID); err == nil {
+		out.FragMode, out.FragRecipe = fr.FragMode, fr.FragRecipe
+	}
 	frows, err := s.q.ExportFragments(ctx, doc.ID)
 	if err != nil {
 		return PooledDoc{}, err
 	}
 	for _, r := range frows {
-		pf := PooledFragment{Page: int(r.Page), Ord: int(r.Ord), Text: r.Text}
+		pf := PooledFragment{Page: int(r.Page), Ord: int(r.Ord), StartOff: int(r.StartOff), EndOff: int(r.EndOff), Text: r.Text}
 		if len(r.Vec) > 0 {
 			pf.Vec = decodeVec(r.Vec)
 		}
@@ -345,7 +356,7 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 	frags := make([]stagedFrag, len(doc.Fragments))
 	vecs := map[int][]float32{}
 	for i, f := range doc.Fragments {
-		frags[i] = stagedFrag{page: f.Page, ord: f.Ord, text: f.Text}
+		frags[i] = stagedFrag{page: f.Page, ord: f.Ord, startOff: f.StartOff, endOff: f.EndOff, text: f.Text}
 		if len(f.Vec) > 0 {
 			vecs[i] = f.Vec
 		}
@@ -360,7 +371,10 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 		}
 		prov = append(prov, stagedPage{page: p.Page, engine: p.Engine, imgPath: imgPath})
 	}
-	if err := s.commitDoc(docPath, title, frags, prov, vecs); err != nil {
+	// Media rows are recomputed from the pooled fragments' figure markers + the
+	// restored page images (same as a fresh ingest), not serialized.
+	media := extractMedia(frags, prov)
+	if err := s.commitDoc(docPath, title, doc.FragMode, doc.FragRecipe, frags, prov, media, vecs); err != nil {
 		return 0, err
 	}
 	return len(frags), nil

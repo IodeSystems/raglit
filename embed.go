@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // Semantic (vector) search — the opt-in tier above BM25.
@@ -72,6 +73,53 @@ func (e *Embedder) EmbedQuery(ctx context.Context, text string) ([]float32, erro
 	}
 	normalize(vecs[0])
 	return vecs[0], nil
+}
+
+// maxEmbedProbeChars bounds DiscoverEmbedLimit so a tolerant endpoint (one that
+// silently truncates instead of erroring) terminates rather than growing forever.
+const maxEmbedProbeChars = 200000
+
+// DiscoverEmbedLimit probes the largest single input (in characters) the embed
+// endpoint accepts without error — the same shape as llm.DiscoverContext. It
+// grows exponentially to find a length that FAILS, then binary-searches the
+// boundary. Only works on endpoints that REJECT an over-long input; a tolerant
+// endpoint that truncates returns maxEmbedProbeChars (treated as "effectively
+// unbounded"). Store the result in Config.EmbedLimitChars to cap the fragment
+// ceiling by the model, not by taste.
+func (e *Embedder) DiscoverEmbedLimit(ctx context.Context) (int, error) {
+	accepts := func(n int) bool {
+		_, err := e.EmbedDocs(ctx, []string{strings.Repeat("a ", n/2+1)[:n]})
+		return err == nil
+	}
+	const floor = 256
+	if !accepts(floor) {
+		return 0, fmt.Errorf("raglit: embed endpoint rejected even a %d-char input", floor)
+	}
+	lo := floor
+	hi := 0
+	for n := floor * 2; n <= maxEmbedProbeChars; n *= 2 {
+		if accepts(n) {
+			lo = n
+			if n == maxEmbedProbeChars {
+				return maxEmbedProbeChars, nil
+			}
+			continue
+		}
+		hi = n
+		break
+	}
+	if hi == 0 {
+		return maxEmbedProbeChars, nil // never failed under the cap
+	}
+	for hi-lo > floor {
+		mid := (lo + hi) / 2
+		if accepts(mid) {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return lo, nil
 }
 
 // normalize scales v to unit L2 length in place (a zero vector is left as-is).

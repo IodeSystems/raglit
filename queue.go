@@ -90,7 +90,7 @@ func (s *Store) claimNextJob() (*Job, error) {
 }
 
 // completeJob marks a job done with the fragment count it produced and the
-// segmentation mode it used ("llm" | "offline").
+// fragmenter/outcome mode ("text-overlap" | "llm-seg" | "pooled" | "unchanged").
 func (s *Store) completeJob(id int64, fragments int, mode string) error {
 	return s.q.CompleteJob(context.Background(), gen.CompleteJobParams{
 		Fragments: int64(fragments), Mode: mode, FinishedAt: time.Now().UnixNano(), ID: id,

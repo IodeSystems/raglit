@@ -31,12 +31,14 @@ type Worker struct {
 	// OCR ingests PDF jobs. nil → a PDF job fails with a clear message (a text
 	// corpus needs no vision model).
 	OCR *OCR
-	// Segmenter, if set, LLM-segments TEXT/code jobs (windowed to WindowChars)
-	// instead of blank-line splitting — the "very good at code" path. nil → the
-	// dependency-free blank-line fallback (fully offline). WindowChars comes from
-	// config/default (see WindowCharsForHome); 0 → a safe default.
-	Segmenter   *Segmenter
-	WindowChars int
+	// Segmenter LLM-segments a document ONLY when a page escalated to the VLM (the
+	// llm-seg path, decided per-document in ingestUnits). Text/code never escalate,
+	// so they take the deterministic overlapping-window fragmenter regardless of
+	// whether a model is configured. nil → PDF/image llm-seg unavailable.
+	Segmenter *Segmenter
+	// Frag tunes the deterministic text fragmenter (window/stride/floor) and caps
+	// the fragment ceiling by the embed model's probed input limit. Zero → defaults.
+	Frag FragConfig
 	// Fetcher overrides URL resolution (tests). nil → Fetch (file://, http(s)://).
 	Fetcher func(ctx context.Context, url string) (Fetched, error)
 	// IdlePoll is how long Run waits when the queue is empty. Default 500ms.
@@ -118,8 +120,9 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // ingest turns a job's URL into indexed fragments, recording each pipeline stage
-// via sl and returning (fragment count, segmentation mode, error). mode is "llm"
-// when the LLM segmenter ran, "offline" for the dependency-free blank-line split.
+// via sl and returning (fragment count, fragmenter mode, error). mode is the
+// per-document fragmenter chosen: "text-overlap" (deterministic) or "llm-seg" (a
+// page escalated to the VLM), or "pooled"/"unchanged" for the reuse/skip paths.
 func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, string, error) {
 	f, err := w.fetch(ctx, job.URL)
 	if err != nil {
@@ -190,9 +193,10 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 			return 0, "", err
 		}
 		defer cleanup()
-		// ingestPDF records the extract + ocr + segment + embed + commit stages.
-		n, err := w.Store.ingestPDF(ctx, w.OCR, job.URL, path, title, sl)
-		return n, "llm", err
+		// ingestPDF records the extract + ocr + segment + embed + commit stages, and
+		// picks the fragmenter per-document (llm-seg if a page hit the VLM, else
+		// text-overlap). mode is the fragmenter it chose.
+		return w.Store.ingestPDF(ctx, w.OCR, job.URL, path, title, w.Frag, sl)
 
 	case KindImage:
 		if w.OCR == nil {
@@ -203,9 +207,8 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 		sl.Done("extract", "image", "1 page")
 		mime := mimeForExt(filepath.Ext(job.URL))
 		units := []ingestUnit{{page: 1, mime: mime, data: f.Data}}
-		// ingestUnits OCRs the image → text, then segments it (records ocr/segment/…).
-		n, err := w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), w.OCR, job.URL, title, units, sl)
-		return n, "llm", err
+		// ingestUnits OCRs the image → text, then fragments it (records ocr/segment/…).
+		return w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), w.OCR, job.URL, title, units, w.Frag, sl)
 
 	case KindOffice:
 		path, cleanup, err := writeTemp(f.Data, strings.ToLower(filepath.Ext(job.URL)))
@@ -227,22 +230,12 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 	return w.ingestPlainText(ctx, job.URL, title, f.Data, sl)
 }
 
-// ingestPlainText segments text with the LLM segmenter when configured (mode
-// "llm"), else falls back to a blank-line paragraph split (mode "offline", fully
-// offline — a code/text file → fragments directly, no OCR).
+// ingestPlainText fragments a text/code document with the deterministic
+// overlapping-window fragmenter (fragment.go) — text never escalates to a model,
+// so there is no LLM fork: the same path runs whether or not a model is
+// configured. mode is the fragmenter chosen ("text-overlap").
 func (w *Worker) ingestPlainText(ctx context.Context, url, title string, data []byte, sl *StageLog) (int, string, error) {
-	if w.Segmenter != nil {
-		n, err := w.Store.ingestText(ctx, w.Segmenter, url, title, string(data), w.WindowChars, sl)
-		return n, "llm", err
-	}
-	doc := Document{Path: url, Title: title, Fragments: TextFragments(data)}
-	if err := w.Store.Ingest(ctx, doc); err != nil {
-		sl.Fail("segment", "offline", err)
-		return 0, "offline", err
-	}
-	sl.Done("segment", "offline", fmt.Sprintf("%d fragment(s)", len(doc.Fragments)))
-	sl.Done("commit", "", "")
-	return len(doc.Fragments), "offline", nil
+	return w.Store.ingestText(ctx, url, title, string(data), w.Frag, sl)
 }
 
 // writeTemp materializes bytes to a temp file with the given extension (external
@@ -260,21 +253,4 @@ func writeTemp(data []byte, ext string) (path string, cleanup func(), err error)
 	}
 	f.Close()
 	return f.Name(), func() { os.Remove(f.Name()) }, nil
-}
-
-// TextFragments splits raw text/markdown into fragments on blank lines
-// (paragraph grain). Pageless (page 0). Shared by the CLI text path and the
-// worker so both fragment identically.
-func TextFragments(data []byte) []Fragment {
-	var frags []Fragment
-	ord := 0
-	for _, block := range strings.Split(string(data), "\n\n") {
-		block = strings.TrimSpace(block)
-		if block == "" {
-			continue
-		}
-		frags = append(frags, Fragment{Ord: ord, Text: block})
-		ord++
-	}
-	return frags
 }

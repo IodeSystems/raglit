@@ -88,15 +88,11 @@ func textWindows(text string, maxChars int) []string {
 	return windows
 }
 
-// ingestText segments a text/code document into coherent fragments via the LLM,
-// windowing to windowChars (0 → default). Cross-window continuation stitches
-// fragments split at a window boundary. Falls under one logical page (0). Text
-// windows are never images, so no OCR is needed (nil ocr).
-func (s *Store) ingestText(ctx context.Context, sg *Segmenter, docPath, title, text string, windowChars int, sl *StageLog) (int, error) {
-	windows := textWindows(text, windowChars)
-	units := make([]ingestUnit, len(windows))
-	for i, w := range windows {
-		units[i] = ingestUnit{page: 0, text: w}
-	}
-	return s.ingestUnits(ctx, sg, nil, docPath, title, units, sl)
+// ingestText fragments a text/code document deterministically (fragment.go): a
+// text file never escalates to the VLM, so it is always the text-overlap path and
+// needs no model, no OCR, and no LLM windowing — the whole file is one pageless
+// (page 0) unit and the overlapping windower handles arbitrary length.
+func (s *Store) ingestText(ctx context.Context, docPath, title, text string, fc FragConfig, sl *StageLog) (int, string, error) {
+	units := []ingestUnit{{page: 0, text: text}}
+	return s.ingestUnits(ctx, nil, nil, docPath, title, units, fc, sl)
 }
