@@ -134,3 +134,8 @@ SELECT content_hash FROM documents WHERE path = ?;
 
 -- name: SetDocumentHash :exec
 UPDATE documents SET content_hash = ? WHERE path = ?;
+
+-- name: ExportFragments :many
+SELECT f.page, f.ord, f.text, fv.vec
+FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
+WHERE f.doc_id = ? ORDER BY f.page, f.ord;

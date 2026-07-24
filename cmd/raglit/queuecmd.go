@@ -52,7 +52,7 @@ func expandIngestTargets(args []string) ([]string, error) {
 // model is configured; text-window sizing is resolved lazily on the first text
 // job (probing + caching the model's context). No model → offline blank-line text
 // + PDF-fails-gracefully.
-func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home) *raglit.Worker {
+func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *raglit.Pool) *raglit.Worker {
 	w := &raglit.Worker{Store: store}
 	if *lf.visionModel != "" {
 		client := lf.visionClient()
@@ -65,6 +65,14 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home) *raglit.Wo
 		} else {
 			w.WindowChars = raglit.WindowCharsForHome(home)
 		}
+	}
+	// Cross-index pool (daemon only): key ingest work by (recipe, file). The
+	// recipe is the models + config that shape the output, so alt models reprocess.
+	if pool != nil {
+		w.Pool = pool
+		cfg, _, _ := raglit.LoadConfig(home)
+		recipe := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|win=%d", *lf.visionModel, *lf.embedModel, cfg.OCR.CheapEngine, w.WindowChars)
+		w.RecipeHash = raglit.HashHex([]byte(recipe))
 	}
 	return w
 }
@@ -117,7 +125,7 @@ func runIngest(args []string) error {
 			}
 			store.SetEmbedder(lf.embedder())
 		}
-		n, err := buildWorker(store, lf, homeOf()).Drain(context.Background())
+		n, err := buildWorker(store, lf, homeOf(), nil).Drain(context.Background())
 		if err != nil {
 			return err
 		}
@@ -147,7 +155,7 @@ func runWork(args []string) error {
 		}
 		store.SetEmbedder(lf.embedder())
 	}
-	n, err := buildWorker(store, lf, homeOf()).Drain(context.Background())
+	n, err := buildWorker(store, lf, homeOf(), nil).Drain(context.Background())
 	if err != nil {
 		return err
 	}

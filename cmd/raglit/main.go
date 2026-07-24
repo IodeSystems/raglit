@@ -222,7 +222,7 @@ func runIndex(args []string) error {
 			return err
 		}
 	}
-	n, err := buildWorker(store, lf, homeOf()).Drain(context.Background())
+	n, err := buildWorker(store, lf, homeOf(), nil).Drain(context.Background())
 	if err != nil {
 		return err
 	}

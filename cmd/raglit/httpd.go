@@ -47,9 +47,18 @@ func runHttpd(args []string) error {
 		}
 		reg.SetEmbedder(lf.embedder())
 	}
+	// Shared document pool: ingest work (extract/OCR/segment/embed) is cached by
+	// (recipe, file hash) under the daemon's storage root, so the same file — in
+	// ANY index, or on a retry — is reused instead of reprocessed.
+	pool, err := raglit.OpenPool(string(cfgHome))
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runIndexWorkers(ctx, reg, lf, cfgHome)
+	go runIndexWorkers(ctx, reg, lf, cfgHome, pool)
 
 	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit)
 	if err != nil {

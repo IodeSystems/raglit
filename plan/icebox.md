@@ -30,9 +30,15 @@ The concrete roadmap, in order. Expands items #1 and #2 below.
 
 All three checklist items are complete. DONE since: retired the legacy stdlib
 daemon/review (`daemon`/`review` now run the gat server; `httpd` alias removed);
-added source-content dedup (documents.content_hash → the worker skips re-ingest of
-unchanged bytes, mode "unchanged"). Remaining tails: client-only `init` (write
-daemon_url, skip local index bytes); the branch overlay follow-ups above.
+per-index source-content dedup (documents.content_hash, mode "unchanged"); and the
+**shared cross-index pool** (`pool.go`) — the daemon caches each processed document
+by `(recipe_hash, file_hash)` at `<root>/pool.sqlite` + `<root>/pool-pages/`, so
+the same file in ANY index (or a retry) reuses cached fragments+vectors+images
+(mode "pooled") instead of re-running the LLM; a different recipe (alt models)
+reprocesses. Remaining tails: client-only `init` (write daemon_url, skip local
+index bytes); branch overlay follow-ups (VecSearch/DocReview, merge/diff, CLI/MCP);
+pool GC/eviction; splitting the vector cache from the fragment cache (re-embed
+without re-segment) if alt-embed-model churn becomes common.
 
 
 ## 1. MCP-as-daemon-client: one shared server, many MCP clients

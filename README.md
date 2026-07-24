@@ -52,8 +52,13 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   paged-text→fragments; a code/text file goes straight to fragments (LLM-segmented
   into coherent ~500-word units — functions bound with their docs — or a
   dependency-free offline split when no model is set); a born-digital PDF page
-  uses its text layer, no OCR. Every stage and its engine is recorded per job. Re-ingesting an unchanged
-  source is skipped (a sha256 of the bytes is compared) so no work is duplicated.
+  uses its text layer, no OCR. Every stage and its engine is recorded per job.
+  **Indexing work is deduped**: the daemon caches each processed document in a
+  shared pool keyed by `(recipe, file-hash)` — where *recipe* is the models +
+  config that shape the output — so the same file, in ANY index or on a retry,
+  is reused (fragments + vectors + page images copied in, mode `pooled`) instead
+  of re-running the LLM. Re-indexing under different models is a new recipe, so
+  it reprocesses. (Embedded/single-index mode dedups per index by content hash.)
 - **Search** — BM25 (`--mode bm25`, default), vectors (`--mode vec`), or hybrid
   RRF (`--mode hybrid`). Results are precise citations: document → page →
   fragment.

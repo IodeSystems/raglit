@@ -18,6 +18,9 @@ func sha256hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// HashHex is the hex sha256 of b — exported so callers can build pool recipe keys.
+func HashHex(b []byte) string { return sha256hex(b) }
+
 // Worker drains the ingest queue (queue.go): claim a pending job → fetch its
 // URL → turn it into a Document (plain-text fragmenting, or PDF → OCR) → Ingest
 // → mark done/error. Run it in the background of `serve`, or step it once from
@@ -38,6 +41,14 @@ type Worker struct {
 	Fetcher func(ctx context.Context, url string) (Fetched, error)
 	// IdlePoll is how long Run waits when the queue is empty. Default 500ms.
 	IdlePoll time.Duration
+	// Pool + RecipeHash enable cross-index dedup of INDEXING work: a fresh ingest
+	// is cached in the pool keyed by (RecipeHash, source-file hash); a matching
+	// key — from ANY index, or a retry — is reused (fragments + vectors + images
+	// copied in) instead of re-running the LLM. RecipeHash captures the models +
+	// config that shape the output, so alt models are a new key. nil Pool →
+	// per-index dedup only (content_hash).
+	Pool       *Pool
+	RecipeHash string
 }
 
 func (w *Worker) fetch(ctx context.Context, url string) (Fetched, error) {
@@ -117,21 +128,44 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	}
 	sl.Done("fetch", "", fmt.Sprintf("%d bytes", len(f.Data)))
 
-	// Dedup: if this URL was already indexed from identical source bytes, skip the
-	// expensive extract/OCR/segment/embed work entirely.
 	hash := sha256hex(f.Data)
+	title := job.Title
+	if title == "" {
+		title = f.Title
+	}
+
+	// Fast path — same index, identical bytes: skip entirely (nothing to do).
 	if prev, _ := w.Store.DocumentHash(job.URL); prev != "" && prev == hash {
 		sl.Skip("extract", "unchanged — source hash match")
 		return 0, "unchanged", nil
 	}
 
-	title := job.Title
-	if title == "" {
-		title = f.Title
+	// Cross-index reuse — this (recipe, file) was processed anywhere before: copy
+	// the cached fragments + vectors + page images in (cheap), no LLM.
+	if w.Pool != nil && w.RecipeHash != "" {
+		if doc, ok, _ := w.Pool.Get(w.RecipeHash, hash); ok {
+			t := title
+			if job.Title == "" && doc.Title != "" {
+				t = doc.Title
+			}
+			if n, err := w.Store.IngestPooled(ctx, job.URL, t, doc, w.Pool.FileDir(hash)); err == nil {
+				_ = w.Store.SetDocumentHash(job.URL, hash)
+				sl.Skip("extract", "pooled — reused cached processing (recipe+file match)")
+				return n, "pooled", nil
+			}
+			// copy failed → fall through and reprocess.
+		}
 	}
+
+	// Process fresh, then remember it (per-index hash + shared pool).
 	n, mode, ierr := w.extractAndIngest(ctx, job, f, title, sl)
 	if ierr == nil {
-		_ = w.Store.SetDocumentHash(job.URL, hash) // remember for the next dedup
+		_ = w.Store.SetDocumentHash(job.URL, hash)
+		if w.Pool != nil && w.RecipeHash != "" {
+			if doc, e := w.Store.ExportDoc(job.URL); e == nil {
+				_ = w.Pool.Put(w.RecipeHash, hash, doc)
+			}
+		}
 	}
 	return n, mode, ierr
 }

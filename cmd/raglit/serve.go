@@ -58,7 +58,7 @@ func runServe(args []string) error {
 	// workers cached). A configured model gives PDF OCR + LLM text segmentation.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runIndexWorkers(ctx, reg, lf, homeOf())
+	go runIndexWorkers(ctx, reg, lf, homeOf(), nil) // embedded serve: single index, no shared pool
 
 	s := server.NewMCPServer("raglit", version)
 	addRaglitTools(s, toolHandlers{
@@ -185,7 +185,7 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 
 // runIndexWorkers drains every index's queue, round-robin, caching one worker
 // per index. New indexes (created via ingest) are picked up on the next round.
-func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home) {
+func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home, pool *raglit.Pool) {
 	workers := map[string]*raglit.Worker{}
 	for ctx.Err() == nil {
 		did := false
@@ -196,7 +196,7 @@ func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, ho
 			}
 			w := workers[name]
 			if w == nil {
-				w = buildWorker(st, lf, home)
+				w = buildWorker(st, lf, home, pool)
 				workers[name] = w
 			}
 			if processed, _ := w.ProcessOne(ctx); processed {

@@ -119,6 +119,47 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) (int64, 
 	return id, err
 }
 
+const exportFragments = `-- name: ExportFragments :many
+SELECT f.page, f.ord, f.text, fv.vec
+FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
+WHERE f.doc_id = ? ORDER BY f.page, f.ord
+`
+
+type ExportFragmentsRow struct {
+	Page int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord  int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text string `db:"text" derived:"fragments.text" json:"text"`
+	Vec  []byte `db:"vec" derived:"fragment_vectors.vec" json:"vec"`
+}
+
+func (q *Queries) ExportFragments(ctx context.Context, docID int64) ([]ExportFragmentsRow, error) {
+	rows, err := q.db.QueryContext(ctx, exportFragments, docID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ExportFragmentsRow
+	for rows.Next() {
+		var i ExportFragmentsRow
+		if err := rows.Scan(
+			&i.Page,
+			&i.Ord,
+			&i.Text,
+			&i.Vec,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const failJob = `-- name: FailJob :exec
 UPDATE ingest_jobs SET state='error', error=?, finished_at=? WHERE id=?
 `

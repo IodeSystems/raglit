@@ -185,6 +185,47 @@ var EnqueueJobCols = struct {
 	ID: metaquery.NewIntCol("id"),
 }
 
+var MetaExportFragments = metaquery.Query{
+	Name:    "ExportFragments",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT f.page, f.ord, f.text, fv.vec
+FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
+WHERE f.doc_id = ? ORDER BY f.page, f.ord`,
+	Columns: []metaquery.Column{
+		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
+		{Name: "ord", OriginalName: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
+		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "fragments"},
+		{Name: "vec", OriginalName: "vec", GoType: "[]byte", DBType: "BLOB", Table: "fragment_vectors"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WARNING: ExportFragments ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapExportFragments returns a metaquery.Builder over MetaExportFragments, pre-bound with typed arguments.
+func WrapExportFragments(docID int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaExportFragments, docID)
+}
+
+// ExportFragmentsCols gives typed, name-safe access to ExportFragments's output columns.
+var ExportFragmentsCols = struct {
+	Page metaquery.IntCol
+	Ord  metaquery.IntCol
+	Text metaquery.TextCol
+	Vec  metaquery.BytesCol
+}{
+	Page: metaquery.NewIntCol("page"),
+	Ord:  metaquery.NewIntCol("ord"),
+	Text: metaquery.NewTextCol("text"),
+	Vec:  metaquery.NewBytesCol("vec"),
+}
+
 var MetaFailJob = metaquery.Query{
 	Name:    "FailJob",
 	Cmd:     ":exec",
