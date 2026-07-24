@@ -60,7 +60,8 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   of re-running the LLM. Re-indexing under different models is a new recipe, so
   it reprocesses. (Embedded/single-index mode dedups per index by content hash.)
   The pool is bounded but lax by default: it grows freely up to a **byte budget**
-  (`--pool-max-bytes`, default 4 GiB) and trims by evicting the **oldest-accessed**
+  (`--pool-max-bytes`, default 4 GiB — counting cached payloads **and** page
+  images) and trims by evicting the **oldest-accessed**
   entries — so merges and retries keep reusing pooled work rather than re-indexing
   it. `--pool-max` (entry cap) and `--pool-ttl` (evict unused; off by default) are
   optional; `POST /api/pool/gc` runs it on demand and `GET /api/pool` reports size.

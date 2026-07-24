@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -148,5 +149,39 @@ func TestPool_GCByteBudget(t *testing.T) {
 	}
 	if _, ok, _ := pool.Get("r", "f1"); ok {
 		t.Fatal("f1 (oldest) must be evicted")
+	}
+}
+
+func TestPool_GCCountsAndFreesImageBytes(t *testing.T) {
+	root := t.TempDir()
+	pool, err := OpenPool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	// A ~5KB source page image for the entry.
+	imgSrc := filepath.Join(t.TempDir(), "p0001.png")
+	must(t, os.WriteFile(imgSrc, make([]byte, 5000), 0o644))
+	must(t, pool.Put("r", "f1", PooledDoc{
+		Fragments: []PooledFragment{{Text: "small"}},
+		Pages:     []PooledPage{{Page: 1, Engine: "vision", Image: imgSrc}},
+	}))
+
+	// Stats.Bytes must include the copied image (well over the tiny payload).
+	st, _ := pool.Stats()
+	if st.Bytes < 5000 {
+		t.Fatalf("Stats.Bytes=%d should include the ~5KB image", st.Bytes)
+	}
+	// A byte budget below the image forces eviction (the payload alone is tiny).
+	n, err := pool.GC(GCPolicy{MaxBytes: 100})
+	must(t, err)
+	if n != 1 {
+		t.Fatalf("GC evicted %d, want 1 (image bytes counted toward budget)", n)
+	}
+	if _, err := os.Stat(pool.FileDir("f1")); !os.IsNotExist(err) {
+		t.Fatal("pool-pages dir should be removed when the file's last entry is evicted")
+	}
+	if after, _ := pool.Stats(); after.Bytes != 0 {
+		t.Fatalf("after GC Bytes=%d, want 0", after.Bytes)
 	}
 }

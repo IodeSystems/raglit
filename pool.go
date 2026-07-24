@@ -160,12 +160,32 @@ type PoolStats struct {
 	Bytes   int64 `json:"bytes"`    // total cached-payload bytes (the GC budget basis)
 }
 
-// Stats reports the pool's size.
+// Stats reports the pool's size. Bytes counts both the cached payloads (fragments
+// + vectors) and the pool-pages images on disk.
 func (p *Pool) Stats() (PoolStats, error) {
 	var st PoolStats
-	err := p.db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT file_hash), COALESCE(SUM(LENGTH(payload)),0) FROM pool`).
-		Scan(&st.Entries, &st.Files, &st.Bytes)
-	return st, err
+	var payload int64
+	if err := p.db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT file_hash), COALESCE(SUM(LENGTH(payload)),0) FROM pool`).
+		Scan(&st.Entries, &st.Files, &payload); err != nil {
+		return st, err
+	}
+	st.Bytes = payload + dirSize(p.pagesRoot)
+	return st, nil
+}
+
+// dirSize sums the regular-file bytes under dir (0 if it doesn't exist).
+func dirSize(dir string) int64 {
+	var total int64
+	filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error { //nolint:errcheck
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr
+		}
+		if fi, e := d.Info(); e == nil {
+			total += fi.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 // GCPolicy bounds the pool. All limits are optional (zero = disabled). The
@@ -206,18 +226,39 @@ func (p *Pool) GC(pol GCPolicy) (int, error) {
 		return 0, err
 	}
 
+	// Per-file image sizes + reference counts. A file's pool-pages images are
+	// shared across its recipe entries, so they only free when the file's LAST
+	// entry is evicted — account for them that way.
+	imgBytes := map[string]int64{}
+	fileRefs := map[string]int{}
+	for _, e := range ents {
+		fileRefs[e.file]++
+		if _, seen := imgBytes[e.file]; !seen {
+			imgBytes[e.file] = dirSize(p.FileDir(e.file))
+		}
+	}
+
 	evict := make([]bool, len(ents)) // index-aligned with ents (oldest first)
 	var totalBytes int64
 	for _, e := range ents {
 		totalBytes += e.bytes
 	}
+	for _, sz := range imgBytes {
+		totalBytes += sz
+	}
 	remaining := len(ents)
 
 	drop := func(i int) {
-		if !evict[i] {
-			evict[i] = true
-			totalBytes -= ents[i].bytes
-			remaining--
+		if evict[i] {
+			return
+		}
+		evict[i] = true
+		totalBytes -= ents[i].bytes
+		remaining--
+		f := ents[i].file
+		fileRefs[f]--
+		if fileRefs[f] == 0 {
+			totalBytes -= imgBytes[f] // last entry for this file → its images free too
 		}
 	}
 	// 1) TTL: anything cold beyond MaxAgeUnused.
