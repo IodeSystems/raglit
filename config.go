@@ -15,11 +15,8 @@ type Config struct {
 	APIKey      string `json:"api_key"`
 	VisionModel string `json:"vision_model"`
 	EmbedModel  string `json:"embed_model"`
-	// ContextTokens caches the model's discovered context window (see window.go)
-	// so text/code ingestion doesn't re-probe it every run. 0 = not yet probed.
-	ContextTokens int `json:"context_tokens,omitempty"`
 	// EmbedLimitChars caps a fragment's size to what the embed model accepts as one
-	// input — probed once and stored (like ContextTokens), so the deterministic
+	// input — probed once and stored (DiscoverEmbedLimit), so the deterministic
 	// fragmenter's ceiling is bounded by the model, not by taste. 0 = not probed
 	// (the fragmenter falls back to FragWindow uncapped).
 	EmbedLimitChars int `json:"embed_limit_chars,omitempty"`

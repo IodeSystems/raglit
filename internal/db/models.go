@@ -62,6 +62,13 @@ type JobStage struct {
 	At     int64  `db:"at" derived:"job_stages.at" json:"at"`
 }
 
+type MediaVector struct {
+	MediaID int64  `db:"media_id" derived:"media_vectors.media_id" json:"media_id"`
+	Dim     int64  `db:"dim" derived:"media_vectors.dim" json:"dim"`
+	Vec     []byte `db:"vec" derived:"media_vectors.vec" json:"vec"`
+	Space   string `db:"space" derived:"media_vectors.space" json:"space"`
+}
+
 type Medium struct {
 	ID          int64         `db:"id" derived:"media.id" json:"id"`
 	DocID       int64         `db:"doc_id" derived:"media.doc_id" json:"doc_id"`

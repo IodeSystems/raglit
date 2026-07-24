@@ -67,6 +67,7 @@ func runServe(args []string) error {
 	s := server.NewMCPServer("raglit", version)
 	addRaglitTools(s, toolHandlers{
 		search:        searchHandler(reg, *defLimit),
+		searchFigures: searchFiguresHandler(reg, *defLimit),
 		ingest:        ingestHandler(reg),
 		status:        statusHandler(reg),
 		listIndexes:   listHandler(reg),
@@ -81,6 +82,7 @@ func runServe(args []string) error {
 // registry (embedded mode) or as daemon proxies (client mode — serveclient.go).
 type toolHandlers struct {
 	search        server.ToolHandlerFunc
+	searchFigures server.ToolHandlerFunc
 	ingest        server.ToolHandlerFunc
 	status        server.ToolHandlerFunc
 	listIndexes   server.ToolHandlerFunc
@@ -104,6 +106,20 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
 		),
 		h.search,
+	)
+	s.AddTool(
+		mcp.NewTool("search_figures",
+			mcp.WithDescription(
+				"Semantic search over FIGURES (diagrams/charts/tables the VLM described while "+
+					"OCR'ing). Returns ranked figures as JSON {figures:[{index,media_id,path,title,"+
+					"page,description,image_path,fragment_id,score}]}, best first. Each figure is "+
+					"embedded by its description (or its image, when an image embedder is configured). "+
+					"Needs an --embed'd index. `index` selects one/comma-separated set; omit = all."),
+			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language query about a figure's content")),
+			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
+			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
+		),
+		h.searchFigures,
 	)
 	s.AddTool(
 		mcp.NewTool("ingest",
@@ -272,6 +288,49 @@ func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
 		merged := rrfMerge(lists, limit)
 
 		b, err := json.Marshal(taggedHits(merged))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// taggedFigure is a figure hit tagged with the index it came from.
+type taggedFigure struct {
+	Index string `json:"index"`
+	raglit.FigureHit
+}
+
+func searchFiguresHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		q, err := req.RequireString("query")
+		if err != nil {
+			return mcp.NewToolResultError("query is required"), nil
+		}
+		limit := req.GetInt("limit", defLimit)
+		var all []taggedFigure
+		for _, name := range selectIndexes(reg, req.GetString("index", "")) {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			figs, err := st.SearchFigures(ctx, q, limit)
+			if err != nil {
+				// No embedder → skip this index rather than failing the whole call.
+				continue
+			}
+			for _, f := range figs {
+				all = append(all, taggedFigure{Index: name, FigureHit: f})
+			}
+		}
+		sort.SliceStable(all, func(i, j int) bool { return all[i].Score > all[j].Score })
+		if len(all) > limit {
+			all = all[:limit]
+		}
+		if all == nil {
+			all = []taggedFigure{}
+		}
+		b, err := json.Marshal(map[string]any{"figures": all})
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("encode", err), nil
 		}

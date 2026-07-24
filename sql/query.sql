@@ -147,9 +147,12 @@ FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 WHERE f.doc_id = ? ORDER BY f.page, f.ord;
 
 -- ===== media (figures explained into fragments) =====
--- name: InsertMedia :exec
+-- name: InsertMedia :one
 INSERT INTO media(doc_id, page, ord, kind, image_path, bbox, description, fragment_id)
-VALUES(?,?,?,?,?,?,?,?);
+VALUES(?,?,?,?,?,?,?,?) RETURNING id;
+
+-- name: InsertMediaVector :exec
+INSERT INTO media_vectors(media_id, dim, vec, space) VALUES(?,?,?,?);
 
 -- name: DeleteMediaByDoc :exec
 DELETE FROM media WHERE doc_id = ?;

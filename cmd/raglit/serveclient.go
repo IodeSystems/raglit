@@ -35,6 +35,19 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			return proxyGet(base, "/search", v, ns)
 		},
 
+		searchFigures: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			q, err := req.RequireString("query")
+			if err != nil {
+				return mcp.NewToolResultError("query is required"), nil
+			}
+			v := url.Values{"q": {q}}
+			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			if n := req.GetInt("limit", defLimit); n > 0 {
+				v.Set("n", strconv.Itoa(n))
+			}
+			return proxyGet(base, "/search-figures", v, ns)
+		},
+
 		ingest: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			u, err := req.RequireString("url")
 			if err != nil {

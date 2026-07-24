@@ -1,6 +1,13 @@
 package raglit
 
-import "regexp"
+import (
+	"context"
+	"fmt"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+)
 
 // Figures explained into fragments.
 //
@@ -51,6 +58,132 @@ func parseFigureMarkers(text string) []string {
 		out = append(out, m[1])
 	}
 	return out
+}
+
+// ImageEmbedder embeds a figure IMAGE into a vector (a CLIP-style tower). It is
+// the seam for real image embeddings; raglit ships none by default (its Embedder
+// is text-only), so figures fall back to embedding their description. An image
+// vector lives in a DIFFERENT space from the text query, so it is stored but not
+// used by the text-query figure search.
+type ImageEmbedder interface {
+	EmbedImage(ctx context.Context, mime string, data []byte) ([]float32, error)
+}
+
+// embedMedia fills each figure's embedding, in place, before the atomic swap:
+// the IMAGE via the image embedder when one is configured and the crop is on
+// disk, else the DESCRIPTION via the text embedder (same space as fragments, so
+// text queries can match). Best-effort — a figure that can't be embedded is still
+// stored (searchable inline as text), it just won't appear in figure search.
+func (s *Store) embedMedia(ctx context.Context, media []stagedMedia) {
+	if len(media) == 0 {
+		return
+	}
+	// Image embeddings first (when available); collect the rest for a batched
+	// description embedding.
+	var descIdx []int
+	for i := range media {
+		m := &media[i]
+		if s.imageEmbedder != nil && m.imagePath != "" {
+			if data, err := os.ReadFile(m.imagePath); err == nil {
+				if v, err := s.imageEmbedder.EmbedImage(ctx, mimeForExt(filepathExt(m.imagePath)), data); err == nil && len(v) > 0 {
+					m.vec, m.space = v, "image"
+					continue
+				}
+			}
+		}
+		if s.embedder != nil && strings.TrimSpace(m.description) != "" {
+			descIdx = append(descIdx, i)
+		}
+	}
+	if len(descIdx) == 0 {
+		return
+	}
+	texts := make([]string, len(descIdx))
+	for j, i := range descIdx {
+		texts[j] = media[i].description
+	}
+	vecs, err := s.embedder.EmbedDocs(ctx, texts)
+	if err != nil {
+		return // best-effort
+	}
+	for j, i := range descIdx {
+		if j < len(vecs) && len(vecs[j]) > 0 {
+			media[i].vec, media[i].space = vecs[j], "text"
+		}
+	}
+}
+
+// FigureHit is one figure matched by SearchFigures: the figure plus where it
+// lives, ranked by similarity to the query.
+type FigureHit struct {
+	MediaID     int64   `json:"media_id"`
+	Path        string  `json:"path"`
+	Title       string  `json:"title"`
+	Page        int     `json:"page"`
+	Description string  `json:"description"`
+	ImagePath   string  `json:"image_path"`
+	FragmentID  int64   `json:"fragment_id"`
+	Score       float64 `json:"score"`
+}
+
+// SearchFigures ranks figures by cosine similarity of the query to each figure's
+// embedding, best first. Only figures embedded in the TEXT space (their
+// description) are comparable to a text query, so image-space embeddings are
+// skipped here (they await an image-query path). Requires a text embedder.
+func (s *Store) SearchFigures(ctx context.Context, query string, limit int) ([]FigureHit, error) {
+	if s.embedder == nil {
+		return nil, fmt.Errorf("raglit: SearchFigures needs an embedder (SetEmbedder)")
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	qv, err := s.embedder.EmbedQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT m.id, d.path, d.title, m.page, m.description, m.image_path,
+		        COALESCE(m.fragment_id, 0), mv.vec
+		 FROM media_vectors mv
+		 JOIN media m ON m.id = mv.media_id
+		 JOIN documents d ON d.id = m.doc_id
+		 WHERE mv.space = 'text'`)
+	if err != nil {
+		return nil, fmt.Errorf("raglit: searchfigures: %w", err)
+	}
+	defer rows.Close()
+	var hits []FigureHit
+	for rows.Next() {
+		var h FigureHit
+		var blob []byte
+		if err := rows.Scan(&h.MediaID, &h.Path, &h.Title, &h.Page, &h.Description, &h.ImagePath, &h.FragmentID, &blob); err != nil {
+			return nil, err
+		}
+		h.Score = float64(dot(qv, decodeVec(blob)))
+		hits = append(hits, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits, nil
+}
+
+// filepathExt returns the lowercased extension (without the dot) of a path, for
+// mimeForExt — avoids importing path/filepath just for Ext here.
+func filepathExt(p string) string {
+	for i := len(p) - 1; i >= 0 && p[i] != '/'; i-- {
+		if p[i] == '.' {
+			return p[i+1:]
+		}
+	}
+	return ""
 }
 
 // extractMedia turns the [FIGURE: ...] markers in the finalized fragments into

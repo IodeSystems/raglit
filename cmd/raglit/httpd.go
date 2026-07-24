@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -175,6 +176,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
 	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
+	gat.Register(api, g, op("searchFigures", http.MethodGet, "/search-figures", "Semantic search over figures (MCP search_figures)."), searchFiguresOp(reg, defLimit))
 	gat.Register(api, g, op("ingest", http.MethodPost, "/ingest", "Queue targets for lazy ingestion."), ingestOp(reg))
 	gat.Register(api, g, op("listJobs", http.MethodGet, "/api/jobs", "List ingest jobs (all states) with stages + ETA."), listJobs(reg))
 	gat.Register(api, g, op("retryJob", http.MethodPost, "/api/jobs/retry", "Requeue an errored/done job."), jobAction(reg, (*raglit.Store).RetryJob))
@@ -339,6 +341,67 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 				Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 				Score: h.Score, Snippet: clip(oneLine(h.Text), 300),
 			})
+		}
+		return out, nil
+	}
+}
+
+type figureRow struct {
+	Index       string  `json:"index"`
+	MediaID     int64   `json:"media_id"`
+	Path        string  `json:"path"`
+	Title       string  `json:"title"`
+	Page        int     `json:"page"`
+	Description string  `json:"description"`
+	ImagePath   string  `json:"image_path"`
+	FragmentID  int64   `json:"fragment_id"`
+	Score       float64 `json:"score"`
+}
+type searchFiguresIn struct {
+	Query string `query:"q"`
+	Index string `query:"index"`
+	Limit int    `query:"n"`
+}
+type searchFiguresOut struct {
+	Body struct {
+		Figures []figureRow `json:"figures"`
+	}
+}
+
+func searchFiguresOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchFiguresIn) (*searchFiguresOut, error) {
+	return func(ctx context.Context, in *searchFiguresIn) (*searchFiguresOut, error) {
+		if in.Query == "" {
+			return nil, huma.Error400BadRequest("q is required")
+		}
+		limit := in.Limit
+		if limit <= 0 {
+			limit = defLimit
+		}
+		out := &searchFiguresOut{}
+		out.Body.Figures = []figureRow{}
+		for _, name := range selectIndexes(reg, in.Index) {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			figs, err := st.SearchFigures(ctx, in.Query, limit)
+			if err != nil {
+				continue // no embedder on this index → skip
+			}
+			for _, f := range figs {
+				title := f.Title
+				if title == "" {
+					title = f.Path
+				}
+				out.Body.Figures = append(out.Body.Figures, figureRow{
+					Index: name, MediaID: f.MediaID, Path: f.Path, Title: title, Page: f.Page,
+					Description: f.Description, ImagePath: f.ImagePath, FragmentID: f.FragmentID, Score: f.Score,
+				})
+			}
+		}
+		sort.SliceStable(out.Body.Figures, func(i, j int) bool { return out.Body.Figures[i].Score > out.Body.Figures[j].Score })
+		if len(out.Body.Figures) > limit {
+			out.Body.Figures = out.Body.Figures[:limit]
 		}
 		return out, nil
 	}

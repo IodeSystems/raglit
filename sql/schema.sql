@@ -98,6 +98,17 @@ CREATE TABLE IF NOT EXISTS media (
 );
 CREATE INDEX IF NOT EXISTS media_doc ON media(doc_id);
 CREATE INDEX IF NOT EXISTS media_frag ON media(fragment_id);
+-- One embedding per figure, so figures are retrievable at figure grain. space
+-- records which tower produced it: 'text' (the description, in the SAME space as
+-- fragment_vectors — so a text query can cosine against it) or 'image' (a CLIP-
+-- style image embedding, a DIFFERENT space — not comparable to a text query, kept
+-- for a future image-query path). A text-query figure search uses space='text'.
+CREATE TABLE IF NOT EXISTS media_vectors (
+  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+  dim      INTEGER NOT NULL,
+  vec      BLOB NOT NULL,
+  space    TEXT NOT NULL DEFAULT 'text'
+);
 -- Branch storage: a tombstone marks a PARENT document path as deleted-in-branch,
 -- so the parent's version does not show through the branch-over-parent overlay.
 -- Present in every index (harmless for non-branch indexes).

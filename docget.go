@@ -59,13 +59,25 @@ type DocPageText struct {
 	Text string `json:"text"`
 }
 
-// DocContent is a document's indexed text: per-page plus a single joined blob.
+// DocContent is a document's indexed text: per-page plus a single joined blob,
+// plus any figures explained into it.
 type DocContent struct {
 	Path      string        `json:"path"`
 	Title     string        `json:"title"`
 	Pages     []DocPageText `json:"pages"`
 	Text      string        `json:"text"`
 	Truncated bool          `json:"truncated"`
+	Figures   []FigureRef   `json:"figures,omitempty"`
+}
+
+// FigureRef is one figure attached to a document (or a search hit): its
+// description and image, located by page.
+type FigureRef struct {
+	Page        int    `json:"page"`
+	Kind        string `json:"kind"`
+	Description string `json:"description"`
+	ImagePath   string `json:"image_path,omitempty"`
+	Bbox        string `json:"bbox,omitempty"`
 }
 
 // pageSep joins fragments into a page and pages into the Text blob.
@@ -143,6 +155,18 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 		out.Text = out.Text[:maxChars]
 		out.Truncated = true
 		out.Pages = capPages(out.Pages, maxChars)
+	}
+	// Figures explained into this document (within the requested page range).
+	if mrows, err := s.q.ListMediaByDoc(ctx, doc.ID); err == nil {
+		for _, m := range mrows {
+			p := int(m.Page)
+			if (from > 0 && p < from) || (to > 0 && p > to) {
+				continue
+			}
+			out.Figures = append(out.Figures, FigureRef{
+				Page: p, Kind: m.Kind, Description: m.Description, ImagePath: m.ImagePath, Bbox: m.Bbox,
+			})
+		}
 	}
 	return out, nil
 }

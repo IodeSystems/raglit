@@ -53,7 +53,9 @@ type stagedPage struct {
 }
 
 // stagedMedia is a figure explained into a fragment, anchored by the fragment's
-// index in the staged slice (its id doesn't exist until the swap).
+// index in the staged slice (its id doesn't exist until the swap). vec/space are
+// the figure's embedding, filled by embedMedia before the swap (empty vec → no
+// embedding, e.g. no embedder or an embed failure — the figure is still stored).
 type stagedMedia struct {
 	fragIdx     int
 	page, ord   int
@@ -61,6 +63,8 @@ type stagedMedia struct {
 	imagePath   string
 	bbox        string
 	description string
+	vec         []float32
+	space       string
 }
 
 // FragConfig tunes the deterministic text fragmenter and identifies the per-
@@ -211,6 +215,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	}
 
 	media := extractMedia(frags, provenance)
+	s.embedMedia(ctx, media) // figure embeddings (image-or-description); best-effort
 	recipe := fragRecipe(fragMode, window, stride, floor, fc.FigurePrompt)
 	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs); err != nil {
 		sl.Fail("commit", "", err)
@@ -335,11 +340,24 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		if m.fragIdx >= 0 && m.fragIdx < len(fragIDs) {
 			fid = sql.NullInt64{Int64: fragIDs[m.fragIdx], Valid: true}
 		}
-		if err := q.InsertMedia(ctx, gen.InsertMediaParams{
+		mediaID, err := q.InsertMedia(ctx, gen.InsertMediaParams{
 			DocID: docID, Page: int64(m.page), Ord: int64(m.ord), Kind: m.kind,
 			ImagePath: m.imagePath, Bbox: m.bbox, Description: m.description, FragmentID: fid,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("raglit: insert media: %w", err)
+		}
+		// The figure's embedding (image or description), when one was produced.
+		if len(m.vec) > 0 {
+			space := m.space
+			if space == "" {
+				space = "text"
+			}
+			if err := q.InsertMediaVector(ctx, gen.InsertMediaVectorParams{
+				MediaID: mediaID, Dim: int64(len(m.vec)), Vec: encodeVec(m.vec), Space: space,
+			}); err != nil {
+				return fmt.Errorf("raglit: store media vector: %w", err)
+			}
 		}
 	}
 	return tx.Commit()

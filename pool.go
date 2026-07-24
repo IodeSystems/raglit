@@ -372,8 +372,10 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 		prov = append(prov, stagedPage{page: p.Page, engine: p.Engine, imgPath: imgPath})
 	}
 	// Media rows are recomputed from the pooled fragments' figure markers + the
-	// restored page images (same as a fresh ingest), not serialized.
+	// restored page images (same as a fresh ingest), not serialized. Re-embed them
+	// (cheap; figures are few) so pooled figures are searchable too.
 	media := extractMedia(frags, prov)
+	s.embedMedia(ctx, media)
 	if err := s.commitDoc(docPath, title, doc.FragMode, doc.FragRecipe, frags, prov, media, vecs); err != nil {
 		return 0, err
 	}

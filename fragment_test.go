@@ -1,9 +1,42 @@
 package raglit
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
+
+func TestIngestText_DeterministicOverlap(t *testing.T) {
+	s := openMem(t)
+	// Long enough to span several small windows; small FragConfig forces overlap.
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = strings.Repeat("word ", 6)
+	}
+	text := strings.Join(lines, "\n")
+	fc := FragConfig{Window: 120, Stride: 80, Floor: 30}
+
+	n, mode, err := s.ingestText(context.Background(), "code.txt", "Code", text, fc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "text-overlap" {
+		t.Fatalf("mode = %q, want text-overlap", mode)
+	}
+	if n < 2 {
+		t.Fatalf("long text should split into multiple overlapping fragments, got %d", n)
+	}
+
+	// Fragments carry source offsets, and get_document reassembles the source
+	// EXACTLY ONCE despite the overlap.
+	doc, err := s.DocText("code.txt", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Text != text {
+		t.Fatalf("reassembly not exact:\n got %q\nwant %q", doc.Text, text)
+	}
+}
 
 // checkCoverage asserts the fragments' spans are valid, monotdonic, gap-free, and
 // that their text matches the source slice — the invariants get_document relies on.

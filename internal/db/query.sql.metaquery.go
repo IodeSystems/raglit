@@ -511,11 +511,14 @@ var InsertFragmentCols = struct {
 
 var MetaInsertMedia = metaquery.Query{
 	Name:    "InsertMedia",
-	Cmd:     ":exec",
+	Cmd:     ":one",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
 	SQL: `INSERT INTO media(doc_id, page, ord, kind, image_path, bbox, description, fragment_id)
-VALUES(?,?,?,?,?,?,?,?)`,
+VALUES(?,?,?,?,?,?,?,?) RETURNING id`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64"},
+	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
 		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
@@ -532,6 +535,33 @@ VALUES(?,?,?,?,?,?,?,?)`,
 // WrapInsertMedia returns a metaquery.Builder over MetaInsertMedia, pre-bound with typed arguments.
 func WrapInsertMedia(arg InsertMediaParams) *metaquery.Builder {
 	return metaquery.Wrap(&MetaInsertMedia, arg.DocID, arg.Page, arg.Ord, arg.Kind, arg.ImagePath, arg.Bbox, arg.Description, arg.FragmentID)
+}
+
+// InsertMediaCols gives typed, name-safe access to InsertMedia's output columns.
+var InsertMediaCols = struct {
+	ID metaquery.IntCol
+}{
+	ID: metaquery.NewIntCol("id"),
+}
+
+var MetaInsertMediaVector = metaquery.Query{
+	Name:    "InsertMediaVector",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `INSERT INTO media_vectors(media_id, dim, vec, space) VALUES(?,?,?,?)`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "media_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "dim", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "vec", GoType: "[]byte", DBType: "BLOB", NotNull: true},
+		{Position: 4, Name: "space", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+	Table: &metaquery.Table{Name: "media_vectors"},
+}
+
+// WrapInsertMediaVector returns a metaquery.Builder over MetaInsertMediaVector, pre-bound with typed arguments.
+func WrapInsertMediaVector(arg InsertMediaVectorParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaInsertMediaVector, arg.MediaID, arg.Dim, arg.Vec, arg.Space)
 }
 
 var MetaInsertStage = metaquery.Query{

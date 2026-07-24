@@ -334,9 +334,9 @@ func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) 
 	return id, err
 }
 
-const insertMedia = `-- name: InsertMedia :exec
+const insertMedia = `-- name: InsertMedia :one
 INSERT INTO media(doc_id, page, ord, kind, image_path, bbox, description, fragment_id)
-VALUES(?,?,?,?,?,?,?,?)
+VALUES(?,?,?,?,?,?,?,?) RETURNING id
 `
 
 type InsertMediaParams struct {
@@ -351,8 +351,8 @@ type InsertMediaParams struct {
 }
 
 // ===== media (figures explained into fragments) =====
-func (q *Queries) InsertMedia(ctx context.Context, arg InsertMediaParams) error {
-	_, err := q.db.ExecContext(ctx, insertMedia,
+func (q *Queries) InsertMedia(ctx context.Context, arg InsertMediaParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, insertMedia,
 		arg.DocID,
 		arg.Page,
 		arg.Ord,
@@ -361,6 +361,29 @@ func (q *Queries) InsertMedia(ctx context.Context, arg InsertMediaParams) error 
 		arg.Bbox,
 		arg.Description,
 		arg.FragmentID,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertMediaVector = `-- name: InsertMediaVector :exec
+INSERT INTO media_vectors(media_id, dim, vec, space) VALUES(?,?,?,?)
+`
+
+type InsertMediaVectorParams struct {
+	MediaID int64  `db:"media_id" derived:"media_vectors.media_id" json:"media_id"`
+	Dim     int64  `db:"dim" derived:"media_vectors.dim" json:"dim"`
+	Vec     []byte `db:"vec" derived:"media_vectors.vec" json:"vec"`
+	Space   string `db:"space" derived:"media_vectors.space" json:"space"`
+}
+
+func (q *Queries) InsertMediaVector(ctx context.Context, arg InsertMediaVectorParams) error {
+	_, err := q.db.ExecContext(ctx, insertMediaVector,
+		arg.MediaID,
+		arg.Dim,
+		arg.Vec,
+		arg.Space,
 	)
 	return err
 }

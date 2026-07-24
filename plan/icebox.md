@@ -125,13 +125,15 @@ only for documents a VLM already transcribed — can land first.
   `BodyStartLine` are ready-made atoms with titles attached. BLOCKED on
   poly-lsp's daemon (see its `plan/plan.md`): raglit builds CGO_ENABLED=0 and
   tree-sitter needs cgo, so a socket is the only import-free way in.
-- **Image embeddings / a second vector space.** `fragment_vectors` is
-  `PRIMARY KEY(fragment_id)`, one vector, one space (`sql/schema.sql:33`). Text
-  and CLIP-style image vectors are different spaces; cosine across them is
-  meaningless. Needs either a table per space fused with the RRF search already
-  uses across indexes, or a shared multimodal space whose text tower embeds the
-  query. Inline VLM figure DESCRIPTIONS (tier (a) in fragmenters.md) capture
-  most of the value first, as text, with no schema change.
+- **Image embeddings / a second vector space.** PARTIALLY SHIPPED: figures now get
+  a `media_vectors` row and `SearchFigures` (see fragmenters.md) — image embedding
+  via an optional `ImageEmbedder` if one is configured, else the description in the
+  TEXT space (so text queries match). What remains iceboxed is the DIFFERENT-space
+  side: raglit ships no image embedder, and an image-space vector can't be cosine'd
+  against a text query — so image-space media vectors are stored but dormant. A real
+  second space needs a multimodal model whose text tower embeds the query, then RRF
+  fusion of the image-space ranking into the main search. Until then, description
+  embeddings (text space) carry figure retrieval.
 - **Eval harness.** A fixed query set with known-relevant documents, scored
   recall@k / MRR across fragmenter modes. Until it exists, every fragmenter
   choice here is taste, including the ones already decided.

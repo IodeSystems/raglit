@@ -45,6 +45,10 @@ type Store struct {
 	home     Home
 	withHome bool
 	embedder *Embedder // nil → lexical only; set for vector/hybrid search
+	// imageEmbedder, when set, embeds figure IMAGES (a CLIP-style tower) for
+	// figure search; nil → figures fall back to embedding their DESCRIPTION with
+	// the text embedder (same space as fragments, so text queries can match).
+	imageEmbedder ImageEmbedder
 	// parent, when set, makes this Store a BRANCH: reads overlay branch-over-
 	// parent at document grain (a branch doc / tombstone shadows the parent's).
 	// Writes go to the branch only (copy-on-write). See branch.go.
@@ -80,6 +84,11 @@ func (s *Store) SetDocumentHash(path, hash string) error {
 // SetEmbedder enables vector search: fragments are embedded on Ingest and
 // VecSearch/HybridSearch become available. nil disables it.
 func (s *Store) SetEmbedder(e *Embedder) { s.embedder = e }
+
+// SetImageEmbedder enables IMAGE embeddings for figures (a CLIP-style tower):
+// each figure is embedded from its image rather than its description. nil (the
+// default) → figures embed their description with the text embedder instead.
+func (s *Store) SetImageEmbedder(ie ImageEmbedder) { s.imageEmbedder = ie }
 
 // schema is the whole index: metadata tables + an FTS5 mirror kept in sync by
 // triggers (external-content pattern). The embedded sql/schema.sql is the SAME
