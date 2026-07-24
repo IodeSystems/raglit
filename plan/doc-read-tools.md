@@ -20,7 +20,8 @@ documents by filename or pull a doc's full indexed text.
   path OR a unique filename substring (ambiguous → error listing candidates; none
   → error). Resolves across all indexes unless `index` set. Text reassembled from
   fragments in page/ord order; `page` or `from`/`to` bound an inclusive range;
-  `max_chars` caps the joined `text` blob (per-page array stays whole).
+  `max_chars` caps the whole response — `text` and the `pages` array are cut at
+  the same offset, so it bounds what a caller takes back.
 
 Store side (`docget.go`): `MatchDocuments(ref)` (exact-then-substring resolver,
 returns []DocRef) and `DocText(exactPath, from, to, maxChars) DocContent`.
@@ -28,7 +29,8 @@ returns []DocRef) and `DocText(exactPath, from, to, maxChars) DocContent`.
 ## Verified
 
 - Unit (`docget_test.go`): MatchDocuments exact/substring/title/broad/none/empty;
-  DocText full + page-range + max_chars cap (pages kept whole) + page-0 text doc
+  DocText full + page-range + max_chars cap (blob and pages cut together, incl.
+  a cap straddling a later page and a no-op cap) + page-0 text doc
   + unknown-path error. Green.
 - Live MCP stdio: both tools advertised; `list_documents{name:"auth"}` found the
   doc; `get_document{path:"auth",max_chars:220}` returned page-0 text; a broad

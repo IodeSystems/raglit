@@ -85,7 +85,7 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   `list_documents` with a `name` filter to find it by filename), then
   `get_document` with that path (or a unique filename substring) to read the full
   indexed text — per-page plus a joined blob, with optional page range and a
-  `max_chars` cap. `ocr` is the other read path: it extracts text from a file/URL
+  `max_chars` cap that bounds the whole response (pages included). `ocr` is the other read path: it extracts text from a file/URL
   you supply directly (not from the index).
 
 ## Commands

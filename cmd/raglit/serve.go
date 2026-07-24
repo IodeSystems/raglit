@@ -154,13 +154,14 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 					"{index,path,title,pages:[{page,text}],text,truncated}. `path` is a document path "+
 					"(the doc_id from a search hit) OR a unique filename substring — ambiguous matches "+
 					"return an error listing the candidates. Optional `page` (single) or `from`/`to` "+
-					"(inclusive page range); `max_chars` caps the joined `text` blob (the per-page array "+
-					"is always whole). `index` restricts the lookup; omit to resolve across all indexes."),
+					"(inclusive page range); `max_chars` caps the WHOLE response — `text` and the "+
+					"`pages` array are cut at the same offset, so it bounds what you take back. "+
+					"`index` restricts the lookup; omit to resolve across all indexes."),
 			mcp.WithString("path", mcp.Required(), mcp.Description("document path or a unique filename substring")),
 			mcp.WithNumber("page", mcp.Description("single page to return (overrides from/to)")),
 			mcp.WithNumber("from", mcp.Description("first page of an inclusive range")),
 			mcp.WithNumber("to", mcp.Description("last page of an inclusive range")),
-			mcp.WithNumber("max_chars", mcp.Description("cap on the joined text blob (0 = uncapped)")),
+			mcp.WithNumber("max_chars", mcp.Description("cap on the returned text, pages included (0 = uncapped)")),
 			mcp.WithString("index", mcp.Description("restrict lookup to this index (or comma-separated set); empty = all")),
 		),
 		h.getDocument,

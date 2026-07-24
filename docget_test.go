@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -90,13 +91,29 @@ func TestDocText_FullAndRange(t *testing.T) {
 		t.Fatalf("range p2 = %+v", c)
 	}
 
-	// max_chars caps the blob (pages stay whole).
+	// max_chars caps the whole response: the blob AND the page array, cut at the
+	// same offset. Doc is "Invoice header\n\nLine items" (p1) + "Total due" (p2).
 	c, _ = s.DocText("file:///docs/invoice-2024.pdf", 0, 0, 10)
-	if !c.Truncated || len(c.Text) != 10 {
+	if !c.Truncated || c.Text != "Invoice he" {
 		t.Fatalf("cap = %q trunc=%v", c.Text, c.Truncated)
 	}
-	if len(c.Pages) != 2 {
-		t.Fatalf("cap should not drop pages: %d", len(c.Pages))
+	if len(c.Pages) != 1 || c.Pages[0].Text != c.Text {
+		t.Fatalf("cap should cut pages to the blob: %+v", c.Pages)
+	}
+
+	// A cap landing inside a later page keeps the earlier pages whole.
+	c, _ = s.DocText("file:///docs/invoice-2024.pdf", 0, 0, 32)
+	if len(c.Pages) != 2 || c.Pages[0].Text != "Invoice header\n\nLine items" || c.Pages[1].Text != "Tota" {
+		t.Fatalf("straddling cap = %+v", c.Pages)
+	}
+	if joinPages(c.Pages) != c.Text {
+		t.Fatalf("pages %q != text %q", joinPages(c.Pages), c.Text)
+	}
+
+	// A cap at/above the full length leaves everything whole and untruncated.
+	c, _ = s.DocText("file:///docs/invoice-2024.pdf", 0, 0, 1000)
+	if c.Truncated || len(c.Pages) != 2 || c.Text != "Invoice header\n\nLine items\n\nTotal due" {
+		t.Fatalf("no-op cap = %+v", c)
 	}
 
 	// Page-0 (plain text) doc.
@@ -109,4 +126,12 @@ func TestDocText_FullAndRange(t *testing.T) {
 	if _, err := s.DocText("file:///nope", 0, 0, 0); err == nil {
 		t.Fatal("unknown path should error")
 	}
+}
+
+func joinPages(pages []DocPageText) string {
+	parts := make([]string, len(pages))
+	for i, p := range pages {
+		parts[i] = p.Text
+	}
+	return strings.Join(parts, "\n\n")
 }

@@ -67,12 +67,15 @@ type DocContent struct {
 	Truncated bool          `json:"truncated"`
 }
 
+// pageSep joins fragments into a page and pages into the Text blob.
+const pageSep = "\n\n"
+
 // DocText returns a document's indexed text, reassembled from its fragments in
 // page/ord order. exactPath must be a stored document path (use MatchDocuments to
 // resolve a filename first). from/to bound the page range inclusively (≤0 = open
-// end); maxChars caps the joined Text blob (≤0 = uncapped), setting Truncated
-// when it bites — the per-page array is left whole. Returns (‑, false, nil) via a
-// zero DocContent when the path is unknown.
+// end); maxChars caps the WHOLE result (≤0 = uncapped) — both the joined Text
+// blob and the Pages array, cut at the same offsets — setting Truncated when it
+// bites. Returns (‑, false, nil) via a zero DocContent when the path is unknown.
 func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocContent, error) {
 	ctx := context.Background()
 	var out DocContent
@@ -104,7 +107,7 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 	var buf []string
 	flush := func() {
 		if curPage >= 0 {
-			out.Pages = append(out.Pages, DocPageText{Page: int(curPage), Text: strings.Join(buf, "\n\n")})
+			out.Pages = append(out.Pages, DocPageText{Page: int(curPage), Text: strings.Join(buf, pageSep)})
 		}
 		buf = nil
 	}
@@ -121,10 +124,34 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 	for i, p := range out.Pages {
 		parts[i] = p.Text
 	}
-	out.Text = strings.Join(parts, "\n\n")
+	out.Text = strings.Join(parts, pageSep)
 	if maxChars > 0 && len(out.Text) > maxChars {
 		out.Text = out.Text[:maxChars]
 		out.Truncated = true
+		out.Pages = capPages(out.Pages, maxChars)
 	}
 	return out, nil
+}
+
+// capPages cuts a page array to the same maxChars budget as the joined Text
+// blob, at the same offsets: pages that fit stay whole, the page straddling the
+// cap is truncated, later pages are dropped. Without this the cap bounded only
+// Text while Pages carried the whole document — useless to a caller using
+// max_chars to bound how much it takes back.
+func capPages(pages []DocPageText, maxChars int) []DocPageText {
+	used := 0
+	for i, p := range pages {
+		if i > 0 {
+			used += len(pageSep) // the join preceding this page
+		}
+		if used >= maxChars {
+			return pages[:i]
+		}
+		if room := maxChars - used; len(p.Text) > room {
+			pages[i].Text = p.Text[:room]
+			return pages[:i+1]
+		}
+		used += len(p.Text)
+	}
+	return pages
 }
