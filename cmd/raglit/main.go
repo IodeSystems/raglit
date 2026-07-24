@@ -148,6 +148,21 @@ func resolveIndexName(flagVal string, homeOf func() raglit.Home) string {
 	return "default"
 }
 
+// resolveDaemon picks the effective daemon URL to route to: an explicit --daemon
+// (or $RAGLIT_DAEMON, its flag default) wins, else the home config's daemon_url.
+// Empty → local/embedded mode (open the index directly). This is what makes a
+// project's .raglit/ a CLIENT config: set daemon_url and every command talks to
+// the daemon without passing --daemon each time.
+func resolveDaemon(flagVal string, homeOf func() raglit.Home) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if cfg, _, _ := raglit.LoadConfig(homeOf()); cfg.DaemonURL != "" {
+		return cfg.DaemonURL
+	}
+	return ""
+}
+
 func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	openStore, homeOf := addStoreFlags(fs)
@@ -227,8 +242,8 @@ func runSearch(args []string) error {
 	}
 
 	// Client mode: query a running daemon.
-	if *daemon != "" {
-		return daemonSearchPrint(*daemon, query, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *mode, *limit)
+	if dURL := resolveDaemon(*daemon, homeOf); dURL != "" {
+		return daemonSearchPrint(dURL, query, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *mode, *limit)
 	}
 
 	store, err := openStore()

@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/iodesystems/agentkit v0.0.0
+	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/pdfcpu/pdfcpu v0.13.0
 	golang.org/x/image v0.41.0
@@ -37,3 +38,5 @@ require (
 )
 
 replace github.com/iodesystems/agentkit => ../agentkit
+
+replace github.com/iodesystems/sqlc-go-codegen-metaquery => ../sqlc-go-codegen-metaquery

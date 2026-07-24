@@ -90,8 +90,8 @@ func runIngest(args []string) error {
 	}
 
 	// Client mode: hand off to a running daemon instead of touching the files.
-	if *daemon != "" {
-		return daemonIngest(*daemon, targets, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *title)
+	if dURL := resolveDaemon(*daemon, homeOf); dURL != "" {
+		return daemonIngest(dURL, targets, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *title)
 	}
 
 	store, err := openStore()
@@ -162,8 +162,8 @@ func runStatus(args []string) error {
 	openStore, homeOf := addStoreFlags(fs)
 	daemon := addDaemonFlag(fs)
 	fs.Parse(args)
-	if *daemon != "" {
-		return daemonStatusPrint(*daemon, resolveIndexName(fs.Lookup("index").Value.String(), homeOf))
+	if dURL := resolveDaemon(*daemon, homeOf); dURL != "" {
+		return daemonStatusPrint(dURL, resolveIndexName(fs.Lookup("index").Value.String(), homeOf))
 	}
 	store, err := openStore()
 	if err != nil {

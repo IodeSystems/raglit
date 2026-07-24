@@ -1,0 +1,18 @@
+version: '2'
+plugins:
+- name: metaquery
+  process:
+    cmd: ../sqlc-go-codegen-metaquery/bin/sqlc-go-codegen-metaquery
+sql:
+- schema: sql/schema.sql
+  queries: sql/query.sql
+  engine: sqlite
+  codegen:
+  - plugin: metaquery
+    out: internal/db
+    options:
+      package: db
+      sql_package: database/sql
+      emit_db_tags: true
+      emit_json_tags: true
+      emit_metaquery: cols

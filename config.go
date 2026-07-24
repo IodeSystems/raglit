@@ -21,6 +21,12 @@ type Config struct {
 	// DefaultIndex is the index used when a command gives no --index. Empty →
 	// "default". Set it in the wizard to make one named index your working default.
 	DefaultIndex string `json:"default_index,omitempty"`
+	// DaemonURL, when set, makes this a CLIENT config: commands route to the
+	// raglit daemon at this URL (http(s)://host:port) instead of opening a local
+	// index. The daemon owns storage (scoped per index, under its own home), so
+	// the local .raglit/ then holds config only. Precedence for the effective
+	// daemon: --daemon flag > $RAGLIT_DAEMON > this. Empty → local (embedded) mode.
+	DaemonURL string `json:"daemon_url,omitempty"`
 	// OCR configures the cheap first-pass tier of the OCR cascade. Zero value →
 	// VLM-only (every page transcribed by the vision model).
 	OCR OCRConfig `json:"ocr,omitempty"`
