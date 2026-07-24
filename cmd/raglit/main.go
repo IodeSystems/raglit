@@ -94,7 +94,8 @@ usage:
   raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
   raglit daemon [--root DIR|--home DIR] [--addr :7420] [--embed]   multi-protocol daemon:
                 REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
-                per-index storage under --root (default ~/.raglit); --home for a single index
+                per-index storage under --root (default ~/.raglit); --home for a single index;
+                records <root>/daemon.json for client discovery; --stop signals a running one
   raglit review [--root DIR|--home DIR] [--addr :7420] [--embed]   same daemon, review-UI banner
   # add --daemon URL (or $RAGLIT_DAEMON) to ingest/search/status to call a daemon
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)

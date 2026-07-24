@@ -155,7 +155,14 @@ raglit serve                       # MCP over the shared daemon
 # run it explicitly (foreground) if you prefer, or point at a remote one:
 raglit daemon --addr 127.0.0.1:7420    # workers + HTTP API + review UI + OpenAPI + GraphQL
 raglit search --daemon http://host:7420 "…"   # or RAGLIT_DAEMON / config daemon_url
+raglit daemon --stop                    # signal the running daemon to shut down
 ```
+
+On startup the daemon records `<root>/daemon.json` (`{pid, addr, root, ...}`) and
+removes it on clean shutdown. Clients read it to **discover** the daemon's real
+address — so one on a non-default port is found instead of a duplicate being
+spawned on 7420 — after verifying the pid is alive and it answers `/api/health`
+(a stale file is ignored). `raglit daemon --stop` reads it to signal that pid.
 
 `raglit daemon` is a multi-protocol server (huma + gwag/gat): the same operations
 are REST + in-process GraphQL (`/graphql`) + gRPC off one port, with **OpenAPI at

@@ -133,6 +133,14 @@ const defaultDaemonURL = "http://" + defaultDaemonAddr
 func ensureDaemon(flagVal string, homeOf func() raglit.Home) (string, error) {
 	base := resolveDaemon(flagVal, homeOf)
 	if base == "" {
+		// No explicit target: discover a running daemon from its state file, so one
+		// on a non-default port is found instead of a duplicate spawned on 7420. Only
+		// trust it if the pid is alive AND it answers health (guards a stale file).
+		if st, ok := readDaemonState(raglit.DefaultRoot()); ok && pidAlive(st.PID) {
+			if u := "http://" + st.Addr; daemonHealthy(u) {
+				return u, nil
+			}
+		}
 		base = defaultDaemonURL
 	}
 	if daemonHealthy(base) {

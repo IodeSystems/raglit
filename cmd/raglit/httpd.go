@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -37,7 +39,17 @@ func runHttpd(args []string) error {
 	poolMaxBytes := fs.Int64("pool-max-bytes", 4<<30, "keep the shared pool under this many bytes, evicting oldest-accessed (0 = unlimited)")
 	poolMax := fs.Int("pool-max", 0, "also cap the pool at N entries, LRU (0 = unlimited)")
 	poolTTL := fs.Duration("pool-ttl", 0, "also evict pooled docs unused this long (0 = never — off so merges/retries keep reusing)")
+	stop := fs.Bool("stop", false, "signal the running daemon (recorded in <root>/daemon.json) to shut down, then exit")
 	fs.Parse(args)
+
+	// --stop: signal the daemon recorded under this root and return (no server).
+	if *stop {
+		root := *rootFlag
+		if root == "" {
+			root = raglit.DefaultRoot()
+		}
+		return stopDaemon(root)
+	}
 
 	reg, cfgHome, err := openDaemonRegistry(*homeFlag, *rootFlag)
 	if err != nil {
@@ -88,9 +100,32 @@ func runHttpd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Record runtime state so clients discover this daemon (even on a non-default
+	// port) and `--stop` can signal it. Removed on clean shutdown.
+	removeState, err := writeDaemonState(string(cfgHome), *addr)
+	if err != nil {
+		return err
+	}
+	defer removeState()
+
+	srv := &http.Server{Addr: *addr, Handler: handler}
+	// Graceful shutdown on SIGINT/SIGTERM (what `--stop` sends) so the deferred
+	// state removal + pool/registry closes run.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sig
+		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer scancel()
+		srv.Shutdown(sctx)
+	}()
+
 	fmt.Fprintf(os.Stderr, "raglit httpd (gat) on http://%s (storage %s)\n", *addr, cfgHome)
 	fmt.Fprintf(os.Stderr, "  REST + review UI: http://%s/   OpenAPI: /openapi.json   GraphQL: /graphql\n", *addr)
-	return (&http.Server{Addr: *addr, Handler: handler}).ListenAndServe()
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 // openDaemonRegistry opens the daemon's index registry: an explicit --home is the
