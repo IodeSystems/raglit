@@ -35,10 +35,14 @@ per-index source-content dedup (documents.content_hash, mode "unchanged"); and t
 by `(recipe_hash, file_hash)` at `<root>/pool.sqlite` + `<root>/pool-pages/`, so
 the same file in ANY index (or a retry) reuses cached fragments+vectors+images
 (mode "pooled") instead of re-running the LLM; a different recipe (alt models)
-reprocesses. Remaining tails: client-only `init` (write daemon_url, skip local
-index bytes); branch overlay follow-ups (VecSearch/DocReview, merge/diff, CLI/MCP);
-pool GC/eviction; splitting the vector cache from the fragment cache (re-embed
-without re-segment) if alt-embed-model churn becomes common.
+reprocesses. Pool GC/eviction DONE: last_used_at tracking + `Pool.GC(maxAgeUnused, maxEntries)`
+(TTL + LRU cap, orphan pool-pages cleanup); daemon `--pool-ttl`/`--pool-max` +
+hourly background GC + `GET /api/pool` (stats) / `POST /api/pool/gc`.
+
+Remaining tails: client-only `init` (write daemon_url, skip local index bytes);
+branch overlay follow-ups (VecSearch/DocReview, merge/diff, CLI/MCP); splitting the
+vector cache from the fragment cache (re-embed without re-segment) if
+alt-embed-model churn becomes common.
 
 
 ## 1. MCP-as-daemon-client: one shared server, many MCP clients

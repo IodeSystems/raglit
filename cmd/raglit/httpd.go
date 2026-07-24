@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -33,6 +34,8 @@ func runHttpd(args []string) error {
 	addr := fs.String("addr", defaultDaemonAddr, "listen address")
 	defLimit := fs.Int("n", 8, "default search results")
 	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
+	poolTTL := fs.Duration("pool-ttl", 720*time.Hour, "evict pooled docs unused this long (0 = never)")
+	poolMax := fs.Int("pool-max", 0, "cap the shared pool at N entries, LRU-evicting the rest (0 = unlimited)")
 	fs.Parse(args)
 
 	reg, cfgHome, err := openDaemonRegistry(*homeFlag, *rootFlag)
@@ -60,7 +63,25 @@ func runHttpd(args []string) error {
 	defer cancel()
 	go runIndexWorkers(ctx, reg, lf, cfgHome, pool)
 
-	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit)
+	// Background pool GC: evict unused/over-cap entries hourly.
+	if *poolTTL > 0 || *poolMax > 0 {
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if n, err := pool.GC(*poolTTL, *poolMax); err == nil && n > 0 {
+						fmt.Fprintf(os.Stderr, "raglit: pool GC evicted %d entr(ies)\n", n)
+					}
+				}
+			}
+		}()
+	}
+
+	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, *poolTTL, *poolMax)
 	if err != nil {
 		return err
 	}
@@ -89,7 +110,7 @@ func openDaemonRegistry(homeFlag, rootFlag string) (*raglit.Registry, raglit.Hom
 
 // buildGatHandler wires the chi router: humachi API + gat gateway (all JSON
 // operations), then the two plain routes (HTML UI at /, binary page-image).
-func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int) (http.Handler, error) {
+func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int, pool *raglit.Pool, gcTTL time.Duration, gcMax int) (http.Handler, error) {
 	router := chi.NewRouter()
 	api := humachi.New(router, huma.DefaultConfig("raglit", version))
 	g, err := gat.New()
@@ -117,6 +138,10 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
+	if pool != nil {
+		gat.Register(api, g, op("poolStats", http.MethodGet, "/api/pool", "Shared document-pool size (entries + files)."), poolStatsOp(pool))
+		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs (unused past max_age_hours, or over max_entries LRU)."), poolGCOp(pool, gcTTL, gcMax))
+	}
 
 	if err := gat.RegisterHuma(api, g, ""); err != nil {
 		return nil, err
@@ -582,6 +607,53 @@ func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (
 		}
 		out := &getDocumentOut{}
 		out.Body.Index, out.Body.DocContent = cands[0].index, content
+		return out, nil
+	}
+}
+
+type poolStatsOut struct {
+	Body raglit.PoolStats
+}
+
+func poolStatsOp(pool *raglit.Pool) func(context.Context, *struct{}) (*poolStatsOut, error) {
+	return func(_ context.Context, _ *struct{}) (*poolStatsOut, error) {
+		st, err := pool.Stats()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("pool", err)
+		}
+		return &poolStatsOut{Body: st}, nil
+	}
+}
+
+type poolGCIn struct {
+	Body struct {
+		MaxAgeHours float64 `json:"max_age_hours,omitempty"`
+		MaxEntries  int     `json:"max_entries,omitempty"`
+	}
+}
+type poolGCOut struct {
+	Body struct {
+		Evicted int `json:"evicted"`
+	}
+}
+
+// poolGCOp runs pool eviction, defaulting to the daemon's --pool-ttl/--pool-max
+// when the request omits them.
+func poolGCOp(pool *raglit.Pool, defTTL time.Duration, defMax int) func(context.Context, *poolGCIn) (*poolGCOut, error) {
+	return func(_ context.Context, in *poolGCIn) (*poolGCOut, error) {
+		ttl, max := defTTL, defMax
+		if in.Body.MaxAgeHours > 0 {
+			ttl = time.Duration(in.Body.MaxAgeHours * float64(time.Hour))
+		}
+		if in.Body.MaxEntries > 0 {
+			max = in.Body.MaxEntries
+		}
+		n, err := pool.GC(ttl, max)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("pool gc", err)
+		}
+		out := &poolGCOut{}
+		out.Body.Evicted = n
 		return out, nil
 	}
 }

@@ -71,3 +71,46 @@ func TestPool_CrossIndexReuse(t *testing.T) {
 		t.Fatal("different recipe must be a pool miss")
 	}
 }
+
+func TestPool_GCEvictsLRU(t *testing.T) {
+	root := t.TempDir()
+	pool, err := OpenPool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	put := func(file string) {
+		must(t, pool.Put("recipe", file, PooledDoc{Fragments: []PooledFragment{{Text: file}}}))
+	}
+	put("f1")
+	put("f2")
+	put("f3")
+	if st, _ := pool.Stats(); st.Entries != 3 {
+		t.Fatalf("entries = %d, want 3", st.Entries)
+	}
+	// Bump f3 and f1 to most-recently-used; f2 is now the LRU.
+	pool.Get("recipe", "f3")
+	pool.Get("recipe", "f1")
+
+	// Nothing to do when both budgets are disabled.
+	if n, _ := pool.GC(0, 0); n != 0 {
+		t.Fatalf("GC(0,0) evicted %d, want 0", n)
+	}
+	// Cap at 2 → evict the single LRU entry (f2).
+	n, err := pool.GC(0, 2)
+	must(t, err)
+	if n != 1 {
+		t.Fatalf("GC evicted %d, want 1", n)
+	}
+	if _, ok, _ := pool.Get("recipe", "f2"); ok {
+		t.Fatal("f2 (LRU) should have been evicted")
+	}
+	for _, keep := range []string{"f1", "f3"} {
+		if _, ok, _ := pool.Get("recipe", keep); !ok {
+			t.Fatalf("%s should have survived GC", keep)
+		}
+	}
+	if st, _ := pool.Stats(); st.Entries != 2 {
+		t.Fatalf("entries after GC = %d, want 2", st.Entries)
+	}
+}

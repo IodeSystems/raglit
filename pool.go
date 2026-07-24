@@ -49,10 +49,11 @@ type PooledDoc struct {
 
 const poolSchema = `
 CREATE TABLE IF NOT EXISTS pool (
-  recipe_hash TEXT NOT NULL,
-  file_hash   TEXT NOT NULL,
-  payload     BLOB NOT NULL,   -- JSON PooledDoc (page images live in pool-pages/)
-  created_at  INTEGER NOT NULL,
+  recipe_hash  TEXT NOT NULL,
+  file_hash    TEXT NOT NULL,
+  payload      BLOB NOT NULL,   -- JSON PooledDoc (page images live in pool-pages/)
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL DEFAULT 0,  -- updated on reuse; the GC/LRU basis
   PRIMARY KEY (recipe_hash, file_hash)
 );`
 
@@ -77,6 +78,15 @@ func OpenPool(root string) (*Pool, error) {
 		db.Close()
 		return nil, fmt.Errorf("raglit: pool schema: %w", err)
 	}
+	// Migrate an older pool (no last_used_at): add it, seed from created_at so
+	// existing entries aren't treated as never-used (and instantly GC'd).
+	if has, _ := hasColumn(db, "pool", "last_used_at"); !has {
+		if _, err := db.Exec(`ALTER TABLE pool ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+			db.Close()
+			return nil, err
+		}
+		db.Exec(`UPDATE pool SET last_used_at = created_at WHERE last_used_at = 0`) //nolint:errcheck
+	}
 	return &Pool{db: db, pagesRoot: filepath.Join(root, "pool-pages")}, nil
 }
 
@@ -100,6 +110,9 @@ func (p *Pool) Get(recipeHash, fileHash string) (PooledDoc, bool, error) {
 	if err := json.Unmarshal(payload, &doc); err != nil {
 		return PooledDoc{}, false, err
 	}
+	// Record the reuse for LRU eviction.
+	p.db.Exec(`UPDATE pool SET last_used_at=? WHERE recipe_hash=? AND file_hash=?`, //nolint:errcheck
+		time.Now().UnixNano(), recipeHash, fileHash)
 	return doc, true, nil
 }
 
@@ -132,11 +145,86 @@ func (p *Pool) Put(recipeHash, fileHash string, doc PooledDoc) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now().UnixNano()
 	_, err = p.db.Exec(
-		`INSERT INTO pool(recipe_hash, file_hash, payload, created_at) VALUES(?,?,?,?)
-		 ON CONFLICT(recipe_hash, file_hash) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at`,
-		recipeHash, fileHash, payload, time.Now().UnixNano())
+		`INSERT INTO pool(recipe_hash, file_hash, payload, created_at, last_used_at) VALUES(?,?,?,?,?)
+		 ON CONFLICT(recipe_hash, file_hash) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at, last_used_at=excluded.last_used_at`,
+		recipeHash, fileHash, payload, now, now)
 	return err
+}
+
+// PoolStats is a snapshot of the pool for reporting.
+type PoolStats struct {
+	Entries int `json:"entries"` // cached (recipe, file) documents
+	Files   int `json:"files"`   // distinct source files (pool-pages dirs)
+}
+
+// Stats reports the pool's size.
+func (p *Pool) Stats() (PoolStats, error) {
+	var st PoolStats
+	if err := p.db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT file_hash) FROM pool`).Scan(&st.Entries, &st.Files); err != nil {
+		return st, err
+	}
+	return st, nil
+}
+
+// GC evicts pooled documents: any not reused within maxAgeUnused (0 = disabled),
+// and — over maxEntries (0 = unlimited) — the least-recently-used beyond the cap.
+// A file's pool-pages/ dir is removed once no entry references it. Returns the
+// number of entries evicted.
+func (p *Pool) GC(maxAgeUnused time.Duration, maxEntries int) (int, error) {
+	type key struct{ recipe, file string }
+	evict := map[key]bool{}
+	files := map[string]bool{}
+
+	collect := func(q string, args ...any) error {
+		rows, err := p.db.Query(q, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var k key
+			if err := rows.Scan(&k.recipe, &k.file); err != nil {
+				return err
+			}
+			evict[k] = true
+			files[k.file] = true
+		}
+		return rows.Err()
+	}
+
+	if maxAgeUnused > 0 {
+		cutoff := time.Now().UnixNano() - int64(maxAgeUnused)
+		if err := collect(`SELECT recipe_hash, file_hash FROM pool WHERE last_used_at < ?`, cutoff); err != nil {
+			return 0, err
+		}
+	}
+	if maxEntries > 0 {
+		// Everything past the newest-used maxEntries.
+		if err := collect(`SELECT recipe_hash, file_hash FROM pool ORDER BY last_used_at DESC LIMIT -1 OFFSET ?`, maxEntries); err != nil {
+			return 0, err
+		}
+	}
+	if len(evict) == 0 {
+		return 0, nil
+	}
+	for k := range evict {
+		if _, err := p.db.Exec(`DELETE FROM pool WHERE recipe_hash=? AND file_hash=?`, k.recipe, k.file); err != nil {
+			return 0, err
+		}
+	}
+	// Drop pool-pages dirs for files no entry references any more.
+	for f := range files {
+		var n int
+		if err := p.db.QueryRow(`SELECT COUNT(*) FROM pool WHERE file_hash=?`, f).Scan(&n); err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			os.RemoveAll(p.FileDir(f)) //nolint:errcheck
+		}
+	}
+	return len(evict), nil
 }
 
 // ExportDoc reads a freshly-ingested document back out of an index as a PooledDoc
