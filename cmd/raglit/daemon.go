@@ -308,6 +308,28 @@ func daemonGet(base, path string, q url.Values) ([]byte, error) {
 	return b, nil
 }
 
+// daemonDelete performs a daemon DELETE and returns the body, erroring on non-200.
+func daemonDelete(base, path string, q url.Values) ([]byte, error) {
+	u := strings.TrimRight(base, "/") + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	req, err := http.NewRequest(http.MethodDelete, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon %s: %s", path, string(b))
+	}
+	return b, nil
+}
+
 // daemonSearchPrint queries the daemon and prints ranked hits. ns is the project
 // namespace, stripped from each hit's index tag for display.
 func daemonSearchPrint(base, query, index, mode string, limit int, ns string) error {

@@ -44,6 +44,8 @@ func main() {
 		err = runIngest(os.Args[2:])
 	case "sync":
 		err = runSync(os.Args[2:])
+	case "branch":
+		err = runBranch(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
 	case "work":
@@ -88,6 +90,8 @@ usage:
   raglit ingest [--home DIR] [--now] TARGET...  queue folders/files/URLs (file://, http(s)://)
   raglit sync   [--home DIR] [--index N] [--dry-run]   ingest the config's [indexes] roots
                 (per-index include/ignore globs, honors .gitignore; dedup skips unchanged)
+  raglit branch list|fork NAME|delete NAME   manage copy-on-write branch indexes
+                (daemon only; namespaced + scoped to this project)
   raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"
