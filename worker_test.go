@@ -2,8 +2,10 @@ package raglit
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -123,6 +125,11 @@ func TestIndexStatus_ItemsAndCounts(t *testing.T) {
 	st, _ = s.IndexStatus()
 	if st.Done != 3 || st.Pending != 0 || len(st.Items) != 0 {
 		t.Fatalf("post-drain: %+v", st)
+	}
+	// An idle queue must marshal items as [], not null.
+	b, err := json.Marshal(st)
+	if err != nil || !strings.Contains(string(b), `"items":[]`) {
+		t.Fatalf("idle status json = %s err=%v", b, err)
 	}
 }
 

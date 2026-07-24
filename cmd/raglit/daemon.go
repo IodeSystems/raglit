@@ -78,7 +78,7 @@ func searchByMode(st *raglit.Store, q, mode string, limit int) ([]raglit.Hit, er
 
 // aggregateStatus sums status across the named indexes.
 func aggregateStatus(reg *raglit.Registry, names []string) raglit.Status {
-	var agg raglit.Status
+	agg := raglit.NewStatus()
 	for _, name := range names {
 		st, err := reg.Get(name)
 		if err != nil {

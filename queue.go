@@ -197,12 +197,17 @@ type Status struct {
 	Items      []PendingItem `json:"items"`        // running + pending, in processing order, with ETAs
 }
 
+// NewStatus is a zero Status with a non-nil Items, so an idle queue marshals as
+// `"items":[]` rather than `null` — null-vs-empty-array trips naive consumers.
+// Every producer of a Status (IndexStatus, the daemon/MCP aggregators) starts here.
+func NewStatus() Status { return Status{Items: []PendingItem{}} }
+
 // IndexStatus reports queue progress: counts, a recent processing rate, and a
 // per-item ETA (queue position × recent average job duration). ETA/rate are 0
 // until at least one job has completed (no basis to estimate).
 func (s *Store) IndexStatus() (Status, error) {
 	ctx := context.Background()
-	var st Status
+	st := NewStatus()
 	nd, err := s.q.CountDocuments(ctx)
 	if err != nil {
 		return st, err

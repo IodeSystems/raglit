@@ -302,7 +302,7 @@ func ingestHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 func statusHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		names := selectIndexes(reg, req.GetString("index", ""))
-		var agg raglit.Status
+		agg := raglit.NewStatus()
 		for _, name := range names {
 			st, err := reg.Get(name)
 			if err != nil {
