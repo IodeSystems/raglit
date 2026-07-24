@@ -69,8 +69,17 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
     on the 49-doc dogfood index (status/documents/search/get-document all correct).
   - Regenerate: `sqlc generate` (plugin: `make -C ../sqlc-go-codegen-metaquery
     bin/sqlc-go-codegen-metaquery`).
-- ◻ **P4 — serve as daemon client**: MCP tools proxy to the daemon over HTTP
-  when `daemon_url` set; local/embedded mode is the fallback. Completes item #1.
+- ✅ **P4 — serve as daemon client** (completes item #1). `serve` now branches on
+  `resolveDaemon` (flag > $RAGLIT_DAEMON > config `daemon_url`): with a daemon
+  set, the MCP tools proxy to its HTTP surface; else embedded (own the registry).
+  - serve.go refactor: tool DEFINITIONS extracted to `addRaglitTools(s, toolHandlers)`
+    (one contract); embedded mode supplies local handlers, client mode supplies
+    `daemonToolHandlers(url, defLimit)` (serveclient.go). Added a daemon `/api/ocr`
+    endpoint + `daemonPostJSON`; `stripSchema` removes huma's `$schema` so proxied
+    JSON matches embedded output; `ingest` reshaped to the `{job_id,…}` contract.
+  - Verified: serveclient_test.go (client handlers over an httptest gat daemon:
+    list_indexes/status/search/list_documents/get_document/ingest) + live MCP
+    stdio smoke (`serve --daemon` → all tools return the daemon's data).
 - ◻ **P5 — scoped storage** (item #2): daemon owns per-index storage under its
   own root (`~/.raglit/indexes/<index>`); client holds config only.
 - ◻ **P6 — branch storage** (item #3): branch-off-parent (diff layers, COW at

@@ -6,14 +6,18 @@ Not scheduled. Pick up explicitly. Each entry carries enough design to resume.
 
 The concrete roadmap, in order. Expands items #1 and #2 below.
 
-- [ ] **Local folder config for the client.** `.raglit/` in the project/worktree
-      holds CONFIG ONLY (endpoint, models, which daemon + which index/branch to
-      target) — no index bytes. The client (`serve` MCP + CLI) reads it and talks
-      to the daemon.
-- [ ] **Multi-config daemon with scoped storage.** One daemon serves many
+- [x] **Local folder config for the client.** DONE (P0+P4). `Config.DaemonURL` +
+      `resolveDaemon` (flag > $RAGLIT_DAEMON > config); CLI (ingest/search/status)
+      and `serve` MCP both route to the daemon when set. `serve` proxies all tools
+      to the daemon's gat HTTP surface. (Still TODO: make init offer to write a
+      client-only config, and skip creating local index/originals/pages when
+      daemon_url is set — see P5.)
+- [ ] **Multi-config daemon with scoped storage.** (P5) One daemon serves many
       clients/indexes; storage is scoped per index under a daemon-owned root
       (e.g. `~/.raglit/indexes/<index>`). The daemon is the single writer + single
-      LLM caller (coordinates queueing + corrallm fair-share).
+      LLM caller (coordinates queueing + corrallm fair-share). The gat daemon (P2)
+      + the migrated Store (P3) are the foundation; what remains is the storage
+      ROOT + per-index resolution (today it's one home/registry).
 - [ ] **Branch storage** (versioned indexes): a client (e.g. a git worktree) can
       branch an index off a parent; the branch stores only its diffs vs parent,
       resolved branch-over-parent on read (copy-on-write at document grain).

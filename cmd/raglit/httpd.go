@@ -85,6 +85,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("reocr", http.MethodPost, "/api/reocr", "Re-run the OCR cascade on a saved page image."), reocrOp(reg, lf, home))
 	gat.Register(api, g, op("findDocuments", http.MethodGet, "/api/find-documents", "Find documents by name substring (MCP list_documents)."), findDocumentsOp(reg))
 	gat.Register(api, g, op("getDocument", http.MethodGet, "/api/get-document", "Get a document's indexed text (MCP get_document)."), getDocumentOp(reg))
+	gat.Register(api, g, op("ocr", http.MethodPost, "/api/ocr", "Extract a document (path or base64 data) to paged text (MCP ocr)."), ocrToolOp(lf, home))
 
 	if err := gat.RegisterHuma(api, g, ""); err != nil {
 		return nil, err
@@ -551,6 +552,34 @@ func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (
 		out := &getDocumentOut{}
 		out.Body.Index, out.Body.DocContent = cands[0].index, content
 		return out, nil
+	}
+}
+
+type ocrToolIn struct {
+	Body struct {
+		Path string `json:"path"`
+		Data string `json:"data"`
+		Mime string `json:"mime"`
+	}
+}
+type ocrToolOut struct {
+	Body ocrOut
+}
+
+// ocrToolOp is the daemon side of the MCP `ocr` tool: resolve a path/base64 doc
+// to a temp file, run the format router + OCR cascade, return paged text.
+func ocrToolOp(lf *llmFlags, home raglit.Home) func(context.Context, *ocrToolIn) (*ocrToolOut, error) {
+	return func(ctx context.Context, in *ocrToolIn) (*ocrToolOut, error) {
+		fp, cleanup, err := resolveDoc(in.Body.Path, in.Body.Data, in.Body.Mime)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		defer cleanup()
+		res, err := ocrDocument(ctx, buildToolOCR(lf, home), fp)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("ocr", err)
+		}
+		return &ocrToolOut{Body: res}, nil
 	}
 }
 

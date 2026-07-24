@@ -26,9 +26,20 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	_, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
+	daemonFlag := addDaemonFlag(fs)
 	defLimit := fs.Int("n", 8, "default max results")
 	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
 	fs.Parse(args)
+
+	// Client mode: when a daemon is configured (--daemon / $RAGLIT_DAEMON / config
+	// daemon_url), the MCP tools proxy to it over HTTP instead of opening the index
+	// here — so many `serve` instances share ONE daemon's storage + LLM + queue
+	// (the client/daemon split, item 1). Otherwise run embedded (own the registry).
+	if durl := resolveDaemon(*daemonFlag, homeOf); durl != "" {
+		s := server.NewMCPServer("raglit", version)
+		addRaglitTools(s, daemonToolHandlers(durl, *defLimit))
+		return server.ServeStdio(s)
+	}
 
 	reg, err := raglit.OpenRegistry(homeOf())
 	if err != nil {
@@ -50,6 +61,33 @@ func runServe(args []string) error {
 	go runIndexWorkers(ctx, reg, lf, homeOf())
 
 	s := server.NewMCPServer("raglit", version)
+	addRaglitTools(s, toolHandlers{
+		search:        searchHandler(reg, *defLimit),
+		ingest:        ingestHandler(reg),
+		status:        statusHandler(reg),
+		listIndexes:   listHandler(reg),
+		listDocuments: listDocumentsHandler(reg),
+		getDocument:   getDocumentHandler(reg),
+		ocr:           ocrHandler(buildToolOCR(lf, homeOf())),
+	})
+	return server.ServeStdio(s)
+}
+
+// toolHandlers is raglit's MCP tool surface, supplied either from the local
+// registry (embedded mode) or as daemon proxies (client mode — serveclient.go).
+type toolHandlers struct {
+	search        server.ToolHandlerFunc
+	ingest        server.ToolHandlerFunc
+	status        server.ToolHandlerFunc
+	listIndexes   server.ToolHandlerFunc
+	listDocuments server.ToolHandlerFunc
+	getDocument   server.ToolHandlerFunc
+	ocr           server.ToolHandlerFunc
+}
+
+// addRaglitTools registers the tool definitions once, backed by the given
+// handlers. One tool contract, either backing.
+func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 	s.AddTool(
 		mcp.NewTool("search",
 			mcp.WithDescription(
@@ -61,7 +99,7 @@ func runServe(args []string) error {
 			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
 			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
 		),
-		searchHandler(reg, *defLimit),
+		h.search,
 	)
 	s.AddTool(
 		mcp.NewTool("ingest",
@@ -74,7 +112,7 @@ func runServe(args []string) error {
 			mcp.WithString("index", mcp.Description("target index (default \"default\")")),
 			mcp.WithString("title", mcp.Description("optional document title")),
 		),
-		ingestHandler(reg),
+		h.ingest,
 	)
 	s.AddTool(
 		mcp.NewTool("index_status",
@@ -84,13 +122,13 @@ func runServe(args []string) error {
 					"pending items each with an ETA. `index` selects one; omit to aggregate all."),
 			mcp.WithString("index", mcp.Description("index name; empty = aggregate all")),
 		),
-		statusHandler(reg),
+		h.status,
 	)
 	s.AddTool(
 		mcp.NewTool("list_indexes",
 			mcp.WithDescription("List the available indexes with their document/fragment counts (JSON)."),
 		),
-		listHandler(reg),
+		h.listIndexes,
 	)
 	s.AddTool(
 		mcp.NewTool("list_documents",
@@ -103,7 +141,7 @@ func runServe(args []string) error {
 			mcp.WithString("name", mcp.Description("case-insensitive substring filter over path/title; empty = all")),
 			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
 		),
-		listDocumentsHandler(reg),
+		h.listDocuments,
 	)
 	s.AddTool(
 		mcp.NewTool("get_document",
@@ -121,7 +159,7 @@ func runServe(args []string) error {
 			mcp.WithNumber("max_chars", mcp.Description("cap on the joined text blob (0 = uncapped)")),
 			mcp.WithString("index", mcp.Description("restrict lookup to this index (or comma-separated set); empty = all")),
 		),
-		getDocumentHandler(reg),
+		h.getDocument,
 	)
 	// ocr tool: any document → paged text, via the format router (extract.go).
 	// A PDF uses its text layer where present and OCRs the scanned pages; office/
@@ -141,9 +179,8 @@ func runServe(args []string) error {
 			mcp.WithString("data", mcp.Description("base64-encoded document bytes (alternative to path)")),
 			mcp.WithString("mime", mcp.Description("content type hint, e.g. application/pdf, image/png, or a docx type")),
 		),
-		ocrHandler(buildToolOCR(lf, homeOf())),
+		h.ocr,
 	)
-	return server.ServeStdio(s)
 }
 
 // runIndexWorkers drains every index's queue, round-robin, caching one worker
