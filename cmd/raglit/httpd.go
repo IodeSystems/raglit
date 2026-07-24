@@ -40,6 +40,7 @@ func runHttpd(args []string) error {
 	poolMax := fs.Int("pool-max", 0, "also cap the pool at N entries, LRU (0 = unlimited)")
 	poolTTL := fs.Duration("pool-ttl", 0, "also evict pooled docs unused this long (0 = never — off so merges/retries keep reusing)")
 	stop := fs.Bool("stop", false, "signal the running daemon (recorded in <root>/daemon.json) to shut down, then exit")
+	watchInterval := fs.Duration("watch-interval", 5*time.Second, "how often to re-scan watched projects for changes")
 	fs.Parse(args)
 
 	// --stop: signal the daemon recorded under this root and return (no server).
@@ -77,6 +78,12 @@ func runHttpd(args []string) error {
 	defer cancel()
 	go runIndexWorkers(ctx, reg, lf, cfgHome, pool)
 
+	// Directory watching: keep opt-in projects (config watch:true) re-ingested on
+	// change. Registrations persist under the daemon root and reload here.
+	watch := newWatcher(reg, string(cfgHome), *watchInterval)
+	watch.load()
+	go watch.run(ctx)
+
 	// Background pool GC: keep the pool within the (lax, size-based) budget hourly.
 	gcPol := raglit.GCPolicy{MaxBytes: *poolMaxBytes, MaxEntries: *poolMax, MaxAgeUnused: *poolTTL}
 	if gcPol.MaxBytes > 0 || gcPol.MaxEntries > 0 || gcPol.MaxAgeUnused > 0 {
@@ -96,7 +103,7 @@ func runHttpd(args []string) error {
 		}()
 	}
 
-	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, gcPol)
+	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, gcPol, watch)
 	if err != nil {
 		return err
 	}
@@ -148,7 +155,7 @@ func openDaemonRegistry(homeFlag, rootFlag string) (*raglit.Registry, raglit.Hom
 
 // buildGatHandler wires the chi router: humachi API + gat gateway (all JSON
 // operations), then the two plain routes (HTML UI at /, binary page-image).
-func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int, pool *raglit.Pool, defGC raglit.GCPolicy) (http.Handler, error) {
+func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int, pool *raglit.Pool, defGC raglit.GCPolicy, watch *watcher) (http.Handler, error) {
 	router := chi.NewRouter()
 	api := humachi.New(router, huma.DefaultConfig("raglit", version))
 	g, err := gat.New()
@@ -176,6 +183,11 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
+	if watch != nil {
+		gat.Register(api, g, op("listWatches", http.MethodGet, "/api/watch", "List project homes watched for auto re-ingest."), listWatchesOp(watch))
+		gat.Register(api, g, op("addWatch", http.MethodPost, "/api/watch", "Register a project home for auto re-ingest on change."), addWatchOp(watch))
+		gat.Register(api, g, op("removeWatch", http.MethodDelete, "/api/watch", "Unregister a watched project home."), removeWatchOp(watch))
+	}
 	if pool != nil {
 		gat.Register(api, g, op("poolStats", http.MethodGet, "/api/pool", "Shared document-pool size (entries + files)."), poolStatsOp(pool))
 		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs to a budget (max_bytes / max_entries / max_age_hours), oldest-accessed first."), poolGCOp(pool, defGC))
@@ -757,6 +769,58 @@ type deleteBranchIn struct {
 func deleteBranchOp(reg *raglit.Registry) func(context.Context, *deleteBranchIn) (*okOut, error) {
 	return func(_ context.Context, in *deleteBranchIn) (*okOut, error) {
 		if err := reg.DeleteBranch(in.Name); err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		out := &okOut{}
+		out.Body.OK = true
+		return out, nil
+	}
+}
+
+type listWatchesOut struct {
+	Body struct {
+		Watches []watchInfo `json:"watches"`
+	}
+}
+
+func listWatchesOp(w *watcher) func(context.Context, *struct{}) (*listWatchesOut, error) {
+	return func(_ context.Context, _ *struct{}) (*listWatchesOut, error) {
+		out := &listWatchesOut{}
+		out.Body.Watches = w.List()
+		if out.Body.Watches == nil {
+			out.Body.Watches = []watchInfo{}
+		}
+		return out, nil
+	}
+}
+
+type addWatchIn struct {
+	Body struct {
+		Home string `json:"home"`
+	}
+}
+
+func addWatchOp(w *watcher) func(context.Context, *addWatchIn) (*okOut, error) {
+	return func(_ context.Context, in *addWatchIn) (*okOut, error) {
+		if in.Body.Home == "" {
+			return nil, huma.Error400BadRequest("home is required")
+		}
+		if err := w.Add(in.Body.Home); err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		out := &okOut{}
+		out.Body.OK = true
+		return out, nil
+	}
+}
+
+type removeWatchIn struct {
+	Home string `query:"home"`
+}
+
+func removeWatchOp(w *watcher) func(context.Context, *removeWatchIn) (*okOut, error) {
+	return func(_ context.Context, in *removeWatchIn) (*okOut, error) {
+		if err := w.Remove(in.Home); err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
 		}
 		out := &okOut{}

@@ -33,6 +33,11 @@ type Config struct {
 	// every project that opts in — without duplicating them per project. Writes
 	// (ingest/branch) still target this project only. Empty → fully isolated.
 	Shared []string `json:"shared,omitempty"`
+	// Watch, when true, tells the daemon to keep this project's configured source
+	// roots fresh: after you register it (a `raglit sync` with watch:true, or
+	// `raglit watch`), the daemon re-scans the roots on an interval and re-ingests
+	// changed files / drops deleted ones. Needs `indexes` (the roots to watch).
+	Watch bool `json:"watch,omitempty"`
 	// DaemonURL, when set, makes this a CLIENT config: commands route to the
 	// raglit daemon at this URL (http(s)://host:port) instead of opening a local
 	// index. The daemon owns storage (scoped per index, under its own home), so

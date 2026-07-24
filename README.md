@@ -139,6 +139,20 @@ raglit sync --index code --dry-run  # preview one index's matched files
 Globs: no `/` matches the basename (`*.go`); with `/`, the path (`gen/**`, `**/x`).
 `sync` routes to the daemon when `daemon_url`/`--daemon` is set, else the local home.
 
+**Watch** (`"watch": true`): register a project and the daemon keeps its roots
+fresh — on an interval it re-plans the sources (same rules) and re-ingests changed
+files, dropping documents whose source file was deleted. `raglit sync` auto-
+registers when `watch:true`; manage it with `raglit watch`:
+
+```sh
+raglit watch          # register this project (idempotent)
+raglit watch list     # what the daemon is watching (project, file count)
+raglit watch stop     # unregister this project
+```
+It's a poll (default every 5s, `--watch-interval`), so an unchanged file that
+slips through is a no-op thanks to the content-hash dedup; registrations persist
+under the daemon root and reload on restart.
+
 ## Daemon mode
 
 **By default every client — `serve` (MCP) and the CLI (`ingest`/`search`/`status`/

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
@@ -100,6 +101,17 @@ func runSync(args []string) error {
 			hint = "the daemon drains it in the background"
 		}
 		fmt.Printf("queued %d file(s) across %d index(es) — %s.\n", total, len(names), hint)
+
+		// watch:true → register with the daemon so it keeps re-ingesting on change.
+		if dURL != "" && cfg.Watch {
+			if home, aerr := filepath.Abs(string(home)); aerr == nil {
+				if _, werr := daemonPostJSON(dURL, "/api/watch", map[string]any{"home": home}); werr == nil {
+					fmt.Printf("watching %s for changes (config watch:true)\n", home)
+				} else {
+					fmt.Fprintf(os.Stderr, "warning: could not register watch: %v\n", werr)
+				}
+			}
+		}
 	}
 	return nil
 }

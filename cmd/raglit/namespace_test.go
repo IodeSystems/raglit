@@ -156,7 +156,7 @@ func TestServeClient_NamespaceIsolation(t *testing.T) {
 	lf := addLLMFlags(fs)
 	_ = fs.Parse(nil)
 	lf.resolve(home)
-	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{})
+	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestServeClient_SharedNamespace(t *testing.T) {
 	lf := addLLMFlags(fs)
 	_ = fs.Parse(nil)
 	lf.resolve(home)
-	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{})
+	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -46,6 +46,8 @@ func main() {
 		err = runSync(os.Args[2:])
 	case "branch":
 		err = runBranch(os.Args[2:])
+	case "watch":
+		err = runWatch(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
 	case "work":
@@ -92,6 +94,8 @@ usage:
                 (per-index include/ignore globs, honors .gitignore; dedup skips unchanged)
   raglit branch list|fork NAME|delete NAME   manage copy-on-write branch indexes
                 (daemon only; namespaced + scoped to this project)
+  raglit watch  [start|list|stop]            daemon auto re-ingests this project's
+                roots on change (config "watch":true; sync auto-registers)
   raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"
