@@ -257,6 +257,20 @@ func resolveProject(flagVal string, homeOf func() raglit.Home) (string, error) {
 	return raglit.NormalizeIndexName(raw), nil
 }
 
+// projectShared returns the home config's `shared` namespaces (normalized) — the
+// other projects whose indexes this project also SEARCHES (e.g. common ~/doc).
+func projectShared(homeOf func() raglit.Home) []string {
+	cfg, _, _ := raglit.LoadConfig(homeOf())
+	out := make([]string, 0, len(cfg.Shared))
+	for _, s := range cfg.Shared {
+		if strings.TrimSpace(s) == "" {
+			continue // don't let NormalizeIndexName turn "" into "default"
+		}
+		out = append(out, raglit.NormalizeIndexName(s))
+	}
+	return out
+}
+
 func daemonIngest(base string, targets []string, index, title string) error {
 	body, _ := json.Marshal(map[string]any{"targets": targets, "index": index, "title": title})
 	resp, err := http.Post(strings.TrimRight(base, "/")+"/ingest", "application/json", bytes.NewReader(body))

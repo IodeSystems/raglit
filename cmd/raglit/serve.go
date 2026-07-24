@@ -41,7 +41,7 @@ func runServe(args []string) error {
 	}
 	if durl != "" {
 		s := server.NewMCPServer("raglit", version)
-		addRaglitTools(s, daemonToolHandlers(durl, *defLimit, ns))
+		addRaglitTools(s, daemonToolHandlers(durl, *defLimit, ns, projectShared(homeOf)))
 		return server.ServeStdio(s)
 	}
 

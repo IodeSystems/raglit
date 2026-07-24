@@ -55,6 +55,28 @@ func nsSelector(ns, sel string) string {
 	return strings.Join(parts, ",")
 }
 
+// nsReadSelector maps a local READ selector to a daemon selector that spans this
+// project plus its shared namespaces. An explicit selection stays private (each
+// name prefixed with the project ns). The "all" case (empty/"all") becomes
+// "<ns>__*" plus "<shared>__*" for each shared namespace — so shared docs indexed
+// once (e.g. under a "shared" project) are searched from every project that opts
+// in. ns=="" (embedded) returns the selector unchanged.
+func nsReadSelector(ns string, shared []string, sel string) string {
+	if ns == "" {
+		return strings.TrimSpace(sel)
+	}
+	if s := strings.TrimSpace(sel); s != "" && s != "all" {
+		return nsSelector(ns, s) // explicit → private to this project
+	}
+	parts := []string{ns + nsSep + "*"}
+	for _, s := range shared { // shared is pre-normalized (see projectShared)
+		if s != "" && s != ns {
+			parts = append(parts, s+nsSep+"*")
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 // nsStrip removes the "<ns>__" prefix from a daemon index name for display.
 func nsStrip(ns, full string) string {
 	if ns == "" {
@@ -100,10 +122,11 @@ func walkStripIndex(v any, prefix string) {
 	}
 }
 
-// filterIndexList narrows a list_indexes response ({"indexes":[{"name",...}]})
-// to rows in this project's namespace, stripping the prefix from each name — so
-// a shared daemon's index list shows only the caller's own indexes.
-func filterIndexList(b []byte, ns string) []byte {
+// filterIndexList narrows a list_indexes response ({"indexes":[{"name",...}]}) to
+// this project's indexes plus any shared namespaces it reads. The project's own
+// "<ns>__" prefix is stripped for display; shared rows keep their "<shared>__"
+// name so their provenance is visible. Everything else is dropped.
+func filterIndexList(b []byte, ns string, shared []string) []byte {
 	if ns == "" {
 		return b
 	}
@@ -115,7 +138,7 @@ func filterIndexList(b []byte, ns string) []byte {
 	if !ok {
 		return b
 	}
-	prefix := ns + nsSep
+	own := ns + nsSep
 	kept := make([]any, 0, len(rows))
 	for _, r := range rows {
 		m, ok := r.(map[string]any)
@@ -123,15 +146,27 @@ func filterIndexList(b []byte, ns string) []byte {
 			continue
 		}
 		name, _ := m["name"].(string)
-		if !strings.HasPrefix(name, prefix) {
-			continue
+		switch {
+		case strings.HasPrefix(name, own):
+			m["name"] = strings.TrimPrefix(name, own)
+			kept = append(kept, m)
+		case hasAnyPrefix(name, shared, nsSep):
+			kept = append(kept, m) // shared: keep the "<shared>__name" for provenance
 		}
-		m["name"] = strings.TrimPrefix(name, prefix)
-		kept = append(kept, m)
 	}
 	doc["indexes"] = kept
 	if out, err := json.Marshal(doc); err == nil {
 		return out
 	}
 	return b
+}
+
+// hasAnyPrefix reports whether name starts with "<p><sep>" for any p in ps.
+func hasAnyPrefix(name string, ps []string, sep string) bool {
+	for _, p := range ps {
+		if p != "" && strings.HasPrefix(name, p+sep) {
+			return true
+		}
+	}
+	return false
 }

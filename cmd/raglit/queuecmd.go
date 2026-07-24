@@ -180,7 +180,7 @@ func runStatus(args []string) error {
 		return err
 	}
 	if dURL != "" {
-		return daemonStatusPrint(dURL, nsSelector(ns, fs.Lookup("index").Value.String()))
+		return daemonStatusPrint(dURL, nsReadSelector(ns, projectShared(homeOf), fs.Lookup("index").Value.String()))
 	}
 	store, err := openStore()
 	if err != nil {

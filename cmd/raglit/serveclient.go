@@ -20,7 +20,7 @@ import (
 // at base. ns is the project namespace: index names in requests are prefixed
 // ("<ns>__<local>", "<ns>__*" for all) and stripped back out of responses, so on
 // the shared daemon this project only sees its own indexes.
-func daemonToolHandlers(base string, defLimit int, ns string) toolHandlers {
+func daemonToolHandlers(base string, defLimit int, ns string, shared []string) toolHandlers {
 	return toolHandlers{
 		search: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			q, err := req.RequireString("query")
@@ -28,7 +28,7 @@ func daemonToolHandlers(base string, defLimit int, ns string) toolHandlers {
 				return mcp.NewToolResultError("query is required"), nil
 			}
 			v := url.Values{"q": {q}}
-			v.Set("index", nsSelector(ns, req.GetString("index", "")))
+			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
 			if n := req.GetInt("limit", defLimit); n > 0 {
 				v.Set("n", strconv.Itoa(n))
 			}
@@ -62,7 +62,7 @@ func daemonToolHandlers(base string, defLimit int, ns string) toolHandlers {
 		},
 
 		status: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := url.Values{"index": {nsSelector(ns, req.GetString("index", ""))}}
+			v := url.Values{"index": {nsReadSelector(ns, shared, req.GetString("index", ""))}}
 			return proxyGet(base, "/status", v, ns)
 		},
 
@@ -71,13 +71,13 @@ func daemonToolHandlers(base string, defLimit int, ns string) toolHandlers {
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("daemon", err), nil
 			}
-			return mcp.NewToolResultText(string(filterIndexList(stripSchema(b), ns))), nil
+			return mcp.NewToolResultText(string(filterIndexList(stripSchema(b), ns, shared))), nil
 		},
 
 		listDocuments: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v := url.Values{}
 			setIf(v, "name", req.GetString("name", ""))
-			v.Set("index", nsSelector(ns, req.GetString("index", "")))
+			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
 			return proxyGet(base, "/api/find-documents", v, ns)
 		},
 
@@ -91,7 +91,7 @@ func daemonToolHandlers(base string, defLimit int, ns string) toolHandlers {
 			setIntIf(v, "from", req.GetInt("from", 0))
 			setIntIf(v, "to", req.GetInt("to", 0))
 			setIntIf(v, "max_chars", req.GetInt("max_chars", 0))
-			v.Set("index", nsSelector(ns, req.GetString("index", "")))
+			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
 			return proxyGet(base, "/api/get-document", v, ns)
 		},
 

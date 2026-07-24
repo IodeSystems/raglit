@@ -262,8 +262,9 @@ func runSearch(args []string) error {
 		return err
 	}
 	if dURL != "" {
-		// Empty --index → all of THIS project's indexes (nsSelector → "<ns>__*").
-		return daemonSearchPrint(dURL, query, nsSelector(ns, fs.Lookup("index").Value.String()), *mode, *limit, ns)
+		// Empty --index → this project's indexes + its shared namespaces.
+		sel := nsReadSelector(ns, projectShared(homeOf), fs.Lookup("index").Value.String())
+		return daemonSearchPrint(dURL, query, sel, *mode, *limit, ns)
 	}
 
 	store, err := openStore()

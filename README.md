@@ -169,6 +169,19 @@ name is **required** to start a daemon-routed client (`serve` or CLI); `--projec
 overrides it, and `--embedded`/`--db` (single-session, in-process) need none. The
 `<project>__` prefix is internal — search/status/list show plain local names.
 
+**Shared docs** (`shared`): common material — a home `~/doc`, a team handbook — is
+indexed **once** under its own project (say `shared`), and other projects opt into
+reading it by listing that namespace in their config. A project's "search all"
+then spans its own indexes **plus** each shared namespace; writes (ingest, branch)
+still target the project only, and shared hits keep their `shared__` tag so you
+can see where they came from. No duplication per project.
+
+```jsonc
+// ~/doc, indexed once:  raglit --home ~/.raglit-shared ingest ~/doc   (project "shared")
+{ "project": "alpha", "shared": ["shared"], "daemon_url": "http://127.0.0.1:7420" }
+// `alpha` now searches alpha__* + shared__*; a project without "shared" stays isolated.
+```
+
 On startup the daemon records `<root>/daemon.json` (`{pid, addr, root, ...}`) and
 removes it on clean shutdown. Clients read it to **discover** the daemon's real
 address — so one on a non-default port is found instead of a duplicate being

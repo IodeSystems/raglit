@@ -103,12 +103,16 @@ func runInit(args []string) error {
 	// daemon-routed client. Default: the project directory's name.
 	project := ask(r, "project name (namespaces this project's indexes on the shared daemon)", defaultProjectName(home))
 
+	// Shared namespaces — other projects this one also SEARCHES (e.g. a "shared"
+	// project holding ~/doc). Comma-separated; blank = fully isolated.
+	shared := splitCSV(ask(r, "shared namespaces to also search (comma-separated, blank = none)", ""))
+
 	// Default index — the one commands use when no --index is given.
 	defIndex := ask(r, "default index name", "default")
 
 	if err := raglit.SaveConfig(home, raglit.Config{
 		BaseURL: base, APIKey: key, VisionModel: vision, EmbedModel: embed,
-		ContextTokens: ctxTokens, DefaultIndex: defIndex, Project: project,
+		ContextTokens: ctxTokens, DefaultIndex: defIndex, Project: project, Shared: shared,
 	}); err != nil {
 		return err
 	}
@@ -166,6 +170,18 @@ func defaultProjectName(home raglit.Home) string {
 		return "project"
 	}
 	return name
+}
+
+// splitCSV splits a comma-separated reply into trimmed, non-empty entries (nil
+// when blank).
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ask prompts with an optional default and returns the trimmed reply (or def).

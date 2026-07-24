@@ -40,6 +40,26 @@ func TestNSSelector(t *testing.T) {
 	}
 }
 
+func TestNSReadSelector(t *testing.T) {
+	cases := []struct {
+		ns     string
+		shared []string
+		sel    string
+		want   string
+	}{
+		{"acme", nil, "", "acme__*"},
+		{"acme", []string{"shared"}, "", "acme__*,shared__*"},
+		{"acme", []string{"shared", "acme"}, "all", "acme__*,shared__*"}, // own filtered from shared
+		{"acme", []string{"shared"}, "code", "acme__code"},               // explicit → private only
+		{"", []string{"shared"}, "", ""},
+	}
+	for _, c := range cases {
+		if got := nsReadSelector(c.ns, c.shared, c.sel); got != c.want {
+			t.Errorf("nsReadSelector(%q,%v,%q) = %q, want %q", c.ns, c.shared, c.sel, got, c.want)
+		}
+	}
+}
+
 func TestNSStripAndJSON(t *testing.T) {
 	if got := nsStrip("acme", "acme__code"); got != "code" {
 		t.Errorf("nsStrip = %q", got)
@@ -59,7 +79,7 @@ func TestNSStripAndJSON(t *testing.T) {
 
 func TestFilterIndexList(t *testing.T) {
 	in := `{"indexes":[{"name":"acme__code","documents":2},{"name":"other__docs","documents":9},{"name":"acme__docs","documents":1}]}`
-	got := string(filterIndexList([]byte(in), "acme"))
+	got := string(filterIndexList([]byte(in), "acme", nil))
 	if strings.Contains(got, "other") {
 		t.Errorf("filterIndexList leaked a foreign index: %s", got)
 	}
@@ -125,7 +145,7 @@ func TestServeClient_NamespaceIsolation(t *testing.T) {
 	srv := httptest.NewServer(h)
 	t.Cleanup(func() { srv.Close(); reg.Close() })
 
-	acme := daemonToolHandlers(srv.URL, 8, "acme")
+	acme := daemonToolHandlers(srv.URL, 8, "acme", nil)
 
 	// search-all (empty index → acme__*) finds acme's doc, not other's.
 	out := callTool(t, acme.search, map[string]any{"query": "quarterly revenue"})
@@ -143,5 +163,57 @@ func TestServeClient_NamespaceIsolation(t *testing.T) {
 	list := callTool(t, acme.listIndexes, nil)
 	if !strings.Contains(list, `"name":"default"`) || strings.Contains(list, "other") || strings.Contains(list, "acme__") {
 		t.Fatalf("list_indexes not scoped/stripped: %s", list)
+	}
+}
+
+// TestServeClient_SharedNamespace: a project reading a shared namespace sees its
+// own docs AND the shared ones, but still not an unrelated project's.
+func TestServeClient_SharedNamespace(t *testing.T) {
+	home := raglit.Home(t.TempDir())
+	reg, err := raglit.OpenScopedRegistry(string(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := func(index, path, text string) {
+		st, err := reg.Get(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Ingest(context.Background(), raglit.Document{
+			Path: path, Fragments: []raglit.Fragment{{Text: text}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("acme__default", "file:///acme.md", "confidential acme note")
+	seed("shared__default", "file:///handbook.md", "confidential shared handbook")
+	seed("other__default", "file:///other.md", "confidential other note")
+
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	lf := addLLMFlags(fs)
+	_ = fs.Parse(nil)
+	lf.resolve(home)
+	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(func() { srv.Close(); reg.Close() })
+
+	acme := daemonToolHandlers(srv.URL, 8, "acme", []string{"shared"})
+	out := callTool(t, acme.search, map[string]any{"query": "confidential"})
+	if !strings.Contains(out, "acme.md") {
+		t.Fatalf("should see own doc: %s", out)
+	}
+	if !strings.Contains(out, "handbook.md") {
+		t.Fatalf("should see shared doc: %s", out)
+	}
+	if strings.Contains(out, "other.md") {
+		t.Fatalf("LEAK: saw an unrelated project's doc: %s", out)
+	}
+	// list_indexes: own shown as "default", shared kept as "shared__default".
+	list := callTool(t, acme.listIndexes, nil)
+	if !strings.Contains(list, `"name":"default"`) || !strings.Contains(list, `"name":"shared__default"`) || strings.Contains(list, "other") {
+		t.Fatalf("list_indexes shared scoping wrong: %s", list)
 	}
 }

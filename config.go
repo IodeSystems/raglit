@@ -27,6 +27,12 @@ type Config struct {
 	// within its own indexes. Required to start a daemon-routed client (serve/CLI);
 	// --embedded/--db (single-session, in-process) don't need it. Set in the wizard.
 	Project string `json:"project,omitempty"`
+	// Shared lists OTHER project namespaces this project also SEARCHES (reads only).
+	// A "search all" spans "<project>__*" plus each "<shared>__*", so common docs
+	// (e.g. ~/doc indexed once under a project named "shared") are visible from
+	// every project that opts in — without duplicating them per project. Writes
+	// (ingest/branch) still target this project only. Empty → fully isolated.
+	Shared []string `json:"shared,omitempty"`
 	// DaemonURL, when set, makes this a CLIENT config: commands route to the
 	// raglit daemon at this URL (http(s)://host:port) instead of opening a local
 	// index. The daemon owns storage (scoped per index, under its own home), so
