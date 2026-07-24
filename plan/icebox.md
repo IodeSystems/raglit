@@ -2,6 +2,31 @@
 
 Not scheduled. Pick up explicitly. Each entry carries enough design to resume.
 
+## USER CHECKLIST (2026-07-23) — the agreed next build
+
+The concrete roadmap, in order. Expands items #1 and #2 below.
+
+- [ ] **Local folder config for the client.** `.raglit/` in the project/worktree
+      holds CONFIG ONLY (endpoint, models, which daemon + which index/branch to
+      target) — no index bytes. The client (`serve` MCP + CLI) reads it and talks
+      to the daemon.
+- [ ] **Multi-config daemon with scoped storage.** One daemon serves many
+      clients/indexes; storage is scoped per index under a daemon-owned root
+      (e.g. `~/.raglit/indexes/<index>`). The daemon is the single writer + single
+      LLM caller (coordinates queueing + corrallm fair-share).
+- [ ] **Branch storage** (versioned indexes): a client (e.g. a git worktree) can
+      branch an index off a parent; the branch stores only its diffs vs parent,
+      resolved branch-over-parent on read (copy-on-write at document grain).
+  - [ ] **delete branch** — drop a branch layer (GC its storage), parent intact.
+  - [ ] **list branches** — enumerate branches with **age** (created_at) and
+        **last access** (last_accessed_at). → needs per-index/branch metadata:
+        track `created_at` + touch `last_accessed_at` on read/write.
+
+Sequencing note: #1+#2 (client/daemon split + scoped storage) are the
+foundation; branch storage (#3) builds on the daemon owning the store. See the
+design detail in the two entries below.
+
+
 ## 1. MCP-as-daemon-client: one shared server, many MCP clients
 
 **Ask (2026-07-23):** Multiple raglit MCP instances will run at once. We want ONE
