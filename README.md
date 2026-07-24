@@ -23,8 +23,11 @@ raglit search "how does the auth token refresh work?"
 ```
 
 That's it. `init` asks for a base URL + API key and lists the endpoint's models
-so you can pick a vision model and an embedding model; everything else uses
-sensible defaults (you never pass model flags again). When the endpoint reports
+so you can pick a vision model and an embedding model, plus a **project name**
+(defaults to the directory name); everything else uses
+sensible defaults (you never pass model flags again). The project name namespaces
+this repo's indexes on the shared daemon (below), so two projects both using the
+`default` index never collide. When the endpoint reports
 capabilities (a corrallm-class server), each pick list is **filtered to the
 models that fit the role** — image-capable models for OCR, embedding models for
 `--embed` — instead of the whole catalog; a plain OpenAI server shows all
@@ -157,6 +160,14 @@ raglit daemon --addr 127.0.0.1:7420    # workers + HTTP API + review UI + OpenAP
 raglit search --daemon http://host:7420 "…"   # or RAGLIT_DAEMON / config daemon_url
 raglit daemon --stop                    # signal the running daemon to shut down
 ```
+
+Because that one daemon serves every project, each client namespaces its indexes
+by the config's **`project`** name: the daemon index is `<project>__<local>`, and a
+project's "search all" is scoped to `<project>__*` — so two repos both using
+`default` don't share storage, and neither sees the other's documents. The project
+name is **required** to start a daemon-routed client (`serve` or CLI); `--project`
+overrides it, and `--embedded`/`--db` (single-session, in-process) need none. The
+`<project>__` prefix is internal — search/status/list show plain local names.
 
 On startup the daemon records `<root>/daemon.json` (`{pid, addr, root, ...}`) and
 removes it on clean shutdown. Clients read it to **discover** the daemon's real

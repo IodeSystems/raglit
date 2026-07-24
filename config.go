@@ -21,6 +21,12 @@ type Config struct {
 	// DefaultIndex is the index used when a command gives no --index. Empty →
 	// "default". Set it in the wizard to make one named index your working default.
 	DefaultIndex string `json:"default_index,omitempty"`
+	// Project names this project. On the SHARED daemon it namespaces every index
+	// this client touches (daemon index = "<project>__<local>"), so two projects
+	// both using index "default" don't collide, and a project's "search all" stays
+	// within its own indexes. Required to start a daemon-routed client (serve/CLI);
+	// --embedded/--db (single-session, in-process) don't need it. Set in the wizard.
+	Project string `json:"project,omitempty"`
 	// DaemonURL, when set, makes this a CLIENT config: commands route to the
 	// raglit daemon at this URL (http(s)://host:port) instead of opening a local
 	// index. The daemon owns storage (scoped per index, under its own home), so

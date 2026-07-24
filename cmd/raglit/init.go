@@ -98,12 +98,17 @@ func runInit(args []string) error {
 		fmt.Sscanf(ans, "%d", &ctxTokens)
 	}
 
+	// Project name — namespaces this project's indexes on the shared daemon, so
+	// two projects both using "default" don't collide. Required to start a
+	// daemon-routed client. Default: the project directory's name.
+	project := ask(r, "project name (namespaces this project's indexes on the shared daemon)", defaultProjectName(home))
+
 	// Default index — the one commands use when no --index is given.
 	defIndex := ask(r, "default index name", "default")
 
 	if err := raglit.SaveConfig(home, raglit.Config{
 		BaseURL: base, APIKey: key, VisionModel: vision, EmbedModel: embed,
-		ContextTokens: ctxTokens, DefaultIndex: defIndex,
+		ContextTokens: ctxTokens, DefaultIndex: defIndex, Project: project,
 	}); err != nil {
 		return err
 	}
@@ -143,6 +148,24 @@ func printPostInit(home raglit.Home) {
 	fmt.Println("  search:  raglit search \"your query\"           BM25 (add --mode hybrid with --embed)")
 	fmt.Println("  status:  raglit status                        index + queue state")
 	fmt.Println("  doctor:  raglit doctor                        OCR / extractor readiness")
+}
+
+// defaultProjectName derives a sensible project name from the home's location:
+// the project directory's basename (the parent of a ./.raglit home, else the
+// home itself). Falls back to "project".
+func defaultProjectName(home raglit.Home) string {
+	abs, err := filepath.Abs(string(home))
+	if err != nil {
+		abs = string(home)
+	}
+	if filepath.Base(abs) == filepath.Base(raglit.ProjectHomeName) { // ".raglit"
+		abs = filepath.Dir(abs)
+	}
+	name := raglit.NormalizeIndexName(filepath.Base(abs))
+	if name == "" || name == "default" {
+		return "project"
+	}
+	return name
 }
 
 // ask prompts with an optional default and returns the trimmed reply (or def).

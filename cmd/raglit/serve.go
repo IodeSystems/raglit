@@ -35,13 +35,13 @@ func runServe(args []string) error {
 	// if none is running — so N Claude sessions are N thin clients to ONE daemon
 	// (single writer + worker pool + LLM caller), not N processes fighting over the
 	// same index. --embedded opts out and runs the index in-process (single-session).
-	durl, err := client(homeOf, false)
+	durl, ns, err := client(homeOf, false)
 	if err != nil {
 		return err
 	}
 	if durl != "" {
 		s := server.NewMCPServer("raglit", version)
-		addRaglitTools(s, daemonToolHandlers(durl, *defLimit))
+		addRaglitTools(s, daemonToolHandlers(durl, *defLimit, ns))
 		return server.ServeStdio(s)
 	}
 
@@ -218,7 +218,10 @@ func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, ho
 }
 
 // selectIndexes resolves the `index` argument to a concrete set of names: empty
-// → all; else the comma-separated list (unknown names simply return nothing).
+// → all; else the comma-separated list. A member ending in "*" is a prefix
+// wildcard, expanded against the existing indexes — clients pass "<project>__*"
+// to scope "all" to their own namespace. Non-wildcard names pass through (an
+// unknown one is opened empty → no hits).
 func selectIndexes(reg *raglit.Registry, arg string) []string {
 	arg = strings.TrimSpace(arg)
 	if arg == "" || arg == "all" {
@@ -226,9 +229,19 @@ func selectIndexes(reg *raglit.Registry, arg string) []string {
 	}
 	var out []string
 	for _, n := range strings.Split(arg, ",") {
-		if n = strings.TrimSpace(n); n != "" {
-			out = append(out, n)
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
 		}
+		if prefix, ok := strings.CutSuffix(n, "*"); ok {
+			for _, nm := range reg.Names() {
+				if strings.HasPrefix(nm, prefix) {
+					out = append(out, nm)
+				}
+			}
+			continue
+		}
+		out = append(out, n)
 	}
 	return out
 }

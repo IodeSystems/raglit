@@ -34,8 +34,8 @@ func callTool(t *testing.T, h server.ToolHandlerFunc, args map[string]any) strin
 // against a real gat daemon (httptest) and checks they return the daemon's data,
 // $schema-stripped, in the tool contract shapes.
 func TestServeClient_ProxiesToDaemon(t *testing.T) {
-	srv, _ := gatTestServer(t) // seeds file:///notes.md ("…refresh token rotates…") + a pending job
-	h := daemonToolHandlers(srv.URL, 8)
+	srv, _ := gatTestServer(t)              // seeds file:///notes.md ("…refresh token rotates…") + a pending job
+	h := daemonToolHandlers(srv.URL, 8, "") // ns="" → no namespacing (proxy contract unchanged)
 
 	if out := callTool(t, h.listIndexes, nil); !strings.Contains(out, `"documents":1`) {
 		t.Fatalf("list_indexes: %s", out)

@@ -97,6 +97,10 @@ func (h Home) indexPath(name string) string {
 	return h.IndexPath()
 }
 
+// NormalizeIndexName is the exported form of normalizeIndexName, for clients that
+// build daemon index names (e.g. project namespacing).
+func NormalizeIndexName(name string) string { return normalizeIndexName(name) }
+
 // normalizeIndexName lowercases and strips a name to [a-z0-9_-], so a name from
 // an MCP tool argument can't traverse the filesystem. Empty → "default".
 func normalizeIndexName(name string) string {

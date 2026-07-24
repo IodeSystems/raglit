@@ -97,6 +97,9 @@ usage:
                 per-index storage under --root (default ~/.raglit); --home for a single index;
                 records <root>/daemon.json for client discovery; --stop signals a running one
   raglit review [--root DIR|--home DIR] [--addr :7420] [--embed]   same daemon, review-UI banner
+  # daemon-routed clients (the default) need a project name: config "project" or
+  # --project NAME (namespaces this project's indexes so they don't collide);
+  # --embedded (or --db) opts out for a single-session in-process index
   # add --daemon URL (or $RAGLIT_DAEMON) to ingest/search/status to call a daemon
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
@@ -250,12 +253,13 @@ func runSearch(args []string) error {
 
 	// Default: query the shared daemon (auto-started if needed); --embedded/--db
 	// open the index in-process.
-	dURL, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	dURL, ns, err := client(homeOf, fs.Lookup("db").Value.String() != "")
 	if err != nil {
 		return err
 	}
 	if dURL != "" {
-		return daemonSearchPrint(dURL, query, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *mode, *limit)
+		// Empty --index → all of THIS project's indexes (nsSelector → "<ns>__*").
+		return daemonSearchPrint(dURL, query, nsSelector(ns, fs.Lookup("index").Value.String()), *mode, *limit, ns)
 	}
 
 	store, err := openStore()

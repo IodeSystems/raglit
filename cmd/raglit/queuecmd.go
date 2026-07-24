@@ -99,12 +99,12 @@ func runIngest(args []string) error {
 
 	// Default: hand off to the shared daemon (auto-started if needed). --embedded
 	// or --db opens the index in-process instead.
-	dURL, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	dURL, ns, err := client(homeOf, fs.Lookup("db").Value.String() != "")
 	if err != nil {
 		return err
 	}
 	if dURL != "" {
-		return daemonIngest(dURL, targets, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *title)
+		return daemonIngest(dURL, targets, nsIndex(ns, resolveIndexName(fs.Lookup("index").Value.String(), homeOf)), *title)
 	}
 
 	store, err := openStore()
@@ -175,12 +175,12 @@ func runStatus(args []string) error {
 	openStore, homeOf := addStoreFlags(fs)
 	client := addClientFlags(fs) // --daemon + --embedded
 	fs.Parse(args)
-	dURL, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	dURL, ns, err := client(homeOf, fs.Lookup("db").Value.String() != "")
 	if err != nil {
 		return err
 	}
 	if dURL != "" {
-		return daemonStatusPrint(dURL, resolveIndexName(fs.Lookup("index").Value.String(), homeOf))
+		return daemonStatusPrint(dURL, nsSelector(ns, fs.Lookup("index").Value.String()))
 	}
 	store, err := openStore()
 	if err != nil {

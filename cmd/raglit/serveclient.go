@@ -17,8 +17,10 @@ import (
 )
 
 // daemonToolHandlers builds the MCP tool handlers as thin proxies to the daemon
-// at base.
-func daemonToolHandlers(base string, defLimit int) toolHandlers {
+// at base. ns is the project namespace: index names in requests are prefixed
+// ("<ns>__<local>", "<ns>__*" for all) and stripped back out of responses, so on
+// the shared daemon this project only sees its own indexes.
+func daemonToolHandlers(base string, defLimit int, ns string) toolHandlers {
 	return toolHandlers{
 		search: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			q, err := req.RequireString("query")
@@ -26,11 +28,11 @@ func daemonToolHandlers(base string, defLimit int) toolHandlers {
 				return mcp.NewToolResultError("query is required"), nil
 			}
 			v := url.Values{"q": {q}}
-			setIf(v, "index", req.GetString("index", ""))
+			v.Set("index", nsSelector(ns, req.GetString("index", "")))
 			if n := req.GetInt("limit", defLimit); n > 0 {
 				v.Set("n", strconv.Itoa(n))
 			}
-			return proxyGet(base, "/search", v)
+			return proxyGet(base, "/search", v, ns)
 		},
 
 		ingest: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -39,7 +41,7 @@ func daemonToolHandlers(base string, defLimit int) toolHandlers {
 				return mcp.NewToolResultError("url is required"), nil
 			}
 			b, err := daemonPostJSON(base, "/ingest", map[string]any{
-				"targets": []string{u}, "index": req.GetString("index", ""), "title": req.GetString("title", ""),
+				"targets": []string{u}, "index": nsIndex(ns, req.GetString("index", "")), "title": req.GetString("title", ""),
 			})
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("ingest", err), nil
@@ -55,25 +57,28 @@ func daemonToolHandlers(base string, defLimit int) toolHandlers {
 			if len(r.JobIDs) > 0 {
 				jobID = r.JobIDs[0]
 			}
-			out, _ := json.Marshal(map[string]any{"job_id": jobID, "index": r.Index, "state": "pending", "url": u})
+			out, _ := json.Marshal(map[string]any{"job_id": jobID, "index": nsStrip(ns, r.Index), "state": "pending", "url": u})
 			return mcp.NewToolResultText(string(out)), nil
 		},
 
 		status: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := url.Values{}
-			setIf(v, "index", req.GetString("index", ""))
-			return proxyGet(base, "/status", v)
+			v := url.Values{"index": {nsSelector(ns, req.GetString("index", ""))}}
+			return proxyGet(base, "/status", v, ns)
 		},
 
 		listIndexes: func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return proxyGet(base, "/indexes", nil)
+			b, err := daemonGet(base, "/indexes", nil)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("daemon", err), nil
+			}
+			return mcp.NewToolResultText(string(filterIndexList(stripSchema(b), ns))), nil
 		},
 
 		listDocuments: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v := url.Values{}
 			setIf(v, "name", req.GetString("name", ""))
-			setIf(v, "index", req.GetString("index", ""))
-			return proxyGet(base, "/api/find-documents", v)
+			v.Set("index", nsSelector(ns, req.GetString("index", "")))
+			return proxyGet(base, "/api/find-documents", v, ns)
 		},
 
 		getDocument: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -86,8 +91,8 @@ func daemonToolHandlers(base string, defLimit int) toolHandlers {
 			setIntIf(v, "from", req.GetInt("from", 0))
 			setIntIf(v, "to", req.GetInt("to", 0))
 			setIntIf(v, "max_chars", req.GetInt("max_chars", 0))
-			setIf(v, "index", req.GetString("index", ""))
-			return proxyGet(base, "/api/get-document", v)
+			v.Set("index", nsSelector(ns, req.GetString("index", "")))
+			return proxyGet(base, "/api/get-document", v, ns)
 		},
 
 		ocr: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -102,14 +107,15 @@ func daemonToolHandlers(base string, defLimit int) toolHandlers {
 	}
 }
 
-// proxyGet performs a daemon GET and returns its (schema-stripped) JSON as the
-// tool result, surfacing a daemon error as a tool error.
-func proxyGet(base, path string, v url.Values) (*mcp.CallToolResult, error) {
+// proxyGet performs a daemon GET and returns its JSON as the tool result — with
+// huma's $schema stripped and every "index" field un-namespaced (ns prefix
+// removed) — surfacing a daemon error as a tool error.
+func proxyGet(base, path string, v url.Values, ns string) (*mcp.CallToolResult, error) {
 	b, err := daemonGet(base, path, v)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("daemon", err), nil
 	}
-	return mcp.NewToolResultText(string(stripSchema(b))), nil
+	return mcp.NewToolResultText(string(stripNSJSON(stripSchema(b), ns))), nil
 }
 
 func setIf(v url.Values, key, val string) {

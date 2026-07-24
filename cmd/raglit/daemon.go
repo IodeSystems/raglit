@@ -213,18 +213,48 @@ func startDaemonDetached(addr string) error {
 	return cmd.Process.Release() // keep it running after we exit
 }
 
-// addClientFlags registers --daemon + --embedded and returns a resolver that
-// yields the shared-daemon URL (auto-starting if needed) — or "" when --embedded
-// is set (open the index in-process). dbSet forces embedded (a raw --db file).
-func addClientFlags(fs *flag.FlagSet) (resolve func(homeOf func() raglit.Home, dbSet bool) (string, error)) {
+// addClientFlags registers --daemon, --embedded, and --project, returning a
+// resolver that yields (daemonURL, projectNamespace). In daemon mode it
+// auto-starts the shared daemon if needed and REQUIRES a project name (flag or
+// config "project") — that namespaces this client's indexes so projects don't
+// collide on the shared daemon. --embedded (or a raw --db) opts out: returns
+// ("", "") to open the index in-process, no project needed.
+func addClientFlags(fs *flag.FlagSet) (resolve func(homeOf func() raglit.Home, dbSet bool) (durl, ns string, err error)) {
 	daemon := addDaemonFlag(fs)
-	embedded := fs.Bool("embedded", false, "bypass the shared daemon; open the index in-process")
-	return func(homeOf func() raglit.Home, dbSet bool) (string, error) {
+	embedded := fs.Bool("embedded", false, "bypass the shared daemon; open the index in-process (no project needed)")
+	project := fs.String("project", "", `project name — namespaces this client's indexes on the shared daemon (required; default: config "project")`)
+	return func(homeOf func() raglit.Home, dbSet bool) (string, string, error) {
 		if *embedded || dbSet {
-			return "", nil
+			return "", "", nil
 		}
-		return ensureDaemon(*daemon, homeOf)
+		durl, err := ensureDaemon(*daemon, homeOf)
+		if err != nil {
+			return "", "", err
+		}
+		ns, err := resolveProject(*project, homeOf)
+		if err != nil {
+			return "", "", err
+		}
+		return durl, ns, nil
 	}
+}
+
+// resolveProject picks the project namespace: an explicit --project wins, else the
+// home config's "project". Required in daemon mode — an empty result is an error
+// (the shared daemon namespaces by project, so a client without one is refused).
+func resolveProject(flagVal string, homeOf func() raglit.Home) (string, error) {
+	raw := strings.TrimSpace(flagVal)
+	if raw == "" {
+		if cfg, _, _ := raglit.LoadConfig(homeOf()); cfg.Project != "" {
+			raw = cfg.Project
+		}
+	}
+	if raw == "" {
+		return "", fmt.Errorf("no project name — set \"project\" in %s (run `raglit init`) or pass --project. "+
+			"The shared daemon namespaces every project's indexes by name so they don't collide; a client without one is refused. "+
+			"(Use --embedded for a single-session, in-process index with no project.)", homeOf().ConfigPath())
+	}
+	return raglit.NormalizeIndexName(raw), nil
 }
 
 func daemonIngest(base string, targets []string, index, title string) error {
@@ -278,8 +308,9 @@ func daemonGet(base, path string, q url.Values) ([]byte, error) {
 	return b, nil
 }
 
-// daemonSearchPrint queries the daemon and prints ranked hits.
-func daemonSearchPrint(base, query, index, mode string, limit int) error {
+// daemonSearchPrint queries the daemon and prints ranked hits. ns is the project
+// namespace, stripped from each hit's index tag for display.
+func daemonSearchPrint(base, query, index, mode string, limit int, ns string) error {
 	q := url.Values{"q": {query}, "mode": {mode}, "n": {strconv.Itoa(limit)}}
 	if index != "" {
 		q.Set("index", index)
@@ -309,7 +340,7 @@ func daemonSearchPrint(base, query, index, mode string, limit int) error {
 		if h.Page > 0 {
 			loc = fmt.Sprintf("%s p%d", h.DocID, h.Page)
 		}
-		fmt.Printf("%d. [%.3f] (%s) %s\n   %s\n", i+1, h.Score, h.Index, loc, clip(oneLine(h.Snippet), 160))
+		fmt.Printf("%d. [%.3f] (%s) %s\n   %s\n", i+1, h.Score, nsStrip(ns, h.Index), loc, clip(oneLine(h.Snippet), 160))
 	}
 	return nil
 }
