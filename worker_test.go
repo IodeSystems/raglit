@@ -125,3 +125,55 @@ func TestIndexStatus_ItemsAndCounts(t *testing.T) {
 		t.Fatalf("post-drain: %+v", st)
 	}
 }
+
+func TestWorker_DedupSkipsUnchangedContent(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "n.md")
+	os.WriteFile(src, []byte("alpha bravo\n\ncharlie delta"), 0o644)
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	url := "file://" + src
+	w := &Worker{Store: s} // offline (no segmenter)
+
+	drain := func() JobInfo {
+		if _, err := s.Enqueue(url, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.ProcessOne(ctx); err != nil {
+			t.Fatal(err)
+		}
+		jobs, _ := s.Jobs("all", 10) // newest first
+		return jobs[0]
+	}
+
+	// 1) first ingest: real work (offline split), fragments indexed.
+	j1 := drain()
+	if j1.Mode != "offline" || j1.Fragments == 0 {
+		t.Fatalf("first ingest = %+v, want offline with fragments", j1)
+	}
+	frags := func() int { st, _ := s.IndexStatus(); return st.Fragments }
+	before := frags()
+
+	// 2) re-ingest identical bytes: skipped, no new work.
+	j2 := drain()
+	if j2.Mode != "unchanged" {
+		t.Fatalf("unchanged re-ingest mode = %q, want unchanged", j2.Mode)
+	}
+	if frags() != before {
+		t.Fatalf("skip should not change the index: %d → %d fragments", before, frags())
+	}
+
+	// 3) change the file: re-ingested (hash differs).
+	os.WriteFile(src, []byte("echo foxtrot golf"), 0o644)
+	j3 := drain()
+	if j3.Mode == "unchanged" {
+		t.Fatal("changed content must re-ingest, not skip")
+	}
+	if h, _ := s.Search("foxtrot", 5); len(h) != 1 {
+		t.Fatalf("changed content should be searchable: %d hits", len(h))
+	}
+}

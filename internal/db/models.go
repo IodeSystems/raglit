@@ -5,10 +5,11 @@
 package db
 
 type Document struct {
-	ID      int64  `db:"id" derived:"documents.id" json:"id"`
-	Path    string `db:"path" derived:"documents.path" json:"path"`
-	Title   string `db:"title" derived:"documents.title" json:"title"`
-	AddedAt int64  `db:"added_at" derived:"documents.added_at" json:"added_at"`
+	ID          int64  `db:"id" derived:"documents.id" json:"id"`
+	Path        string `db:"path" derived:"documents.path" json:"path"`
+	Title       string `db:"title" derived:"documents.title" json:"title"`
+	AddedAt     int64  `db:"added_at" derived:"documents.added_at" json:"added_at"`
+	ContentHash string `db:"content_hash" derived:"documents.content_hash" json:"content_hash"`
 }
 
 type Fragment struct {

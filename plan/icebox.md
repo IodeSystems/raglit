@@ -28,9 +28,11 @@ The concrete roadmap, in order. Expands items #1 and #2 below.
   - Follow-ups (not blocking): VecSearch/DocReview overlay; merge/diff; CLI/MCP
     branch commands.
 
-All three checklist items are complete. Remaining tails across items: client-only
-`init` (write daemon_url, skip local index bytes); retire the legacy stdlib
-daemon/review; the branch overlay follow-ups above.
+All three checklist items are complete. DONE since: retired the legacy stdlib
+daemon/review (`daemon`/`review` now run the gat server; `httpd` alias removed);
+added source-content dedup (documents.content_hash → the worker skips re-ingest of
+unchanged bytes, mode "unchanged"). Remaining tails: client-only `init` (write
+daemon_url, skip local index bytes); the branch overlay follow-ups above.
 
 
 ## 1. MCP-as-daemon-client: one shared server, many MCP clients

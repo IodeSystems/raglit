@@ -2,12 +2,21 @@ package raglit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// sha256hex is the hex sha256 of raw bytes — the source-content fingerprint used
+// for ingest dedup (skip re-indexing unchanged content).
+func sha256hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
 
 // Worker drains the ingest queue (queue.go): claim a pending job → fetch its
 // URL → turn it into a Document (plain-text fragmenting, or PDF → OCR) → Ingest
@@ -107,14 +116,30 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 		return 0, "", err
 	}
 	sl.Done("fetch", "", fmt.Sprintf("%d bytes", len(f.Data)))
+
+	// Dedup: if this URL was already indexed from identical source bytes, skip the
+	// expensive extract/OCR/segment/embed work entirely.
+	hash := sha256hex(f.Data)
+	if prev, _ := w.Store.DocumentHash(job.URL); prev != "" && prev == hash {
+		sl.Skip("extract", "unchanged — source hash match")
+		return 0, "unchanged", nil
+	}
+
 	title := job.Title
 	if title == "" {
 		title = f.Title
 	}
+	n, mode, ierr := w.extractAndIngest(ctx, job, f, title, sl)
+	if ierr == nil {
+		_ = w.Store.SetDocumentHash(job.URL, hash) // remember for the next dedup
+	}
+	return n, mode, ierr
+}
 
-	// Route by document kind (extract.go): a PDF runs the text-layer/OCR hybrid,
-	// an office/markup file goes through pandoc, an image through OCR, and anything
-	// else is treated as text.
+// extractAndIngest routes a fetched document by kind (extract.go) and indexes it:
+// a PDF runs the text-layer/OCR hybrid, an office/markup file goes through
+// pandoc, an image through OCR, and anything else is treated as text.
+func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, title string, sl *StageLog) (int, string, error) {
 	kind := ClassifyDoc(job.URL, f.ContentType)
 	if f.IsPDF {
 		kind = KindPDF

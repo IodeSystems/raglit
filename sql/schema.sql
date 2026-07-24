@@ -3,10 +3,11 @@
 -- vector cosine scan are NOT expressed as sqlc queries (sqlc's SQLite parser
 -- can't model fts5 virtual tables / MATCH / bm25); those stay as raw SQL.
 CREATE TABLE IF NOT EXISTS documents (
-  id       INTEGER PRIMARY KEY,
-  path     TEXT NOT NULL UNIQUE,
-  title    TEXT NOT NULL DEFAULT '',
-  added_at INTEGER NOT NULL
+  id           INTEGER PRIMARY KEY,
+  path         TEXT NOT NULL UNIQUE,
+  title        TEXT NOT NULL DEFAULT '',
+  added_at     INTEGER NOT NULL,
+  content_hash TEXT NOT NULL DEFAULT ''   -- sha256 of the source bytes; skip re-ingest when unchanged
 );
 CREATE TABLE IF NOT EXISTS fragments (
   id     INTEGER PRIMARY KEY,

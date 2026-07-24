@@ -127,3 +127,10 @@ SELECT path FROM documents;
 
 -- name: DeleteDocumentByPath :exec
 DELETE FROM documents WHERE path = ?;
+
+-- ===== content-hash dedup =====
+-- name: GetDocumentHash :one
+SELECT content_hash FROM documents WHERE path = ?;
+
+-- name: SetDocumentHash :exec
+UPDATE documents SET content_hash = ? WHERE path = ?;

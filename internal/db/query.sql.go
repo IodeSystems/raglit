@@ -139,12 +139,19 @@ const getDocumentByPath = `-- name: GetDocumentByPath :one
 SELECT id, path, title, added_at FROM documents WHERE path = ?
 `
 
+type GetDocumentByPathRow struct {
+	ID      int64  `db:"id" derived:"documents.id" json:"id"`
+	Path    string `db:"path" derived:"documents.path" json:"path"`
+	Title   string `db:"title" derived:"documents.title" json:"title"`
+	AddedAt int64  `db:"added_at" derived:"documents.added_at" json:"added_at"`
+}
+
 // Relational CRUD for the raglit Store. FTS5 search + vector cosine are NOT here
 // (sqlc can't parse fts5); they stay as raw SQL in store.go.
 // ===== documents =====
-func (q *Queries) GetDocumentByPath(ctx context.Context, path string) (Document, error) {
+func (q *Queries) GetDocumentByPath(ctx context.Context, path string) (GetDocumentByPathRow, error) {
 	row := q.db.QueryRowContext(ctx, getDocumentByPath, path)
-	var i Document
+	var i GetDocumentByPathRow
 	err := row.Scan(
 		&i.ID,
 		&i.Path,
@@ -152,6 +159,18 @@ func (q *Queries) GetDocumentByPath(ctx context.Context, path string) (Document,
 		&i.AddedAt,
 	)
 	return i, err
+}
+
+const getDocumentHash = `-- name: GetDocumentHash :one
+SELECT content_hash FROM documents WHERE path = ?
+`
+
+// ===== content-hash dedup =====
+func (q *Queries) GetDocumentHash(ctx context.Context, path string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getDocumentHash, path)
+	var content_hash string
+	err := row.Scan(&content_hash)
+	return content_hash, err
 }
 
 const getJob = `-- name: GetJob :one
@@ -754,6 +773,20 @@ func (q *Queries) RetryJob(ctx context.Context, id int64) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setDocumentHash = `-- name: SetDocumentHash :exec
+UPDATE documents SET content_hash = ? WHERE path = ?
+`
+
+type SetDocumentHashParams struct {
+	ContentHash string `db:"content_hash" derived:"documents.content_hash" json:"content_hash"`
+	Path        string `db:"path" derived:"documents.path" json:"path"`
+}
+
+func (q *Queries) SetDocumentHash(ctx context.Context, arg SetDocumentHashParams) error {
+	_, err := q.db.ExecContext(ctx, setDocumentHash, arg.ContentHash, arg.Path)
+	return err
 }
 
 const setJobRunning = `-- name: SetJobRunning :exec

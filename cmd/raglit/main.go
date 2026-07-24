@@ -54,8 +54,6 @@ func main() {
 		err = runDaemon(os.Args[2:])
 	case "review":
 		err = runReview(os.Args[2:])
-	case "httpd":
-		err = runHttpd(os.Args[2:])
 	case "demo":
 		err = runDemo(os.Args[2:])
 	case "pagify":
@@ -90,8 +88,10 @@ usage:
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"
   raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
-  raglit daemon [--home DIR] [--addr :7420] [--embed]   HTTP daemon (ingest/search/status) + review UI at /
-  raglit review [--home DIR] [--addr :7420] [--embed]   same daemon, framed as the status/job/OCR review UI
+  raglit daemon [--root DIR|--home DIR] [--addr :7420] [--embed]   multi-protocol daemon:
+                REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
+                per-index storage under --root (default ~/.raglit); --home for a single index
+  raglit review [--root DIR|--home DIR] [--addr :7420] [--embed]   same daemon, review-UI banner
   # add --daemon URL (or $RAGLIT_DAEMON) to ingest/search/status to call a daemon
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model

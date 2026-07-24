@@ -52,7 +52,8 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   paged-text→fragments; a code/text file goes straight to fragments (LLM-segmented
   into coherent ~500-word units — functions bound with their docs — or a
   dependency-free offline split when no model is set); a born-digital PDF page
-  uses its text layer, no OCR. Every stage and its engine is recorded per job.
+  uses its text layer, no OCR. Every stage and its engine is recorded per job. Re-ingesting an unchanged
+  source is skipped (a sha256 of the bytes is compared) so no work is duplicated.
 - **Search** — BM25 (`--mode bm25`, default), vectors (`--mode vec`), or hybrid
   RRF (`--mode hybrid`). Results are precise citations: document → page →
   fragment.
@@ -93,22 +94,30 @@ the wizard), falling back to `default`.
 
 ## Daemon mode
 
-For big or ongoing ingests, run a daemon that owns the index and the background
-workers; other invocations call into it over HTTP instead of touching the
-SQLite files (no contention, and remote-capable):
+For big or ongoing ingests — or to share one index across many clients — run a
+daemon that owns storage, the workers, and the LLM calls; other invocations call
+into it over HTTP instead of touching the SQLite files:
 
 ```sh
-raglit daemon --addr 127.0.0.1:7420        # long-running: workers + HTTP API + review UI
+raglit daemon --addr 127.0.0.1:7420        # workers + HTTP API + review UI + OpenAPI + GraphQL
 
-# point any command at it (or set RAGLIT_DAEMON=http://host:7420)
+# point any command (or `serve`) at it (or set RAGLIT_DAEMON=http://host:7420 / config daemon_url)
 raglit ingest --daemon http://127.0.0.1:7420 ./my-project
 raglit search --daemon http://127.0.0.1:7420 "rollback procedure"
-raglit status --daemon http://127.0.0.1:7420
 ```
 
-API endpoints: `GET /health`, `GET /indexes`, `POST /ingest`, `GET /search`,
-`GET /status`. The daemon reads local paths from its OWN filesystem (share it,
-or use `http(s)://` targets); bind to localhost — there's no auth yet.
+`raglit daemon` is a multi-protocol server (huma + gwag/gat): the same operations
+are REST + in-process GraphQL (`/graphql`) + gRPC off one port, with **OpenAPI at
+`/openapi.json`**. Storage is **scoped per index** under `--root` (default
+`~/.raglit`, so each index lives at `~/.raglit/indexes/<name>/`); `--home DIR`
+selects a single-index layout instead. `serve` becomes a thin **client** to the
+daemon when `daemon_url`/`--daemon` is set, so many MCP `serve` instances share
+one daemon.
+
+**Branches** (copy-on-write, worktree-style): `POST /api/branches {name,parent}`
+forks a branch whose reads overlay the parent at document grain (writes/deletes
+touch the branch only); `GET /api/branches` lists them with age + last-access;
+`DELETE /api/branches?name=` drops one. Localhost, no auth — don't expose it.
 
 ## Review UI
 

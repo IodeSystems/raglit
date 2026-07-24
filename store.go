@@ -20,6 +20,7 @@ package raglit
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,6 +59,23 @@ func gq(tx gen.DBTX) *gen.Queries { return gen.New(tx) }
 
 // Path is the index file path (or ":memory:").
 func (s *Store) Path() string { return s.path }
+
+// DocumentHash returns a document's stored source-content hash, or "" if the doc
+// is unknown or has none. The worker uses it to skip re-ingesting unchanged
+// content (dedup work).
+func (s *Store) DocumentHash(path string) (string, error) {
+	h, err := s.q.GetDocumentHash(context.Background(), path)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return h, err
+}
+
+// SetDocumentHash records a document's source-content hash after a successful
+// ingest, so an unchanged re-ingest can be skipped.
+func (s *Store) SetDocumentHash(path, hash string) error {
+	return s.q.SetDocumentHash(context.Background(), gen.SetDocumentHashParams{ContentHash: hash, Path: path})
+}
 
 // SetEmbedder enables vector search: fragments are embedded on Ingest and
 // VecSearch/HybridSearch become available. nil disables it.
@@ -101,13 +119,19 @@ func Open(path string) (*Store, error) {
 // column first, so a fresh DB (already carrying the column from schema) and an
 // old DB converge without error.
 func migrate(db *sql.DB) error {
-	has, err := hasColumn(db, "ingest_jobs", "mode")
-	if err != nil {
-		return err
+	cols := []struct{ table, col, def string }{
+		{"ingest_jobs", "mode", "TEXT NOT NULL DEFAULT ''"},
+		{"documents", "content_hash", "TEXT NOT NULL DEFAULT ''"},
 	}
-	if !has {
-		if _, err := db.Exec(`ALTER TABLE ingest_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT ''`); err != nil {
+	for _, c := range cols {
+		has, err := hasColumn(db, c.table, c.col)
+		if err != nil {
 			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, c.table, c.col, c.def)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

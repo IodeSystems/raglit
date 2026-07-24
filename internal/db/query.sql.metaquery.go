@@ -239,6 +239,32 @@ var GetDocumentByPathCols = struct {
 	AddedAt: metaquery.NewIntCol("added_at"),
 }
 
+var MetaGetDocumentHash = metaquery.Query{
+	Name:    "GetDocumentHash",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT content_hash FROM documents WHERE path = ?`,
+	Columns: []metaquery.Column{
+		{Name: "content_hash", OriginalName: "content_hash", GoType: "string"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "path", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WrapGetDocumentHash returns a metaquery.Builder over MetaGetDocumentHash, pre-bound with typed arguments.
+func WrapGetDocumentHash(path string) *metaquery.Builder {
+	return metaquery.Wrap(&MetaGetDocumentHash, path)
+}
+
+// GetDocumentHashCols gives typed, name-safe access to GetDocumentHash's output columns.
+var GetDocumentHashCols = struct {
+	ContentHash metaquery.TextCol
+}{
+	ContentHash: metaquery.NewTextCol("content_hash"),
+}
+
 var MetaGetJob = metaquery.Query{
 	Name:    "GetJob",
 	Cmd:     ":one",
@@ -905,6 +931,23 @@ WHERE id=? AND state IN ('error','done')`,
 // WrapRetryJob returns a metaquery.Builder over MetaRetryJob, pre-bound with typed arguments.
 func WrapRetryJob(id int64) *metaquery.Builder {
 	return metaquery.Wrap(&MetaRetryJob, id)
+}
+
+var MetaSetDocumentHash = metaquery.Query{
+	Name:    "SetDocumentHash",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `UPDATE documents SET content_hash = ? WHERE path = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "content_hash", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "path", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WrapSetDocumentHash returns a metaquery.Builder over MetaSetDocumentHash, pre-bound with typed arguments.
+func WrapSetDocumentHash(arg SetDocumentHashParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaSetDocumentHash, arg.ContentHash, arg.Path)
 }
 
 var MetaSetJobRunning = metaquery.Query{
