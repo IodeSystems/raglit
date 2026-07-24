@@ -30,6 +30,42 @@ type Config struct {
 	// OCR configures the cheap first-pass tier of the OCR cascade. Zero value →
 	// VLM-only (every page transcribed by the vision model).
 	OCR OCRConfig `json:"ocr,omitempty"`
+
+	// Ignore is this config's default exclude globs (project-scoped — it does not
+	// affect other projects' configs). Merged with a built-in default (dot-dirs,
+	// node_modules, vendor) and the per-index / per-root ignores; ignore wins.
+	Ignore []string `json:"ignore,omitempty"`
+	// Gitignore, when nil or true, also honors each root's .gitignore chain.
+	Gitignore *bool `json:"gitignore,omitempty"`
+	// Indexes declares named indexes and the source roots + rules that feed them,
+	// for `raglit sync`. Multi-index: one project can define several.
+	Indexes map[string]IndexConfig `json:"indexes,omitempty"`
+}
+
+// IndexConfig is one index's source definition: the roots to scan and the
+// include/ignore globs that apply to them (overridable per root).
+type IndexConfig struct {
+	Roots   []Root   `json:"roots,omitempty"`
+	Include []string `json:"include,omitempty"` // a file must match one to be indexed
+	Ignore  []string `json:"ignore,omitempty"`  // merged with project + built-in ignore
+}
+
+// Root is a source directory, optionally with its own include/ignore overriding
+// the index's. In JSON it is EITHER a bare path string OR {path, include, ignore}.
+type Root struct {
+	Path    string   `json:"path"`
+	Include []string `json:"include,omitempty"`
+	Ignore  []string `json:"ignore,omitempty"`
+}
+
+// UnmarshalJSON accepts a bare string ("./src") or an object
+// ({"path":"./gen","include":["*.go"]}).
+func (r *Root) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		return json.Unmarshal(b, &r.Path)
+	}
+	type raw Root
+	return json.Unmarshal(b, (*raw)(r))
 }
 
 // OCRConfig selects and tunes the cheap first-pass OCR engine. The cascade tries

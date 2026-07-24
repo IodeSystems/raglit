@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -31,7 +32,7 @@ func TestConfigRoundTripAndInited(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("load after save: ok=%v err=%v", ok, err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", got, want)
 	}
 }

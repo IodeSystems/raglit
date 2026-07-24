@@ -8,3 +8,6 @@
 *.sqlite-shm
 /raglit-home/
 /.raglit/
+
+# poly-lsp-mcp workspace cache
+/.poly-lsp-mcp/

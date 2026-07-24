@@ -103,6 +103,37 @@ else `$RAGLIT_HOME`, else `~/local/raglit`); `--index NAME` selects a named inde
 within it. With no `--index`, commands use the config's `default_index` (set in
 the wizard), falling back to `default`.
 
+## Configured sources (`raglit sync`)
+
+Instead of passing paths every time, declare source roots + rules in the project's
+`.raglit/config.json` and run `raglit sync` — it resolves them to files and
+enqueues each (the content-hash dedup skips unchanged ones, so re-syncing is
+cheap). Rules layer **project → index → root** (ignore is unioned and always wins;
+include is overridable per root), each root's **`.gitignore` is honored**, and a
+built-in default drops dot-dirs / `node_modules` / `vendor`. Multi-index is native.
+
+```jsonc
+{
+  // ...endpoint + models...
+  "ignore":    ["**/*.min.js"],     // project-scoped default excludes (this config only)
+  "gitignore": true,                 // honor each root's .gitignore (default)
+  "indexes": {
+    "code": {
+      "roots":   [".", "../shared-lib"],
+      "include": ["*.go", "*.ts", "*.py", "*.md"],   // a file must match one
+      "ignore":  ["*_test.go", "gen/**"]              // merged with project + built-in
+    },
+    "docs": { "roots": [ { "path": "./docs", "include": ["*.md", "*.pdf"] } ] }
+  }
+}
+```
+```sh
+raglit sync                       # ingest every configured index's roots
+raglit sync --index code --dry-run  # preview one index's matched files
+```
+Globs: no `/` matches the basename (`*.go`); with `/`, the path (`gen/**`, `**/x`).
+`sync` routes to the daemon when `daemon_url`/`--daemon` is set, else the local home.
+
 ## Daemon mode
 
 For big or ongoing ingests — or to share one index across many clients — run a

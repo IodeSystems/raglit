@@ -42,6 +42,8 @@ func main() {
 		err = runIndex(os.Args[2:])
 	case "ingest":
 		err = runIngest(os.Args[2:])
+	case "sync":
+		err = runSync(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
 	case "work":
@@ -84,6 +86,8 @@ usage:
   raglit demo                                self-contained offline tour
   raglit index  [--home DIR] [--embed] FILE|DIR...   ingest local files (+ PDFs via OCR)
   raglit ingest [--home DIR] [--now] TARGET...  queue folders/files/URLs (file://, http(s)://)
+  raglit sync   [--home DIR] [--index N] [--dry-run]   ingest the config's [indexes] roots
+                (per-index include/ignore globs, honors .gitignore; dedup skips unchanged)
   raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"
