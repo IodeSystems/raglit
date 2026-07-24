@@ -53,9 +53,22 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
   - Not yet on gat: MCP `ocr` tool endpoint (extract arbitrary bytes) — add with
     P4 serve-parity. `Store.SQLDB()` accessor deferred to P3 (handlers use Store
     methods for now).
-- ◻ **P3 — migrate Store internals to internal/db** (queue/review/docget/stages
-  → generated queries; unify `store.go` schema const with `sql/schema.sql` via
-  `//go:embed` — currently DUPLICATED, keep in sync until then). FTS/vec stay raw.
+- ✅ **P3 — Store internals migrated to internal/db (sqlc + metaquery)**.
+  - Schema unified: `store.go` embeds `sql/schema.sql` (`//go:embed`) — one
+    source of truth for codegen AND runtime, no drift.
+  - `Store.q *gen.Queries` (over `s.db`); `gq(tx)` binds generated queries to a
+    transaction. Migrated: queue.go (Enqueue/claimNextJob/complete/fail/Retry/
+    Cancel/IndexStatus/recentAvg — **Jobs via a metaquery Builder**: OrderBy +
+    optional state filter + pagination), stages.go (InsertStage/JobStages),
+    review.go (UpsertOcrPage/Documents/DocReview/PageImagePath), docget.go
+    (MatchDocuments; **DocText page-range via a metaquery Builder**), pipeline.go
+    `commitDoc` + store.go `Ingest` (generated inserts inside their tx via gq).
+  - **Raw SQL remains ONLY** for FTS5 `MATCH`/`bm25` search + the vector cosine
+    `SELECT ... fv.vec` (store.go:335/379) — the two sqlc can't model.
+  - Verified: full suite + `-race` green; live gat daemon over the migrated layer
+    on the 49-doc dogfood index (status/documents/search/get-document all correct).
+  - Regenerate: `sqlc generate` (plugin: `make -C ../sqlc-go-codegen-metaquery
+    bin/sqlc-go-codegen-metaquery`).
 - ◻ **P4 — serve as daemon client**: MCP tools proxy to the daemon over HTTP
   when `daemon_url` set; local/embedded mode is the fallback. Completes item #1.
 - ◻ **P5 — scoped storage** (item #2): daemon owns per-index storage under its

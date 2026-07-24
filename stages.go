@@ -1,10 +1,13 @@
 package raglit
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	gen "github.com/iodesystems/raglit/internal/db"
 )
 
 // Per-job pipeline stages — the "series of tasks" an ingest item goes through.
@@ -55,10 +58,10 @@ func (s *Store) addStage(jobID int64, seq int, name, engine, state, detail strin
 	if len(detail) > 500 {
 		detail = detail[:500]
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO job_stages(job_id, seq, name, engine, state, detail, at) VALUES(?,?,?,?,?,?,?)`,
-		jobID, seq, name, engine, state, detail, time.Now().UnixNano())
-	return err
+	return s.q.InsertStage(context.Background(), gen.InsertStageParams{
+		JobID: jobID, Seq: int64(seq), Name: name, Engine: engine, State: state,
+		Detail: detail, At: time.Now().UnixNano(),
+	})
 }
 
 // JobStage is one recorded pipeline step.
@@ -73,22 +76,15 @@ type JobStage struct {
 
 // JobStages returns a job's stages in order.
 func (s *Store) JobStages(jobID int64) ([]JobStage, error) {
-	rows, err := s.db.Query(
-		`SELECT seq, name, engine, state, detail, at FROM job_stages
-		 WHERE job_id=? ORDER BY seq`, jobID)
+	rows, err := s.q.ListJobStages(context.Background(), jobID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []JobStage
-	for rows.Next() {
-		var st JobStage
-		if err := rows.Scan(&st.Seq, &st.Name, &st.Engine, &st.State, &st.Detail, &st.At); err != nil {
-			return nil, err
-		}
-		out = append(out, st)
+	out := make([]JobStage, len(rows))
+	for i, r := range rows {
+		out[i] = JobStage{Seq: int(r.Seq), Name: r.Name, Engine: r.Engine, State: r.State, Detail: r.Detail, At: r.At}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // engineSummary renders an engine→count map as a stable "vision×2, tesseract×1"

@@ -2,9 +2,10 @@ package raglit
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
+
+	gen "github.com/iodesystems/raglit/internal/db"
 )
 
 // Segmented ingestion pipeline.
@@ -176,68 +177,38 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 // (capturing their ids for vectors), vectors, and page provenance. All-or-nothing
 // — search never observes a half-updated document.
 func (s *Store) commitDoc(docPath, title string, frags []stagedFrag, provenance []stagedPage, vecs map[int][]float32) error {
+	ctx := context.Background()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	q := gq(tx) // generated queries bound to this tx
 
-	if _, err := tx.Exec(
-		`INSERT INTO documents(path, title, added_at) VALUES(?,?,?)
-		 ON CONFLICT(path) DO UPDATE SET title=excluded.title, added_at=excluded.added_at`,
-		docPath, title, time.Now().UnixNano()); err != nil {
+	docID, err := q.UpsertDocument(ctx, gen.UpsertDocumentParams{Path: docPath, Title: title, AddedAt: time.Now().UnixNano()})
+	if err != nil {
 		return fmt.Errorf("raglit: commit doc: %w", err)
 	}
-	var docID int64
-	if err := tx.QueryRow(`SELECT id FROM documents WHERE path=?`, docPath).Scan(&docID); err != nil {
+	if err := q.DeleteFragmentsByDoc(ctx, docID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM fragments WHERE doc_id=?`, docID); err != nil {
+	if err := q.DeleteOcrPagesByDoc(ctx, docID); err != nil {
 		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM ocr_pages WHERE doc_id=?`, docID); err != nil {
-		return err
-	}
-
-	fins, err := tx.Prepare(`INSERT INTO fragments(doc_id, page, ord, text) VALUES(?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer fins.Close()
-	var vins *sql.Stmt
-	if len(vecs) > 0 {
-		if vins, err = tx.Prepare(`INSERT INTO fragment_vectors(fragment_id, dim, vec) VALUES(?,?,?)`); err != nil {
-			return err
-		}
-		defer vins.Close()
 	}
 	for i, f := range frags {
-		res, err := fins.Exec(docID, f.page, f.ord, f.text)
+		fid, err := q.InsertFragment(ctx, gen.InsertFragmentParams{DocID: docID, Page: int64(f.page), Ord: int64(f.ord), Text: f.text})
 		if err != nil {
 			return fmt.Errorf("raglit: insert fragment: %w", err)
 		}
-		if vins != nil {
-			if v := vecs[i]; len(v) > 0 {
-				id, _ := res.LastInsertId()
-				if _, err := vins.Exec(id, len(v), encodeVec(v)); err != nil {
-					return fmt.Errorf("raglit: store vector: %w", err)
-				}
+		if v := vecs[i]; len(v) > 0 {
+			if err := q.InsertVector(ctx, gen.InsertVectorParams{FragmentID: fid, Dim: int64(len(v)), Vec: encodeVec(v)}); err != nil {
+				return fmt.Errorf("raglit: store vector: %w", err)
 			}
 		}
 	}
-
-	if len(provenance) > 0 {
-		pins, err := tx.Prepare(
-			`INSERT INTO ocr_pages(doc_id, page, engine, image_path) VALUES(?,?,?,?)
-			 ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=excluded.image_path`)
-		if err != nil {
+	for _, p := range provenance {
+		if err := q.UpsertOcrPage(ctx, gen.UpsertOcrPageParams{DocID: docID, Page: int64(p.page), Engine: p.engine, ImagePath: p.imgPath}); err != nil {
 			return err
-		}
-		defer pins.Close()
-		for _, p := range provenance {
-			if _, err := pins.Exec(docID, p.page, p.engine, p.imgPath); err != nil {
-				return err
-			}
 		}
 	}
 	return tx.Commit()

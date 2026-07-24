@@ -28,6 +28,10 @@ import (
 	"strings"
 	"time"
 
+	_ "embed"
+
+	gen "github.com/iodesystems/raglit/internal/db"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -35,11 +39,15 @@ import (
 // knows a Home layout and copies ingested originals into it.
 type Store struct {
 	db       *sql.DB
+	q        *gen.Queries // sqlc/metaquery typed CRUD over db (FTS/vec stay raw)
 	path     string
 	home     Home
 	withHome bool
 	embedder *Embedder // nil → lexical only; set for vector/hybrid search
 }
+
+// gq returns a generated Queries bound to a transaction (for atomic writes).
+func gq(tx gen.DBTX) *gen.Queries { return gen.New(tx) }
 
 // Path is the index file path (or ":memory:").
 func (s *Store) Path() string { return s.path }
@@ -49,79 +57,12 @@ func (s *Store) Path() string { return s.path }
 func (s *Store) SetEmbedder(e *Embedder) { s.embedder = e }
 
 // schema is the whole index: metadata tables + an FTS5 mirror kept in sync by
-// triggers (external-content pattern — the fts table stores only the index, not
-// a second copy of the text).
-const schema = `
-CREATE TABLE IF NOT EXISTS documents (
-  id       INTEGER PRIMARY KEY,
-  path     TEXT NOT NULL UNIQUE,
-  title    TEXT NOT NULL DEFAULT '',
-  added_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS fragments (
-  id     INTEGER PRIMARY KEY,
-  doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  page   INTEGER NOT NULL DEFAULT 0,
-  ord    INTEGER NOT NULL DEFAULT 0,
-  text   TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS fragments_doc ON fragments(doc_id);
-CREATE VIRTUAL TABLE IF NOT EXISTS fragments_fts USING fts5(
-  text,
-  content='fragments',
-  content_rowid='id',
-  tokenize='porter unicode61'
-);
-CREATE TRIGGER IF NOT EXISTS fragments_ai AFTER INSERT ON fragments BEGIN
-  INSERT INTO fragments_fts(rowid, text) VALUES (new.id, new.text);
-END;
-CREATE TRIGGER IF NOT EXISTS fragments_ad AFTER DELETE ON fragments BEGIN
-  INSERT INTO fragments_fts(fragments_fts, rowid, text) VALUES ('delete', old.id, old.text);
-END;
-CREATE TRIGGER IF NOT EXISTS fragments_au AFTER UPDATE ON fragments BEGIN
-  INSERT INTO fragments_fts(fragments_fts, rowid, text) VALUES ('delete', old.id, old.text);
-  INSERT INTO fragments_fts(rowid, text) VALUES (new.id, new.text);
-END;
-CREATE TABLE IF NOT EXISTS fragment_vectors (
-  fragment_id INTEGER PRIMARY KEY REFERENCES fragments(id) ON DELETE CASCADE,
-  dim         INTEGER NOT NULL,
-  vec         BLOB NOT NULL   -- little-endian float32, L2-normalized
-);
-CREATE TABLE IF NOT EXISTS ingest_jobs (
-  id          INTEGER PRIMARY KEY,
-  url         TEXT NOT NULL,
-  title       TEXT NOT NULL DEFAULT '',
-  state       TEXT NOT NULL DEFAULT 'pending',  -- pending | running | done | error
-  error       TEXT NOT NULL DEFAULT '',
-  fragments   INTEGER NOT NULL DEFAULT 0,
-  mode        TEXT NOT NULL DEFAULT '',          -- 'llm' | 'offline' | '' (segmentation mode)
-  enqueued_at INTEGER NOT NULL,
-  started_at  INTEGER NOT NULL DEFAULT 0,
-  finished_at INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS ingest_jobs_state ON ingest_jobs(state, id);
--- Per-job pipeline stages (the "series of tasks" an item goes through): fetch →
--- extract → [ocr] → segment → [embed] → commit, each tagged with the engine/mode
--- that handled it. Populated by the worker as it runs, shown in the review UI.
-CREATE TABLE IF NOT EXISTS job_stages (
-  id      INTEGER PRIMARY KEY,
-  job_id  INTEGER NOT NULL REFERENCES ingest_jobs(id) ON DELETE CASCADE,
-  seq     INTEGER NOT NULL,
-  name    TEXT NOT NULL,               -- fetch | extract | ocr | segment | embed | commit
-  engine  TEXT NOT NULL DEFAULT '',    -- text-layer | pandoc | tesseract | vision | llm | offline | …
-  state   TEXT NOT NULL DEFAULT 'done',-- done | error | skipped
-  detail  TEXT NOT NULL DEFAULT '',
-  at      INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS job_stages_job ON job_stages(job_id, seq);
-CREATE TABLE IF NOT EXISTS ocr_pages (
-  doc_id     INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  page       INTEGER NOT NULL,
-  engine     TEXT NOT NULL DEFAULT '',   -- 'text' (layer/plain) | 'vision' | 'tesseract' | 'paddleocr'
-  image_path TEXT NOT NULL DEFAULT '',   -- absolute path to the saved page image; '' for text pages
-  PRIMARY KEY (doc_id, page)
-);
-`
+// triggers (external-content pattern). The embedded sql/schema.sql is the SAME
+// file sqlc reads for codegen — one source of truth, no drift. Every statement
+// is IF NOT EXISTS, so re-applying on each Open is a no-op on an existing index.
+//
+//go:embed sql/schema.sql
+var schema string
 
 // Open opens (creating if needed) a raglit index at path. Use ":memory:" for a
 // throwaway index (tests). foreign_keys is ON so a document delete cascades to
@@ -145,7 +86,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("raglit: migrate: %w", err)
 	}
-	return &Store{db: db, path: path}, nil
+	return &Store{db: db, q: gen.New(db), path: path}, nil
 }
 
 // migrate applies additive schema changes that CREATE TABLE IF NOT EXISTS can't
@@ -237,27 +178,17 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	q := gq(tx)
 
-	if _, err := tx.Exec(
-		`INSERT INTO documents(path, title, added_at) VALUES(?,?,?)
-		 ON CONFLICT(path) DO UPDATE SET title=excluded.title, added_at=excluded.added_at`,
-		doc.Path, doc.Title, time.Now().UnixNano()); err != nil {
+	docID, err := q.UpsertDocument(ctx, gen.UpsertDocumentParams{Path: doc.Path, Title: doc.Title, AddedAt: time.Now().UnixNano()})
+	if err != nil {
 		return fmt.Errorf("raglit: upsert document: %w", err)
-	}
-	var docID int64
-	if err := tx.QueryRow(`SELECT id FROM documents WHERE path=?`, doc.Path).Scan(&docID); err != nil {
-		return fmt.Errorf("raglit: doc id: %w", err)
 	}
 	// Replace-on-reingest: drop old fragments (triggers clean the fts mirror;
 	// FK cascade drops their vectors).
-	if _, err := tx.Exec(`DELETE FROM fragments WHERE doc_id=?`, docID); err != nil {
+	if err := q.DeleteFragmentsByDoc(ctx, docID); err != nil {
 		return fmt.Errorf("raglit: clear fragments: %w", err)
 	}
-	ins, err := tx.Prepare(`INSERT INTO fragments(doc_id, page, ord, text) VALUES(?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer ins.Close()
 	type frag struct {
 		id   int64
 		text string
@@ -267,11 +198,10 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 		if strings.TrimSpace(f.Text) == "" {
 			continue
 		}
-		res, err := ins.Exec(docID, f.Page, f.Ord, f.Text)
+		id, err := q.InsertFragment(ctx, gen.InsertFragmentParams{DocID: docID, Page: int64(f.Page), Ord: int64(f.Ord), Text: f.Text})
 		if err != nil {
 			return fmt.Errorf("raglit: insert fragment: %w", err)
 		}
-		id, _ := res.LastInsertId()
 		frags = append(frags, frag{id, f.Text})
 	}
 	if err := tx.Commit(); err != nil {
@@ -294,16 +224,12 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 			return err
 		}
 		defer vtx.Rollback() //nolint:errcheck
-		vins, err := vtx.Prepare(`INSERT INTO fragment_vectors(fragment_id, dim, vec) VALUES(?,?,?)`)
-		if err != nil {
-			return err
-		}
-		defer vins.Close()
+		vq := gq(vtx)
 		for i, f := range frags {
 			if i >= len(vecs) {
 				break
 			}
-			if _, err := vins.Exec(f.id, len(vecs[i]), encodeVec(vecs[i])); err != nil {
+			if err := vq.InsertVector(ctx, gen.InsertVectorParams{FragmentID: f.id, Dim: int64(len(vecs[i])), Vec: encodeVec(vecs[i])}); err != nil {
 				return fmt.Errorf("raglit: store vector: %w", err)
 			}
 		}

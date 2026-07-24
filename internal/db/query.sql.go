@@ -9,12 +9,77 @@ import (
 	"context"
 )
 
+const cancelJob = `-- name: CancelJob :execrows
+DELETE FROM ingest_jobs WHERE id=? AND state='pending'
+`
+
+func (q *Queries) CancelJob(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelJob, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const completeJob = `-- name: CompleteJob :exec
+UPDATE ingest_jobs SET state='done', fragments=?, mode=?, error='', finished_at=? WHERE id=?
+`
+
+type CompleteJobParams struct {
+	Fragments  int64  `db:"fragments" derived:"ingest_jobs.fragments" json:"fragments"`
+	Mode       string `db:"mode" derived:"ingest_jobs.mode" json:"mode"`
+	FinishedAt int64  `db:"finished_at" derived:"ingest_jobs.finished_at" json:"finished_at"`
+	ID         int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+}
+
+func (q *Queries) CompleteJob(ctx context.Context, arg CompleteJobParams) error {
+	_, err := q.db.ExecContext(ctx, completeJob,
+		arg.Fragments,
+		arg.Mode,
+		arg.FinishedAt,
+		arg.ID,
+	)
+	return err
+}
+
+const countDocuments = `-- name: CountDocuments :one
+SELECT COUNT(*) AS n FROM documents
+`
+
+func (q *Queries) CountDocuments(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countDocuments)
+	var n int64
+	err := row.Scan(&n)
+	return n, err
+}
+
+const countFragments = `-- name: CountFragments :one
+SELECT COUNT(*) AS n FROM fragments
+`
+
+// ===== fragments =====
+func (q *Queries) CountFragments(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countFragments)
+	var n int64
+	err := row.Scan(&n)
+	return n, err
+}
+
 const deleteFragmentsByDoc = `-- name: DeleteFragmentsByDoc :exec
 DELETE FROM fragments WHERE doc_id = ?
 `
 
 func (q *Queries) DeleteFragmentsByDoc(ctx context.Context, docID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteFragmentsByDoc, docID)
+	return err
+}
+
+const deleteOcrPagesByDoc = `-- name: DeleteOcrPagesByDoc :exec
+DELETE FROM ocr_pages WHERE doc_id = ?
+`
+
+func (q *Queries) DeleteOcrPagesByDoc(ctx context.Context, docID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteOcrPagesByDoc, docID)
 	return err
 }
 
@@ -28,6 +93,7 @@ type EnqueueJobParams struct {
 	EnqueuedAt int64  `db:"enqueued_at" derived:"ingest_jobs.enqueued_at" json:"enqueued_at"`
 }
 
+// ===== ingest_jobs =====
 func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, enqueueJob, arg.Url, arg.Title, arg.EnqueuedAt)
 	var id int64
@@ -35,10 +101,29 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) (int64, 
 	return id, err
 }
 
+const failJob = `-- name: FailJob :exec
+UPDATE ingest_jobs SET state='error', error=?, finished_at=? WHERE id=?
+`
+
+type FailJobParams struct {
+	Error      string `db:"error" derived:"ingest_jobs.error" json:"error"`
+	FinishedAt int64  `db:"finished_at" derived:"ingest_jobs.finished_at" json:"finished_at"`
+	ID         int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+}
+
+func (q *Queries) FailJob(ctx context.Context, arg FailJobParams) error {
+	_, err := q.db.ExecContext(ctx, failJob, arg.Error, arg.FinishedAt, arg.ID)
+	return err
+}
+
 const getDocumentByPath = `-- name: GetDocumentByPath :one
+
 SELECT id, path, title, added_at FROM documents WHERE path = ?
 `
 
+// Relational CRUD for the raglit Store. FTS5 search + vector cosine are NOT here
+// (sqlc can't parse fts5); they stay as raw SQL in store.go.
+// ===== documents =====
 func (q *Queries) GetDocumentByPath(ctx context.Context, path string) (Document, error) {
 	row := q.db.QueryRowContext(ctx, getDocumentByPath, path)
 	var i Document
@@ -74,25 +159,275 @@ func (q *Queries) GetJob(ctx context.Context, id int64) (IngestJob, error) {
 	return i, err
 }
 
-const listDocuments = `-- name: ListDocuments :many
-SELECT id, path, title, added_at FROM documents ORDER BY added_at DESC
+const getOldestPendingJob = `-- name: GetOldestPendingJob :one
+SELECT id, url, title, enqueued_at FROM ingest_jobs WHERE state='pending' ORDER BY id LIMIT 1
 `
 
-func (q *Queries) ListDocuments(ctx context.Context) ([]Document, error) {
-	rows, err := q.db.QueryContext(ctx, listDocuments)
+type GetOldestPendingJobRow struct {
+	ID         int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+	Url        string `db:"url" derived:"ingest_jobs.url" json:"url"`
+	Title      string `db:"title" derived:"ingest_jobs.title" json:"title"`
+	EnqueuedAt int64  `db:"enqueued_at" derived:"ingest_jobs.enqueued_at" json:"enqueued_at"`
+}
+
+func (q *Queries) GetOldestPendingJob(ctx context.Context) (GetOldestPendingJobRow, error) {
+	row := q.db.QueryRowContext(ctx, getOldestPendingJob)
+	var i GetOldestPendingJobRow
+	err := row.Scan(
+		&i.ID,
+		&i.Url,
+		&i.Title,
+		&i.EnqueuedAt,
+	)
+	return i, err
+}
+
+const getPageImagePath = `-- name: GetPageImagePath :one
+SELECT p.image_path FROM ocr_pages p JOIN documents d ON d.id = p.doc_id
+WHERE d.path = ? AND p.page = ?
+`
+
+type GetPageImagePathParams struct {
+	Path string `db:"path" derived:"documents.path" json:"path"`
+	Page int64  `db:"page" derived:"ocr_pages.page" json:"page"`
+}
+
+func (q *Queries) GetPageImagePath(ctx context.Context, arg GetPageImagePathParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getPageImagePath, arg.Path, arg.Page)
+	var image_path string
+	err := row.Scan(&image_path)
+	return image_path, err
+}
+
+const insertFragment = `-- name: InsertFragment :one
+INSERT INTO fragments(doc_id, page, ord, text) VALUES(?, ?, ?, ?) RETURNING id
+`
+
+type InsertFragmentParams struct {
+	DocID int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
+	Page  int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord   int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text  string `db:"text" derived:"fragments.text" json:"text"`
+}
+
+func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, insertFragment,
+		arg.DocID,
+		arg.Page,
+		arg.Ord,
+		arg.Text,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertStage = `-- name: InsertStage :exec
+INSERT INTO job_stages(job_id, seq, name, engine, state, detail, at) VALUES(?,?,?,?,?,?,?)
+`
+
+type InsertStageParams struct {
+	JobID  int64  `db:"job_id" derived:"job_stages.job_id" json:"job_id"`
+	Seq    int64  `db:"seq" derived:"job_stages.seq" json:"seq"`
+	Name   string `db:"name" derived:"job_stages.name" json:"name"`
+	Engine string `db:"engine" derived:"job_stages.engine" json:"engine"`
+	State  string `db:"state" derived:"job_stages.state" json:"state"`
+	Detail string `db:"detail" derived:"job_stages.detail" json:"detail"`
+	At     int64  `db:"at" derived:"job_stages.at" json:"at"`
+}
+
+// ===== job_stages =====
+func (q *Queries) InsertStage(ctx context.Context, arg InsertStageParams) error {
+	_, err := q.db.ExecContext(ctx, insertStage,
+		arg.JobID,
+		arg.Seq,
+		arg.Name,
+		arg.Engine,
+		arg.State,
+		arg.Detail,
+		arg.At,
+	)
+	return err
+}
+
+const insertVector = `-- name: InsertVector :exec
+INSERT INTO fragment_vectors(fragment_id, dim, vec) VALUES(?, ?, ?)
+`
+
+type InsertVectorParams struct {
+	FragmentID int64  `db:"fragment_id" derived:"fragment_vectors.fragment_id" json:"fragment_id"`
+	Dim        int64  `db:"dim" derived:"fragment_vectors.dim" json:"dim"`
+	Vec        []byte `db:"vec" derived:"fragment_vectors.vec" json:"vec"`
+}
+
+// ===== fragment_vectors =====
+func (q *Queries) InsertVector(ctx context.Context, arg InsertVectorParams) error {
+	_, err := q.db.ExecContext(ctx, insertVector, arg.FragmentID, arg.Dim, arg.Vec)
+	return err
+}
+
+const jobStateCounts = `-- name: JobStateCounts :many
+SELECT state, COUNT(*) AS n FROM ingest_jobs GROUP BY state
+`
+
+type JobStateCountsRow struct {
+	State string `db:"state" derived:"ingest_jobs.state" json:"state"`
+	N     int64  `db:"n" json:"n"`
+}
+
+func (q *Queries) JobStateCounts(ctx context.Context) ([]JobStateCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, jobStateCounts)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Document
+	var items []JobStateCountsRow
 	for rows.Next() {
-		var i Document
+		var i JobStateCountsRow
+		if err := rows.Scan(&i.State, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveJobs = `-- name: ListActiveJobs :many
+SELECT id, url, state FROM ingest_jobs
+WHERE state IN ('running','pending')
+ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END, id
+`
+
+type ListActiveJobsRow struct {
+	ID    int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+	Url   string `db:"url" derived:"ingest_jobs.url" json:"url"`
+	State string `db:"state" derived:"ingest_jobs.state" json:"state"`
+}
+
+func (q *Queries) ListActiveJobs(ctx context.Context) ([]ListActiveJobsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveJobsRow
+	for rows.Next() {
+		var i ListActiveJobsRow
+		if err := rows.Scan(&i.ID, &i.Url, &i.State); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDocumentSummaries = `-- name: ListDocumentSummaries :many
+SELECT d.id, d.path, d.title, d.added_at,
+       (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id) AS fragments
+FROM documents d ORDER BY d.added_at DESC
+`
+
+type ListDocumentSummariesRow struct {
+	ID        int64  `db:"id" derived:"documents.id" json:"id"`
+	Path      string `db:"path" derived:"documents.path" json:"path"`
+	Title     string `db:"title" derived:"documents.title" json:"title"`
+	AddedAt   int64  `db:"added_at" derived:"documents.added_at" json:"added_at"`
+	Fragments int64  `db:"fragments" json:"fragments"`
+}
+
+func (q *Queries) ListDocumentSummaries(ctx context.Context) ([]ListDocumentSummariesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDocumentSummaries)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDocumentSummariesRow
+	for rows.Next() {
+		var i ListDocumentSummariesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Path,
 			&i.Title,
 			&i.AddedAt,
+			&i.Fragments,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFragmentTextByPage = `-- name: ListFragmentTextByPage :many
+SELECT text FROM fragments WHERE doc_id = ? AND page = ? ORDER BY ord
+`
+
+type ListFragmentTextByPageParams struct {
+	DocID int64 `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
+	Page  int64 `db:"page" derived:"fragments.page" json:"page"`
+}
+
+func (q *Queries) ListFragmentTextByPage(ctx context.Context, arg ListFragmentTextByPageParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listFragmentTextByPage, arg.DocID, arg.Page)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return nil, err
+		}
+		items = append(items, text)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFragmentsForDoc = `-- name: ListFragmentsForDoc :many
+SELECT page, ord, text FROM fragments WHERE doc_id = ? ORDER BY page, ord
+`
+
+type ListFragmentsForDocRow struct {
+	Page int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord  int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text string `db:"text" derived:"fragments.text" json:"text"`
+}
+
+func (q *Queries) ListFragmentsForDoc(ctx context.Context, docID int64) ([]ListFragmentsForDocRow, error) {
+	rows, err := q.db.QueryContext(ctx, listFragmentsForDoc, docID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListFragmentsForDocRow
+	for rows.Next() {
+		var i ListFragmentsForDocRow
+		if err := rows.Scan(&i.Page, &i.Ord, &i.Text); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -151,11 +486,11 @@ func (q *Queries) ListJobStages(ctx context.Context, jobID int64) ([]ListJobStag
 
 const listJobs = `-- name: ListJobs :many
 SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
-FROM ingest_jobs ORDER BY id DESC LIMIT ?
+FROM ingest_jobs
 `
 
-func (q *Queries) ListJobs(ctx context.Context, limit int64) ([]IngestJob, error) {
-	rows, err := q.db.QueryContext(ctx, listJobs, limit)
+func (q *Queries) ListJobs(ctx context.Context) ([]IngestJob, error) {
+	rows, err := q.db.QueryContext(ctx, listJobs)
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +556,138 @@ func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcr
 	return items, nil
 }
 
+const matchDocumentsLike = `-- name: MatchDocumentsLike :many
+SELECT path, title FROM documents
+WHERE lower(path) LIKE ? OR lower(title) LIKE ?
+ORDER BY added_at DESC
+`
+
+type MatchDocumentsLikeParams struct {
+	Path  string `db:"path" derived:"documents.path" json:"path"`
+	Title string `db:"title" derived:"documents.title" json:"title"`
+}
+
+type MatchDocumentsLikeRow struct {
+	Path  string `db:"path" derived:"documents.path" json:"path"`
+	Title string `db:"title" derived:"documents.title" json:"title"`
+}
+
+func (q *Queries) MatchDocumentsLike(ctx context.Context, arg MatchDocumentsLikeParams) ([]MatchDocumentsLikeRow, error) {
+	rows, err := q.db.QueryContext(ctx, matchDocumentsLike, arg.Path, arg.Title)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MatchDocumentsLikeRow
+	for rows.Next() {
+		var i MatchDocumentsLikeRow
+		if err := rows.Scan(&i.Path, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ocrEngineCountsByDoc = `-- name: OcrEngineCountsByDoc :many
+SELECT engine, COUNT(*) AS n FROM ocr_pages WHERE doc_id = ? GROUP BY engine
+`
+
+type OcrEngineCountsByDocRow struct {
+	Engine string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
+	N      int64  `db:"n" json:"n"`
+}
+
+func (q *Queries) OcrEngineCountsByDoc(ctx context.Context, docID int64) ([]OcrEngineCountsByDocRow, error) {
+	rows, err := q.db.QueryContext(ctx, ocrEngineCountsByDoc, docID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OcrEngineCountsByDocRow
+	for rows.Next() {
+		var i OcrEngineCountsByDocRow
+		if err := rows.Scan(&i.Engine, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recentDoneDurations = `-- name: RecentDoneDurations :many
+SELECT started_at, finished_at FROM ingest_jobs
+WHERE state='done' AND started_at>0 AND finished_at>=started_at
+ORDER BY finished_at DESC LIMIT 10
+`
+
+type RecentDoneDurationsRow struct {
+	StartedAt  int64 `db:"started_at" derived:"ingest_jobs.started_at" json:"started_at"`
+	FinishedAt int64 `db:"finished_at" derived:"ingest_jobs.finished_at" json:"finished_at"`
+}
+
+func (q *Queries) RecentDoneDurations(ctx context.Context) ([]RecentDoneDurationsRow, error) {
+	rows, err := q.db.QueryContext(ctx, recentDoneDurations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecentDoneDurationsRow
+	for rows.Next() {
+		var i RecentDoneDurationsRow
+		if err := rows.Scan(&i.StartedAt, &i.FinishedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const retryJob = `-- name: RetryJob :execrows
+UPDATE ingest_jobs SET state='pending', error='', started_at=0, finished_at=0, fragments=0
+WHERE id=? AND state IN ('error','done')
+`
+
+func (q *Queries) RetryJob(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, retryJob, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setJobRunning = `-- name: SetJobRunning :exec
+UPDATE ingest_jobs SET state='running', started_at=? WHERE id=?
+`
+
+type SetJobRunningParams struct {
+	StartedAt int64 `db:"started_at" derived:"ingest_jobs.started_at" json:"started_at"`
+	ID        int64 `db:"id" derived:"ingest_jobs.id" json:"id"`
+}
+
+func (q *Queries) SetJobRunning(ctx context.Context, arg SetJobRunningParams) error {
+	_, err := q.db.ExecContext(ctx, setJobRunning, arg.StartedAt, arg.ID)
+	return err
+}
+
 const upsertDocument = `-- name: UpsertDocument :one
 INSERT INTO documents(path, title, added_at) VALUES(?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET title=excluded.title, added_at=excluded.added_at
@@ -238,4 +705,27 @@ func (q *Queries) UpsertDocument(ctx context.Context, arg UpsertDocumentParams) 
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const upsertOcrPage = `-- name: UpsertOcrPage :exec
+INSERT INTO ocr_pages(doc_id, page, engine, image_path) VALUES(?,?,?,?)
+ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=excluded.image_path
+`
+
+type UpsertOcrPageParams struct {
+	DocID     int64  `db:"doc_id" derived:"ocr_pages.doc_id" json:"doc_id"`
+	Page      int64  `db:"page" derived:"ocr_pages.page" json:"page"`
+	Engine    string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
+	ImagePath string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
+}
+
+// ===== ocr_pages =====
+func (q *Queries) UpsertOcrPage(ctx context.Context, arg UpsertOcrPageParams) error {
+	_, err := q.db.ExecContext(ctx, upsertOcrPage,
+		arg.DocID,
+		arg.Page,
+		arg.Engine,
+		arg.ImagePath,
+	)
+	return err
 }

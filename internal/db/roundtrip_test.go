@@ -49,9 +49,9 @@ func TestGenerated_PlainQueries(t *testing.T) {
 	if _, err := q.UpsertDocument(ctx, db.UpsertDocumentParams{Path: "file:///d", Title: "D", AddedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
-	docs, err := q.ListDocuments(ctx)
+	docs, err := q.ListDocumentSummaries(ctx)
 	if err != nil || len(docs) != 1 || docs[0].Path != "file:///d" {
-		t.Fatalf("ListDocuments = %+v, %v", docs, err)
+		t.Fatalf("ListDocumentSummaries = %+v, %v", docs, err)
 	}
 }
 
@@ -69,8 +69,8 @@ func TestGenerated_MetaqueryBuilder(t *testing.T) {
 	}
 
 	// Dynamic filter on top of the generated ListJobs query.
-	b := db.WrapListJobs(100).ApplyFilters([]metaquery.Filter{
-		{Column: "url", Op: "LIKE", Value: "%bravo%"},
+	b := db.WrapListJobs().ApplyFilters([]metaquery.Filter{
+		{Column: "url", Op: metaquery.OpLike, Value: "%bravo%"},
 	})
 	res, err := mqsqlite.Scan[db.IngestJob](ctx, conn, b)
 	if err != nil {

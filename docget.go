@@ -1,9 +1,15 @@
 package raglit
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+
+	gen "github.com/iodesystems/raglit/internal/db"
+	"github.com/iodesystems/sqlc-go-codegen-metaquery/metaquery"
+	"github.com/iodesystems/sqlc-go-codegen-metaquery/metaquery/mqsqlite"
 )
 
 // Document content retrieval — the read side for an agent that has a search hit
@@ -26,34 +32,24 @@ func (s *Store) MatchDocuments(ref string) ([]DocRef, error) {
 	if ref == "" {
 		return nil, nil
 	}
+	ctx := context.Background()
 	// Exact path first.
-	var d DocRef
-	err := s.db.QueryRow(`SELECT path, title FROM documents WHERE path=?`, ref).Scan(&d.Path, &d.Title)
-	if err == nil {
-		return []DocRef{d}, nil
-	}
-	if err != sql.ErrNoRows {
+	if d, err := s.q.GetDocumentByPath(ctx, ref); err == nil {
+		return []DocRef{{Path: d.Path, Title: d.Title}}, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	// Substring over path/title.
 	like := "%" + strings.ToLower(ref) + "%"
-	rows, err := s.db.Query(
-		`SELECT path, title FROM documents
-		 WHERE lower(path) LIKE ? OR lower(title) LIKE ?
-		 ORDER BY added_at DESC`, like, like)
+	rows, err := s.q.MatchDocumentsLike(ctx, gen.MatchDocumentsLikeParams{Path: like, Title: like})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []DocRef
-	for rows.Next() {
-		var r DocRef
-		if err := rows.Scan(&r.Path, &r.Title); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
+	out := make([]DocRef, len(rows))
+	for i, r := range rows {
+		out[i] = DocRef{Path: r.Path, Title: r.Title}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // DocPageText is one page's reassembled text.
@@ -78,57 +74,46 @@ type DocContent struct {
 // when it bites — the per-page array is left whole. Returns (‑, false, nil) via a
 // zero DocContent when the path is unknown.
 func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, error) {
-	var docID int64
+	ctx := context.Background()
 	var out DocContent
-	err := s.db.QueryRow(`SELECT id, path, title FROM documents WHERE path=?`, exactPath).
-		Scan(&docID, &out.Path, &out.Title)
-	if err == sql.ErrNoRows {
+	doc, err := s.q.GetDocumentByPath(ctx, exactPath)
+	if errors.Is(err, sql.ErrNoRows) {
 		return DocContent{}, fmt.Errorf("raglit: no document with path %q", exactPath)
 	}
 	if err != nil {
 		return DocContent{}, err
 	}
+	out.Path, out.Title = doc.Path, doc.Title
 
-	q := `SELECT page, ord, text FROM fragments WHERE doc_id=?`
-	args := []any{docID}
+	// Page-range filter via a metaquery Builder over the base ListFragmentsForDoc
+	// (dynamic from/to WHERE + the page/ord ordering, no hand-built SQL).
+	b := gen.WrapListFragmentsForDoc(doc.ID).OrderBy("page", metaquery.Asc).OrderBy("ord", metaquery.Asc)
 	if from > 0 {
-		q += ` AND page>=?`
-		args = append(args, from)
+		b = b.Where("page", metaquery.OpGe, from)
 	}
 	if to > 0 {
-		q += ` AND page<=?`
-		args = append(args, to)
+		b = b.Where("page", metaquery.OpLe, to)
 	}
-	q += ` ORDER BY page, ord`
-	rows, err := s.db.Query(q, args...)
+	res, err := mqsqlite.Scan[gen.ListFragmentsForDocRow](ctx, s.db, b)
 	if err != nil {
 		return DocContent{}, err
 	}
-	defer rows.Close()
 
 	// Group fragments into pages, preserving order.
-	var curPage = -1
+	curPage := int64(-1)
 	var buf []string
 	flush := func() {
 		if curPage >= 0 {
-			out.Pages = append(out.Pages, DocPageText{Page: curPage, Text: strings.Join(buf, "\n\n")})
+			out.Pages = append(out.Pages, DocPageText{Page: int(curPage), Text: strings.Join(buf, "\n\n")})
 		}
 		buf = nil
 	}
-	for rows.Next() {
-		var page, ord int
-		var text string
-		if err := rows.Scan(&page, &ord, &text); err != nil {
-			return DocContent{}, err
-		}
-		if page != curPage {
+	for _, r := range res.Data {
+		if r.Page != curPage {
 			flush()
-			curPage = page
+			curPage = r.Page
 		}
-		buf = append(buf, text)
-	}
-	if err := rows.Err(); err != nil {
-		return DocContent{}, err
+		buf = append(buf, r.Text)
 	}
 	flush()
 

@@ -11,6 +11,87 @@ import (
 
 var _ = metaquery.Query{}
 
+var MetaCancelJob = metaquery.Query{
+	Name:    "CancelJob",
+	Cmd:     ":execrows",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `DELETE FROM ingest_jobs WHERE id=? AND state='pending'`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapCancelJob returns a metaquery.Builder over MetaCancelJob, pre-bound with typed arguments.
+func WrapCancelJob(id int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaCancelJob, id)
+}
+
+var MetaCompleteJob = metaquery.Query{
+	Name:    "CompleteJob",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `UPDATE ingest_jobs SET state='done', fragments=?, mode=?, error='', finished_at=? WHERE id=?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "fragments", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "mode", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 3, Name: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 4, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapCompleteJob returns a metaquery.Builder over MetaCompleteJob, pre-bound with typed arguments.
+func WrapCompleteJob(arg CompleteJobParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaCompleteJob, arg.Fragments, arg.Mode, arg.FinishedAt, arg.ID)
+}
+
+var MetaCountDocuments = metaquery.Query{
+	Name:    "CountDocuments",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT COUNT(*) AS n FROM documents`,
+	Columns: []metaquery.Column{
+		{Name: "n", OriginalName: "n", GoType: "int64"},
+	},
+}
+
+// WrapCountDocuments returns a metaquery.Builder over MetaCountDocuments, pre-bound with typed arguments.
+func WrapCountDocuments() *metaquery.Builder {
+	return metaquery.Wrap(&MetaCountDocuments)
+}
+
+// CountDocumentsCols gives typed, name-safe access to CountDocuments's output columns.
+var CountDocumentsCols = struct {
+	N metaquery.IntCol
+}{
+	N: metaquery.NewIntCol("n"),
+}
+
+var MetaCountFragments = metaquery.Query{
+	Name:    "CountFragments",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT COUNT(*) AS n FROM fragments`,
+	Columns: []metaquery.Column{
+		{Name: "n", OriginalName: "n", GoType: "int64"},
+	},
+}
+
+// WrapCountFragments returns a metaquery.Builder over MetaCountFragments, pre-bound with typed arguments.
+func WrapCountFragments() *metaquery.Builder {
+	return metaquery.Wrap(&MetaCountFragments)
+}
+
+// CountFragmentsCols gives typed, name-safe access to CountFragments's output columns.
+var CountFragmentsCols = struct {
+	N metaquery.IntCol
+}{
+	N: metaquery.NewIntCol("n"),
+}
+
 var MetaDeleteFragmentsByDoc = metaquery.Query{
 	Name:    "DeleteFragmentsByDoc",
 	Cmd:     ":exec",
@@ -25,6 +106,22 @@ var MetaDeleteFragmentsByDoc = metaquery.Query{
 // WrapDeleteFragmentsByDoc returns a metaquery.Builder over MetaDeleteFragmentsByDoc, pre-bound with typed arguments.
 func WrapDeleteFragmentsByDoc(docID int64) *metaquery.Builder {
 	return metaquery.Wrap(&MetaDeleteFragmentsByDoc, docID)
+}
+
+var MetaDeleteOcrPagesByDoc = metaquery.Query{
+	Name:    "DeleteOcrPagesByDoc",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `DELETE FROM ocr_pages WHERE doc_id = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapDeleteOcrPagesByDoc returns a metaquery.Builder over MetaDeleteOcrPagesByDoc, pre-bound with typed arguments.
+func WrapDeleteOcrPagesByDoc(docID int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaDeleteOcrPagesByDoc, docID)
 }
 
 var MetaEnqueueJob = metaquery.Query{
@@ -56,12 +153,31 @@ var EnqueueJobCols = struct {
 	ID: metaquery.NewIntCol("id"),
 }
 
+var MetaFailJob = metaquery.Query{
+	Name:    "FailJob",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `UPDATE ingest_jobs SET state='error', error=?, finished_at=? WHERE id=?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "error", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapFailJob returns a metaquery.Builder over MetaFailJob, pre-bound with typed arguments.
+func WrapFailJob(arg FailJobParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaFailJob, arg.Error, arg.FinishedAt, arg.ID)
+}
+
 var MetaGetDocumentByPath = metaquery.Query{
 	Name:    "GetDocumentByPath",
 	Cmd:     ":one",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL:     `SELECT id, path, title, added_at FROM documents WHERE path = ?`,
+	SQL: `
+SELECT id, path, title, added_at FROM documents WHERE path = ?`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "documents"},
 		{Name: "path", OriginalName: "path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
@@ -145,40 +261,309 @@ var GetJobCols = struct {
 	FinishedAt: metaquery.NewIntCol("finished_at"),
 }
 
-var MetaListDocuments = metaquery.Query{
-	Name:    "ListDocuments",
+var MetaGetOldestPendingJob = metaquery.Query{
+	Name:    "GetOldestPendingJob",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT id, url, title, enqueued_at FROM ingest_jobs WHERE state='pending' ORDER BY id LIMIT 1`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "url", OriginalName: "url", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "title", OriginalName: "title", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "enqueued_at", OriginalName: "enqueued_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+	},
+}
+
+// WARNING: GetOldestPendingJob ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapGetOldestPendingJob returns a metaquery.Builder over MetaGetOldestPendingJob, pre-bound with typed arguments.
+func WrapGetOldestPendingJob() *metaquery.Builder {
+	return metaquery.Wrap(&MetaGetOldestPendingJob)
+}
+
+// GetOldestPendingJobCols gives typed, name-safe access to GetOldestPendingJob's output columns.
+var GetOldestPendingJobCols = struct {
+	ID         metaquery.IntCol
+	Url        metaquery.TextCol
+	Title      metaquery.TextCol
+	EnqueuedAt metaquery.IntCol
+}{
+	ID:         metaquery.NewIntCol("id"),
+	Url:        metaquery.NewTextCol("url"),
+	Title:      metaquery.NewTextCol("title"),
+	EnqueuedAt: metaquery.NewIntCol("enqueued_at"),
+}
+
+var MetaGetPageImagePath = metaquery.Query{
+	Name:    "GetPageImagePath",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT p.image_path FROM ocr_pages p JOIN documents d ON d.id = p.doc_id
+WHERE d.path = ? AND p.page = ?`,
+	Columns: []metaquery.Column{
+		{Name: "image_path", OriginalName: "image_path", GoType: "string"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "path", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapGetPageImagePath returns a metaquery.Builder over MetaGetPageImagePath, pre-bound with typed arguments.
+func WrapGetPageImagePath(arg GetPageImagePathParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaGetPageImagePath, arg.Path, arg.Page)
+}
+
+// GetPageImagePathCols gives typed, name-safe access to GetPageImagePath's output columns.
+var GetPageImagePathCols = struct {
+	ImagePath metaquery.TextCol
+}{
+	ImagePath: metaquery.NewTextCol("image_path"),
+}
+
+var MetaInsertFragment = metaquery.Query{
+	Name:    "InsertFragment",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `INSERT INTO fragments(doc_id, page, ord, text) VALUES(?, ?, ?, ?) RETURNING id`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 4, Name: "text", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+	Table: &metaquery.Table{Name: "fragments"},
+}
+
+// WrapInsertFragment returns a metaquery.Builder over MetaInsertFragment, pre-bound with typed arguments.
+func WrapInsertFragment(arg InsertFragmentParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaInsertFragment, arg.DocID, arg.Page, arg.Ord, arg.Text)
+}
+
+// InsertFragmentCols gives typed, name-safe access to InsertFragment's output columns.
+var InsertFragmentCols = struct {
+	ID metaquery.IntCol
+}{
+	ID: metaquery.NewIntCol("id"),
+}
+
+var MetaInsertStage = metaquery.Query{
+	Name:    "InsertStage",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `INSERT INTO job_stages(job_id, seq, name, engine, state, detail, at) VALUES(?,?,?,?,?,?,?)`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "job_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "seq", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "name", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 4, Name: "engine", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 5, Name: "state", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 6, Name: "detail", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 7, Name: "at", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+	Table: &metaquery.Table{Name: "job_stages"},
+}
+
+// WrapInsertStage returns a metaquery.Builder over MetaInsertStage, pre-bound with typed arguments.
+func WrapInsertStage(arg InsertStageParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaInsertStage, arg.JobID, arg.Seq, arg.Name, arg.Engine, arg.State, arg.Detail, arg.At)
+}
+
+var MetaInsertVector = metaquery.Query{
+	Name:    "InsertVector",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `INSERT INTO fragment_vectors(fragment_id, dim, vec) VALUES(?, ?, ?)`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "fragment_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "dim", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "vec", GoType: "[]byte", DBType: "BLOB", NotNull: true},
+	},
+	Table: &metaquery.Table{Name: "fragment_vectors"},
+}
+
+// WrapInsertVector returns a metaquery.Builder over MetaInsertVector, pre-bound with typed arguments.
+func WrapInsertVector(arg InsertVectorParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaInsertVector, arg.FragmentID, arg.Dim, arg.Vec)
+}
+
+var MetaJobStateCounts = metaquery.Query{
+	Name:    "JobStateCounts",
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL:     `SELECT id, path, title, added_at FROM documents ORDER BY added_at DESC`,
+	SQL:     `SELECT state, COUNT(*) AS n FROM ingest_jobs GROUP BY state`,
+	Columns: []metaquery.Column{
+		{Name: "state", OriginalName: "state", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "n", OriginalName: "n", GoType: "int64", DBType: "integer", NotNull: true},
+	},
+}
+
+// WrapJobStateCounts returns a metaquery.Builder over MetaJobStateCounts, pre-bound with typed arguments.
+func WrapJobStateCounts() *metaquery.Builder {
+	return metaquery.Wrap(&MetaJobStateCounts)
+}
+
+// JobStateCountsCols gives typed, name-safe access to JobStateCounts's output columns.
+var JobStateCountsCols = struct {
+	State metaquery.TextCol
+	N     metaquery.IntCol
+}{
+	State: metaquery.NewTextCol("state"),
+	N:     metaquery.NewIntCol("n"),
+}
+
+var MetaListActiveJobs = metaquery.Query{
+	Name:    "ListActiveJobs",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT id, url, state FROM ingest_jobs
+WHERE state IN ('running','pending')
+ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END, id`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "url", OriginalName: "url", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "state", OriginalName: "state", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+	},
+}
+
+// WARNING: ListActiveJobs ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListActiveJobs returns a metaquery.Builder over MetaListActiveJobs, pre-bound with typed arguments.
+func WrapListActiveJobs() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListActiveJobs)
+}
+
+// ListActiveJobsCols gives typed, name-safe access to ListActiveJobs's output columns.
+var ListActiveJobsCols = struct {
+	ID    metaquery.IntCol
+	Url   metaquery.TextCol
+	State metaquery.TextCol
+}{
+	ID:    metaquery.NewIntCol("id"),
+	Url:   metaquery.NewTextCol("url"),
+	State: metaquery.NewTextCol("state"),
+}
+
+var MetaListDocumentSummaries = metaquery.Query{
+	Name:    "ListDocumentSummaries",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT d.id, d.path, d.title, d.added_at,
+       (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id) AS fragments
+FROM documents d ORDER BY d.added_at DESC`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "documents"},
 		{Name: "path", OriginalName: "path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
 		{Name: "title", OriginalName: "title", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
 		{Name: "added_at", OriginalName: "added_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "documents"},
+		{Name: "fragments", OriginalName: "fragments", GoType: "int64", DBType: "integer", NotNull: true},
 	},
 }
 
-// WARNING: ListDocuments ends in a top-level ORDER BY. Wrapping re-applies
+// WARNING: ListDocumentSummaries ends in a top-level ORDER BY. Wrapping re-applies
 // ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
 // that can defeat index use. Drop ORDER BY from the query and order via
 // .ApplyOrder(...) instead. See benchmark/README.md.
-// WrapListDocuments returns a metaquery.Builder over MetaListDocuments, pre-bound with typed arguments.
-func WrapListDocuments() *metaquery.Builder {
-	return metaquery.Wrap(&MetaListDocuments)
+// WrapListDocumentSummaries returns a metaquery.Builder over MetaListDocumentSummaries, pre-bound with typed arguments.
+func WrapListDocumentSummaries() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListDocumentSummaries)
 }
 
-// ListDocumentsCols gives typed, name-safe access to ListDocuments's output columns.
-var ListDocumentsCols = struct {
-	ID      metaquery.IntCol
-	Path    metaquery.TextCol
-	Title   metaquery.TextCol
-	AddedAt metaquery.IntCol
+// ListDocumentSummariesCols gives typed, name-safe access to ListDocumentSummaries's output columns.
+var ListDocumentSummariesCols = struct {
+	ID        metaquery.IntCol
+	Path      metaquery.TextCol
+	Title     metaquery.TextCol
+	AddedAt   metaquery.IntCol
+	Fragments metaquery.IntCol
 }{
-	ID:      metaquery.NewIntCol("id"),
-	Path:    metaquery.NewTextCol("path"),
-	Title:   metaquery.NewTextCol("title"),
-	AddedAt: metaquery.NewIntCol("added_at"),
+	ID:        metaquery.NewIntCol("id"),
+	Path:      metaquery.NewTextCol("path"),
+	Title:     metaquery.NewTextCol("title"),
+	AddedAt:   metaquery.NewIntCol("added_at"),
+	Fragments: metaquery.NewIntCol("fragments"),
+}
+
+var MetaListFragmentTextByPage = metaquery.Query{
+	Name:    "ListFragmentTextByPage",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT text FROM fragments WHERE doc_id = ? AND page = ? ORDER BY ord`,
+	Columns: []metaquery.Column{
+		{Name: "text", OriginalName: "text", GoType: "string"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WARNING: ListFragmentTextByPage ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListFragmentTextByPage returns a metaquery.Builder over MetaListFragmentTextByPage, pre-bound with typed arguments.
+func WrapListFragmentTextByPage(arg ListFragmentTextByPageParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaListFragmentTextByPage, arg.DocID, arg.Page)
+}
+
+// ListFragmentTextByPageCols gives typed, name-safe access to ListFragmentTextByPage's output columns.
+var ListFragmentTextByPageCols = struct {
+	Text metaquery.TextCol
+}{
+	Text: metaquery.NewTextCol("text"),
+}
+
+var MetaListFragmentsForDoc = metaquery.Query{
+	Name:    "ListFragmentsForDoc",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT page, ord, text FROM fragments WHERE doc_id = ? ORDER BY page, ord`,
+	Columns: []metaquery.Column{
+		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
+		{Name: "ord", OriginalName: "ord", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
+		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "fragments"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WARNING: ListFragmentsForDoc ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListFragmentsForDoc returns a metaquery.Builder over MetaListFragmentsForDoc, pre-bound with typed arguments.
+func WrapListFragmentsForDoc(docID int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaListFragmentsForDoc, docID)
+}
+
+// ListFragmentsForDocCols gives typed, name-safe access to ListFragmentsForDoc's output columns.
+var ListFragmentsForDocCols = struct {
+	Page metaquery.IntCol
+	Ord  metaquery.IntCol
+	Text metaquery.TextCol
+}{
+	Page: metaquery.NewIntCol("page"),
+	Ord:  metaquery.NewIntCol("ord"),
+	Text: metaquery.NewTextCol("text"),
 }
 
 var MetaListJobStages = metaquery.Query{
@@ -232,7 +617,7 @@ var MetaListJobs = metaquery.Query{
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
 	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
-FROM ingest_jobs ORDER BY id DESC LIMIT ?`,
+FROM ingest_jobs`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "url", OriginalName: "url", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
@@ -245,18 +630,11 @@ FROM ingest_jobs ORDER BY id DESC LIMIT ?`,
 		{Name: "started_at", OriginalName: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "finished_at", OriginalName: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 	},
-	Args: []metaquery.Arg{
-		{Position: 1, Name: "limit", GoType: "int64", DBType: "integer", NotNull: true},
-	},
 }
 
-// WARNING: ListJobs ends in a top-level ORDER BY. Wrapping re-applies
-// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
-// that can defeat index use. Drop ORDER BY from the query and order via
-// .ApplyOrder(...) instead. See benchmark/README.md.
 // WrapListJobs returns a metaquery.Builder over MetaListJobs, pre-bound with typed arguments.
-func WrapListJobs(limit int64) *metaquery.Builder {
-	return metaquery.Wrap(&MetaListJobs, limit)
+func WrapListJobs() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListJobs)
 }
 
 // ListJobsCols gives typed, name-safe access to ListJobs's output columns.
@@ -320,6 +698,137 @@ var ListOcrPagesByDocCols = struct {
 	ImagePath: metaquery.NewTextCol("image_path"),
 }
 
+var MetaMatchDocumentsLike = metaquery.Query{
+	Name:    "MatchDocumentsLike",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT path, title FROM documents
+WHERE lower(path) LIKE ? OR lower(title) LIKE ?
+ORDER BY added_at DESC`,
+	Columns: []metaquery.Column{
+		{Name: "path", OriginalName: "path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
+		{Name: "title", OriginalName: "title", GoType: "string", DBType: "TEXT", NotNull: true, Table: "documents"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "path", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "title", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WARNING: MatchDocumentsLike ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapMatchDocumentsLike returns a metaquery.Builder over MetaMatchDocumentsLike, pre-bound with typed arguments.
+func WrapMatchDocumentsLike(arg MatchDocumentsLikeParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaMatchDocumentsLike, arg.Path, arg.Title)
+}
+
+// MatchDocumentsLikeCols gives typed, name-safe access to MatchDocumentsLike's output columns.
+var MatchDocumentsLikeCols = struct {
+	Path  metaquery.TextCol
+	Title metaquery.TextCol
+}{
+	Path:  metaquery.NewTextCol("path"),
+	Title: metaquery.NewTextCol("title"),
+}
+
+var MetaOcrEngineCountsByDoc = metaquery.Query{
+	Name:    "OcrEngineCountsByDoc",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT engine, COUNT(*) AS n FROM ocr_pages WHERE doc_id = ? GROUP BY engine`,
+	Columns: []metaquery.Column{
+		{Name: "engine", OriginalName: "engine", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ocr_pages"},
+		{Name: "n", OriginalName: "n", GoType: "int64", DBType: "integer", NotNull: true},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapOcrEngineCountsByDoc returns a metaquery.Builder over MetaOcrEngineCountsByDoc, pre-bound with typed arguments.
+func WrapOcrEngineCountsByDoc(docID int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaOcrEngineCountsByDoc, docID)
+}
+
+// OcrEngineCountsByDocCols gives typed, name-safe access to OcrEngineCountsByDoc's output columns.
+var OcrEngineCountsByDocCols = struct {
+	Engine metaquery.TextCol
+	N      metaquery.IntCol
+}{
+	Engine: metaquery.NewTextCol("engine"),
+	N:      metaquery.NewIntCol("n"),
+}
+
+var MetaRecentDoneDurations = metaquery.Query{
+	Name:    "RecentDoneDurations",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT started_at, finished_at FROM ingest_jobs
+WHERE state='done' AND started_at>0 AND finished_at>=started_at
+ORDER BY finished_at DESC LIMIT 10`,
+	Columns: []metaquery.Column{
+		{Name: "started_at", OriginalName: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "finished_at", OriginalName: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+	},
+}
+
+// WARNING: RecentDoneDurations ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapRecentDoneDurations returns a metaquery.Builder over MetaRecentDoneDurations, pre-bound with typed arguments.
+func WrapRecentDoneDurations() *metaquery.Builder {
+	return metaquery.Wrap(&MetaRecentDoneDurations)
+}
+
+// RecentDoneDurationsCols gives typed, name-safe access to RecentDoneDurations's output columns.
+var RecentDoneDurationsCols = struct {
+	StartedAt  metaquery.IntCol
+	FinishedAt metaquery.IntCol
+}{
+	StartedAt:  metaquery.NewIntCol("started_at"),
+	FinishedAt: metaquery.NewIntCol("finished_at"),
+}
+
+var MetaRetryJob = metaquery.Query{
+	Name:    "RetryJob",
+	Cmd:     ":execrows",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `UPDATE ingest_jobs SET state='pending', error='', started_at=0, finished_at=0, fragments=0
+WHERE id=? AND state IN ('error','done')`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapRetryJob returns a metaquery.Builder over MetaRetryJob, pre-bound with typed arguments.
+func WrapRetryJob(id int64) *metaquery.Builder {
+	return metaquery.Wrap(&MetaRetryJob, id)
+}
+
+var MetaSetJobRunning = metaquery.Query{
+	Name:    "SetJobRunning",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `UPDATE ingest_jobs SET state='running', started_at=? WHERE id=?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapSetJobRunning returns a metaquery.Builder over MetaSetJobRunning, pre-bound with typed arguments.
+func WrapSetJobRunning(arg SetJobRunningParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaSetJobRunning, arg.StartedAt, arg.ID)
+}
+
 var MetaUpsertDocument = metaquery.Query{
 	Name:    "UpsertDocument",
 	Cmd:     ":one",
@@ -349,4 +858,25 @@ var UpsertDocumentCols = struct {
 	ID metaquery.IntCol
 }{
 	ID: metaquery.NewIntCol("id"),
+}
+
+var MetaUpsertOcrPage = metaquery.Query{
+	Name:    "UpsertOcrPage",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `INSERT INTO ocr_pages(doc_id, page, engine, image_path) VALUES(?,?,?,?)
+ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=excluded.image_path`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "engine", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 4, Name: "image_path", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+	Table: &metaquery.Table{Name: "ocr_pages"},
+}
+
+// WrapUpsertOcrPage returns a metaquery.Builder over MetaUpsertOcrPage, pre-bound with typed arguments.
+func WrapUpsertOcrPage(arg UpsertOcrPageParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaUpsertOcrPage, arg.DocID, arg.Page, arg.Engine, arg.ImagePath)
 }

@@ -1,11 +1,15 @@
 package raglit
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	gen "github.com/iodesystems/raglit/internal/db"
 )
 
 // OCR review + document inspection.
@@ -42,11 +46,9 @@ func (s *Store) savePageImage(docPath string, page int, mime string, data []byte
 
 // recordPage upserts one page's provenance (idempotent on reingest).
 func (s *Store) recordPage(docID int64, page int, engine, imagePath string) error {
-	_, err := s.db.Exec(
-		`INSERT INTO ocr_pages(doc_id, page, engine, image_path) VALUES(?,?,?,?)
-		 ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=excluded.image_path`,
-		docID, page, engine, imagePath)
-	return err
+	return s.q.UpsertOcrPage(context.Background(), gen.UpsertOcrPageParams{
+		DocID: docID, Page: int64(page), Engine: engine, ImagePath: imagePath,
+	})
 }
 
 // DocSummary is a document with counts for the review UI's document list.
@@ -63,49 +65,28 @@ type DocSummary struct {
 // Documents lists indexed documents with fragment/page/engine counts, newest
 // first. Docs with no OCR-tracked pages (plain text) report Pages 0.
 func (s *Store) Documents() ([]DocSummary, error) {
-	rows, err := s.db.Query(
-		`SELECT d.path, d.title, d.added_at,
-		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id=d.id) AS frags
-		 FROM documents d ORDER BY d.added_at DESC`)
+	ctx := context.Background()
+	rows, err := s.q.ListDocumentSummaries(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []DocSummary
-	for rows.Next() {
-		var ds DocSummary
-		if err := rows.Scan(&ds.Path, &ds.Title, &ds.AddedAt, &ds.Fragments); err != nil {
-			return nil, err
-		}
-		ds.Engines = map[string]int{}
-		out = append(out, ds)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	// Per-doc engine breakdown (a second pass keeps the query simple).
-	for i := range out {
-		erows, err := s.db.Query(
-			`SELECT p.engine, COUNT(*) FROM ocr_pages p
-			 JOIN documents d ON d.id=p.doc_id
-			 WHERE d.path=? GROUP BY p.engine`, out[i].Path)
+	out := make([]DocSummary, len(rows))
+	for i, r := range rows {
+		ds := DocSummary{Path: r.Path, Title: r.Title, Fragments: int(r.Fragments), AddedAt: r.AddedAt, Engines: map[string]int{}}
+		// Per-doc engine breakdown (a second pass keeps the query simple).
+		ec, err := s.q.OcrEngineCountsByDoc(ctx, r.ID)
 		if err != nil {
 			return nil, err
 		}
-		for erows.Next() {
-			var eng string
-			var n int
-			if err := erows.Scan(&eng, &n); err != nil {
-				erows.Close()
-				return nil, err
-			}
-			out[i].Engines[eng] = n
-			out[i].Pages += n
-			if eng == "vision" {
-				out[i].Vision += n
+		for _, e := range ec {
+			n := int(e.N)
+			ds.Engines[e.Engine] = n
+			ds.Pages += n
+			if e.Engine == "vision" {
+				ds.Vision += n
 			}
 		}
-		erows.Close()
+		out[i] = ds
 	}
 	return out, nil
 }
@@ -126,52 +107,32 @@ type PageReview struct {
 // i.e. what OCR/segmentation actually produced. Returns (‑, nil, nil) when the
 // path is unknown.
 func (s *Store) DocReview(path string) (title string, pages []PageReview, err error) {
-	var docID int64
-	err = s.db.QueryRow(`SELECT id, title FROM documents WHERE path=?`, path).Scan(&docID, &title)
-	if err == sql.ErrNoRows {
+	ctx := context.Background()
+	doc, err := s.q.GetDocumentByPath(ctx, path)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil, nil
 	}
 	if err != nil {
 		return "", nil, err
 	}
-	rows, err := s.db.Query(
-		`SELECT page, engine, image_path FROM ocr_pages WHERE doc_id=? ORDER BY page`, docID)
+	title = doc.Title
+	prows, err := s.q.ListOcrPagesByDoc(ctx, doc.ID)
 	if err != nil {
 		return "", nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var pr PageReview
-		var img string
-		if err := rows.Scan(&pr.Page, &pr.Engine, &img); err != nil {
-			return "", nil, err
+	for _, pr := range prows {
+		page := PageReview{
+			Page: int(pr.Page), Engine: pr.Engine,
+			Vision: pr.Engine == "vision", HasImage: pr.ImagePath != "",
 		}
-		pr.Vision = pr.Engine == "vision"
-		pr.HasImage = img != ""
-		pages = append(pages, pr)
-	}
-	if err := rows.Err(); err != nil {
-		return "", nil, err
-	}
-	// Fill each page's indexed text from its fragments.
-	for i := range pages {
-		frows, err := s.db.Query(
-			`SELECT text FROM fragments WHERE doc_id=? AND page=? ORDER BY ord`, docID, pages[i].Page)
+		// Page text is the concatenation of the fragments indexed for the page.
+		texts, err := s.q.ListFragmentTextByPage(ctx, gen.ListFragmentTextByPageParams{DocID: doc.ID, Page: pr.Page})
 		if err != nil {
 			return "", nil, err
 		}
-		var parts []string
-		for frows.Next() {
-			var t string
-			if err := frows.Scan(&t); err != nil {
-				frows.Close()
-				return "", nil, err
-			}
-			parts = append(parts, t)
-		}
-		frows.Close()
-		pages[i].Fragments = len(parts)
-		pages[i].Text = strings.Join(parts, "\n\n")
+		page.Fragments = len(texts)
+		page.Text = strings.Join(texts, "\n\n")
+		pages = append(pages, page)
 	}
 	return title, pages, nil
 }
@@ -180,11 +141,8 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 // "" if there is none. The daemon validates the path is under the home's pages/
 // dir before serving it.
 func (s *Store) PageImagePath(path string, page int) (string, error) {
-	var img string
-	err := s.db.QueryRow(
-		`SELECT image_path FROM ocr_pages p JOIN documents d ON d.id=p.doc_id
-		 WHERE d.path=? AND p.page=?`, path, page).Scan(&img)
-	if err == sql.ErrNoRows {
+	img, err := s.q.GetPageImagePath(context.Background(), gen.GetPageImagePathParams{Path: path, Page: int64(page)})
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
