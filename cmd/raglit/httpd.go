@@ -45,11 +45,12 @@ func runHttpd(args []string) error {
 	}
 	defer reg.Close()
 	lf.resolve(cfgHome) // daemon config (endpoint + models) from the home / root
-	if *embed {
-		if err := lf.requireEmbed(); err != nil {
-			return err
-		}
+	// Embed automatically when the config has an embed model (so an auto-started
+	// daemon supports vector/hybrid search); --embed with no model is an error.
+	if *lf.embedModel != "" {
 		reg.SetEmbedder(lf.embedder())
+	} else if *embed {
+		return lf.requireEmbed()
 	}
 	// Shared document pool: ingest work (extract/OCR/segment/embed) is cached by
 	// (recipe, file hash) under the daemon's storage root, so the same file — in

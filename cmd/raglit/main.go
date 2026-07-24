@@ -238,7 +238,7 @@ func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
 	openStore, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
-	daemon := addDaemonFlag(fs)
+	client := addClientFlags(fs) // --daemon + --embedded
 	limit := fs.Int("n", 10, "max results")
 	mode := fs.String("mode", "bm25", "bm25 | vec | hybrid (vec/hybrid need embeddings)")
 	fs.Parse(args)
@@ -247,8 +247,13 @@ func runSearch(args []string) error {
 		return fmt.Errorf("search: empty query")
 	}
 
-	// Client mode: query a running daemon.
-	if dURL := resolveDaemon(*daemon, homeOf); dURL != "" {
+	// Default: query the shared daemon (auto-started if needed); --embedded/--db
+	// open the index in-process.
+	dURL, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	if err != nil {
+		return err
+	}
+	if dURL != "" {
 		return daemonSearchPrint(dURL, query, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *mode, *limit)
 	}
 

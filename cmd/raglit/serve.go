@@ -26,16 +26,20 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	_, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
-	daemonFlag := addDaemonFlag(fs)
+	client := addClientFlags(fs) // --daemon + --embedded
 	defLimit := fs.Int("n", 8, "default max results")
-	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
+	embed := fs.Bool("embed", false, "embedded mode: embed ingested fragments")
 	fs.Parse(args)
 
-	// Client mode: when a daemon is configured (--daemon / $RAGLIT_DAEMON / config
-	// daemon_url), the MCP tools proxy to it over HTTP instead of opening the index
-	// here — so many `serve` instances share ONE daemon's storage + LLM + queue
-	// (the client/daemon split, item 1). Otherwise run embedded (own the registry).
-	if durl := resolveDaemon(*daemonFlag, homeOf); durl != "" {
+	// DEFAULT: proxy the MCP tools to the shared per-user daemon, auto-starting it
+	// if none is running — so N Claude sessions are N thin clients to ONE daemon
+	// (single writer + worker pool + LLM caller), not N processes fighting over the
+	// same index. --embedded opts out and runs the index in-process (single-session).
+	durl, err := client(homeOf, false)
+	if err != nil {
+		return err
+	}
+	if durl != "" {
 		s := server.NewMCPServer("raglit", version)
 		addRaglitTools(s, daemonToolHandlers(durl, *defLimit))
 		return server.ServeStdio(s)

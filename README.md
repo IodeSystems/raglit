@@ -136,16 +136,25 @@ Globs: no `/` matches the basename (`*.go`); with `/`, the path (`gen/**`, `**/x
 
 ## Daemon mode
 
-For big or ongoing ingests — or to share one index across many clients — run a
-daemon that owns storage, the workers, and the LLM calls; other invocations call
-into it over HTTP instead of touching the SQLite files:
+**By default every client — `serve` (MCP) and the CLI (`ingest`/`search`/`status`/
+`sync`) — talks to a single shared per-user daemon, auto-starting it if none is
+running.** That's deliberate: N Claude sessions each running `serve` *embedded*
+would be N processes opening the same SQLite index, running their own workers, and
+calling the LLM independently → write contention + duplicated indexing work. One
+daemon (single writer + worker pool + LLM caller, scoped storage, shared dedup
+pool) is the safe model. `--embedded` opts out (in-process, single-session);
+`--db` and `demo` are inherently in-process.
 
 ```sh
-raglit daemon --addr 127.0.0.1:7420        # workers + HTTP API + review UI + OpenAPI + GraphQL
+# nothing to start — the first client brings the daemon up (at 127.0.0.1:7420,
+# storage under $RAGLIT_ROOT / ~/.raglit), and every session connects to it:
+raglit ingest ./my-project
+raglit search "rollback procedure"
+raglit serve                       # MCP over the shared daemon
 
-# point any command (or `serve`) at it (or set RAGLIT_DAEMON=http://host:7420 / config daemon_url)
-raglit ingest --daemon http://127.0.0.1:7420 ./my-project
-raglit search --daemon http://127.0.0.1:7420 "rollback procedure"
+# run it explicitly (foreground) if you prefer, or point at a remote one:
+raglit daemon --addr 127.0.0.1:7420    # workers + HTTP API + review UI + OpenAPI + GraphQL
+raglit search --daemon http://host:7420 "…"   # or RAGLIT_DAEMON / config daemon_url
 ```
 
 `raglit daemon` is a multi-protocol server (huma + gwag/gat): the same operations

@@ -83,7 +83,7 @@ func runIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	openStore, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
-	daemon := addDaemonFlag(fs)
+	client := addClientFlags(fs) // --daemon + --embedded
 	title := fs.String("title", "", "document title (single-URL convenience)")
 	now := fs.Bool("now", false, "also process the queue now (don't wait for a serve worker)")
 	embed := fs.Bool("embed", false, "with --now: embed ingested fragments")
@@ -97,8 +97,13 @@ func runIngest(args []string) error {
 		return err
 	}
 
-	// Client mode: hand off to a running daemon instead of touching the files.
-	if dURL := resolveDaemon(*daemon, homeOf); dURL != "" {
+	// Default: hand off to the shared daemon (auto-started if needed). --embedded
+	// or --db opens the index in-process instead.
+	dURL, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	if err != nil {
+		return err
+	}
+	if dURL != "" {
 		return daemonIngest(dURL, targets, resolveIndexName(fs.Lookup("index").Value.String(), homeOf), *title)
 	}
 
@@ -168,9 +173,13 @@ func runWork(args []string) error {
 func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	openStore, homeOf := addStoreFlags(fs)
-	daemon := addDaemonFlag(fs)
+	client := addClientFlags(fs) // --daemon + --embedded
 	fs.Parse(args)
-	if dURL := resolveDaemon(*daemon, homeOf); dURL != "" {
+	dURL, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	if err != nil {
+		return err
+	}
+	if dURL != "" {
 		return daemonStatusPrint(dURL, resolveIndexName(fs.Lookup("index").Value.String(), homeOf))
 	}
 	store, err := openStore()

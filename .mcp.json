@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "poly-lsp": {
+      "command": "poly-lsp-mcp",
+      "args": ["mcp", "--root", "/home/nthalk/local/src/iodesystems/raglit"]
+    },
+    "raglit": {
+      "command": "raglit",
+      "args": ["serve", "--home", "/home/nthalk/local/src/iodesystems/raglit/.raglit"]
+    }
+  }
+}

@@ -7,12 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/iodesystems/raglit"
 )
@@ -114,6 +118,105 @@ func queryInt(r *http.Request, key string, def int) int {
 func addDaemonFlag(fs *flag.FlagSet) *string {
 	return fs.String("daemon", os.Getenv("RAGLIT_DAEMON"),
 		"route to a running daemon (e.g. http://host:7420); default $RAGLIT_DAEMON")
+}
+
+// defaultDaemonURL is the shared per-user daemon every client ensures by default.
+const defaultDaemonURL = "http://" + defaultDaemonAddr
+
+// ensureDaemon returns a reachable shared-daemon base URL, auto-starting a LOCAL
+// daemon if none is running — so every session/CLI is a thin client to ONE daemon
+// (single writer + single worker pool + single LLM caller), never N processes
+// opening the index in-process. Target: --daemon > $RAGLIT_DAEMON > config
+// daemon_url, else the default localhost daemon. A REMOTE target that's down is an
+// error (can't start it). Race-safe: concurrent starters collide on the port bind;
+// the loser exits and everyone connects to the winner.
+func ensureDaemon(flagVal string, homeOf func() raglit.Home) (string, error) {
+	base := resolveDaemon(flagVal, homeOf)
+	if base == "" {
+		base = defaultDaemonURL
+	}
+	if daemonHealthy(base) {
+		return base, nil
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("bad daemon url %q: %w", base, err)
+	}
+	if !isLoopback(u.Hostname()) {
+		return "", fmt.Errorf("daemon at %s is unreachable and not local — start it there", base)
+	}
+	if err := startDaemonDetached(u.Host); err != nil {
+		return "", fmt.Errorf("auto-start daemon: %w", err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if daemonHealthy(base) {
+			return base, nil
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return "", fmt.Errorf("auto-started daemon did not come up at %s (see %s)", base, filepath.Join(raglit.DefaultRoot(), "daemon.log"))
+}
+
+// daemonHealthy reports whether a daemon answers /api/health at base.
+func daemonHealthy(base string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/api/health", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" || host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// startDaemonDetached launches `raglit daemon --addr <addr>` as a detached process
+// (own session, output appended to <root>/daemon.log) so the shared daemon
+// outlives the client that started it.
+func startDaemonDetached(addr string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	root := raglit.DefaultRoot()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	logf, err := os.OpenFile(filepath.Join(root, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	cmd := exec.Command(exe, "daemon", "--addr", addr)
+	cmd.Stdout, cmd.Stderr, cmd.Stdin = logf, logf, nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from our session
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release() // keep it running after we exit
+}
+
+// addClientFlags registers --daemon + --embedded and returns a resolver that
+// yields the shared-daemon URL (auto-starting if needed) — or "" when --embedded
+// is set (open the index in-process). dbSet forces embedded (a raw --db file).
+func addClientFlags(fs *flag.FlagSet) (resolve func(homeOf func() raglit.Home, dbSet bool) (string, error)) {
+	daemon := addDaemonFlag(fs)
+	embedded := fs.Bool("embedded", false, "bypass the shared daemon; open the index in-process")
+	return func(homeOf func() raglit.Home, dbSet bool) (string, error) {
+		if *embedded || dbSet {
+			return "", nil
+		}
+		return ensureDaemon(*daemon, homeOf)
+	}
 }
 
 func daemonIngest(base string, targets []string, index, title string) error {

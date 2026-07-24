@@ -17,7 +17,7 @@ import (
 func runSync(args []string) error {
 	fs := flag.NewFlagSet("sync", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
-	daemon := addDaemonFlag(fs)
+	client := addClientFlags(fs) // --daemon + --embedded
 	only := fs.String("index", "", "sync only this configured index (default: all)")
 	dry := fs.Bool("dry-run", false, "print what would be ingested; don't enqueue")
 	fs.Parse(args)
@@ -49,7 +49,13 @@ func runSync(args []string) error {
 		return err
 	}
 
-	dURL := resolveDaemon(*daemon, homeOf)
+	var dURL string
+	if !*dry {
+		dURL, err = client(homeOf, false)
+		if err != nil {
+			return err
+		}
+	}
 	names := make([]string, 0, len(plan))
 	for n := range plan {
 		names = append(names, n)
