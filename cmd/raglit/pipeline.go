@@ -126,7 +126,7 @@ func runOcr(args []string) error {
 	if fs.NArg() == 0 {
 		return fmt.Errorf("ocr: no image files given")
 	}
-	home := raglit.DefaultHome()
+	home := raglit.DiscoverHome()
 	if *homeFlag != "" {
 		home = raglit.Home(*homeFlag)
 	}

@@ -20,11 +20,13 @@ func TestIngestUnits_SegmentedWithContinuationAndEmbed(t *testing.T) {
 		`{"continues_previous":true,"fragments":[{"text":"and revokes the old one` + pad + `"},{"text":"funcC flips the load balancer` + pad + `"}]}`,
 	}})
 
+	// Text units (a born-digital PDF's text-layer pages): segmented directly, no
+	// OCR. The OCR-split path (image → ocr → segment) is covered by atomic_test.go.
 	units := []ingestUnit{
-		{page: 1, mime: "image/png", data: []byte{1, 2, 3}},
-		{page: 2, mime: "image/png", data: []byte{4, 5, 6}},
+		{page: 1, text: "raw text of page one"},
+		{page: 2, text: "raw text of page two"},
 	}
-	n, err := s.ingestUnits(ctx, sg, "doc.pdf", "Doc", units)
+	n, err := s.ingestUnits(ctx, sg, nil, "doc.pdf", "Doc", units, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,7 @@ func TestIngestUnits_NoEmbedderStillIndexes(t *testing.T) {
 	sg := NewSegmenter(&scriptChatter{replies: []string{
 		`{"continues_previous":false,"fragments":[{"text":"only fragment here"}]}`,
 	}})
-	n, err := s.ingestUnits(context.Background(), sg, "d", "", []ingestUnit{{page: 1, mime: "image/png", data: []byte{9}}})
+	n, err := s.ingestUnits(context.Background(), sg, nil, "d", "", []ingestUnit{{page: 1, text: "raw"}}, nil)
 	if err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}

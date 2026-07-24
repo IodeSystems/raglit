@@ -23,7 +23,7 @@ func main() {
 	if len(os.Args) < 2 {
 		// No command: run the setup wizard if this home isn't initialized yet,
 		// otherwise show usage. (raglit is unusable until `init` writes config.)
-		if !raglit.Inited(raglit.DefaultHome()) {
+		if !raglit.Inited(raglit.DiscoverHome()) {
 			fmt.Fprintln(os.Stderr, "raglit is not configured yet — starting setup.")
 			if err := runInit(nil); err != nil {
 				fmt.Fprintf(os.Stderr, "raglit: %v\n", err)
@@ -52,6 +52,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "daemon":
 		err = runDaemon(os.Args[2:])
+	case "review":
+		err = runReview(os.Args[2:])
 	case "demo":
 		err = runDemo(os.Args[2:])
 	case "pagify":
@@ -78,7 +80,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `raglit — local BM25 document index (SQLite FTS5)
 
 usage:
-  raglit init   [--home DIR]                 configure endpoint + models (wizard)
+  raglit init   [--home DIR]                 configure endpoint + models (writes ./.raglit)
   raglit demo                                self-contained offline tour
   raglit index  [--home DIR] [--embed] FILE|DIR...   ingest local files (+ PDFs via OCR)
   raglit ingest [--home DIR] [--now] TARGET...  queue folders/files/URLs (file://, http(s)://)
@@ -86,15 +88,16 @@ usage:
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"
   raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
-  raglit daemon [--home DIR] [--addr :7420] [--embed]   HTTP daemon (ingest/search/status)
+  raglit daemon [--home DIR] [--addr :7420] [--embed]   HTTP daemon (ingest/search/status) + review UI at /
+  raglit review [--home DIR] [--addr :7420] [--embed]   same daemon, framed as the status/job/OCR review UI
   # add --daemon URL (or $RAGLIT_DAEMON) to ingest/search/status to call a daemon
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
   raglit doctor [--home DIR]                 OCR readiness: cheap engine + vision endpoint
 
 flags:
-  --home        index home dir (default $RAGLIT_HOME or ~/local/raglit); holds
-                index.sqlite + originals/ + pages/
+  --home        index home dir; holds index.sqlite + originals/ + pages/. Default:
+                nearest ./.raglit walking up from cwd, else $RAGLIT_HOME or ~/local/raglit
   --db          raw index file path (overrides --home; skips originals storage)
   -n            search/serve: max (default) results
   --embed       index: also embed fragments for vector/hybrid search
@@ -122,7 +125,7 @@ func addStoreFlags(fs *flag.FlagSet) (open func() (*raglit.Store, error), homeOf
 		if *home != "" {
 			return raglit.Home(*home)
 		}
-		return raglit.DefaultHome()
+		return raglit.DiscoverHome()
 	}
 	open = func() (*raglit.Store, error) {
 		if *db != "" {

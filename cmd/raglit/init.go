@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
-	"sort"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,16 +16,24 @@ import (
 	"github.com/iodesystems/raglit"
 )
 
-// runInit is the setup wizard. It writes <home>/config.json: an OpenAI-standard
-// base URL + token, then a vision model (image in → text, for OCR) and an
-// embedding model (text in → vector). It queries the endpoint's /v1/models and
-// lets you pick from the list; if that fails, you type ids by hand.
+// runInit is the setup wizard. By default it writes a PROJECT-LOCAL home —
+// ./.raglit/ in the current directory — so a repo/sub-project owns its own
+// index and config; every command run anywhere in the tree discovers it by
+// walking up (see raglit.DiscoverHome). --home overrides the location.
+//
+// config.json is OpenAI-standard: a base URL + token, then a vision model
+// (image in → text, for OCR) and an embedding model (text in → vector). init
+// queries the endpoint's /v1/models; if the server reports capabilities
+// (corrallm-class), each pick list is filtered to models that fit the role —
+// image-in for vision, embeddings for --embed. A plain OpenAI server shows the
+// full list. If the query fails, you type ids by hand. On success it prints the
+// MCP server setup plus the ingest/search commands for reference.
 func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	homeFlag := fs.String("home", "", "index home dir (default $RAGLIT_HOME or ~/local/raglit)")
+	homeFlag := fs.String("home", "", "home dir (default: ./.raglit in the current directory)")
 	fs.Parse(args)
 
-	home := raglit.DefaultHome()
+	home := raglit.Home(raglit.ProjectHomeName) // ./.raglit
 	if *homeFlag != "" {
 		home = raglit.Home(*homeFlag)
 	}
@@ -50,12 +57,14 @@ func runInit(args []string) error {
 
 	var vision, embed string
 	if err == nil && len(models) > 0 {
-		fmt.Printf("\n%d models available:\n", len(models))
-		for i, m := range models {
-			fmt.Printf("  %2d) %s\n", i+1, m)
+		enriched := hasCapabilities(models)
+		if enriched {
+			fmt.Printf("\n%d models (capabilities reported — filtering per role)\n", len(models))
+		} else {
+			fmt.Printf("\n%d models available\n", len(models))
 		}
-		vision = pick(r, models, "\nvision model (image in → text, for PDF OCR)")
-		embed = pick(r, models, "embedding model (text in → vector, for --embed)")
+		vision = chooseModel(r, models, enriched, "vision", "vision model (image in → text, for PDF OCR)")
+		embed = chooseModel(r, models, enriched, "embed", "embedding model (text in → vector, for --embed)")
 	} else {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  couldn't list models (%v) — enter ids manually\n", err)
@@ -99,8 +108,41 @@ func runInit(args []string) error {
 		return err
 	}
 	fmt.Printf("\nwrote %s\n", home.ConfigPath())
-	fmt.Println("ready: raglit index <files>  ·  raglit search \"query\"  ·  raglit serve")
+	printPostInit(home)
 	return nil
+}
+
+// printPostInit prints, after a successful init, the MCP server setup (so an
+// agent can reach this index) and the ingest/search commands for reference. The
+// MCP snippet pins an absolute --home so it works regardless of the client's
+// working directory; the CLI examples rely on walk-up discovery of ./.raglit,
+// so they need no --home when run inside the project.
+func printPostInit(home raglit.Home) {
+	abs, err := filepath.Abs(string(home))
+	if err != nil {
+		abs = string(home)
+	}
+
+	type mcpServer struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	srv := mcpServer{Command: "raglit", Args: []string{"serve", "--home", abs}}
+	oneLine, _ := json.Marshal(srv)
+	full, _ := json.MarshalIndent(
+		map[string]any{"mcpServers": map[string]any{"raglit": srv}}, "  ", "  ")
+
+	fmt.Print("\nMCP server (stdio) — expose this index to an agent:\n\n")
+	fmt.Printf("  Claude Code:\n    claude mcp add-json raglit '%s'\n\n", oneLine)
+	fmt.Printf("  Or add to .mcp.json (any MCP client):\n  %s\n", full)
+	fmt.Print("\n  Tools: search · ingest · index_status · list_indexes · ocr\n")
+
+	fmt.Print("\nreference (run anywhere in this project — raglit finds ./.raglit):\n")
+	fmt.Println("  ingest:  raglit ingest <FILE|DIR|URL>...      queue + index (lazy)")
+	fmt.Println("  index:   raglit index  <FILE|DIR>...          index now")
+	fmt.Println("  search:  raglit search \"your query\"           BM25 (add --mode hybrid with --embed)")
+	fmt.Println("  status:  raglit status                        index + queue state")
+	fmt.Println("  doctor:  raglit doctor                        OCR / extractor readiness")
 }
 
 // ask prompts with an optional default and returns the trimmed reply (or def).
@@ -118,52 +160,28 @@ func ask(r *bufio.Reader, label, def string) string {
 	return line
 }
 
-// pick lets the user choose from options by number OR type an id directly (so a
-// model not in the list still works).
-func pick(r *bufio.Reader, options []string, label string) string {
-	in := ask(r, label+" (number or id)", "")
-	if n, err := strconv.Atoi(in); err == nil && n >= 1 && n <= len(options) {
-		return options[n-1]
+// chooseModel prints a numbered model pick list for role and returns the chosen
+// id. When the server reports capabilities, the list is filtered to models that
+// fit the role (image-in for vision, embeddings for embed); if the filter would
+// empty the list it falls back to the full catalog. The default (Enter) is the
+// best-ranked model; you can also type a number or an id not shown.
+func chooseModel(r *bufio.Reader, all []modelInfo, enriched bool, role, label string) string {
+	if len(all) == 0 {
+		return ask(r, label+" id", "")
 	}
-	return in
-}
-
-// fetchModels GETs <base>/v1/models and returns the sorted model ids.
-func fetchModels(ctx context.Context, base, key string) ([]string, error) {
-	u := strings.TrimRight(base, "/")
-	if !strings.HasSuffix(u, "/v1") {
-		u += "/v1"
-	}
-	u += "/models"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
-	}
-	var out struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(out.Data))
-	for _, m := range out.Data {
-		if m.ID != "" {
-			ids = append(ids, m.ID)
+	shown := all
+	if enriched {
+		if f := filterByRole(all, role); len(f) > 0 {
+			shown = f
 		}
 	}
-	sort.Strings(ids)
-	return ids, nil
+	fmt.Printf("\n%s:\n", label)
+	for i, m := range shown {
+		fmt.Printf("  %2d) %s\n", i+1, modelLabel(m))
+	}
+	in := ask(r, "  choose (number or id)", shown[0].ID)
+	if n, err := strconv.Atoi(in); err == nil && n >= 1 && n <= len(shown) {
+		return shown[n-1].ID
+	}
+	return in
 }

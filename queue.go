@@ -86,11 +86,12 @@ func (s *Store) claimNextJob() (*Job, error) {
 	return &j, nil
 }
 
-// completeJob marks a job done with the fragment count it produced.
-func (s *Store) completeJob(id int64, fragments int) error {
+// completeJob marks a job done with the fragment count it produced and the
+// segmentation mode it used ("llm" | "offline").
+func (s *Store) completeJob(id int64, fragments int, mode string) error {
 	_, err := s.db.Exec(
-		`UPDATE ingest_jobs SET state='done', fragments=?, error='', finished_at=? WHERE id=?`,
-		fragments, time.Now().UnixNano(), id)
+		`UPDATE ingest_jobs SET state='done', fragments=?, mode=?, error='', finished_at=? WHERE id=?`,
+		fragments, mode, time.Now().UnixNano(), id)
 	return err
 }
 
@@ -103,6 +104,83 @@ func (s *Store) failJob(id int64, msg string) error {
 		`UPDATE ingest_jobs SET state='error', error=?, finished_at=? WHERE id=?`,
 		msg, time.Now().UnixNano(), id)
 	return err
+}
+
+// JobInfo is a full ingest-job row for the review UI's job table (all states).
+type JobInfo struct {
+	ID         int64  `json:"id"`
+	URL        string `json:"url"`
+	Title      string `json:"title"`
+	State      string `json:"state"`
+	Error      string `json:"error"`
+	Fragments  int    `json:"fragments"`
+	Mode       string `json:"mode"` // 'llm' | 'offline' | '' — segmentation mode
+	EnqueuedAt int64  `json:"enqueued_at"`
+	StartedAt  int64  `json:"started_at"`
+	FinishedAt int64  `json:"finished_at"`
+}
+
+// Jobs lists ingest jobs, newest first. state filters to one lifecycle state
+// (pending|running|done|error); "" or "all" returns every state. limit ≤ 0 →
+// 100.
+func (s *Store) Jobs(state string, limit int) ([]JobInfo, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	q := `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
+	      FROM ingest_jobs`
+	var args []any
+	if state != "" && state != "all" {
+		q += ` WHERE state=?`
+		args = append(args, state)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JobInfo
+	for rows.Next() {
+		var j JobInfo
+		if err := rows.Scan(&j.ID, &j.URL, &j.Title, &j.State, &j.Error,
+			&j.Fragments, &j.Mode, &j.EnqueuedAt, &j.StartedAt, &j.FinishedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// RetryJob requeues an errored or done job: state → pending, error cleared,
+// timestamps reset, so the worker picks it up again. Errors if the job isn't in
+// a retryable state (pending/running jobs are already live).
+func (s *Store) RetryJob(id int64) error {
+	res, err := s.db.Exec(
+		`UPDATE ingest_jobs SET state='pending', error='', started_at=0, finished_at=0, fragments=0
+		 WHERE id=? AND state IN ('error','done')`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("raglit: job %d not retryable (must be error or done)", id)
+	}
+	return nil
+}
+
+// CancelJob removes a pending job from the queue. Only pending jobs can be
+// canceled — a running job is mid-flight (the worker owns it) and done/error
+// jobs are already terminal.
+func (s *Store) CancelJob(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM ingest_jobs WHERE id=? AND state='pending'`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("raglit: job %d not cancelable (only pending jobs can be canceled)", id)
+	}
+	return nil
 }
 
 // PendingItem is one queued (not-yet-done) job plus an ETA estimate.

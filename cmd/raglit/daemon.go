@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -31,6 +32,13 @@ import (
 // bind to localhost (the default) unless you add a proxy.
 
 const defaultDaemonAddr = "127.0.0.1:7420"
+
+// runReview is `daemon` framed as the review UI — same server (the UI is served
+// at / and its control plane under /api), with a banner pointing at the page.
+func runReview(args []string) error {
+	fmt.Fprintln(os.Stderr, "raglit review — status, job control, and OCR review UI")
+	return runDaemon(args)
+}
 
 func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
@@ -135,8 +143,211 @@ func runDaemon(args []string) error {
 		writeJSON(w, aggregateStatus(reg, selectIndexes(reg, r.URL.Query().Get("index"))))
 	})
 
+	// ── review UI + control plane ──────────────────────────────────────
+	registerReviewRoutes(mux, reg, lf, homeOf())
+
 	fmt.Fprintf(os.Stderr, "raglit daemon on http://%s (home %s)\n", *addr, homeOf())
+	fmt.Fprintf(os.Stderr, "  review UI: http://%s/\n", *addr)
 	return (&http.Server{Addr: *addr, Handler: mux}).ListenAndServe()
+}
+
+// registerReviewRoutes wires the review UI (served at /) and its JSON control
+// plane: job listing + retry/cancel, the document list, per-document OCR review,
+// page-image serving, and on-demand cascade re-OCR of a saved page image. All
+// review endpoints are per-index (default "default").
+func registerReviewRoutes(mux *http.ServeMux, reg *raglit.Registry, lf *llmFlags, home raglit.Home) {
+	// getStore resolves the ?index (default "default"), 404-ing an unknown index.
+	getStore := func(w http.ResponseWriter, r *http.Request) (*raglit.Store, bool) {
+		st, err := reg.Get(r.URL.Query().Get("index"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return nil, false
+		}
+		return st, true
+	}
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(reviewHTML)
+	})
+
+	mux.HandleFunc("/api/jobs", func(w http.ResponseWriter, r *http.Request) {
+		st, ok := getStore(w, r)
+		if !ok {
+			return
+		}
+		jobs, err := st.Jobs(r.URL.Query().Get("state"), queryInt(r, "limit", 100))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if jobs == nil {
+			jobs = []raglit.JobInfo{}
+		}
+		// Fold in ETA for pending/running items from the status snapshot.
+		st2, _ := st.IndexStatus()
+		eta := map[int64]float64{}
+		for _, it := range st2.Items {
+			eta[it.ID] = it.ETASeconds
+		}
+		type jobOut struct {
+			raglit.JobInfo
+			ETASeconds float64           `json:"eta_seconds"`
+			Stages     []raglit.JobStage `json:"stages"`
+		}
+		out := make([]jobOut, len(jobs))
+		for i, j := range jobs {
+			stages, _ := st.JobStages(j.ID)
+			if stages == nil {
+				stages = []raglit.JobStage{}
+			}
+			out[i] = jobOut{JobInfo: j, ETASeconds: eta[j.ID], Stages: stages}
+		}
+		writeJSON(w, map[string]any{"jobs": out})
+	})
+
+	jobAction := func(action func(st *raglit.Store, id int64) error) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "POST only", http.StatusMethodNotAllowed)
+				return
+			}
+			st, ok := getStore(w, r)
+			if !ok {
+				return
+			}
+			var req struct {
+				ID int64 `json:"id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := action(st, req.ID); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true, "id": req.ID})
+		}
+	}
+	mux.HandleFunc("/api/jobs/retry", jobAction((*raglit.Store).RetryJob))
+	mux.HandleFunc("/api/jobs/cancel", jobAction((*raglit.Store).CancelJob))
+
+	mux.HandleFunc("/api/documents", func(w http.ResponseWriter, r *http.Request) {
+		st, ok := getStore(w, r)
+		if !ok {
+			return
+		}
+		docs, err := st.Documents()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if docs == nil {
+			docs = []raglit.DocSummary{}
+		}
+		writeJSON(w, map[string]any{"documents": docs})
+	})
+
+	mux.HandleFunc("/api/doc", func(w http.ResponseWriter, r *http.Request) {
+		st, ok := getStore(w, r)
+		if !ok {
+			return
+		}
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			http.Error(w, "path is required", http.StatusBadRequest)
+			return
+		}
+		title, pages, err := st.DocReview(path)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if pages == nil {
+			pages = []raglit.PageReview{}
+		}
+		writeJSON(w, map[string]any{"path": path, "title": title, "pages": pages})
+	})
+
+	mux.HandleFunc("/api/page-image", func(w http.ResponseWriter, r *http.Request) {
+		st, ok := getStore(w, r)
+		if !ok {
+			return
+		}
+		img, err := st.PageImagePath(r.URL.Query().Get("path"), queryInt(r, "page", 0))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Bound serving to the home's pages/ dir (no path traversal via the DB).
+		root := st.PagesRoot()
+		if img == "" || root == "" || !isUnder(img, root) {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, img)
+	})
+
+	// On-demand re-OCR: rerun the cheap→gate→VLM cascade against a saved page
+	// image and return {engine,text} — surfaces the escalation decision that
+	// ingest (which OCRs+segments in one VLM call) doesn't record per page.
+	mux.HandleFunc("/api/reocr", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		st, ok := getStore(w, r)
+		if !ok {
+			return
+		}
+		var req struct {
+			Path string `json:"path"`
+			Page int    `json:"page"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		img, err := st.PageImagePath(req.Path, req.Page)
+		if err != nil || img == "" || !isUnder(img, st.PagesRoot()) {
+			http.Error(w, "no saved page image for that page", http.StatusNotFound)
+			return
+		}
+		data, err := os.ReadFile(img)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		ocr := buildToolOCR(lf, home)
+		text, engine, err := ocr.PageWithEngine(r.Context(), raglit.PageImage{
+			Page: req.Page, Mime: mimeForImage(img), Data: data,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"page": req.Page, "engine": engine, "text": text})
+	})
+}
+
+// isUnder reports whether path is within dir (both cleaned, absolute-ish). Used
+// to bound page-image serving to the home's pages/ directory.
+func isUnder(path, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	ap, err1 := filepath.Abs(path)
+	ad, err2 := filepath.Abs(dir)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rel, err := filepath.Rel(ad, ap)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // searchByMode dispatches bm25 (default) / vec / hybrid.

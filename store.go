@@ -94,11 +94,33 @@ CREATE TABLE IF NOT EXISTS ingest_jobs (
   state       TEXT NOT NULL DEFAULT 'pending',  -- pending | running | done | error
   error       TEXT NOT NULL DEFAULT '',
   fragments   INTEGER NOT NULL DEFAULT 0,
+  mode        TEXT NOT NULL DEFAULT '',          -- 'llm' | 'offline' | '' (segmentation mode)
   enqueued_at INTEGER NOT NULL,
   started_at  INTEGER NOT NULL DEFAULT 0,
   finished_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ingest_jobs_state ON ingest_jobs(state, id);
+-- Per-job pipeline stages (the "series of tasks" an item goes through): fetch →
+-- extract → [ocr] → segment → [embed] → commit, each tagged with the engine/mode
+-- that handled it. Populated by the worker as it runs, shown in the review UI.
+CREATE TABLE IF NOT EXISTS job_stages (
+  id      INTEGER PRIMARY KEY,
+  job_id  INTEGER NOT NULL REFERENCES ingest_jobs(id) ON DELETE CASCADE,
+  seq     INTEGER NOT NULL,
+  name    TEXT NOT NULL,               -- fetch | extract | ocr | segment | embed | commit
+  engine  TEXT NOT NULL DEFAULT '',    -- text-layer | pandoc | tesseract | vision | llm | offline | …
+  state   TEXT NOT NULL DEFAULT 'done',-- done | error | skipped
+  detail  TEXT NOT NULL DEFAULT '',
+  at      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS job_stages_job ON job_stages(job_id, seq);
+CREATE TABLE IF NOT EXISTS ocr_pages (
+  doc_id     INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page       INTEGER NOT NULL,
+  engine     TEXT NOT NULL DEFAULT '',   -- 'text' (layer/plain) | 'vision' | 'tesseract' | 'paddleocr'
+  image_path TEXT NOT NULL DEFAULT '',   -- absolute path to the saved page image; '' for text pages
+  PRIMARY KEY (doc_id, page)
+);
 `
 
 // Open opens (creating if needed) a raglit index at path. Use ":memory:" for a
@@ -119,7 +141,47 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("raglit: schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("raglit: migrate: %w", err)
+	}
 	return &Store{db: db, path: path}, nil
+}
+
+// migrate applies additive schema changes that CREATE TABLE IF NOT EXISTS can't
+// (new columns on existing tables). Each step is idempotent: it checks for the
+// column first, so a fresh DB (already carrying the column from schema) and an
+// old DB converge without error.
+func migrate(db *sql.DB) error {
+	has, err := hasColumn(db, "ingest_jobs", "mode")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.Exec(`ALTER TABLE ingest_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hasColumn reports whether table has a column named col.
+func hasColumn(db *sql.DB, table, col string) (bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // OpenHome opens the home's primary ("default") index. Use Open for a raw path
@@ -293,21 +355,30 @@ func (s *Store) storeOriginal(docPath string) error {
 // when the store has a home, else a temp dir. Returns the number of fragments
 // indexed.
 func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, error) {
-	return s.ingestPDF(ctx, ocr, pdfPath, pdfPath, filepath.Base(pdfPath))
+	return s.ingestPDF(ctx, ocr, pdfPath, pdfPath, filepath.Base(pdfPath), nil)
 }
 
 // ingestPDF is IngestPDF with the document identity (docPath, title) decoupled
 // from the file on disk (filePath) — so a queued URL job can process a temp file
-// while keeping the URL as the stable document key.
-func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, title string) (int, error) {
+// while keeping the URL as the stable document key. sl records the extract stage
+// (and the downstream ocr/segment/embed/commit stages via ingestUnits).
+func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, title string, sl *StageLog) (int, error) {
 	// Per-page hybrid: text-layer pages become text units (free, exact), scanned
 	// pages become image units for the OCR path. Replaces the old Pagify-only path,
 	// which saw no text layer and failed on born-digital PDFs (ErrNoPageImages).
 	units, err := pdfUnits(ctx, filePath)
 	if err != nil {
+		sl.Fail("extract", "pdf", err)
 		return 0, err
 	}
-	return s.ingestUnits(ctx, NewSegmenter(ocr.Client), docPath, title, units)
+	imgPages := 0
+	for _, u := range units {
+		if u.isImage() {
+			imgPages++
+		}
+	}
+	sl.Done("extract", "pdf", fmt.Sprintf("%d page(s): %d text-layer, %d scanned", len(units), len(units)-imgPages, imgPages))
+	return s.ingestUnits(ctx, NewSegmenter(ocr.Client), ocr, docPath, title, units, sl)
 }
 
 // Hit is one BM25-ranked fragment. Score is normalized so HIGHER is better

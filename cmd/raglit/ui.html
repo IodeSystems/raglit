@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>raglit review</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --panel:#fff; --ink:#1a1d21; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2563eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626; --run:#2563eb;
+    --vision:#7c3aed; --text-eng:#0891b2; --chip:#eef2f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0f1115; --panel:#171a21; --ink:#e6e8eb; --muted:#9aa4b2; --line:#262b34;
+      --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --run:#3b82f6;
+      --vision:#a78bfa; --text-eng:#22d3ee; --chip:#20242d;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { position:sticky; top:0; z-index:5; display:flex; gap:12px; align-items:center;
+    padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px; }
+  header h1 span { color:var(--muted); font-weight:400; }
+  .grow { flex:1; }
+  select, button { font:inherit; color:inherit; background:var(--panel);
+    border:1px solid var(--line); border-radius:7px; padding:5px 10px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  label.toggle { display:flex; align-items:center; gap:6px; color:var(--muted); cursor:pointer; }
+  main { padding:16px; max-width:1200px; margin:0 auto; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:18px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .card .n { font-size:22px; font-weight:650; }
+  .card .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted);
+    margin:22px 0 8px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); font-weight:600; }
+  tr:last-child td { border-bottom:none; }
+  td.url { max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  td.actions { white-space:nowrap; text-align:right; }
+  td.actions button { padding:3px 9px; font-size:12px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:20px; font-size:11px; font-weight:600;
+    background:var(--chip); }
+  .badge.pending { color:var(--warn); } .badge.running { color:var(--run); }
+  .badge.done { color:var(--ok); } .badge.error { color:var(--err); }
+  .badge.vision { color:#fff; background:var(--vision); }
+  .badge.text { color:#fff; background:var(--text-eng); }
+  .badge.llm { color:#fff; background:var(--vision); }
+  .badge.offline { color:var(--ink); background:var(--chip); border:1px solid var(--line); }
+  .eng { color:#fff; }
+  /* job stages */
+  tr.stages td { padding:0 12px 10px 34px; background:var(--bg); }
+  .stagelist { display:flex; flex-wrap:wrap; gap:6px; }
+  .stage { display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:7px;
+    border:1px solid var(--line); background:var(--panel); font-size:12px; }
+  .stage .nm { font-weight:600; }
+  .stage .eng2 { color:var(--muted); }
+  .stage .dot { width:7px; height:7px; border-radius:50%; background:var(--ok); }
+  .stage.error .dot { background:var(--err); }
+  .stage.skipped .dot { background:var(--muted); }
+  .stage.error { border-color:var(--err); }
+  .expand { cursor:pointer; user-select:none; color:var(--muted); }
+  .expand:hover { color:var(--accent); }
+  .muted { color:var(--muted); }
+  .err { color:var(--err); font-size:12px; white-space:pre-wrap; }
+  .empty { padding:22px; text-align:center; color:var(--muted); }
+  /* documents + review */
+  .doc-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line);
+    cursor:pointer; }
+  .doc-row:last-child { border-bottom:none; }
+  .doc-row:hover { background:var(--chip); }
+  .doc-row.sel { background:var(--chip); }
+  .doc-title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .doc-title small { color:var(--muted); display:block; overflow:hidden; text-overflow:ellipsis; }
+  .pagecard { display:grid; grid-template-columns:minmax(0,320px) 1fr; gap:16px; padding:14px;
+    border-bottom:1px solid var(--line); }
+  @media (max-width:720px){ .pagecard { grid-template-columns:1fr; } }
+  .pagecard:last-child { border-bottom:none; }
+  .pagecard img { width:100%; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:zoom-in; }
+  .pagehead { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .pagehead .n { font-weight:650; }
+  .ptext { white-space:pre-wrap; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+    background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; max-height:340px;
+    overflow:auto; }
+  .reocr { margin-top:8px; }
+  .reocr .out { margin-top:8px; }
+  dialog { border:none; border-radius:12px; padding:0; max-width:92vw; max-height:92vh; background:transparent; }
+  dialog img { max-width:92vw; max-height:88vh; border-radius:10px; }
+  dialog::backdrop { background:rgba(0,0,0,.72); }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--ink);
+    color:var(--bg); padding:9px 16px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>raglit <span>review</span></h1>
+  <select id="index" title="index"></select>
+  <div class="grow"></div>
+  <label class="toggle"><input type="checkbox" id="auto" checked> auto-refresh</label>
+  <button id="refresh">Refresh</button>
+</header>
+<main>
+  <div class="cards" id="cards"></div>
+
+  <h2>Ingest jobs</h2>
+  <div class="panel"><table>
+    <thead><tr><th></th><th>#</th><th>State</th><th>Mode</th><th>Target</th><th>Frags</th><th>ETA</th><th>Detail</th><th></th></tr></thead>
+    <tbody id="jobs"></tbody>
+  </table></div>
+
+  <h2>Documents &amp; OCR review</h2>
+  <div style="display:grid; grid-template-columns:minmax(240px,340px) 1fr; gap:16px; align-items:start">
+    <div class="panel" id="docs"><div class="empty">loading…</div></div>
+    <div class="panel" id="review"><div class="empty">Select a document to review its pages.</div></div>
+  </div>
+</main>
+
+<dialog id="lightbox"><img id="lightimg" alt=""></dialog>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (t,c,txt) => { const e=document.createElement(t); if(c)e.className=c; if(txt!=null)e.textContent=txt; return e; };
+let curIndex = "default", curDoc = null;
+
+function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1800); }
+async function getJSON(u){ const r=await fetch(u); if(!r.ok) throw new Error((await r.text())||r.status); return r.json(); }
+async function post(u,body){ const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
+  if(!r.ok) throw new Error((await r.text())||r.status); return r.json(); }
+const qi = () => "index="+encodeURIComponent(curIndex);
+const esc = s => (s==null?"":String(s));
+function ago(ns){ if(!ns) return ""; const s=(Date.now()-ns/1e6)/1000; if(s<60)return Math.round(s)+"s ago";
+  if(s<3600)return Math.round(s/60)+"m ago"; if(s<86400)return Math.round(s/3600)+"h ago"; return Math.round(s/86400)+"d ago"; }
+function eta(s){ if(!s) return ""; if(s<90)return "~"+Math.round(s)+"s"; return "~"+Math.round(s/60)+"m"; }
+
+async function loadIndexes(){
+  const d = await getJSON("/indexes");
+  const sel = $("#index"); sel.innerHTML="";
+  (d.indexes||[]).forEach(ix=>{ const o=el("option"); o.value=ix.name;
+    o.textContent=`${ix.name} — ${ix.documents} docs / ${ix.fragments} frags`; sel.appendChild(o); });
+  if(!sel.querySelector(`option[value="${curIndex}"]`) && sel.options.length) curIndex=sel.options[0].value;
+  sel.value=curIndex;
+}
+
+async function loadStatus(){
+  const s = await getJSON("/status?"+qi());
+  const cards=[["documents",s.documents],["fragments",s.fragments],["done",s.done],
+    ["running",s.running],["pending",s.pending],["failed",s.failed],
+    ["jobs/min", (s.rate_per_min||0).toFixed(s.rate_per_min>=10?0:1)]];
+  const c=$("#cards"); c.innerHTML="";
+  cards.forEach(([k,n])=>{ const d=el("div","card"); d.appendChild(el("div","n",esc(n))); d.appendChild(el("div","k",k)); c.appendChild(d); });
+}
+
+const openStages = new Set();
+async function loadJobs(){
+  const d = await getJSON("/api/jobs?"+qi()+"&limit=200");
+  const tb=$("#jobs"); tb.innerHTML="";
+  const jobs=d.jobs||[];
+  if(!jobs.length){ const tr=el("tr"); const td=el("td","empty","No jobs yet."); td.colSpan=9; tr.appendChild(td); tb.appendChild(tr); return; }
+  for(const j of jobs){
+    const tr=el("tr");
+    const stages=j.stages||[];
+    // expand toggle
+    const ex=el("td");
+    if(stages.length){ const t=el("span","expand", openStages.has(j.id)?"▾":"▸"); t.onclick=()=>{ openStages.has(j.id)?openStages.delete(j.id):openStages.add(j.id); loadJobs(); }; ex.appendChild(t); }
+    tr.appendChild(ex);
+    tr.appendChild(el("td",null,"#"+j.id));
+    const st=el("td"); st.appendChild(el("span","badge "+j.state, j.state)); tr.appendChild(st);
+    const md=el("td"); if(j.mode){ md.appendChild(el("span","badge "+j.mode, j.mode)); } tr.appendChild(md);
+    const u=el("td","url",j.url); u.title=(j.title?j.title+"\n":"")+j.url; tr.appendChild(u);
+    tr.appendChild(el("td",null, j.fragments?String(j.fragments):""));
+    tr.appendChild(el("td","muted", j.state==="pending"||j.state==="running"?eta(j.eta_seconds):(j.finished_at?ago(j.finished_at):"")));
+    const det=el("td"); if(j.state==="error"){ det.className="err"; det.textContent=j.error; } else if(j.title){ det.className="muted"; det.textContent=j.title; }
+    tr.appendChild(det);
+    const act=el("td","actions");
+    if(j.state==="error"||j.state==="done"){ const rb=el("button",null,"Retry"); rb.onclick=()=>jobAction("retry",j.id); act.appendChild(rb); }
+    if(j.state==="pending"){ const cb=el("button",null,"Cancel"); cb.onclick=()=>jobAction("cancel",j.id); act.appendChild(cb); }
+    tr.appendChild(act);
+    tb.appendChild(tr);
+    // expanded stages row
+    if(stages.length && openStages.has(j.id)){
+      const sr=el("tr","stages"); const sc=el("td"); sc.colSpan=9;
+      const list=el("div","stagelist");
+      for(const s of stages){
+        const chip=el("div","stage "+s.state);
+        chip.appendChild(el("span","dot"));
+        chip.appendChild(el("span","nm", s.name));
+        if(s.engine) chip.appendChild(el("span","eng2", s.engine));
+        if(s.detail){ const dt=el("span","muted"); dt.textContent="· "+s.detail; chip.appendChild(dt); }
+        chip.title = s.detail || "";
+        list.appendChild(chip);
+      }
+      sc.appendChild(list); sr.appendChild(sc); tb.appendChild(sr);
+    }
+  }
+}
+async function jobAction(kind,id){
+  try{ await post("/api/jobs/"+kind+"?"+qi(),{id}); toast("job #"+id+" "+kind+(kind==="retry"?"ied":"ed")); await Promise.all([loadJobs(),loadStatus()]); }
+  catch(e){ toast(esc(e.message)); }
+}
+
+async function loadDocs(){
+  const d = await getJSON("/api/documents?"+qi());
+  const box=$("#docs"); box.innerHTML="";
+  const docs=d.documents||[];
+  if(!docs.length){ box.appendChild(el("div","empty","No documents indexed.")); return; }
+  for(const doc of docs){
+    const row=el("div","doc-row"); if(doc.path===curDoc) row.classList.add("sel");
+    const t=el("div","doc-title"); t.appendChild(el("div",null,doc.title||doc.path.split("/").pop()));
+    const sub=el("small"); sub.textContent=doc.path; t.appendChild(sub); row.appendChild(t);
+    const meta=el("div","muted"); meta.style.textAlign="right"; meta.style.fontSize="12px";
+    meta.appendChild(el("div",null,doc.fragments+" frags"));
+    if(doc.pages){ const eng=el("div"); eng.innerHTML =
+      (doc.vision?`<span class="badge vision">${doc.vision} vision</span> `:"") +
+      ((doc.pages-doc.vision)>0?`<span class="badge text">${doc.pages-doc.vision} text</span>`:""); meta.appendChild(eng); }
+    row.appendChild(meta);
+    row.onclick=()=>{ curDoc=doc.path; document.querySelectorAll(".doc-row").forEach(r=>r.classList.remove("sel")); row.classList.add("sel"); loadReview(); };
+    box.appendChild(row);
+  }
+}
+
+async function loadReview(){
+  const box=$("#review"); box.innerHTML='<div class="empty">loading…</div>';
+  const d = await getJSON("/api/doc?"+qi()+"&path="+encodeURIComponent(curDoc));
+  box.innerHTML="";
+  const head=el("div"); head.style.padding="12px 14px"; head.style.borderBottom="1px solid var(--line)";
+  head.appendChild(el("strong",null,d.title||d.path.split("/").pop()));
+  head.appendChild(el("div","muted",d.path));
+  box.appendChild(head);
+  if(!d.pages.length){ box.appendChild(el("div","empty","No OCR-tracked pages (born-digital text or plain text — indexed without per-page OCR).")); return; }
+  for(const p of d.pages){
+    const card=el("div","pagecard");
+    const left=el("div");
+    if(p.has_image){
+      const img=el("img"); img.loading="lazy"; img.alt="page "+p.page;
+      img.src="/api/page-image?"+qi()+"&path="+encodeURIComponent(d.path)+"&page="+p.page;
+      img.onclick=()=>{ $("#lightimg").src=img.src; $("#lightbox").showModal(); };
+      left.appendChild(img);
+    } else { const ph=el("div","muted"); ph.textContent="(no page image — "+p.engine+")"; left.appendChild(ph); }
+    // re-OCR control
+    if(p.has_image){
+      const wrap=el("div","reocr");
+      const btn=el("button",null,"Re-OCR (cascade)");
+      const out=el("div","out");
+      btn.onclick=async()=>{ btn.disabled=true; btn.textContent="running…";
+        try{ const r=await post("/api/reocr?"+qi(),{path:d.path,page:p.page});
+          out.innerHTML=""; const h=el("div","pagehead"); h.appendChild(el("span","badge eng "+(r.engine==="vision"?"vision":"text"),r.engine)); out.appendChild(h);
+          out.appendChild(el("div","ptext",r.text||"(empty)")); }
+        catch(e){ out.innerHTML=""; out.appendChild(el("div","err",esc(e.message))); }
+        finally{ btn.disabled=false; btn.textContent="Re-OCR (cascade)"; } };
+      wrap.appendChild(btn); wrap.appendChild(out); left.appendChild(wrap);
+    }
+    card.appendChild(left);
+    const right=el("div");
+    const ph=el("div","pagehead");
+    ph.appendChild(el("span","n","Page "+p.page));
+    ph.appendChild(el("span","badge eng "+(p.vision?"vision":"text"), p.vision?"vision (VLM)":p.engine));
+    ph.appendChild(el("span","muted",p.fragments+" frag"+(p.fragments===1?"":"s")));
+    right.appendChild(ph);
+    right.appendChild(el("div","ptext",p.text||"(no indexed text)"));
+    card.appendChild(right);
+    box.appendChild(card);
+  }
+}
+
+async function refreshAll(){
+  try{ await Promise.all([loadStatus(),loadJobs(),loadDocs()]); if(curDoc) await loadReview(); }
+  catch(e){ toast(esc(e.message)); }
+}
+
+$("#index").onchange = e => { curIndex=e.target.value; curDoc=null;
+  $("#review").innerHTML='<div class="empty">Select a document to review its pages.</div>'; refreshAll(); };
+$("#refresh").onclick = refreshAll;
+$("#lightbox").onclick = () => $("#lightbox").close();
+
+let timer=null;
+function tick(){ if($("#auto").checked){ loadStatus().catch(()=>{}); loadJobs().catch(()=>{}); } }
+$("#auto").onchange = ()=>{}; // polling always scheduled; checkbox gates the work
+timer=setInterval(tick,3000);
+
+(async function init(){ await loadIndexes(); await refreshAll(); })();
+</script>
+</body>
+</html>

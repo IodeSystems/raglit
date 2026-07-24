@@ -90,12 +90,13 @@ func textWindows(text string, maxChars int) []string {
 
 // ingestText segments a text/code document into coherent fragments via the LLM,
 // windowing to windowChars (0 → default). Cross-window continuation stitches
-// fragments split at a window boundary. Falls under one logical page (0).
-func (s *Store) ingestText(ctx context.Context, sg *Segmenter, docPath, title, text string, windowChars int) (int, error) {
+// fragments split at a window boundary. Falls under one logical page (0). Text
+// windows are never images, so no OCR is needed (nil ocr).
+func (s *Store) ingestText(ctx context.Context, sg *Segmenter, docPath, title, text string, windowChars int, sl *StageLog) (int, error) {
 	windows := textWindows(text, windowChars)
 	units := make([]ingestUnit, len(windows))
 	for i, w := range windows {
 		units[i] = ingestUnit{page: 0, text: w}
 	}
-	return s.ingestUnits(ctx, sg, docPath, title, units)
+	return s.ingestUnits(ctx, sg, nil, docPath, title, units, sl)
 }

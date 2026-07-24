@@ -49,11 +49,12 @@ func (w *Worker) ProcessOne(ctx context.Context) (processed bool, err error) {
 	if job == nil {
 		return false, nil
 	}
-	n, ierr := w.ingest(ctx, job)
+	sl := w.Store.NewStageLog(job.ID)
+	n, mode, ierr := w.ingest(ctx, job, sl)
 	if ierr != nil {
 		return true, w.Store.failJob(job.ID, ierr.Error())
 	}
-	return true, w.Store.completeJob(job.ID, n)
+	return true, w.Store.completeJob(job.ID, n, mode)
 }
 
 // Drain processes jobs until the queue is empty, returning how many it handled.
@@ -96,12 +97,16 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// ingest turns a job's URL into indexed fragments, returning the count.
-func (w *Worker) ingest(ctx context.Context, job *Job) (int, error) {
+// ingest turns a job's URL into indexed fragments, recording each pipeline stage
+// via sl and returning (fragment count, segmentation mode, error). mode is "llm"
+// when the LLM segmenter ran, "offline" for the dependency-free blank-line split.
+func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, string, error) {
 	f, err := w.fetch(ctx, job.URL)
 	if err != nil {
-		return 0, err
+		sl.Fail("fetch", "", err)
+		return 0, "", err
 	}
+	sl.Done("fetch", "", fmt.Sprintf("%d bytes", len(f.Data)))
 	title := job.Title
 	if title == "" {
 		title = f.Title
@@ -117,51 +122,68 @@ func (w *Worker) ingest(ctx context.Context, job *Job) (int, error) {
 	switch kind {
 	case KindPDF:
 		if w.OCR == nil {
-			return 0, fmt.Errorf("pdf ingest needs a vision model — configure one (raglit init) and serve with OCR")
+			err := fmt.Errorf("pdf ingest needs a vision model — configure one (raglit init) and serve with OCR")
+			sl.Fail("extract", "pdf", err)
+			return 0, "", err
 		}
 		path, cleanup, err := writeTemp(f.Data, ".pdf")
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		defer cleanup()
-		return w.Store.ingestPDF(ctx, w.OCR, job.URL, path, title)
+		// ingestPDF records the extract + ocr + segment + embed + commit stages.
+		n, err := w.Store.ingestPDF(ctx, w.OCR, job.URL, path, title, sl)
+		return n, "llm", err
 
 	case KindImage:
 		if w.OCR == nil {
-			return 0, fmt.Errorf("image ingest needs a vision model — configure one (raglit init) and serve with OCR")
+			err := fmt.Errorf("image ingest needs a vision model — configure one (raglit init) and serve with OCR")
+			sl.Fail("extract", "image", err)
+			return 0, "", err
 		}
+		sl.Done("extract", "image", "1 page")
 		mime := mimeForExt(filepath.Ext(job.URL))
 		units := []ingestUnit{{page: 1, mime: mime, data: f.Data}}
-		return w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), job.URL, title, units)
+		// ingestUnits OCRs the image → text, then segments it (records ocr/segment/…).
+		n, err := w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), w.OCR, job.URL, title, units, sl)
+		return n, "llm", err
 
 	case KindOffice:
 		path, cleanup, err := writeTemp(f.Data, strings.ToLower(filepath.Ext(job.URL)))
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		defer cleanup()
 		text, err := PandocText(ctx, path)
 		if err != nil {
-			return 0, err
+			sl.Fail("extract", "pandoc", err)
+			return 0, "", err
 		}
-		return w.ingestPlainText(ctx, job.URL, title, []byte(text))
+		sl.Done("extract", "pandoc", fmt.Sprintf("%d chars", len(text)))
+		return w.ingestPlainText(ctx, job.URL, title, []byte(text), sl)
 	}
 
 	// KindText / KindUnknown: read as text.
-	return w.ingestPlainText(ctx, job.URL, title, f.Data)
+	sl.Done("extract", "text", fmt.Sprintf("%d bytes", len(f.Data)))
+	return w.ingestPlainText(ctx, job.URL, title, f.Data, sl)
 }
 
-// ingestPlainText segments text with the LLM segmenter when configured, else
-// falls back to a blank-line paragraph split (fully offline).
-func (w *Worker) ingestPlainText(ctx context.Context, url, title string, data []byte) (int, error) {
+// ingestPlainText segments text with the LLM segmenter when configured (mode
+// "llm"), else falls back to a blank-line paragraph split (mode "offline", fully
+// offline — a code/text file → fragments directly, no OCR).
+func (w *Worker) ingestPlainText(ctx context.Context, url, title string, data []byte, sl *StageLog) (int, string, error) {
 	if w.Segmenter != nil {
-		return w.Store.ingestText(ctx, w.Segmenter, url, title, string(data), w.WindowChars)
+		n, err := w.Store.ingestText(ctx, w.Segmenter, url, title, string(data), w.WindowChars, sl)
+		return n, "llm", err
 	}
 	doc := Document{Path: url, Title: title, Fragments: TextFragments(data)}
 	if err := w.Store.Ingest(ctx, doc); err != nil {
-		return 0, err
+		sl.Fail("segment", "offline", err)
+		return 0, "offline", err
 	}
-	return len(doc.Fragments), nil
+	sl.Done("segment", "offline", fmt.Sprintf("%d fragment(s)", len(doc.Fragments)))
+	sl.Done("commit", "", "")
+	return len(doc.Fragments), "offline", nil
 }
 
 // writeTemp materializes bytes to a temp file with the given extension (external

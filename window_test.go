@@ -62,7 +62,7 @@ func TestIngestText_WindowsAndSegments(t *testing.T) {
 	}}
 	sg := NewSegmenter(sc)
 	// maxChars=6 → two windows ("AAAA\n", "BBBB\n"), so two segment calls.
-	n, err := s.ingestText(context.Background(), sg, "code.go", "Code", "AAAA\nBBBB\n", 6)
+	n, err := s.ingestText(context.Background(), sg, "code.go", "Code", "AAAA\nBBBB\n", 6, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -92,6 +92,37 @@ func runServe(args []string) error {
 		),
 		listHandler(reg),
 	)
+	s.AddTool(
+		mcp.NewTool("list_documents",
+			mcp.WithDescription(
+				"List indexed documents (filenames/paths) with their fragment/page counts as JSON "+
+					"{documents:[{index,path,title,fragments,pages,vision}]}. `name` filters to documents "+
+					"whose path or title contains that substring (case-insensitive). `index` selects one "+
+					"index or a comma-separated set; omit to list across ALL. Use this to find a document, "+
+					"then get_document to read its text."),
+			mcp.WithString("name", mcp.Description("case-insensitive substring filter over path/title; empty = all")),
+			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
+		),
+		listDocumentsHandler(reg),
+	)
+	s.AddTool(
+		mcp.NewTool("get_document",
+			mcp.WithDescription(
+				"Get a document's indexed TEXT (reassembled from fragments in page order) as JSON "+
+					"{index,path,title,pages:[{page,text}],text,truncated}. `path` is a document path "+
+					"(the doc_id from a search hit) OR a unique filename substring — ambiguous matches "+
+					"return an error listing the candidates. Optional `page` (single) or `from`/`to` "+
+					"(inclusive page range); `max_chars` caps the joined `text` blob (the per-page array "+
+					"is always whole). `index` restricts the lookup; omit to resolve across all indexes."),
+			mcp.WithString("path", mcp.Required(), mcp.Description("document path or a unique filename substring")),
+			mcp.WithNumber("page", mcp.Description("single page to return (overrides from/to)")),
+			mcp.WithNumber("from", mcp.Description("first page of an inclusive range")),
+			mcp.WithNumber("to", mcp.Description("last page of an inclusive range")),
+			mcp.WithNumber("max_chars", mcp.Description("cap on the joined text blob (0 = uncapped)")),
+			mcp.WithString("index", mcp.Description("restrict lookup to this index (or comma-separated set); empty = all")),
+		),
+		getDocumentHandler(reg),
+	)
 	// ocr tool: any document → paged text, via the format router (extract.go).
 	// A PDF uses its text layer where present and OCRs the scanned pages; office/
 	// markup goes through pandoc; images run the OCR cascade; text is read. Useful
@@ -264,6 +295,118 @@ func listHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 			out.Indexes = append(out.Indexes, idx{name, s.Documents, s.Fragments})
 		}
 		b, _ := json.Marshal(out)
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// listDocumentsHandler lists documents across the selected indexes, filtered by
+// an optional case-insensitive name substring, each tagged with its index.
+func listDocumentsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := strings.ToLower(strings.TrimSpace(req.GetString("name", "")))
+		type docOut struct {
+			Index     string `json:"index"`
+			Path      string `json:"path"`
+			Title     string `json:"title"`
+			Fragments int    `json:"fragments"`
+			Pages     int    `json:"pages"`
+			Vision    int    `json:"vision"`
+		}
+		out := struct {
+			Documents []docOut `json:"documents"`
+		}{Documents: []docOut{}}
+		for _, idx := range selectIndexes(reg, req.GetString("index", "")) {
+			st, err := reg.Get(idx)
+			if err != nil {
+				continue
+			}
+			docs, err := st.Documents()
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("list_documents", err), nil
+			}
+			for _, d := range docs {
+				if name != "" && !strings.Contains(strings.ToLower(d.Path), name) &&
+					!strings.Contains(strings.ToLower(d.Title), name) {
+					continue
+				}
+				out.Documents = append(out.Documents, docOut{
+					Index: idx, Path: d.Path, Title: d.Title,
+					Fragments: d.Fragments, Pages: d.Pages, Vision: d.Vision,
+				})
+			}
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// getDocumentHandler returns a document's indexed text. It resolves `path` (an
+// exact path or a unique filename substring) across the selected indexes: no
+// match → error, multiple → an ambiguity error listing candidates, one → its
+// reassembled text (optionally page-ranged and length-capped).
+func getDocumentHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		ref, err := req.RequireString("path")
+		if err != nil {
+			return mcp.NewToolResultError("path is required"), nil
+		}
+		// Resolve candidates across the selected indexes.
+		type cand struct{ index, path, title string }
+		var cands []cand
+		for _, idx := range selectIndexes(reg, req.GetString("index", "")) {
+			st, err := reg.Get(idx)
+			if err != nil {
+				continue
+			}
+			ms, err := st.MatchDocuments(ref)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("resolve", err), nil
+			}
+			for _, m := range ms {
+				cands = append(cands, cand{idx, m.Path, m.Title})
+			}
+		}
+		if len(cands) == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("no document matches %q", ref)), nil
+		}
+		if len(cands) > 1 {
+			var b strings.Builder
+			fmt.Fprintf(&b, "%q is ambiguous — matches %d documents:\n", ref, len(cands))
+			for i, c := range cands {
+				if i == 8 {
+					fmt.Fprintf(&b, "  … and %d more\n", len(cands)-8)
+					break
+				}
+				fmt.Fprintf(&b, "  [%s] %s\n", c.index, c.path)
+			}
+			b.WriteString("pass a more specific path (or set index).")
+			return mcp.NewToolResultError(b.String()), nil
+		}
+
+		c := cands[0]
+		from, to := req.GetInt("from", 0), req.GetInt("to", 0)
+		if p := req.GetInt("page", 0); p > 0 {
+			from, to = p, p
+		}
+		st, err := reg.Get(c.index)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("open index", err), nil
+		}
+		content, err := st.DocText(c.path, from, to, req.GetInt("max_chars", 0))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("get_document", err), nil
+		}
+		payload := struct {
+			Index string `json:"index"`
+			raglit.DocContent
+		}{Index: c.index, DocContent: content}
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
 		return mcp.NewToolResultText(string(b)), nil
 	}
 }

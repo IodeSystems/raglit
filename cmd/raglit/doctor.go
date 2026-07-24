@@ -18,9 +18,9 @@ import (
 // being hard to install" — a one-shot check with the exact install hint.
 func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
-	homeFlag := fs.String("home", "", "config home dir (default $RAGLIT_HOME or ~/local/raglit)")
+	homeFlag := fs.String("home", "", "config home dir (default: nearest ./.raglit, else ~/local/raglit)")
 	fs.Parse(args)
-	home := raglit.DefaultHome()
+	home := raglit.DiscoverHome()
 	if *homeFlag != "" {
 		home = raglit.Home(*homeFlag)
 	}

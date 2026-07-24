@@ -19,6 +19,38 @@ func TestDefaultHome_EnvOverride(t *testing.T) {
 	}
 }
 
+func TestDiscoverHome_WalkUp(t *testing.T) {
+	t.Setenv("RAGLIT_HOME", "") // don't let a real env leak in
+	root := t.TempDir()
+	proj := filepath.Join(root, "proj")
+	dotraglit := filepath.Join(proj, ProjectHomeName)
+	sub := filepath.Join(proj, "a", "b")
+	for _, d := range []string{dotraglit, sub} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// From a nested subdir, DiscoverHome walks up to the project's .raglit/.
+	t.Chdir(sub)
+	got := DiscoverHome()
+	// EvalSymlinks: macOS temp dirs are symlinked (/var → /private/var).
+	want, _ := filepath.EvalSymlinks(dotraglit)
+	gotEval, _ := filepath.EvalSymlinks(string(got))
+	if gotEval != want {
+		t.Fatalf("DiscoverHome = %s, want %s", got, dotraglit)
+	}
+}
+
+func TestDiscoverHome_FallsBackToDefault(t *testing.T) {
+	t.Setenv("RAGLIT_HOME", "/tmp/fallback-raglit")
+	dir := t.TempDir() // no .raglit anywhere up the tree
+	t.Chdir(dir)
+	if got := DiscoverHome(); got != Home("/tmp/fallback-raglit") {
+		t.Fatalf("DiscoverHome = %s, want the DefaultHome fallback", got)
+	}
+}
+
 func TestOpenHome_StoresOriginals(t *testing.T) {
 	dir := t.TempDir()
 	home := Home(filepath.Join(dir, "home"))

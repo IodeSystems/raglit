@@ -34,6 +34,42 @@ func DefaultHome() Home {
 	return Home("raglit-home")
 }
 
+// ProjectHomeName is the per-project home directory `raglit init` creates in the
+// working directory. Commands discover it by walking up from the cwd, so raglit
+// is project-local like git: one .raglit/ per project, found from any subdir.
+const ProjectHomeName = ".raglit"
+
+// DiscoverHome resolves the home for a command given no explicit --home: the
+// nearest ancestor .raglit/ (walking up from the cwd), else DefaultHome()
+// ($RAGLIT_HOME, else ~/local/raglit). `raglit init` instead writes ./.raglit
+// unconditionally, so a fresh project always gets its own local home.
+func DiscoverHome() Home {
+	if h, ok := findProjectHome(); ok {
+		return h
+	}
+	return DefaultHome()
+}
+
+// findProjectHome walks up from the working directory looking for a directory
+// named ProjectHomeName, stopping at the filesystem root.
+func findProjectHome() (Home, bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	for {
+		cand := filepath.Join(dir, ProjectHomeName)
+		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+			return Home(cand), true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
 // IndexPath is the home's primary (default) SQLite index file.
 func (h Home) IndexPath() string { return filepath.Join(string(h), "index.sqlite") }
 

@@ -11,20 +11,34 @@ run.
 # build
 go install github.com/iodesystems/raglit/cmd/raglit@latest
 
-# 1. one-time setup — pick an OpenAI-compatible endpoint + models (a wizard)
-raglit init
+# 1. per-project setup — pick an OpenAI-compatible endpoint + models (a wizard)
+cd my-project
+raglit init                # writes ./.raglit/ here
 
 # 2. ingest a folder (code, markdown, text; PDFs get OCR'd)
-raglit ingest ./my-project --now
+raglit ingest ./src --now
 
-# 3. ask
+# 3. ask (works from any subdirectory — raglit finds ./.raglit)
 raglit search "how does the auth token refresh work?"
 ```
 
 That's it. `init` asks for a base URL + API key and lists the endpoint's models
-so you can pick a chat/vision model and an embedding model; everything else uses
-sensible defaults (you never pass model flags again). The index lives in
-`~/local/raglit` by default.
+so you can pick a vision model and an embedding model; everything else uses
+sensible defaults (you never pass model flags again). When the endpoint reports
+capabilities (a corrallm-class server), each pick list is **filtered to the
+models that fit the role** — image-capable models for OCR, embedding models for
+`--embed` — instead of the whole catalog; a plain OpenAI server shows all
+models.
+
+`raglit init` is **project-local**: it writes `./.raglit/` in the current
+directory, so each repo or sub-project owns its own index and config. Any
+command run inside the tree discovers the nearest `.raglit/` by walking up (like
+git), so you can run `raglit search` from a deep subdirectory. With no `.raglit/`
+found, commands fall back to `$RAGLIT_HOME`, else `~/local/raglit`. Override the
+location anywhere with `--home DIR`.
+
+On success `init` prints the MCP server setup (a `claude mcp add-json` line and a
+`.mcp.json` block) plus the ingest/search commands for reference.
 
 > No endpoint handy? Every offline piece works without one:
 > `raglit demo` runs a self-contained tour, and text ingest falls back to a
@@ -33,9 +47,12 @@ sensible defaults (you never pass model flags again). The index lives in
 ## What it does
 
 - **Ingest** folders, files, or URLs (`file://`, `http(s)://`) — lazily (queued)
-  or with `--now`. Text/code is segmented by the model into coherent, ~500-word
-  fragments (functions bound with their docs, not atomised); PDFs are OCR'd page
-  by page with cross-page stitching.
+  or with `--now`. Each item runs a staged pipeline: a scanned page goes
+  img→paged-text (OCR cascade: cheap `tesseract`→gibberish-gate→vision VLM) then
+  paged-text→fragments; a code/text file goes straight to fragments (LLM-segmented
+  into coherent ~500-word units — functions bound with their docs — or a
+  dependency-free offline split when no model is set); a born-digital PDF page
+  uses its text layer, no OCR. Every stage and its engine is recorded per job.
 - **Search** — BM25 (`--mode bm25`, default), vectors (`--mode vec`), or hybrid
   RRF (`--mode hybrid`). Results are precise citations: document → page →
   fragment.
@@ -45,7 +62,16 @@ sensible defaults (you never pass model flags again). The index lives in
   raglit serve
   ```
 
-  Tools: `search`, `ingest`, `index_status`, `list_indexes`.
+  Tools: `search`, `list_documents`, `get_document`, `ingest`, `index_status`,
+  `list_indexes`, `ocr`. `raglit init` prints a ready-to-paste MCP config (Claude
+  Code + generic `.mcp.json`) pinned to this project's `.raglit/`.
+
+  An agent that needs a whole document's text: `search` to find a hit (or
+  `list_documents` with a `name` filter to find it by filename), then
+  `get_document` with that path (or a unique filename substring) to read the full
+  indexed text — per-page plus a joined blob, with optional page range and a
+  `max_chars` cap. `ocr` is the other read path: it extracts text from a file/URL
+  you supply directly (not from the index).
 
 ## Commands
 
@@ -55,12 +81,15 @@ raglit ingest TARGET... [--now]      queue folders / files / URLs (lazy; --now d
 raglit search "query" [--mode M]     M = bm25 | vec | hybrid
 raglit status                        documents/fragments, queue progress, rate, ETAs
 raglit serve                         stdio MCP server
+raglit daemon                        HTTP API + workers + review UI at /
+raglit review                        the daemon, framed as the status/job/OCR review UI
 raglit demo                          offline, self-contained tour
 ```
 
-`--home DIR` picks the index home; `--index NAME` selects a named index within
-it. With no `--index`, commands use the config's `default_index` (set in the
-wizard), falling back to `default`.
+`--home DIR` overrides the index home (default: nearest `./.raglit` walking up,
+else `$RAGLIT_HOME`, else `~/local/raglit`); `--index NAME` selects a named index
+within it. With no `--index`, commands use the config's `default_index` (set in
+the wizard), falling back to `default`.
 
 ## Daemon mode
 
@@ -69,7 +98,7 @@ workers; other invocations call into it over HTTP instead of touching the
 SQLite files (no contention, and remote-capable):
 
 ```sh
-raglit daemon --addr 127.0.0.1:7420        # long-running: workers + HTTP API
+raglit daemon --addr 127.0.0.1:7420        # long-running: workers + HTTP API + review UI
 
 # point any command at it (or set RAGLIT_DAEMON=http://host:7420)
 raglit ingest --daemon http://127.0.0.1:7420 ./my-project
@@ -77,9 +106,37 @@ raglit search --daemon http://127.0.0.1:7420 "rollback procedure"
 raglit status --daemon http://127.0.0.1:7420
 ```
 
-Endpoints: `GET /health`, `GET /indexes`, `POST /ingest`, `GET /search`,
+API endpoints: `GET /health`, `GET /indexes`, `POST /ingest`, `GET /search`,
 `GET /status`. The daemon reads local paths from its OWN filesystem (share it,
 or use `http(s)://` targets); bind to localhost — there's no auth yet.
+
+## Review UI
+
+The daemon also serves a self-contained web UI at `/` — status, job control, and
+OCR review. `raglit review` is the same server with a friendlier banner:
+
+```sh
+raglit review --addr 127.0.0.1:7420        # then open http://127.0.0.1:7420/
+```
+
+- **Status** — documents, fragments, and live job counts (done/running/pending/
+  failed) + throughput, auto-refreshing.
+- **Job control** — the full ingest queue as a table; **retry** an errored or
+  done job (requeues it) and **cancel** a pending one. Each job shows a **mode**
+  badge (`llm` = LLM-segmented, `offline` = dependency-free blank-line split) and
+  expands to its **pipeline stages** — the series of tasks it ran: fetch →
+  extract → [ocr] → segment → [embed] → commit, each tagged with the engine that
+  handled it (text-layer, pandoc, tesseract, vision, llm, offline…), so a failure
+  shows exactly which stage broke.
+- **OCR review** — pick a document to see its pages: the saved page image beside
+  the indexed text, an engine badge per page (**text** = born-digital/plain,
+  **vision** = the VLM OCR'd it), and a **Re-OCR (cascade)** button that reruns
+  the cheap→gate→VLM cascade on that page's image to show the raw transcription
+  and which engine handled it.
+
+Ingest records per-page provenance (engine + page image) under `<home>/pages/`;
+documents indexed before this feature show no OCR pages until re-ingested.
+Control-plane routes live under `/api/*`. localhost, no auth — don't expose it.
 
 ## For agents (agentkit)
 
@@ -104,7 +161,7 @@ watches via `Opts.ExtraArgs {"index": ...}` — all by default). raglit's
 ## Home layout
 
 ```
-~/local/raglit/            (or $RAGLIT_HOME, or --home)
+./.raglit/                 (per-project; or $RAGLIT_HOME / ~/local/raglit / --home)
   config.json              endpoint + model settings (from `raglit init`)
   index.sqlite             the default index (index-<name>.sqlite for others)
   originals/               copies of ingested sources
