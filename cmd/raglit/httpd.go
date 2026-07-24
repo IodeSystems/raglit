@@ -34,8 +34,9 @@ func runHttpd(args []string) error {
 	addr := fs.String("addr", defaultDaemonAddr, "listen address")
 	defLimit := fs.Int("n", 8, "default search results")
 	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
-	poolTTL := fs.Duration("pool-ttl", 720*time.Hour, "evict pooled docs unused this long (0 = never)")
-	poolMax := fs.Int("pool-max", 0, "cap the shared pool at N entries, LRU-evicting the rest (0 = unlimited)")
+	poolMaxBytes := fs.Int64("pool-max-bytes", 4<<30, "keep the shared pool under this many bytes, evicting oldest-accessed (0 = unlimited)")
+	poolMax := fs.Int("pool-max", 0, "also cap the pool at N entries, LRU (0 = unlimited)")
+	poolTTL := fs.Duration("pool-ttl", 0, "also evict pooled docs unused this long (0 = never — off so merges/retries keep reusing)")
 	fs.Parse(args)
 
 	reg, cfgHome, err := openDaemonRegistry(*homeFlag, *rootFlag)
@@ -63,8 +64,9 @@ func runHttpd(args []string) error {
 	defer cancel()
 	go runIndexWorkers(ctx, reg, lf, cfgHome, pool)
 
-	// Background pool GC: evict unused/over-cap entries hourly.
-	if *poolTTL > 0 || *poolMax > 0 {
+	// Background pool GC: keep the pool within the (lax, size-based) budget hourly.
+	gcPol := raglit.GCPolicy{MaxBytes: *poolMaxBytes, MaxEntries: *poolMax, MaxAgeUnused: *poolTTL}
+	if gcPol.MaxBytes > 0 || gcPol.MaxEntries > 0 || gcPol.MaxAgeUnused > 0 {
 		go func() {
 			t := time.NewTicker(time.Hour)
 			defer t.Stop()
@@ -73,7 +75,7 @@ func runHttpd(args []string) error {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					if n, err := pool.GC(*poolTTL, *poolMax); err == nil && n > 0 {
+					if n, err := pool.GC(gcPol); err == nil && n > 0 {
 						fmt.Fprintf(os.Stderr, "raglit: pool GC evicted %d entr(ies)\n", n)
 					}
 				}
@@ -81,7 +83,7 @@ func runHttpd(args []string) error {
 		}()
 	}
 
-	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, *poolTTL, *poolMax)
+	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, gcPol)
 	if err != nil {
 		return err
 	}
@@ -110,7 +112,7 @@ func openDaemonRegistry(homeFlag, rootFlag string) (*raglit.Registry, raglit.Hom
 
 // buildGatHandler wires the chi router: humachi API + gat gateway (all JSON
 // operations), then the two plain routes (HTML UI at /, binary page-image).
-func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int, pool *raglit.Pool, gcTTL time.Duration, gcMax int) (http.Handler, error) {
+func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int, pool *raglit.Pool, defGC raglit.GCPolicy) (http.Handler, error) {
 	router := chi.NewRouter()
 	api := humachi.New(router, huma.DefaultConfig("raglit", version))
 	g, err := gat.New()
@@ -140,7 +142,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
 	if pool != nil {
 		gat.Register(api, g, op("poolStats", http.MethodGet, "/api/pool", "Shared document-pool size (entries + files)."), poolStatsOp(pool))
-		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs (unused past max_age_hours, or over max_entries LRU)."), poolGCOp(pool, gcTTL, gcMax))
+		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs to a budget (max_bytes / max_entries / max_age_hours), oldest-accessed first."), poolGCOp(pool, defGC))
 	}
 
 	if err := gat.RegisterHuma(api, g, ""); err != nil {
@@ -627,8 +629,9 @@ func poolStatsOp(pool *raglit.Pool) func(context.Context, *struct{}) (*poolStats
 
 type poolGCIn struct {
 	Body struct {
-		MaxAgeHours float64 `json:"max_age_hours,omitempty"`
+		MaxBytes    int64   `json:"max_bytes,omitempty"`
 		MaxEntries  int     `json:"max_entries,omitempty"`
+		MaxAgeHours float64 `json:"max_age_hours,omitempty"`
 	}
 }
 type poolGCOut struct {
@@ -637,18 +640,21 @@ type poolGCOut struct {
 	}
 }
 
-// poolGCOp runs pool eviction, defaulting to the daemon's --pool-ttl/--pool-max
-// when the request omits them.
-func poolGCOp(pool *raglit.Pool, defTTL time.Duration, defMax int) func(context.Context, *poolGCIn) (*poolGCOut, error) {
+// poolGCOp runs pool eviction, defaulting to the daemon's configured budget when
+// the request omits a limit.
+func poolGCOp(pool *raglit.Pool, def raglit.GCPolicy) func(context.Context, *poolGCIn) (*poolGCOut, error) {
 	return func(_ context.Context, in *poolGCIn) (*poolGCOut, error) {
-		ttl, max := defTTL, defMax
-		if in.Body.MaxAgeHours > 0 {
-			ttl = time.Duration(in.Body.MaxAgeHours * float64(time.Hour))
+		pol := def
+		if in.Body.MaxBytes > 0 {
+			pol.MaxBytes = in.Body.MaxBytes
 		}
 		if in.Body.MaxEntries > 0 {
-			max = in.Body.MaxEntries
+			pol.MaxEntries = in.Body.MaxEntries
 		}
-		n, err := pool.GC(ttl, max)
+		if in.Body.MaxAgeHours > 0 {
+			pol.MaxAgeUnused = time.Duration(in.Body.MaxAgeHours * float64(time.Hour))
+		}
+		n, err := pool.GC(pol)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("pool gc", err)
 		}

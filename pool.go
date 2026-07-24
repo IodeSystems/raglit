@@ -155,76 +155,115 @@ func (p *Pool) Put(recipeHash, fileHash string, doc PooledDoc) error {
 
 // PoolStats is a snapshot of the pool for reporting.
 type PoolStats struct {
-	Entries int `json:"entries"` // cached (recipe, file) documents
-	Files   int `json:"files"`   // distinct source files (pool-pages dirs)
+	Entries int   `json:"entries"` // cached (recipe, file) documents
+	Files   int   `json:"files"`   // distinct source files (pool-pages dirs)
+	Bytes   int64 `json:"bytes"`    // total cached-payload bytes (the GC budget basis)
 }
 
 // Stats reports the pool's size.
 func (p *Pool) Stats() (PoolStats, error) {
 	var st PoolStats
-	if err := p.db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT file_hash) FROM pool`).Scan(&st.Entries, &st.Files); err != nil {
-		return st, err
-	}
-	return st, nil
+	err := p.db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT file_hash), COALESCE(SUM(LENGTH(payload)),0) FROM pool`).
+		Scan(&st.Entries, &st.Files, &st.Bytes)
+	return st, err
 }
 
-// GC evicts pooled documents: any not reused within maxAgeUnused (0 = disabled),
-// and — over maxEntries (0 = unlimited) — the least-recently-used beyond the cap.
-// A file's pool-pages/ dir is removed once no entry references it. Returns the
-// number of entries evicted.
-func (p *Pool) GC(maxAgeUnused time.Duration, maxEntries int) (int, error) {
-	type key struct{ recipe, file string }
-	evict := map[key]bool{}
-	files := map[string]bool{}
+// GCPolicy bounds the pool. All limits are optional (zero = disabled). The
+// default posture is deliberately LAX — a byte budget only — so merges and
+// retries keep reusing pooled work instead of paying to re-index it; the pool is
+// trimmed to MaxBytes by evicting the OLDEST-accessed (LRU) entries, which are the
+// ones least likely to be needed again.
+type GCPolicy struct {
+	MaxBytes     int64         // trim total payload bytes below this (LRU)
+	MaxEntries   int           // trim entry count below this (LRU)
+	MaxAgeUnused time.Duration // also evict anything unused at least this long
+}
 
-	collect := func(q string, args ...any) error {
-		rows, err := p.db.Query(q, args...)
-		if err != nil {
-			return err
+// GC evicts pooled documents per policy, oldest-accessed first, and removes any
+// pool-pages/<file> dir no surviving entry references. Returns the number of
+// entries evicted.
+func (p *Pool) GC(pol GCPolicy) (int, error) {
+	// All entries oldest-accessed first, with their payload size.
+	rows, err := p.db.Query(`SELECT recipe_hash, file_hash, LENGTH(payload), last_used_at FROM pool ORDER BY last_used_at ASC`)
+	if err != nil {
+		return 0, err
+	}
+	type ent struct {
+		recipe, file string
+		bytes, used  int64
+	}
+	var ents []ent
+	for rows.Next() {
+		var e ent
+		if err := rows.Scan(&e.recipe, &e.file, &e.bytes, &e.used); err != nil {
+			rows.Close()
+			return 0, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var k key
-			if err := rows.Scan(&k.recipe, &k.file); err != nil {
-				return err
+		ents = append(ents, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	evict := make([]bool, len(ents)) // index-aligned with ents (oldest first)
+	var totalBytes int64
+	for _, e := range ents {
+		totalBytes += e.bytes
+	}
+	remaining := len(ents)
+
+	drop := func(i int) {
+		if !evict[i] {
+			evict[i] = true
+			totalBytes -= ents[i].bytes
+			remaining--
+		}
+	}
+	// 1) TTL: anything cold beyond MaxAgeUnused.
+	if pol.MaxAgeUnused > 0 {
+		cutoff := time.Now().UnixNano() - int64(pol.MaxAgeUnused)
+		for i, e := range ents {
+			if e.used < cutoff {
+				drop(i)
 			}
-			evict[k] = true
-			files[k.file] = true
 		}
-		return rows.Err()
+	}
+	// 2) Byte budget: evict oldest until under MaxBytes.
+	if pol.MaxBytes > 0 {
+		for i := 0; totalBytes > pol.MaxBytes && i < len(ents); i++ {
+			drop(i)
+		}
+	}
+	// 3) Entry cap: evict oldest until under MaxEntries.
+	if pol.MaxEntries > 0 {
+		for i := 0; remaining > pol.MaxEntries && i < len(ents); i++ {
+			drop(i)
+		}
 	}
 
-	if maxAgeUnused > 0 {
-		cutoff := time.Now().UnixNano() - int64(maxAgeUnused)
-		if err := collect(`SELECT recipe_hash, file_hash FROM pool WHERE last_used_at < ?`, cutoff); err != nil {
-			return 0, err
+	n, files := 0, map[string]bool{}
+	for i, e := range ents {
+		if !evict[i] {
+			continue
 		}
-	}
-	if maxEntries > 0 {
-		// Everything past the newest-used maxEntries.
-		if err := collect(`SELECT recipe_hash, file_hash FROM pool ORDER BY last_used_at DESC LIMIT -1 OFFSET ?`, maxEntries); err != nil {
-			return 0, err
+		if _, err := p.db.Exec(`DELETE FROM pool WHERE recipe_hash=? AND file_hash=?`, e.recipe, e.file); err != nil {
+			return n, err
 		}
+		files[e.file] = true
+		n++
 	}
-	if len(evict) == 0 {
-		return 0, nil
-	}
-	for k := range evict {
-		if _, err := p.db.Exec(`DELETE FROM pool WHERE recipe_hash=? AND file_hash=?`, k.recipe, k.file); err != nil {
-			return 0, err
-		}
-	}
-	// Drop pool-pages dirs for files no entry references any more.
+	// Drop pool-pages dirs for files no surviving entry references.
 	for f := range files {
-		var n int
-		if err := p.db.QueryRow(`SELECT COUNT(*) FROM pool WHERE file_hash=?`, f).Scan(&n); err != nil {
-			return 0, err
+		var c int
+		if err := p.db.QueryRow(`SELECT COUNT(*) FROM pool WHERE file_hash=?`, f).Scan(&c); err != nil {
+			return n, err
 		}
-		if n == 0 {
+		if c == 0 {
 			os.RemoveAll(p.FileDir(f)) //nolint:errcheck
 		}
 	}
-	return len(evict), nil
+	return n, nil
 }
 
 // ExportDoc reads a freshly-ingested document back out of an index as a PooledDoc

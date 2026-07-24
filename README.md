@@ -59,8 +59,11 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   is reused (fragments + vectors + page images copied in, mode `pooled`) instead
   of re-running the LLM. Re-indexing under different models is a new recipe, so
   it reprocesses. (Embedded/single-index mode dedups per index by content hash.)
-  The pool is bounded — `--pool-ttl`/`--pool-max` (and `POST /api/pool/gc`) evict
-  unused/over-cap entries; `GET /api/pool` reports its size.
+  The pool is bounded but lax by default: it grows freely up to a **byte budget**
+  (`--pool-max-bytes`, default 4 GiB) and trims by evicting the **oldest-accessed**
+  entries — so merges and retries keep reusing pooled work rather than re-indexing
+  it. `--pool-max` (entry cap) and `--pool-ttl` (evict unused; off by default) are
+  optional; `POST /api/pool/gc` runs it on demand and `GET /api/pool` reports size.
 - **Search** — BM25 (`--mode bm25`, default), vectors (`--mode vec`), or hybrid
   RRF (`--mode hybrid`). Results are precise citations: document → page →
   fragment.

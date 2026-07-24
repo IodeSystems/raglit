@@ -35,9 +35,11 @@ per-index source-content dedup (documents.content_hash, mode "unchanged"); and t
 by `(recipe_hash, file_hash)` at `<root>/pool.sqlite` + `<root>/pool-pages/`, so
 the same file in ANY index (or a retry) reuses cached fragments+vectors+images
 (mode "pooled") instead of re-running the LLM; a different recipe (alt models)
-reprocesses. Pool GC/eviction DONE: last_used_at tracking + `Pool.GC(maxAgeUnused, maxEntries)`
-(TTL + LRU cap, orphan pool-pages cleanup); daemon `--pool-ttl`/`--pool-max` +
-hourly background GC + `GET /api/pool` (stats) / `POST /api/pool/gc`.
+reprocesses. Pool GC/eviction DONE + made LAX: `Pool.GC(GCPolicy{MaxBytes,MaxEntries,MaxAgeUnused})`
+evicts OLDEST-ACCESSED (LRU) first, orphan pool-pages cleanup. Default is a byte
+budget only (`--pool-max-bytes`, 4 GiB) — no TTL, no entry cap — so merges/retries
+keep reusing pooled work instead of re-indexing. Optional `--pool-max`/`--pool-ttl`;
+hourly background GC; `GET /api/pool` (entries/files/bytes) + `POST /api/pool/gc`.
 
 Remaining tails: client-only `init` (write daemon_url, skip local index bytes);
 branch overlay follow-ups (VecSearch/DocReview, merge/diff, CLI/MCP); splitting the

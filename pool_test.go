@@ -93,11 +93,11 @@ func TestPool_GCEvictsLRU(t *testing.T) {
 	pool.Get("recipe", "f1")
 
 	// Nothing to do when both budgets are disabled.
-	if n, _ := pool.GC(0, 0); n != 0 {
+	if n, _ := pool.GC(GCPolicy{}); n != 0 {
 		t.Fatalf("GC(0,0) evicted %d, want 0", n)
 	}
 	// Cap at 2 → evict the single LRU entry (f2).
-	n, err := pool.GC(0, 2)
+	n, err := pool.GC(GCPolicy{MaxEntries: 2})
 	must(t, err)
 	if n != 1 {
 		t.Fatalf("GC evicted %d, want 1", n)
@@ -112,5 +112,41 @@ func TestPool_GCEvictsLRU(t *testing.T) {
 	}
 	if st, _ := pool.Stats(); st.Entries != 2 {
 		t.Fatalf("entries after GC = %d, want 2", st.Entries)
+	}
+}
+
+func TestPool_GCByteBudget(t *testing.T) {
+	root := t.TempDir()
+	pool, err := OpenPool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	big := PooledFragment{Text: string(make([]byte, 2000))}
+	for _, f := range []string{"f1", "f2", "f3", "f4"} {
+		must(t, pool.Put("r", f, PooledDoc{Fragments: []PooledFragment{big}}))
+	}
+	st, _ := pool.Stats()
+	if st.Bytes == 0 {
+		t.Fatal("Stats.Bytes should be > 0")
+	}
+	// Make f3/f4 most-recently-used; f1/f2 are the oldest (evicted first).
+	pool.Get("r", "f4")
+	pool.Get("r", "f3")
+
+	n, err := pool.GC(GCPolicy{MaxBytes: st.Bytes / 2})
+	must(t, err)
+	if n == 0 {
+		t.Fatal("byte budget should have evicted the oldest entries")
+	}
+	after, _ := pool.Stats()
+	if after.Bytes > st.Bytes/2 {
+		t.Fatalf("still over budget: %d > %d", after.Bytes, st.Bytes/2)
+	}
+	if _, ok, _ := pool.Get("r", "f4"); !ok {
+		t.Fatal("f4 (most-recently-used) must survive")
+	}
+	if _, ok, _ := pool.Get("r", "f1"); ok {
+		t.Fatal("f1 (oldest) must be evicted")
 	}
 }
