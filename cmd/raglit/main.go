@@ -54,6 +54,8 @@ func main() {
 		err = runDaemon(os.Args[2:])
 	case "review":
 		err = runReview(os.Args[2:])
+	case "httpd":
+		err = runHttpd(os.Args[2:])
 	case "demo":
 		err = runDemo(os.Args[2:])
 	case "pagify":

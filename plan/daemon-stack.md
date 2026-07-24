@@ -32,22 +32,27 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
   (`internal/db/roundtrip_test.go`): plain typed queries AND a metaquery Builder
   + `ApplyFilters` + `mqsqlite.Scan` run on modernc. Regenerate: `sqlc generate`
   (needs the plugin built: `make -C ../sqlc-go-codegen-metaquery bin/…`).
-- ◐ **P2 — gat multi-protocol daemon** (DECISION: gwag/gat, not plain huma —
-  REST + in-process GraphQL + gRPC off one port, per the other iode services).
-  - ✅ skeleton up + proven: `httpd/` package — chi + humachi + `gat.New` →
-    `gat.Register` → `gat.RegisterHuma(api,g,"")`. Serves REST `/api/health`,
-    OpenAPI `/openapi.json`, GraphQL `/graphql` (httpd/server_test.go via
-    httptest). gwag v1.1.0-rc.7 via replace ../gwag; huma v2.39.0; chi v5.3.1.
-    No NATS needed (gat embedded mode). gRPC is one extra `gat.RegisterGRPC(
-    router,g,"")` after RegisterHuma when wanted.
-  - ◻ **next**: port endpoints as gat handlers `func(ctx,*In)(*Out,error)` over
-    the Store + `internal/db`: health✓, then indexes/ingest/search/status/
-    documents/doc/jobs(+retry/cancel)/page-image/reocr + MCP-parity
-    list_documents/get_document/ocr. Jobs/documents lists use metaquery Builders
-    (ApplyFilters/Pagination); search uses raw FTS. Expose Store's *sql.DB
-    (add `Store.SQLDB()`), share one connection (single writer).
-  - **risk**: keep the running stdlib review UI working until the gat daemon
-    reaches parity, then switch `raglit daemon`/`review` over.
+- ✅ **P2 — gat multi-protocol daemon** (gwag/gat: REST + in-process GraphQL +
+  gRPC off one port). `raglit httpd` (`cmd/raglit/httpd.go`, package main so it
+  reuses the daemon helpers). chi + humachi + `gat.New`→`gat.Register`→
+  `gat.RegisterHuma(api,g,"")`. gwag v1.1.0-rc.7 (replace ../gwag), huma v2.39.0,
+  chi v5.3.1; no NATS (embedded mode); gRPC is one extra `gat.RegisterGRPC` call.
+  - Endpoints ported (all at parity with the stdlib daemon): health, indexes,
+    status, search, ingest, jobs(+retry/cancel), documents, doc(review), reocr,
+    find-documents (MCP list_documents), get-document (MCP get_document). HTML
+    review UI (/) + binary page-image are plain chi routes.
+  - **The existing review UI works UNCHANGED** — paths kept identical
+    (/status, /api/jobs, /api/documents, /api/doc, /api/page-image, /search…).
+  - Handlers call the existing Store/Registry (P3 swaps Store's guts to
+    internal/db under them, no handler change). Verified: httpd_test.go (httptest
+    over a real registry — all ops + GraphQL + POST job-control) and live on the
+    dogfood index (OpenAPI 13 paths, GraphQL schema auto-gen, search works).
+  - Note: huma adds a `$schema` field to JSON bodies (harmless — UI reads named
+    fields; CLI structs ignore unknowns). Legacy stdlib `daemon`/`review` still
+    present; switch them to `httpd` after P3/P4.
+  - Not yet on gat: MCP `ocr` tool endpoint (extract arbitrary bytes) — add with
+    P4 serve-parity. `Store.SQLDB()` accessor deferred to P3 (handlers use Store
+    methods for now).
 - ◻ **P3 — migrate Store internals to internal/db** (queue/review/docget/stages
   → generated queries; unify `store.go` schema const with `sql/schema.sql` via
   `//go:embed` — currently DUPLICATED, keep in sync until then). FTS/vec stay raw.
