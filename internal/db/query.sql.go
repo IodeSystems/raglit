@@ -65,6 +65,15 @@ func (q *Queries) CountFragments(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+const deleteDocumentByPath = `-- name: DeleteDocumentByPath :exec
+DELETE FROM documents WHERE path = ?
+`
+
+func (q *Queries) DeleteDocumentByPath(ctx context.Context, path string) error {
+	_, err := q.db.ExecContext(ctx, deleteDocumentByPath, path)
+	return err
+}
+
 const deleteFragmentsByDoc = `-- name: DeleteFragmentsByDoc :exec
 DELETE FROM fragments WHERE doc_id = ?
 `
@@ -80,6 +89,15 @@ DELETE FROM ocr_pages WHERE doc_id = ?
 
 func (q *Queries) DeleteOcrPagesByDoc(ctx context.Context, docID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteOcrPagesByDoc, docID)
+	return err
+}
+
+const deleteTombstone = `-- name: DeleteTombstone :exec
+DELETE FROM tombstones WHERE path = ?
+`
+
+func (q *Queries) DeleteTombstone(ctx context.Context, path string) error {
+	_, err := q.db.ExecContext(ctx, deleteTombstone, path)
 	return err
 }
 
@@ -250,6 +268,16 @@ func (q *Queries) InsertStage(ctx context.Context, arg InsertStageParams) error 
 	return err
 }
 
+const insertTombstone = `-- name: InsertTombstone :exec
+INSERT OR IGNORE INTO tombstones(path) VALUES(?)
+`
+
+// ===== tombstones (branch storage) =====
+func (q *Queries) InsertTombstone(ctx context.Context, path string) error {
+	_, err := q.db.ExecContext(ctx, insertTombstone, path)
+	return err
+}
+
 const insertVector = `-- name: InsertVector :exec
 INSERT INTO fragment_vectors(fragment_id, dim, vec) VALUES(?, ?, ?)
 `
@@ -323,6 +351,33 @@ func (q *Queries) ListActiveJobs(ctx context.Context) ([]ListActiveJobsRow, erro
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDocumentPaths = `-- name: ListDocumentPaths :many
+SELECT path FROM documents
+`
+
+func (q *Queries) ListDocumentPaths(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listDocumentPaths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		items = append(items, path)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -546,6 +601,33 @@ func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcr
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTombstones = `-- name: ListTombstones :many
+SELECT path FROM tombstones
+`
+
+func (q *Queries) ListTombstones(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listTombstones)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		items = append(items, path)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

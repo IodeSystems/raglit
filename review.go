@@ -64,7 +64,7 @@ type DocSummary struct {
 
 // Documents lists indexed documents with fragment/page/engine counts, newest
 // first. Docs with no OCR-tracked pages (plain text) report Pages 0.
-func (s *Store) Documents() ([]DocSummary, error) {
+func (s *Store) documentsLocal() ([]DocSummary, error) {
 	ctx := context.Background()
 	rows, err := s.q.ListDocumentSummaries(ctx)
 	if err != nil {

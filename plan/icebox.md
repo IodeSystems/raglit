@@ -18,17 +18,19 @@ The concrete roadmap, in order. Expands items #1 and #2 below.
       single daemon owning storage + workers + LLM. `--home` still selects the
       single-home layout for back-compat. (Remaining tail: client-only `init` that
       writes `daemon_url` and skips creating local index bytes.)
-- [ ] **Branch storage** (versioned indexes): a client (e.g. a git worktree) can
-      branch an index off a parent; the branch stores only its diffs vs parent,
-      resolved branch-over-parent on read (copy-on-write at document grain).
-  - [ ] **delete branch** — drop a branch layer (GC its storage), parent intact.
-  - [ ] **list branches** — enumerate branches with **age** (created_at) and
-        **last access** (last_accessed_at). → needs per-index/branch metadata:
-        track `created_at` + touch `last_accessed_at` on read/write.
+- [x] **Branch storage** DONE (P6). A branch is a scoped index with a parent;
+      reads overlay branch-over-parent at document grain (COW); stores only diffs
+      (changed docs + tombstones). `ForkBranch`/`DeleteBranch`/`ListBranches` in
+      the Registry; `GET/POST/DELETE /api/branches` on the daemon; lineage +
+      created_at + last_accessed_at in branch.json.
+  - [x] **delete branch** — `DeleteBranch` / `DELETE /api/branches` (GC storage, parent intact).
+  - [x] **list branches** — `ListBranches` / `GET /api/branches` (age + last-access + local doc count).
+  - Follow-ups (not blocking): VecSearch/DocReview overlay; merge/diff; CLI/MCP
+    branch commands.
 
-Sequencing note: #1+#2 (client/daemon split + scoped storage) are the
-foundation; branch storage (#3) builds on the daemon owning the store. See the
-design detail in the two entries below.
+All three checklist items are complete. Remaining tails across items: client-only
+`init` (write daemon_url, skip local index bytes); retire the legacy stdlib
+daemon/review; the branch overlay follow-ups above.
 
 
 ## 1. MCP-as-daemon-client: one shared server, many MCP clients

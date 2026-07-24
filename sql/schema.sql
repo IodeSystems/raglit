@@ -65,3 +65,9 @@ CREATE TABLE IF NOT EXISTS ocr_pages (
   image_path TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (doc_id, page)
 );
+-- Branch storage: a tombstone marks a PARENT document path as deleted-in-branch,
+-- so the parent's version does not show through the branch-over-parent overlay.
+-- Present in every index (harmless for non-branch indexes).
+CREATE TABLE IF NOT EXISTS tombstones (
+  path TEXT PRIMARY KEY
+);

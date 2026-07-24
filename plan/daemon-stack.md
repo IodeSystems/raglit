@@ -95,9 +95,25 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
     their own indexes/<name>/index.sqlite; `invoice` isolated to proj-b).
   - Legacy stdlib `daemon`/`review` still single-home (being retired). Client-only
     `init` (write daemon_url, skip local index bytes) still TODO — small UX piece.
-- ◻ **P6 — branch storage** (item #3): branch-off-parent (diff layers, COW at
-  document grain), delete-branch, list-branches (age + last-access) — needs
-  per-branch created_at + last_accessed_at.
+- ✅ **P6 — branch storage** (item #3). A branch is a scoped index with a parent;
+  reads overlay branch-over-parent at DOCUMENT grain (copy-on-write); the branch
+  stores only its diffs (changed/added docs + tombstones).
+  - Store: optional `parent *Store`; the base reads renamed `*Local`, overlaid in
+    branch.go — Search (branch hits + parent hits not shadowed, re-ranked),
+    Documents, MatchDocuments, DocText (branch copy, else parent unless
+    tombstoned). `DeleteDocument` tombstones (hides the parent's version).
+    tombstones table + queries added to the schema.
+  - Registry (scoped): `ForkBranch(name,parent)`, `DeleteBranch`, `ListBranches`
+    (name/parent/created_at/last_accessed_at/local-doc-count). Branch lineage +
+    times in `<home>/branch.json`; `Get` wires the parent for a branch;
+    last-access touched on reads (throttled 1/min, not on worker Get polling).
+  - Daemon: `GET/POST/DELETE /api/branches` (list/fork/delete).
+  - Verified: branch_test.go (fork → overlay; COW edit shadows parent, parent
+    untouched; tombstone hides a parent doc; list metadata; delete) + live daemon
+    (fork feat-x←main → search overlays parent, list shows lineage, delete removes
+    storage, parent intact).
+  - NOT overlaid (follow-ups): VecSearch + DocReview see the branch layer only;
+    merge/diff ops; CLI/MCP branch commands (daemon REST only).
 
 ## Blocking decisions (user owns)
 

@@ -92,6 +92,22 @@ var CountFragmentsCols = struct {
 	N: metaquery.NewIntCol("n"),
 }
 
+var MetaDeleteDocumentByPath = metaquery.Query{
+	Name:    "DeleteDocumentByPath",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `DELETE FROM documents WHERE path = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "path", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WrapDeleteDocumentByPath returns a metaquery.Builder over MetaDeleteDocumentByPath, pre-bound with typed arguments.
+func WrapDeleteDocumentByPath(path string) *metaquery.Builder {
+	return metaquery.Wrap(&MetaDeleteDocumentByPath, path)
+}
+
 var MetaDeleteFragmentsByDoc = metaquery.Query{
 	Name:    "DeleteFragmentsByDoc",
 	Cmd:     ":exec",
@@ -122,6 +138,22 @@ var MetaDeleteOcrPagesByDoc = metaquery.Query{
 // WrapDeleteOcrPagesByDoc returns a metaquery.Builder over MetaDeleteOcrPagesByDoc, pre-bound with typed arguments.
 func WrapDeleteOcrPagesByDoc(docID int64) *metaquery.Builder {
 	return metaquery.Wrap(&MetaDeleteOcrPagesByDoc, docID)
+}
+
+var MetaDeleteTombstone = metaquery.Query{
+	Name:    "DeleteTombstone",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `DELETE FROM tombstones WHERE path = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "path", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WrapDeleteTombstone returns a metaquery.Builder over MetaDeleteTombstone, pre-bound with typed arguments.
+func WrapDeleteTombstone(path string) *metaquery.Builder {
+	return metaquery.Wrap(&MetaDeleteTombstone, path)
 }
 
 var MetaEnqueueJob = metaquery.Query{
@@ -378,6 +410,23 @@ func WrapInsertStage(arg InsertStageParams) *metaquery.Builder {
 	return metaquery.Wrap(&MetaInsertStage, arg.JobID, arg.Seq, arg.Name, arg.Engine, arg.State, arg.Detail, arg.At)
 }
 
+var MetaInsertTombstone = metaquery.Query{
+	Name:    "InsertTombstone",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `INSERT OR IGNORE INTO tombstones(path) VALUES(?)`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "path", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+	Table: &metaquery.Table{Name: "tombstones"},
+}
+
+// WrapInsertTombstone returns a metaquery.Builder over MetaInsertTombstone, pre-bound with typed arguments.
+func WrapInsertTombstone(path string) *metaquery.Builder {
+	return metaquery.Wrap(&MetaInsertTombstone, path)
+}
+
 var MetaInsertVector = metaquery.Query{
 	Name:    "InsertVector",
 	Cmd:     ":exec",
@@ -456,6 +505,29 @@ var ListActiveJobsCols = struct {
 	ID:    metaquery.NewIntCol("id"),
 	Url:   metaquery.NewTextCol("url"),
 	State: metaquery.NewTextCol("state"),
+}
+
+var MetaListDocumentPaths = metaquery.Query{
+	Name:    "ListDocumentPaths",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT path FROM documents`,
+	Columns: []metaquery.Column{
+		{Name: "path", OriginalName: "path", GoType: "string"},
+	},
+}
+
+// WrapListDocumentPaths returns a metaquery.Builder over MetaListDocumentPaths, pre-bound with typed arguments.
+func WrapListDocumentPaths() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListDocumentPaths)
+}
+
+// ListDocumentPathsCols gives typed, name-safe access to ListDocumentPaths's output columns.
+var ListDocumentPathsCols = struct {
+	Path metaquery.TextCol
+}{
+	Path: metaquery.NewTextCol("path"),
 }
 
 var MetaListDocumentSummaries = metaquery.Query{
@@ -696,6 +768,29 @@ var ListOcrPagesByDocCols = struct {
 	Page:      metaquery.NewIntCol("page"),
 	Engine:    metaquery.NewTextCol("engine"),
 	ImagePath: metaquery.NewTextCol("image_path"),
+}
+
+var MetaListTombstones = metaquery.Query{
+	Name:    "ListTombstones",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT path FROM tombstones`,
+	Columns: []metaquery.Column{
+		{Name: "path", OriginalName: "path", GoType: "string"},
+	},
+}
+
+// WrapListTombstones returns a metaquery.Builder over MetaListTombstones, pre-bound with typed arguments.
+func WrapListTombstones() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListTombstones)
+}
+
+// ListTombstonesCols gives typed, name-safe access to ListTombstones's output columns.
+var ListTombstonesCols = struct {
+	Path metaquery.TextCol
+}{
+	Path: metaquery.NewTextCol("path"),
 }
 
 var MetaMatchDocumentsLike = metaquery.Query{

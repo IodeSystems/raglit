@@ -44,7 +44,14 @@ type Store struct {
 	home     Home
 	withHome bool
 	embedder *Embedder // nil → lexical only; set for vector/hybrid search
+	// parent, when set, makes this Store a BRANCH: reads overlay branch-over-
+	// parent at document grain (a branch doc / tombstone shadows the parent's).
+	// Writes go to the branch only (copy-on-write). See branch.go.
+	parent *Store
 }
+
+// SetParent makes this store a branch over p (branch-over-parent overlay reads).
+func (s *Store) SetParent(p *Store) { s.parent = p }
 
 // gq returns a generated Queries bound to a transaction (for atomic writes).
 func gq(tx gen.DBTX) *gen.Queries { return gen.New(tx) }
@@ -324,7 +331,7 @@ type Hit struct {
 // query is tokenized and OR-combined for recall — BM25 still floats the
 // strongest matches to the top, and the ambient/notify use case wants recall
 // over precision. Returns no error on zero matches (empty slice).
-func (s *Store) Search(query string, limit int) ([]Hit, error) {
+func (s *Store) searchLocal(query string, limit int) ([]Hit, error) {
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil

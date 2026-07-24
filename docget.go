@@ -27,7 +27,7 @@ type DocRef struct {
 // match wins (returns just that one); otherwise a case-insensitive substring
 // match over path AND title. Empty ref returns nothing. The caller decides what
 // to do with 0 / 1 / many (get_document treats >1 as ambiguous).
-func (s *Store) MatchDocuments(ref string) ([]DocRef, error) {
+func (s *Store) matchDocumentsLocal(ref string) ([]DocRef, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return nil, nil
@@ -73,7 +73,7 @@ type DocContent struct {
 // end); maxChars caps the joined Text blob (≤0 = uncapped), setting Truncated
 // when it bites — the per-page array is left whole. Returns (‑, false, nil) via a
 // zero DocContent when the path is unknown.
-func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, error) {
+func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocContent, error) {
 	ctx := context.Background()
 	var out DocContent
 	doc, err := s.q.GetDocumentByPath(ctx, exactPath)

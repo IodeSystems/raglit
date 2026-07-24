@@ -105,6 +105,9 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("findDocuments", http.MethodGet, "/api/find-documents", "Find documents by name substring (MCP list_documents)."), findDocumentsOp(reg))
 	gat.Register(api, g, op("getDocument", http.MethodGet, "/api/get-document", "Get a document's indexed text (MCP get_document)."), getDocumentOp(reg))
 	gat.Register(api, g, op("ocr", http.MethodPost, "/api/ocr", "Extract a document (path or base64 data) to paged text (MCP ocr)."), ocrToolOp(lf, home))
+	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
+	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))
+	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
 
 	if err := gat.RegisterHuma(api, g, ""); err != nil {
 		return nil, err
@@ -570,6 +573,71 @@ func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (
 		}
 		out := &getDocumentOut{}
 		out.Body.Index, out.Body.DocContent = cands[0].index, content
+		return out, nil
+	}
+}
+
+type listBranchesOut struct {
+	Body struct {
+		Branches []raglit.BranchInfo `json:"branches"`
+	}
+}
+
+func listBranchesOp(reg *raglit.Registry) func(context.Context, *struct{}) (*listBranchesOut, error) {
+	return func(_ context.Context, _ *struct{}) (*listBranchesOut, error) {
+		bs, err := reg.ListBranches()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("branches", err)
+		}
+		if bs == nil {
+			bs = []raglit.BranchInfo{}
+		}
+		out := &listBranchesOut{}
+		out.Body.Branches = bs
+		return out, nil
+	}
+}
+
+type forkBranchIn struct {
+	Body struct {
+		Name   string `json:"name"`
+		Parent string `json:"parent,omitempty"`
+	}
+}
+type forkBranchOut struct {
+	Body struct {
+		OK     bool   `json:"ok"`
+		Name   string `json:"name"`
+		Parent string `json:"parent"`
+	}
+}
+
+func forkBranchOp(reg *raglit.Registry) func(context.Context, *forkBranchIn) (*forkBranchOut, error) {
+	return func(_ context.Context, in *forkBranchIn) (*forkBranchOut, error) {
+		parent := in.Body.Parent
+		if parent == "" {
+			parent = "default"
+		}
+		if err := reg.ForkBranch(in.Body.Name, parent); err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		out := &forkBranchOut{}
+		out.Body.OK, out.Body.Name, out.Body.Parent = true, in.Body.Name, parent
+		return out, nil
+	}
+}
+
+type deleteBranchIn struct {
+	Name string `query:"name"`
+}
+
+func deleteBranchOp(reg *raglit.Registry) func(context.Context, *deleteBranchIn) (*okOut, error) {
+	return func(_ context.Context, in *deleteBranchIn) (*okOut, error) {
+		if err := reg.DeleteBranch(in.Name); err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		out := &okOut{}
+		out.Body.OK = true
 		return out, nil
 	}
 }

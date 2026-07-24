@@ -111,3 +111,19 @@ SELECT engine, COUNT(*) AS n FROM ocr_pages WHERE doc_id = ? GROUP BY engine;
 -- name: GetPageImagePath :one
 SELECT p.image_path FROM ocr_pages p JOIN documents d ON d.id = p.doc_id
 WHERE d.path = ? AND p.page = ?;
+
+-- ===== tombstones (branch storage) =====
+-- name: InsertTombstone :exec
+INSERT OR IGNORE INTO tombstones(path) VALUES(?);
+
+-- name: DeleteTombstone :exec
+DELETE FROM tombstones WHERE path = ?;
+
+-- name: ListTombstones :many
+SELECT path FROM tombstones;
+
+-- name: ListDocumentPaths :many
+SELECT path FROM documents;
+
+-- name: DeleteDocumentByPath :exec
+DELETE FROM documents WHERE path = ?;

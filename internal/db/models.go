@@ -59,3 +59,7 @@ type OcrPage struct {
 	Engine    string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
 	ImagePath string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
 }
+
+type Tombstone struct {
+	Path string `db:"path" derived:"tombstones.path" json:"path"`
+}
