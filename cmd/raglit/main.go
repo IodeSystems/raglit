@@ -103,7 +103,8 @@ usage:
   raglit daemon [--root DIR|--home DIR] [--addr :7420] [--embed]   multi-protocol daemon:
                 REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
                 per-index storage under --root (default ~/.raglit); --home for a single index;
-                records <root>/daemon.json for client discovery; --stop signals a running one
+                records <root>/daemon.json for client discovery; --stop signals a running one,
+                --restart replaces it with a detached one on these flags (after a rebuild)
   raglit review [--root DIR|--home DIR] [--addr :7420] [--embed]   same daemon, review-UI banner
   # daemon-routed clients (the default) need a project name: config "project" or
   # --project NAME (namespaces this project's indexes so they don't collide);

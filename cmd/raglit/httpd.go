@@ -28,7 +28,7 @@ import (
 	"github.com/iodesystems/raglit"
 )
 
-func runHttpd(args []string) error {
+func runHttpd(subcmd string, args []string) error {
 	fs := flag.NewFlagSet("httpd", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "single-home index dir (back-compat; overrides --root)")
 	rootFlag := fs.String("root", "", "scoped storage root (default $RAGLIT_ROOT or ~/.raglit); each index at <root>/indexes/<name>")
@@ -40,16 +40,21 @@ func runHttpd(args []string) error {
 	poolMax := fs.Int("pool-max", 0, "also cap the pool at N entries, LRU (0 = unlimited)")
 	poolTTL := fs.Duration("pool-ttl", 0, "also evict pooled docs unused this long (0 = never — off so merges/retries keep reusing)")
 	stop := fs.Bool("stop", false, "signal the running daemon (recorded in <root>/daemon.json) to shut down, then exit")
+	restart := fs.Bool("restart", false, "stop the running daemon, then relaunch it detached with these flags (picks up a rebuilt binary), and exit")
 	watchInterval := fs.Duration("watch-interval", 5*time.Second, "how often to re-scan watched projects for changes")
 	fs.Parse(args)
 
-	// --stop: signal the daemon recorded under this root and return (no server).
-	if *stop {
+	// --stop / --restart: act on the daemon recorded under this root and return
+	// (no server in THIS process — restart relaunches a detached one).
+	if *stop || *restart {
 		root := *rootFlag
 		if root == "" {
 			root = raglit.DefaultRoot()
 		}
-		return stopDaemon(root)
+		if *stop {
+			return stopDaemon(root)
+		}
+		return restartDaemon(root, subcmd, args, *addr)
 	}
 
 	reg, cfgHome, err := openDaemonRegistry(*homeFlag, *rootFlag)

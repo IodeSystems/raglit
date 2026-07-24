@@ -41,12 +41,12 @@ const defaultDaemonAddr = "127.0.0.1:7420"
 // net/http server + review routes were retired once httpd reached parity — the
 // gat server serves the same paths (REST + review UI + OpenAPI + GraphQL) plus
 // GraphQL/gRPC and branch endpoints.
-func runDaemon(args []string) error { return runHttpd(args) }
+func runDaemon(args []string) error { return runHttpd("daemon", args) }
 
 // runReview is the same daemon, framed as the review UI with a banner.
 func runReview(args []string) error {
 	fmt.Fprintln(os.Stderr, "raglit review — status, job control, and OCR review UI")
-	return runHttpd(args)
+	return runHttpd("review", args)
 }
 
 // isUnder reports whether path is within dir (both cleaned, absolute-ish). Used
@@ -191,6 +191,14 @@ func isLoopback(host string) bool {
 // (own session, output appended to <root>/daemon.log) so the shared daemon
 // outlives the client that started it.
 func startDaemonDetached(addr string) error {
+	return spawnDaemonDetached("daemon", []string{"--addr", addr})
+}
+
+// spawnDaemonDetached launches `raglit <subcmd> <args...>` detached (own session,
+// output appended to <root>/daemon.log). Callers pass the flags the new daemon
+// should run with: the auto-start path passes just --addr, while --restart
+// replays the current invocation's flags so a restarted daemon keeps its config.
+func spawnDaemonDetached(subcmd string, args []string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -204,7 +212,7 @@ func startDaemonDetached(addr string) error {
 		return err
 	}
 	defer logf.Close()
-	cmd := exec.Command(exe, "daemon", "--addr", addr)
+	cmd := exec.Command(exe, append([]string{subcmd}, args...)...)
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = logf, logf, nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from our session
 	if err := cmd.Start(); err != nil {

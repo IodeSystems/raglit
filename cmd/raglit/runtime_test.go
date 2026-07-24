@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestDaemonStateRoundtrip(t *testing.T) {
@@ -65,5 +66,30 @@ func TestStopDaemonStale(t *testing.T) {
 func TestStopDaemonMissing(t *testing.T) {
 	if err := stopDaemon(t.TempDir()); err == nil {
 		t.Error("stopping with no state file should error")
+	}
+}
+
+// The replayed command line must keep every flag but --restart, else the new
+// daemon loses its config (or restarts forever).
+func TestStripBoolFlag(t *testing.T) {
+	in := []string{"--root", "/r", "-restart", "--addr", ":7420", "--restart=true", "--embed", "--restarts", "restart"}
+	got := stripBoolFlag(in, "restart")
+	want := []string{"--root", "/r", "--addr", ":7420", "--embed", "--restarts", "restart"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestWaitPidGone(t *testing.T) {
+	if !waitPidGone(2147483646, 100*time.Millisecond) {
+		t.Error("a dead pid is gone immediately")
+	}
+	if waitPidGone(os.Getpid(), 100*time.Millisecond) {
+		t.Error("a live pid should time out")
 	}
 }
