@@ -43,22 +43,27 @@ deciding to call the `search` tool.
 | var            | default | meaning                                             |
 |----------------|---------|-----------------------------------------------------|
 | `RAGLIT_INDEX` | (all)   | restrict to an index / comma-separated set          |
+| `RAGLIT_PATH`  | (all)   | restrict to a path subtree (prefix; see below)      |
 | `RAGLIT_MODE`  | `bm25`  | `bm25` \| `vec` \| `hybrid` (vec/hybrid need embeddings) |
 | `RAGLIT_N`     | `5`     | max hits injected                                   |
 | `RAGLIT_BIN`   | `raglit`| path to the raglit binary                           |
 
 Set them in the hook's `command` if you want per-project behavior, e.g.
-`"command": "RAGLIT_INDEX=docs RAGLIT_MODE=hybrid ~/.claude/hooks/raglit-context.sh"`.
+`"command": "RAGLIT_INDEX=docs RAGLIT_PATH=/repo/src/api/ ~/.claude/hooks/raglit-context.sh"`.
 
-## Scoping: index, not path
+## Scoping: index and/or path subtree
 
-raglit search scopes by **index** (`--index`), not by path or subdirectory. There
-is no per-directory filter inside an index today (`WHERE fragments_fts MATCH ?`,
-no path clause). So for hierarchical corpora, the way to constrain retrieval to a
-subtree is to **give that subtree its own index** and point `RAGLIT_INDEX` at it.
-`raglit sync` config (the `indexes` map with per-index `roots`) is built for
-exactly this — one project can define several indexes over different directory
-roots. See the top-level README's config section.
+Two independent scopes:
+
+- **By index** — `--index` / `RAGLIT_INDEX` selects one index or a comma-separated
+  set. Good when subtrees map to separate indexes (`raglit sync`'s `indexes` map
+  with per-index `roots` is built for this).
+- **By path subtree** — `--path` / `RAGLIT_PATH` constrains results to documents
+  whose stored path **starts with** the given prefix, across all search modes
+  (bm25 / vec / hybrid, and `search_figures`). Pass a trailing `/` for a clean
+  directory subtree, e.g. `--path /repo/src/api/`. The prefix must match the path
+  form stored in the index (absolute file path, or a `file://` URL) — check
+  `raglit list_documents` / `list_documents` output if unsure.
 
 ## Contract notes (verified against the current Claude Code hooks docs)
 

@@ -365,11 +365,23 @@ type Hit struct {
 	Score float64
 }
 
-// Search runs a BM25 query and returns up to limit fragments, best first. The
-// query is tokenized and OR-combined for recall — BM25 still floats the
-// strongest matches to the top, and the ambient/notify use case wants recall
-// over precision. Returns no error on zero matches (empty slice).
-func (s *Store) searchLocal(query string, limit int) ([]Hit, error) {
+// pathPredicate returns a bare SQL predicate + its arg constraining d.path to
+// documents whose path STARTS WITH pathPrefix (a subtree scope), or ("", nil) for
+// an empty prefix. instr(path, prefix)=1 is an exact prefix match with no LIKE
+// wildcard/escaping surprises; pass a trailing "/" for a clean directory subtree.
+func pathPredicate(pathPrefix string) (string, []any) {
+	if pathPrefix == "" {
+		return "", nil
+	}
+	return "instr(d.path, ?) = 1", []any{pathPrefix}
+}
+
+// searchLocal runs a BM25 query and returns up to limit fragments, best first,
+// optionally constrained to a path subtree (pathPrefix). The query is tokenized
+// and OR-combined for recall — BM25 still floats the strongest matches to the top,
+// and the ambient/notify use case wants recall over precision. Returns no error on
+// zero matches (empty slice).
+func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) {
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil
@@ -377,14 +389,20 @@ func (s *Store) searchLocal(query string, limit int) ([]Hit, error) {
 	if limit <= 0 {
 		limit = 10
 	}
+	pred, pargs := pathPredicate(pathPrefix)
+	if pred != "" {
+		pred = " AND " + pred
+	}
+	args := append([]any{match}, pargs...)
+	args = append(args, limit)
 	rows, err := s.db.Query(
 		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, bm25(fragments_fts) AS score
 		 FROM fragments_fts
 		 JOIN fragments f ON f.id = fragments_fts.rowid
 		 JOIN documents d ON d.id = f.doc_id
-		 WHERE fragments_fts MATCH ?
+		 WHERE fragments_fts MATCH ?`+pred+`
 		 ORDER BY score
-		 LIMIT ?`, match, limit)
+		 LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("raglit: search: %w", err)
 	}
@@ -402,12 +420,17 @@ func (s *Store) searchLocal(query string, limit int) ([]Hit, error) {
 	return hits, rows.Err()
 }
 
-// VecSearch embeds the query and ranks fragments by cosine similarity, best
-// first. Brute-force: it scans every stored vector (fine for a local corpus;
-// see embed.go). Requires SetEmbedder. Score is cosine in [-1,1] (higher =
-// better). Fragments without a vector (indexed before embeddings were enabled)
-// are invisible to this search.
+// VecSearch is VecSearchPath with no path constraint.
 func (s *Store) VecSearch(ctx context.Context, query string, limit int) ([]Hit, error) {
+	return s.VecSearchPath(ctx, query, "", limit)
+}
+
+// VecSearchPath embeds the query and ranks fragments by cosine similarity, best
+// first, optionally constrained to a path subtree (pathPrefix). Brute-force: it
+// scans every stored vector in scope (fine for a local corpus; see embed.go).
+// Requires SetEmbedder. Score is cosine in [-1,1] (higher = better). Fragments
+// without a vector (indexed before embeddings were enabled) are invisible.
+func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, limit int) ([]Hit, error) {
 	if s.embedder == nil {
 		return nil, fmt.Errorf("raglit: VecSearch needs an embedder (SetEmbedder)")
 	}
@@ -421,11 +444,16 @@ func (s *Store) VecSearch(ctx context.Context, query string, limit int) ([]Hit, 
 	if err != nil {
 		return nil, err
 	}
+	pred, pargs := pathPredicate(pathPrefix)
+	where := ""
+	if pred != "" {
+		where = " WHERE " + pred
+	}
 	rows, err := s.db.Query(
 		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, fv.vec
 		 FROM fragment_vectors fv
 		 JOIN fragments f ON f.id = fv.fragment_id
-		 JOIN documents d ON d.id = f.doc_id`)
+		 JOIN documents d ON d.id = f.doc_id`+where, pargs...)
 	if err != nil {
 		return nil, fmt.Errorf("raglit: vecsearch: %w", err)
 	}
@@ -450,12 +478,18 @@ func (s *Store) VecSearch(ctx context.Context, query string, limit int) ([]Hit, 
 	return hits, nil
 }
 
-// HybridSearch fuses BM25 and vector rankings with Reciprocal Rank Fusion
+// HybridSearch is HybridSearchPath with no path constraint.
+func (s *Store) HybridSearch(ctx context.Context, query string, limit int) ([]Hit, error) {
+	return s.HybridSearchPath(ctx, query, "", limit)
+}
+
+// HybridSearchPath fuses BM25 and vector rankings with Reciprocal Rank Fusion
 // (RRF) — the standard, score-scale-agnostic combiner: a fragment's fused score
 // is the sum over each ranked list of 1/(rrfK + rank). It over-fetches from
-// each side, so a fragment strong on either signal surfaces. Requires an
-// embedder. Returns up to limit fragments, best fused first.
-func (s *Store) HybridSearch(ctx context.Context, query string, limit int) ([]Hit, error) {
+// each side, so a fragment strong on either signal surfaces. Both sides honor the
+// optional path subtree scope. Requires an embedder. Returns up to limit
+// fragments, best fused first.
+func (s *Store) HybridSearchPath(ctx context.Context, query, pathPrefix string, limit int) ([]Hit, error) {
 	if s.embedder == nil {
 		return nil, fmt.Errorf("raglit: HybridSearch needs an embedder (SetEmbedder)")
 	}
@@ -463,11 +497,11 @@ func (s *Store) HybridSearch(ctx context.Context, query string, limit int) ([]Hi
 		limit = 10
 	}
 	pool := limit * 4
-	lex, err := s.Search(query, pool)
+	lex, err := s.SearchPath(query, pathPrefix, pool)
 	if err != nil {
 		return nil, err
 	}
-	vec, err := s.VecSearch(ctx, query, pool)
+	vec, err := s.VecSearchPath(ctx, query, pathPrefix, pool)
 	if err != nil {
 		return nil, err
 	}

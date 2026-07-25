@@ -64,15 +64,16 @@ func isUnder(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// searchByMode dispatches bm25 (default) / vec / hybrid.
-func searchByMode(st *raglit.Store, q, mode string, limit int) ([]raglit.Hit, error) {
+// searchByMode dispatches bm25 (default) / vec / hybrid, optionally scoped to a
+// path subtree (pathPrefix; empty = whole index).
+func searchByMode(st *raglit.Store, q, mode, pathPrefix string, limit int) ([]raglit.Hit, error) {
 	switch mode {
 	case "vec":
-		return st.VecSearch(context.Background(), q, limit)
+		return st.VecSearchPath(context.Background(), q, pathPrefix, limit)
 	case "hybrid":
-		return st.HybridSearch(context.Background(), q, limit)
+		return st.HybridSearchPath(context.Background(), q, pathPrefix, limit)
 	default:
-		return st.Search(q, limit)
+		return st.SearchPath(q, pathPrefix, limit)
 	}
 }
 
@@ -354,10 +355,13 @@ func daemonDelete(base, path string, q url.Values) ([]byte, error) {
 
 // daemonSearchPrint queries the daemon and prints ranked hits. ns is the project
 // namespace, stripped from each hit's index tag for display.
-func daemonSearchPrint(base, query, index, mode string, limit int, ns string) error {
+func daemonSearchPrint(base, query, index, mode, path string, limit int, ns string) error {
 	q := url.Values{"q": {query}, "mode": {mode}, "n": {strconv.Itoa(limit)}}
 	if index != "" {
 		q.Set("index", index)
+	}
+	if path != "" {
+		q.Set("path", path)
 	}
 	b, err := daemonGet(base, "/search", q)
 	if err != nil {

@@ -41,11 +41,17 @@ func (s *Store) shadowedPaths() (map[string]bool, error) {
 	return m, nil
 }
 
-// Search overlays branch-over-parent: branch hits, then parent hits whose doc is
-// not shadowed, re-ranked by score and truncated to limit. A non-branch store
-// (parent == nil) is just its local FTS.
+// Search is SearchPath with no path constraint.
 func (s *Store) Search(query string, limit int) ([]Hit, error) {
-	hits, err := s.searchLocal(query, limit)
+	return s.SearchPath(query, "", limit)
+}
+
+// SearchPath overlays branch-over-parent: branch hits, then parent hits whose doc
+// is not shadowed, re-ranked by score and truncated to limit — optionally
+// constrained to a path subtree (pathPrefix). A non-branch store (parent == nil)
+// is just its local FTS.
+func (s *Store) SearchPath(query, pathPrefix string, limit int) ([]Hit, error) {
+	hits, err := s.searchLocal(query, pathPrefix, limit)
 	if err != nil || s.parent == nil {
 		return hits, err
 	}
@@ -54,7 +60,7 @@ func (s *Store) Search(query string, limit int) ([]Hit, error) {
 	if err != nil {
 		return nil, err
 	}
-	phits, err := s.parent.Search(query, limit)
+	phits, err := s.parent.SearchPath(query, pathPrefix, limit)
 	if err != nil {
 		return nil, err
 	}

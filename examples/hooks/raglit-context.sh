@@ -7,8 +7,8 @@
 #
 # Optional env knobs:
 #   RAGLIT_INDEX   restrict to an index (or comma-separated set); empty = all
-#                  (this is the ONLY scoping raglit search supports today — there
-#                   is no per-path/subdirectory filter; see README).
+#   RAGLIT_PATH    restrict to documents whose path starts with this prefix
+#                  (a subtree; use a trailing / for a clean directory). Empty = all.
 #   RAGLIT_MODE    bm25 (default) | vec | hybrid  (vec/hybrid need an --embed'd index)
 #   RAGLIT_N       max hits to inject (default 5)
 #   RAGLIT_BIN     path to the raglit binary (default: `raglit` on PATH)
@@ -28,9 +28,10 @@ prompt=$(printf '%s' "$input" | jq -r '.user_input // .prompt // ""')
 [ "${#prompt}" -ge 12 ] || exit 0
 case "$prompt" in /*) exit 0 ;; esac
 
-# Build args: mode + limit, plus an optional index scope.
+# Build args: mode + limit, plus optional index / path subtree scope.
 args=(search --mode "$mode" -n "$n")
 [ -n "${RAGLIT_INDEX:-}" ] && args+=(--index "$RAGLIT_INDEX")
+[ -n "${RAGLIT_PATH:-}" ] && args+=(--path "$RAGLIT_PATH")
 
 # Query raglit (routes to the shared daemon by default). Never fail the prompt on
 # a retrieval error — just inject nothing.

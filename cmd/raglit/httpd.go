@@ -304,6 +304,7 @@ type searchIn struct {
 	Query string `query:"q"`
 	Index string `query:"index"`
 	Mode  string `query:"mode"`
+	Path  string `query:"path"`
 	Limit int    `query:"n"`
 }
 type searchOut struct {
@@ -327,7 +328,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			if err != nil {
 				continue
 			}
-			hits, err := searchByMode(st, in.Query, in.Mode, limit*2)
+			hits, err := searchByMode(st, in.Query, in.Mode, in.Path, limit*2)
 			if err != nil {
 				return nil, huma.Error500InternalServerError("search", err)
 			}
@@ -364,6 +365,7 @@ type figureRow struct {
 type searchFiguresIn struct {
 	Query string `query:"q"`
 	Index string `query:"index"`
+	Path  string `query:"path"`
 	Limit int    `query:"n"`
 }
 type searchFiguresOut struct {
@@ -388,7 +390,7 @@ func searchFiguresOp(reg *raglit.Registry, defLimit int) func(context.Context, *
 			if err != nil {
 				continue
 			}
-			figs, err := st.SearchFigures(ctx, in.Query, limit)
+			figs, err := st.SearchFiguresPath(ctx, in.Query, in.Path, limit)
 			if err != nil {
 				continue // no embedder on this index → skip
 			}

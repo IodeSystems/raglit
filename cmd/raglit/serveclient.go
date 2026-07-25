@@ -29,6 +29,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			}
 			v := url.Values{"q": {q}}
 			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			setIf(v, "path", req.GetString("path", ""))
 			if n := req.GetInt("limit", defLimit); n > 0 {
 				v.Set("n", strconv.Itoa(n))
 			}
@@ -42,6 +43,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			}
 			v := url.Values{"q": {q}}
 			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			setIf(v, "path", req.GetString("path", ""))
 			if n := req.GetInt("limit", defLimit); n > 0 {
 				v.Set("n", strconv.Itoa(n))
 			}

@@ -106,6 +106,7 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 					"(results merged with reciprocal-rank fusion, each hit tagged by index)."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language or keyword query")),
 			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
+			mcp.WithString("path", mcp.Description("constrain to documents whose path starts with this prefix (a subtree; use a trailing / for a clean directory)")),
 			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
 		),
 		h.search,
@@ -120,6 +121,7 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 					"Needs an --embed'd index. `index` selects one/comma-separated set; omit = all."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language query about a figure's content")),
 			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
+			mcp.WithString("path", mcp.Description("constrain to documents whose path starts with this prefix (a subtree)")),
 			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
 		),
 		h.searchFigures,
@@ -273,6 +275,7 @@ func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("query is required"), nil
 		}
 		limit := req.GetInt("limit", defLimit)
+		path := req.GetString("path", "")
 		names := selectIndexes(reg, req.GetString("index", ""))
 
 		// Search each selected index; over-fetch, then RRF-merge across indexes.
@@ -282,7 +285,7 @@ func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
 			if err != nil {
 				continue
 			}
-			hits, err := st.Search(q, limit*2)
+			hits, err := st.SearchPath(q, path, limit*2)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("search", err), nil
 			}
@@ -311,13 +314,14 @@ func searchFiguresHandler(reg *raglit.Registry, defLimit int) server.ToolHandler
 			return mcp.NewToolResultError("query is required"), nil
 		}
 		limit := req.GetInt("limit", defLimit)
+		path := req.GetString("path", "")
 		var all []taggedFigure
 		for _, name := range selectIndexes(reg, req.GetString("index", "")) {
 			st, err := reg.Get(name)
 			if err != nil {
 				continue
 			}
-			figs, err := st.SearchFigures(ctx, q, limit)
+			figs, err := st.SearchFiguresPath(ctx, q, path, limit)
 			if err != nil {
 				// No embedder → skip this index rather than failing the whole call.
 				continue

@@ -256,6 +256,7 @@ func runSearch(args []string) error {
 	client := addClientFlags(fs) // --daemon + --embedded
 	limit := fs.Int("n", 10, "max results")
 	mode := fs.String("mode", "bm25", "bm25 | vec | hybrid (vec/hybrid need embeddings)")
+	path := fs.String("path", "", "constrain to documents whose path starts with this prefix (a subtree)")
 	fs.Parse(args)
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if query == "" {
@@ -271,7 +272,7 @@ func runSearch(args []string) error {
 	if dURL != "" {
 		// Empty --index → this project's indexes + its shared namespaces.
 		sel := nsReadSelector(ns, projectShared(homeOf), fs.Lookup("index").Value.String())
-		return daemonSearchPrint(dURL, query, sel, *mode, *limit, ns)
+		return daemonSearchPrint(dURL, query, sel, *mode, *path, *limit, ns)
 	}
 
 	store, err := openStore()
@@ -284,7 +285,7 @@ func runSearch(args []string) error {
 	var hits []raglit.Hit
 	switch *mode {
 	case "bm25":
-		hits, err = store.Search(query, *limit)
+		hits, err = store.SearchPath(query, *path, *limit)
 	case "vec", "hybrid":
 		lf.resolve(homeOf())
 		if err := lf.requireEmbed(); err != nil {
@@ -292,9 +293,9 @@ func runSearch(args []string) error {
 		}
 		store.SetEmbedder(lf.embedder())
 		if *mode == "vec" {
-			hits, err = store.VecSearch(ctx, query, *limit)
+			hits, err = store.VecSearchPath(ctx, query, *path, *limit)
 		} else {
-			hits, err = store.HybridSearch(ctx, query, *limit)
+			hits, err = store.HybridSearchPath(ctx, query, *path, *limit)
 		}
 	default:
 		return fmt.Errorf("search: unknown --mode %q (bm25|vec|hybrid)", *mode)

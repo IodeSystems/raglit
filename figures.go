@@ -147,12 +147,18 @@ type FigureHit struct {
 	Score       float64 `json:"score"`
 }
 
-// SearchFigures ranks figures by cosine similarity of the query to each figure's
-// embedding, best first. Only figures whose vector is comparable to a TEXT query
-// are considered — the description embedding, and an aligned image embedding
+// SearchFigures is SearchFiguresPath with no path constraint.
+func (s *Store) SearchFigures(ctx context.Context, query string, limit int) ([]FigureHit, error) {
+	return s.SearchFiguresPath(ctx, query, "", limit)
+}
+
+// SearchFiguresPath ranks figures by cosine similarity of the query to each
+// figure's embedding, best first, optionally constrained to a path subtree
+// (pathPrefix). Only figures whose vector is comparable to a TEXT query are
+// considered — the description embedding, and an aligned image embedding
 // (nomic-vision, whose space nomic-text shares). Non-aligned image embeddings are
 // skipped (they await an image-query path). Requires a text embedder.
-func (s *Store) SearchFigures(ctx context.Context, query string, limit int) ([]FigureHit, error) {
+func (s *Store) SearchFiguresPath(ctx context.Context, query, pathPrefix string, limit int) ([]FigureHit, error) {
 	if s.embedder == nil {
 		return nil, fmt.Errorf("raglit: SearchFigures needs an embedder (SetEmbedder)")
 	}
@@ -166,13 +172,17 @@ func (s *Store) SearchFigures(ctx context.Context, query string, limit int) ([]F
 	if err != nil {
 		return nil, err
 	}
+	pred, pargs := pathPredicate(pathPrefix)
+	if pred != "" {
+		pred = " AND " + pred
+	}
 	rows, err := s.db.Query(
 		`SELECT m.id, d.path, d.title, m.page, m.description, m.image_path,
 		        COALESCE(m.fragment_id, 0), mv.vec
 		 FROM media_vectors mv
 		 JOIN media m ON m.id = mv.media_id
 		 JOIN documents d ON d.id = m.doc_id
-		 WHERE mv.space IN ('text', 'image-aligned')`)
+		 WHERE mv.space IN ('text', 'image-aligned')`+pred, pargs...)
 	if err != nil {
 		return nil, fmt.Errorf("raglit: searchfigures: %w", err)
 	}
