@@ -84,6 +84,21 @@ func (f *llmFlags) embedder() *raglit.Embedder {
 	return raglit.NewEmbedder(llm.NewClient(*f.url, *f.key, *f.embedModel), *f.embedModel)
 }
 
+// buildImageEmbedder returns a figure IMAGE embedder from config (nomic-vision),
+// or nil when none is configured (figures then embed their description). The API
+// key defaults to the main config key.
+func buildImageEmbedder(home raglit.Home) raglit.ImageEmbedder {
+	cfg, _, _ := raglit.LoadConfig(home)
+	if cfg.ImageEmbed.Model == "" {
+		return nil
+	}
+	key := cfg.ImageEmbed.APIKey
+	if key == "" {
+		key = cfg.APIKey
+	}
+	return raglit.NewNomicVisionEmbedder(cfg.ImageEmbed.URL, key, cfg.ImageEmbed.Model)
+}
+
 func firstNonEmpty(ss ...string) string {
 	for _, s := range ss {
 		if s != "" {

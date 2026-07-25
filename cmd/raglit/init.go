@@ -99,6 +99,19 @@ func runInit(args []string) error {
 		}
 	}
 
+	// Figure image embeddings. Optional: embed FIGURES from their image (not just
+	// their description) with nomic-embed-vision, which shares nomic-embed-text's
+	// space — so image figures stay searchable by the same text query. Only offered
+	// when the embed model is the nomic-text pair.
+	var imageEmbed raglit.ImageEmbedConfig
+	if strings.Contains(strings.ToLower(embed), "nomic-embed-text") {
+		if strings.HasPrefix(strings.ToLower(ask(r, "embed figures from their IMAGE with nomic-vision? (y/N)", "n")), "y") {
+			imageEmbed.Model = ask(r, "  image embed model", "nomic-embed-vision-v1.5")
+			imageEmbed.URL = ask(r, "  image embed endpoint (blank = Nomic Atlas API)", "")
+			imageEmbed.APIKey = ask(r, "  image embed API key (blank = reuse main key)", "")
+		}
+	}
+
 	// Project name — namespaces this project's indexes on the shared daemon, so
 	// two projects both using "default" don't collide. Required to start a
 	// daemon-routed client. Default: the project directory's name.
@@ -113,8 +126,8 @@ func runInit(args []string) error {
 
 	if err := raglit.SaveConfig(home, raglit.Config{
 		BaseURL: base, APIKey: key, VisionModel: vision, EmbedModel: embed,
-		EmbedLimitChars: embedLimit,
-		DefaultIndex:    defIndex, Project: project, Shared: shared,
+		EmbedLimitChars: embedLimit, ImageEmbed: imageEmbed,
+		DefaultIndex: defIndex, Project: project, Shared: shared,
 	}); err != nil {
 		return err
 	}

@@ -125,15 +125,14 @@ only for documents a VLM already transcribed — can land first.
   `BodyStartLine` are ready-made atoms with titles attached. BLOCKED on
   poly-lsp's daemon (see its `plan/plan.md`): raglit builds CGO_ENABLED=0 and
   tree-sitter needs cgo, so a socket is the only import-free way in.
-- **Image embeddings / a second vector space.** PARTIALLY SHIPPED: figures now get
-  a `media_vectors` row and `SearchFigures` (see fragmenters.md) — image embedding
-  via an optional `ImageEmbedder` if one is configured, else the description in the
-  TEXT space (so text queries match). What remains iceboxed is the DIFFERENT-space
-  side: raglit ships no image embedder, and an image-space vector can't be cosine'd
-  against a text query — so image-space media vectors are stored but dormant. A real
-  second space needs a multimodal model whose text tower embeds the query, then RRF
-  fusion of the image-space ranking into the main search. Until then, description
-  embeddings (text space) carry figure retrieval.
+- **Image embeddings / a second vector space.** MOSTLY SHIPPED: figures get a
+  `media_vectors` row + `SearchFigures`, and raglit ships the **nomic-vision** image
+  embedder (imageembed.go), which shares nomic-text's space — so image figures ARE
+  text-query-searchable (space `image-aligned`) with no separate query tower. What
+  remains iceboxed is the genuinely-different-space case: an UNaligned model
+  (SigLIP-class) whose text tower isn't the query embedder. Those vectors store as
+  space `image` (dormant); making them searchable needs an image-query path or RRF
+  fusion of the model's own text-tower ranking into the main search.
 - **Eval harness.** A fixed query set with known-relevant documents, scored
   recall@k / MRR across fragmenter modes. Until it exists, every fragmenter
   choice here is taste, including the ones already decided.

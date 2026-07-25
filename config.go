@@ -56,6 +56,11 @@ type Config struct {
 	// OCR configures the cheap first-pass tier of the OCR cascade. Zero value →
 	// VLM-only (every page transcribed by the vision model).
 	OCR OCRConfig `json:"ocr,omitempty"`
+	// ImageEmbed optionally configures an image embedder for FIGURES: when its
+	// Model is set, a figure is embedded from its IMAGE instead of its description.
+	// nomic-embed-vision-v1.5 shares nomic-embed-text's space, so image figures stay
+	// searchable by the same text query — requires EmbedModel to be nomic-embed-text.
+	ImageEmbed ImageEmbedConfig `json:"image_embed,omitempty"`
 
 	// Ignore is this config's default exclude globs (project-scoped — it does not
 	// affect other projects' configs). Merged with a built-in default (dot-dirs,
@@ -92,6 +97,14 @@ func (r *Root) UnmarshalJSON(b []byte) error {
 	}
 	type raw Root
 	return json.Unmarshal(b, (*raw)(r))
+}
+
+// ImageEmbedConfig configures the optional figure IMAGE embedder (see
+// Config.ImageEmbed). Model empty → disabled (figures embed their description).
+type ImageEmbedConfig struct {
+	Model  string `json:"model,omitempty"`   // e.g. nomic-embed-vision-v1.5; empty → disabled
+	URL    string `json:"url,omitempty"`     // full endpoint; empty → Nomic Atlas image API
+	APIKey string `json:"api_key,omitempty"` // empty → reuse the main api_key
 }
 
 // OCRConfig selects and tunes the cheap first-pass OCR engine. The cascade tries

@@ -20,11 +20,12 @@ import (
 //     isolated. This is the DAEMON's multi-index layout — and the substrate for
 //     branch storage (a branch is a scoped store layered over a parent).
 type Registry struct {
-	home       Home   // single-home mode
-	scopedRoot string // scoped mode: indexes at <scopedRoot>/indexes/<name>; "" = single-home
-	mu         sync.Mutex
-	stores     map[string]*Store
-	embedder   *Embedder
+	home          Home   // single-home mode
+	scopedRoot    string // scoped mode: indexes at <scopedRoot>/indexes/<name>; "" = single-home
+	mu            sync.Mutex
+	stores        map[string]*Store
+	embedder      *Embedder
+	imageEmbedder ImageEmbedder
 }
 
 // OpenRegistry prepares a single-home registry (all indexes as sqlite siblings
@@ -57,6 +58,17 @@ func (r *Registry) SetEmbedder(e *Embedder) {
 	r.embedder = e
 	for _, s := range r.stores {
 		s.SetEmbedder(e)
+	}
+}
+
+// SetImageEmbedder makes every index (already open or opened later) embed FIGURE
+// IMAGES on ingest (else figures embed their description). nil disables it.
+func (r *Registry) SetImageEmbedder(ie ImageEmbedder) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.imageEmbedder = ie
+	for _, s := range r.stores {
+		s.SetImageEmbedder(ie)
 	}
 }
 
@@ -96,6 +108,9 @@ func (r *Registry) getLocked(name string) (*Store, error) {
 	}
 	if r.embedder != nil {
 		s.SetEmbedder(r.embedder)
+	}
+	if r.imageEmbedder != nil {
+		s.SetImageEmbedder(r.imageEmbedder)
 	}
 	r.stores[name] = s
 	return s, nil

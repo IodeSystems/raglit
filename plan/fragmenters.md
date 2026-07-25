@@ -31,14 +31,22 @@ Status: SHIPPED 2026-07-24 (§1,2,4,5 + §3a inline figures + §3b media rows).
   carries an image) is opt-in: `OCRConfig.DescribeFigures` (default off), the open
   §6.1 question.
 - **Figure embeddings + search (part of §3c).** Each figure gets a `media_vectors`
-  row: the IMAGE via an optional `ImageEmbedder` (`Store.SetImageEmbedder`) when
-  one is configured, else the DESCRIPTION via the text embedder — the description
-  path is in the SAME space as fragments, so a text query can match it.
-  `Store.SearchFigures` ranks figures by cosine (text-space only; image-space is
-  stored but awaits an image-query tower). Exposed as the `search_figures` MCP tool
-  (+ `/search-figures` daemon endpoint) and attached to `get_document`
-  (`DocContent.Figures`). A distinct multimodal/second-space FUSED search is still
-  iceboxed.
+  row: the IMAGE via an `ImageEmbedder` when one is configured, else the
+  DESCRIPTION via the text embedder. A `space` tag records comparability — `text`
+  (description), `image-aligned` (image in the text query's joint space), `image`
+  (image in a different space, dormant). `Store.SearchFigures` ranks by cosine over
+  the query-comparable spaces (`text` + `image-aligned`). Exposed as the
+  `search_figures` MCP tool (+ `/search-figures` daemon endpoint) and attached to
+  `get_document` (`DocContent.Figures`).
+- **nomic-vision image embedder (imageembed.go).** `NewNomicVisionEmbedder`
+  (`EmbedImage` over HTTP multipart, `Aligned()=true`) is the shipped
+  `ImageEmbedder`. nomic-embed-vision-v1.5 shares nomic-embed-text's space, so an
+  image figure is directly comparable to a text query embedded by the (default)
+  nomic-text — no separate query tower. Config-driven (`Config.ImageEmbed` +
+  `raglit init` step), wired through `Registry.SetImageEmbedder` on daemon / serve /
+  index. Requires `embed_model` to be the nomic-text pair for alignment to hold.
+  With SigLIP-class models (unaligned) the image vectors are stored but need an
+  image-query path — still iceboxed.
 - **Recipe (§5).** Pool recipe gains `frag=overlap,w,s,f|fig=<ver>`;
   `documents.frag_recipe` covers fragmentation alone.
 - **Cleanup.** The dead LLM-windowing helpers (`WindowCharsFor*`, `textWindows`)

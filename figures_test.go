@@ -51,36 +51,45 @@ func TestSearchFigures_DescriptionEmbeddings(t *testing.T) {
 }
 
 // stubImageEmbedder returns a fixed vector for any image.
-type stubImageEmbedder struct{ called int }
+type stubImageEmbedder struct {
+	called  int
+	aligned bool
+}
 
 func (e *stubImageEmbedder) EmbedImage(_ context.Context, _ string, _ []byte) ([]float32, error) {
 	e.called++
 	return []float32{1, 0, 0}, nil
 }
+func (e *stubImageEmbedder) Aligned() bool { return e.aligned }
 
 // TestEmbedMedia_ImageEmbedderWins: when an image embedder is configured and the
-// crop is on disk, the figure is embedded from the IMAGE (space "image"), not the
-// description.
+// crop is on disk, the figure is embedded from the IMAGE, not the description. An
+// unaligned embedder tags space "image"; an aligned one "image-aligned".
 func TestEmbedMedia_ImageEmbedderWins(t *testing.T) {
-	s := openMem(t)
-	s.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
-	ie := &stubImageEmbedder{}
-	s.SetImageEmbedder(ie)
+	for _, tc := range []struct {
+		aligned   bool
+		wantSpace string
+	}{{false, "image"}, {true, "image-aligned"}} {
+		s := openMem(t)
+		s.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
+		ie := &stubImageEmbedder{aligned: tc.aligned}
+		s.SetImageEmbedder(ie)
 
-	f, err := os.CreateTemp(t.TempDir(), "fig-*.png")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.WriteString("PNGDATA")
-	f.Close()
+		f, err := os.CreateTemp(t.TempDir(), "fig-*.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.WriteString("PNGDATA")
+		f.Close()
 
-	media := []stagedMedia{{page: 1, kind: "figure", description: "a billing table", imagePath: f.Name()}}
-	s.embedMedia(context.Background(), media)
-	if ie.called != 1 {
-		t.Fatalf("image embedder called %d times, want 1", ie.called)
-	}
-	if media[0].space != "image" || len(media[0].vec) == 0 {
-		t.Fatalf("media embedding = space %q, vec len %d; want image", media[0].space, len(media[0].vec))
+		media := []stagedMedia{{page: 1, kind: "figure", description: "a billing table", imagePath: f.Name()}}
+		s.embedMedia(context.Background(), media)
+		if ie.called != 1 {
+			t.Fatalf("aligned=%v: image embedder called %d times, want 1", tc.aligned, ie.called)
+		}
+		if media[0].space != tc.wantSpace || len(media[0].vec) == 0 {
+			t.Fatalf("aligned=%v: media space = %q (vec %d), want %q", tc.aligned, media[0].space, len(media[0].vec), tc.wantSpace)
+		}
 	}
 }
 

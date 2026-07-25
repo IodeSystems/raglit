@@ -60,13 +60,29 @@ func parseFigureMarkers(text string) []string {
 	return out
 }
 
-// ImageEmbedder embeds a figure IMAGE into a vector (a CLIP-style tower). It is
-// the seam for real image embeddings; raglit ships none by default (its Embedder
-// is text-only), so figures fall back to embedding their description. An image
-// vector lives in a DIFFERENT space from the text query, so it is stored but not
-// used by the text-query figure search.
+// Media-vector space tags: which query a stored figure vector is comparable to.
+//   - spaceText: the description, embedded by the text embedder — comparable to a
+//     text query (the same space as fragment vectors).
+//   - spaceImageAligned: the image, embedded by a model whose JOINT space the text
+//     query embedder shares (nomic-vision ↔ nomic-text) — also text-query-comparable.
+//   - spaceImage: the image, embedded in a DIFFERENT space (e.g. SigLIP) — stored
+//     but NOT comparable to a text query; it awaits an image-query / paired-tower
+//     path, so the text-query figure search skips it.
+const (
+	spaceText         = "text"
+	spaceImageAligned = "image-aligned"
+	spaceImage        = "image"
+)
+
+// ImageEmbedder embeds a figure IMAGE into a vector (a CLIP-style tower). raglit
+// ships nomic-vision (imageembed.go); with none configured, figures fall back to
+// embedding their description with the text embedder.
 type ImageEmbedder interface {
 	EmbedImage(ctx context.Context, mime string, data []byte) ([]float32, error)
+	// Aligned reports whether the image vectors share the text query embedder's
+	// space, so a text query can cosine against them (true for nomic-vision paired
+	// with nomic-text). False → image vectors are stored but not text-searchable.
+	Aligned() bool
 }
 
 // embedMedia fills each figure's embedding, in place, before the atomic swap:
@@ -86,7 +102,12 @@ func (s *Store) embedMedia(ctx context.Context, media []stagedMedia) {
 		if s.imageEmbedder != nil && m.imagePath != "" {
 			if data, err := os.ReadFile(m.imagePath); err == nil {
 				if v, err := s.imageEmbedder.EmbedImage(ctx, mimeForExt(filepathExt(m.imagePath)), data); err == nil && len(v) > 0 {
-					m.vec, m.space = v, "image"
+					m.vec = v
+					if s.imageEmbedder.Aligned() {
+						m.space = spaceImageAligned
+					} else {
+						m.space = spaceImage
+					}
 					continue
 				}
 			}
@@ -108,7 +129,7 @@ func (s *Store) embedMedia(ctx context.Context, media []stagedMedia) {
 	}
 	for j, i := range descIdx {
 		if j < len(vecs) && len(vecs[j]) > 0 {
-			media[i].vec, media[i].space = vecs[j], "text"
+			media[i].vec, media[i].space = vecs[j], spaceText
 		}
 	}
 }
@@ -127,9 +148,10 @@ type FigureHit struct {
 }
 
 // SearchFigures ranks figures by cosine similarity of the query to each figure's
-// embedding, best first. Only figures embedded in the TEXT space (their
-// description) are comparable to a text query, so image-space embeddings are
-// skipped here (they await an image-query path). Requires a text embedder.
+// embedding, best first. Only figures whose vector is comparable to a TEXT query
+// are considered — the description embedding, and an aligned image embedding
+// (nomic-vision, whose space nomic-text shares). Non-aligned image embeddings are
+// skipped (they await an image-query path). Requires a text embedder.
 func (s *Store) SearchFigures(ctx context.Context, query string, limit int) ([]FigureHit, error) {
 	if s.embedder == nil {
 		return nil, fmt.Errorf("raglit: SearchFigures needs an embedder (SetEmbedder)")
@@ -150,7 +172,7 @@ func (s *Store) SearchFigures(ctx context.Context, query string, limit int) ([]F
 		 FROM media_vectors mv
 		 JOIN media m ON m.id = mv.media_id
 		 JOIN documents d ON d.id = m.doc_id
-		 WHERE mv.space = 'text'`)
+		 WHERE mv.space IN ('text', 'image-aligned')`)
 	if err != nil {
 		return nil, fmt.Errorf("raglit: searchfigures: %w", err)
 	}

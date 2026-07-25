@@ -71,6 +71,10 @@ func runHttpd(subcmd string, args []string) error {
 	} else if *embed {
 		return lf.requireEmbed()
 	}
+	// Optional figure IMAGE embedder (nomic-vision); nil → figures embed descriptions.
+	if ie := buildImageEmbedder(cfgHome); ie != nil {
+		reg.SetImageEmbedder(ie)
+	}
 	// Shared document pool: ingest work (extract/OCR/segment/embed) is cached by
 	// (recipe, file hash) under the daemon's storage root, so the same file — in
 	// ANY index, or on a retry — is reused instead of reprocessed.

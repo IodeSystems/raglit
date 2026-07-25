@@ -201,6 +201,9 @@ func runIndex(args []string) error {
 			return err
 		}
 		store.SetEmbedder(lf.embedder())
+		if ie := buildImageEmbedder(homeOf()); ie != nil {
+			store.SetImageEmbedder(ie)
+		}
 	}
 
 	// Local index goes through the SAME pipeline as URL ingest: enqueue each

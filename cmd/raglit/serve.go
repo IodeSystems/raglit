@@ -57,6 +57,9 @@ func runServe(args []string) error {
 		}
 		reg.SetEmbedder(lf.embedder())
 	}
+	if ie := buildImageEmbedder(homeOf()); ie != nil {
+		reg.SetImageEmbedder(ie)
+	}
 
 	// One background loop drains every index's queue round-robin (per-index
 	// workers cached). A configured model gives PDF OCR + LLM text segmentation.
