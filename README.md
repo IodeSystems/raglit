@@ -44,19 +44,35 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
 `.mcp.json` block) plus the ingest/search commands for reference.
 
 > No endpoint handy? Every offline piece works without one:
-> `raglit demo` runs a self-contained tour, and text ingest falls back to a
-> dependency-free splitter when no model is configured.
+> `raglit demo` runs a self-contained tour, and text/code ingest needs no model at
+> all — the deterministic fragmenter runs fully offline (only OCR and figure
+> description need a vision model).
 
 ## What it does
 
 - **Ingest** folders, files, or URLs (`file://`, `http(s)://`) — lazily (queued)
   or with `--now`. Each item runs a staged pipeline: a scanned page goes
-  img→paged-text (OCR cascade: cheap `tesseract`→gibberish-gate→vision VLM) then
-  paged-text→fragments; a code/text file goes straight to fragments (LLM-segmented
-  into coherent ~500-word units — functions bound with their docs — or a
-  dependency-free offline split when no model is set); a born-digital PDF page
-  uses its text layer, no OCR. Every stage and its engine is recorded per job.
-  **Indexing work is deduped**: the daemon caches each processed document in a
+  img→paged-text (OCR cascade: cheap `tesseract`→gibberish-gate→vision VLM); a
+  born-digital PDF page uses its text layer, no OCR. Then **one per-document
+  fragmenter choice**: text, code, and cheap-OCR'd pages are split by a
+  **deterministic overlapping-window** fragmenter (no model — windows snapped to
+  line/paragraph edges, each fragment carrying its source offsets); a document any
+  page of which the **VLM transcribed** is **LLM-segmented** as a whole (coherent
+  ~500-word units — functions bound with their docs — an open fragment carried
+  across page boundaries). The choice is stored per document (`frag_mode` =
+  `text-overlap` | `llm-seg`, shown in `list_documents`); window / stride / floor
+  are config-tunable and capped by the embed model's probed input limit. Every
+  stage and its engine is recorded per job.
+- **Figures explained into the index** — while the VLM transcribes a scanned page
+  it also **describes each figure/diagram/chart inline** (`[FIGURE: …]`), so a
+  diagram becomes searchable text with no extra infrastructure. Each figure is also
+  recorded as a media object anchored to the fragment holding it and embedded on
+  its own — from the **image** (via `nomic-embed-vision`, which shares
+  `nomic-embed-text`'s space so a text query still matches) or, with no image
+  embedder, from its **description**. `search_figures` ranks figures directly, and
+  `get_document` returns a document's figures alongside its text. (Escalating a
+  born-digital page that carries a figure to the VLM is opt-in: `ocr.describe_figures`.)
+- **Indexing work is deduped**: the daemon caches each processed document in a
   shared pool keyed by `(recipe, file-hash)` — where *recipe* is the models +
   config that shape the output — so the same file, in ANY index or on a retry,
   is reused (fragments + vectors + page images copied in, mode `pooled`) instead
@@ -69,31 +85,36 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   it. `--pool-max` (entry cap) and `--pool-ttl` (evict unused; off by default) are
   optional; `POST /api/pool/gc` runs it on demand and `GET /api/pool` reports size.
 - **Search** — BM25 (`--mode bm25`, default), vectors (`--mode vec`), or hybrid
-  RRF (`--mode hybrid`). Results are precise citations: document → page →
-  fragment.
+  RRF (`--mode hybrid`), optionally scoped to an index and/or a **path subtree**
+  (`--path /repo/src/api/` — a prefix match, so hierarchical corpora don't need a
+  separate index per directory). Results are precise citations: document → page →
+  fragment. `search_figures` does the same over described figures.
 - **Serve** — expose the index(es) to any MCP client (Claude Desktop, agentkit):
 
   ```sh
   raglit serve
   ```
 
-  Tools: `search`, `list_documents`, `get_document`, `ingest`, `index_status`,
-  `list_indexes`, `ocr`. `raglit init` prints a ready-to-paste MCP config (Claude
+  Tools: `search`, `search_figures`, `list_documents`, `get_document`, `ingest`,
+  `index_status`, `list_indexes`, `ocr`. `search` / `search_figures` take an
+  optional `path` prefix. `raglit init` prints a ready-to-paste MCP config (Claude
   Code + generic `.mcp.json`) pinned to this project's `.raglit/`.
 
   An agent that needs a whole document's text: `search` to find a hit (or
   `list_documents` with a `name` filter to find it by filename), then
   `get_document` with that path (or a unique filename substring) to read the full
-  indexed text — per-page plus a joined blob, with optional page range and a
-  `max_chars` cap that bounds the whole response (pages included). `ocr` is the other read path: it extracts text from a file/URL
-  you supply directly (not from the index).
+  indexed text — per-page plus a joined blob (overlapping fragments reassembled
+  exactly once via their offsets), plus the document's figures, with optional page
+  range and a `max_chars` cap that bounds the whole response (pages included).
+  `ocr` is the other read path: it extracts text from a file/URL you supply
+  directly (not from the index).
 
 ## Commands
 
 ```
 raglit init                          configure endpoint + models (wizard)
 raglit ingest TARGET... [--now]      queue folders / files / URLs (lazy; --now drains)
-raglit search "query" [--mode M]     M = bm25 | vec | hybrid
+raglit search "query" [--mode M] [--path P]  M = bm25 | vec | hybrid; P = path-prefix scope
 raglit status                        documents/fragments, queue progress, rate, ETAs
 raglit serve                         stdio MCP server
 raglit daemon                        HTTP API + workers + review UI at /
@@ -234,11 +255,12 @@ raglit review --addr 127.0.0.1:7420        # then open http://127.0.0.1:7420/
   failed) + throughput, auto-refreshing.
 - **Job control** — the full ingest queue as a table; **retry** an errored or
   done job (requeues it) and **cancel** a pending one. Each job shows a **mode**
-  badge (`llm` = LLM-segmented, `offline` = dependency-free blank-line split) and
-  expands to its **pipeline stages** — the series of tasks it ran: fetch →
-  extract → [ocr] → segment → [embed] → commit, each tagged with the engine that
-  handled it (text-layer, pandoc, tesseract, vision, llm, offline…), so a failure
-  shows exactly which stage broke.
+  badge (`text-overlap` = deterministic windows, `llm-seg` = a VLM-transcribed doc
+  segmented by the model, `pooled`/`unchanged` = reused/skipped) and expands to its
+  **pipeline stages** — the series of tasks it ran: fetch → extract → [ocr] →
+  segment → [embed] → commit, each tagged with the engine that handled it
+  (text-layer, pandoc, tesseract, vision, llm, text-overlap…), so a failure shows
+  exactly which stage broke.
 - **OCR review** — pick a document to see its pages: the saved page image beside
   the indexed text, an engine badge per page (**text** = born-digital/plain,
   **vision** = the VLM OCR'd it), and a **Re-OCR (cascade)** button that reruns
@@ -262,12 +284,17 @@ watches via `Opts.ExtraArgs {"index": ...}` — all by default). raglit's
 - **SQLite FTS5** gives BM25 + the document:page:fragment index in one pure-Go
   dependency (`modernc.org/sqlite`, no CGo). Vectors are stored as BLOBs, cosine
   brute-forced (fine for a local corpus).
-- **LLM segmentation** (via [agentkit](https://github.com/iodesystems/agentkit))
-  turns pages/text into coherent fragments with a schema-validated fix-loop and
-  a safe fallback; an open fragment is carried across page/window boundaries and
-  embedded only once it's resolved.
+- **Two fragmenters, chosen by whether a model is already in the loop.** Text,
+  code, and cheap-OCR'd pages take a deterministic overlapping-window splitter with
+  exact source offsets — no model, and overlap gives every hit its surrounding
+  context (get_document reassembles the document once despite the overlap). A page
+  a VLM transcribed is instead **LLM-segmented** (via
+  [agentkit](https://github.com/iodesystems/agentkit)) with a schema-validated
+  fix-loop and a safe fallback, an open fragment carried across boundaries. Figures
+  the VLM sees are described inline and embedded (image or description) for
+  `search_figures`.
 - **Multi-index** — one home holds several named indexes; `serve` searches all
-  (RRF-merged, tagged) or a scoped subset.
+  (RRF-merged, tagged), a scoped subset, or a path subtree.
 
 ## Home layout
 
