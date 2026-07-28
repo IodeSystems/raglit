@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/iodesystems/raglit"
@@ -188,7 +189,9 @@ func runStatus(args []string) error {
 	fs.Parse(args)
 	dURL, ns, err := client(homeOf, fs.Lookup("db").Value.String() != "")
 	if err != nil {
-		return err
+		// No project to resolve. Show what EXISTS instead of only naming a file to
+		// edit — this is the command people run to find out where they are.
+		return printIndexDirectory(err)
 	}
 	if dURL != "" {
 		return daemonStatusPrint(dURL, nsReadSelector(ns, projectShared(homeOf), fs.Lookup("index").Value.String()))
@@ -227,4 +230,80 @@ func renderStatus(st raglit.Status) {
 		}
 		fmt.Printf("  %-8s #%d %s  (%s)\n", it.State, it.ID, it.URL, eta)
 	}
+}
+
+// printIndexDirectory is what `raglit status` shows when it has no project to
+// resolve — i.e. run anywhere outside a configured project.
+//
+// Refusing with "no project name — set project in ..." is correct and useless:
+// it names a file to edit without saying what exists, so the indexes the daemon
+// is holding, and their paths, are undiscoverable from the command whose whole
+// job is to report state. A tool that knows the answer should say it.
+func printIndexDirectory(reason error) error {
+	root := raglit.DefaultRoot()
+	fmt.Printf("not in a project — no index selected.\n")
+	if reason != nil {
+		fmt.Printf("  (%s)\n", firstSentence(reason.Error()))
+	}
+	fmt.Printf("\nstorage root: %s\n", root)
+
+	// daemon.json records where a daemon WAS; it survives a kill, so believing it
+	// would report a dead daemon as running. Probe.
+	if st, recorded := readDaemonState(root); !recorded {
+		fmt.Println("daemon:       not running")
+	} else if base := "http://" + st.Addr; daemonHealthy(base) {
+		fmt.Printf("daemon:       %s  (pid %d, since %s)\n", base, st.PID, st.StartedAt)
+	} else {
+		fmt.Printf("daemon:       not running  (stale %s records pid %d at %s)\n",
+			filepath.Base(daemonStatePath(root)), st.PID, st.Addr)
+	}
+
+	// The indexes themselves, from disk, so this works with the daemon down.
+	dir := filepath.Join(root, "indexes")
+	ents, err := os.ReadDir(dir)
+	if err != nil || len(ents) == 0 {
+		fmt.Printf("\nno indexes under %s\n", dir)
+		fmt.Println("`raglit init` in a project directory creates one.")
+		return nil
+	}
+	fmt.Printf("\n%-34s %-9s %-11s %s\n", "INDEX", "DOCS", "FRAGMENTS", "PATH")
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		p := filepath.Join(dir, name, "index.sqlite")
+		docs, frags := indexCounts(p)
+		fmt.Printf("%-34s %-9s %-11s %s\n", name, docs, frags, p)
+	}
+	fmt.Println("\nAn index is named <project>__<index>. To act on one:")
+	fmt.Println("  cd into the project (its .raglit/config.json names it), or")
+	fmt.Println("  raglit status --project <project> [--index <index>]")
+	return nil
+}
+
+// indexCounts reads an index's totals directly, so the directory listing works
+// whether or not the daemon is up. Unreadable is reported as "?" rather than 0 —
+// zero is a claim about the index, "?" is a claim about our access to it.
+func indexCounts(path string) (string, string) {
+	s, err := raglit.Open(path)
+	if err != nil {
+		return "?", "?"
+	}
+	defer s.Close()
+	st, err := s.IndexStatus()
+	if err != nil {
+		return "?", "?"
+	}
+	return fmt.Sprint(st.Documents), fmt.Sprint(st.Fragments)
+}
+
+func firstSentence(s string) string {
+	if i := strings.Index(s, ". "); i > 0 {
+		return s[:i+1]
+	}
+	return s
 }
