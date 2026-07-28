@@ -14,8 +14,9 @@ import (
 
 // expandIngestTargets turns ingest args into a flat list of ingestable targets:
 // a URL (file://, http(s)://) passes through; a local directory is walked for
-// text/PDF files; a local file becomes its absolute path. So `ingest ./repo`
-// queues every source file under repo.
+// every file raglit can read (ClassifyDoc decides); a local file becomes its
+// absolute path and is queued whatever it is. So `ingest ./repo` queues every
+// readable file under repo.
 func expandIngestTargets(args []string) ([]string, error) {
 	var out []string
 	for _, a := range args {
@@ -32,7 +33,13 @@ func expandIngestTargets(args []string) ([]string, error) {
 				if err != nil {
 					return err
 				}
-				if !d.IsDir() && (isText(p) || isPDF(p)) {
+				// ClassifyDoc is the single authority on what raglit can read.
+				// This walk used to test isText||isPDF, which silently skipped
+				// every office format and every image the extractor handles — a
+				// directory of .docx or scanned .tif enqueued nothing and looked
+				// like it had been covered. A format added to the extractor must
+				// become discoverable in the same change, not the next one.
+				if !d.IsDir() && raglit.ClassifyDoc(p, "") != raglit.KindUnknown {
 					abs, _ := filepath.Abs(p)
 					out = append(out, abs)
 				}
