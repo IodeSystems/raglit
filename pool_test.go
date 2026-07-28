@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -183,5 +184,39 @@ func TestPool_GCCountsAndFreesImageBytes(t *testing.T) {
 	}
 	if after, _ := pool.Stats(); after.Bytes != 0 {
 		t.Fatalf("after GC Bytes=%d, want 0", after.Bytes)
+	}
+}
+
+// The pool is the CHEAP reuse path: a pooled document is replayed without OCR or
+// segmentation. Anything the fragmenter worked out therefore has to survive the
+// round trip, or every reuse silently reintroduces the bug — and because the pool
+// is shared across projects, losing it here loses it everywhere.
+func TestPooledFragmentKeepsPageBoundaries(t *testing.T) {
+	in := PooledDoc{Title: "t", Fragments: []PooledFragment{{
+		Page: 3, Ord: 0, Text: "aaa bbb ccc",
+		PageSpans: []PageSpan{{Off: 0, Page: 3}, {Off: 4, Page: 4}, {Off: 8, Page: 5}},
+	}}}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out PooledDoc
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.Fragments[0].PageSpans
+	if len(got) != 3 {
+		t.Fatalf("boundaries lost through the pool: %+v", got)
+	}
+	if got[2] != (PageSpan{Off: 8, Page: 5}) {
+		t.Errorf("last boundary wrong: %+v", got[2])
+	}
+	// A payload pooled before the field existed must read back as nil, not error.
+	var legacy PooledDoc
+	if err := json.Unmarshal([]byte(`{"title":"t","fragments":[{"page":1,"ord":0,"text":"x"}]}`), &legacy); err != nil {
+		t.Fatalf("old pool payloads must still load: %v", err)
+	}
+	if legacy.Fragments[0].PageSpans != nil {
+		t.Error("a pre-field payload should have no boundaries")
 	}
 }

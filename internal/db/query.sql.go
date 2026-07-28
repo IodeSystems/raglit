@@ -130,18 +130,19 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) (int64, 
 }
 
 const exportFragments = `-- name: ExportFragments :many
-SELECT f.page, f.ord, f.text, f.start_off, f.end_off, fv.vec
+SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, fv.vec
 FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 WHERE f.doc_id = ? ORDER BY f.page, f.ord
 `
 
 type ExportFragmentsRow struct {
-	Page     int64  `db:"page" derived:"fragments.page" json:"page"`
-	Ord      int64  `db:"ord" derived:"fragments.ord" json:"ord"`
-	Text     string `db:"text" derived:"fragments.text" json:"text"`
-	StartOff int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
-	EndOff   int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
-	Vec      []byte `db:"vec" derived:"fragment_vectors.vec" json:"vec"`
+	Page      int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord       int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text      string `db:"text" derived:"fragments.text" json:"text"`
+	StartOff  int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
+	EndOff    int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
+	PageSpans string `db:"page_spans" derived:"fragments.page_spans" json:"page_spans"`
+	Vec       []byte `db:"vec" derived:"fragment_vectors.vec" json:"vec"`
 }
 
 func (q *Queries) ExportFragments(ctx context.Context, docID int64) ([]ExportFragmentsRow, error) {
@@ -159,6 +160,7 @@ func (q *Queries) ExportFragments(ctx context.Context, docID int64) ([]ExportFra
 			&i.Text,
 			&i.StartOff,
 			&i.EndOff,
+			&i.PageSpans,
 			&i.Vec,
 		); err != nil {
 			return nil, err

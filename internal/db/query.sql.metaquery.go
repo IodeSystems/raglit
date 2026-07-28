@@ -208,7 +208,7 @@ var MetaExportFragments = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT f.page, f.ord, f.text, f.start_off, f.end_off, fv.vec
+	SQL: `SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, fv.vec
 FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 WHERE f.doc_id = ? ORDER BY f.page, f.ord`,
 	Columns: []metaquery.Column{
@@ -217,6 +217,7 @@ WHERE f.doc_id = ? ORDER BY f.page, f.ord`,
 		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "fragments"},
 		{Name: "start_off", OriginalName: "start_off", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
 		{Name: "end_off", OriginalName: "end_off", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "fragments"},
+		{Name: "page_spans", OriginalName: "page_spans", GoType: "string", DBType: "TEXT", NotNull: true, Table: "fragments"},
 		{Name: "vec", OriginalName: "vec", GoType: "[]byte", DBType: "BLOB", Table: "fragment_vectors"},
 	},
 	Args: []metaquery.Arg{
@@ -235,19 +236,21 @@ func WrapExportFragments(docID int64) *metaquery.Builder {
 
 // ExportFragmentsCols gives typed, name-safe access to ExportFragments's output columns.
 var ExportFragmentsCols = struct {
-	Page     metaquery.IntCol
-	Ord      metaquery.IntCol
-	Text     metaquery.TextCol
-	StartOff metaquery.IntCol
-	EndOff   metaquery.IntCol
-	Vec      metaquery.BytesCol
+	Page      metaquery.IntCol
+	Ord       metaquery.IntCol
+	Text      metaquery.TextCol
+	StartOff  metaquery.IntCol
+	EndOff    metaquery.IntCol
+	PageSpans metaquery.TextCol
+	Vec       metaquery.BytesCol
 }{
-	Page:     metaquery.NewIntCol("page"),
-	Ord:      metaquery.NewIntCol("ord"),
-	Text:     metaquery.NewTextCol("text"),
-	StartOff: metaquery.NewIntCol("start_off"),
-	EndOff:   metaquery.NewIntCol("end_off"),
-	Vec:      metaquery.NewBytesCol("vec"),
+	Page:      metaquery.NewIntCol("page"),
+	Ord:       metaquery.NewIntCol("ord"),
+	Text:      metaquery.NewTextCol("text"),
+	StartOff:  metaquery.NewIntCol("start_off"),
+	EndOff:    metaquery.NewIntCol("end_off"),
+	PageSpans: metaquery.NewTextCol("page_spans"),
+	Vec:       metaquery.NewBytesCol("vec"),
 }
 
 var MetaFailJob = metaquery.Query{

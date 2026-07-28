@@ -142,7 +142,7 @@ UPDATE documents SET frag_mode = ?, frag_recipe = ? WHERE id = ?;
 SELECT frag_mode, frag_recipe FROM documents WHERE id = ?;
 
 -- name: ExportFragments :many
-SELECT f.page, f.ord, f.text, f.start_off, f.end_off, fv.vec
+SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, fv.vec
 FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 WHERE f.doc_id = ? ORDER BY f.page, f.ord;
 

@@ -27,12 +27,20 @@ import (
 // PooledFragment is one cached fragment: its text, source span, and (optional)
 // vector.
 type PooledFragment struct {
-	Page     int       `json:"page"`
-	Ord      int       `json:"ord"`
-	StartOff int       `json:"start_off,omitempty"`
-	EndOff   int       `json:"end_off,omitempty"`
-	Text     string    `json:"text"`
-	Vec      []float32 `json:"vec,omitempty"`
+	Page     int `json:"page"`
+	Ord      int `json:"ord"`
+	StartOff int `json:"start_off,omitempty"`
+	EndOff   int `json:"end_off,omitempty"`
+	// PageSpans is where each page begins inside Text for a fragment that spans
+	// pages. Carried through the pool because this is the CHEAP reuse path: a
+	// pooled document is replayed without OCR or segmentation, so anything the
+	// fragmenter worked out has to survive here or it is lost on every reuse —
+	// and a pooled doc is shared across projects, so losing it here loses it
+	// everywhere. Omitted when the fragment lies on one page; absent in payloads
+	// pooled before the field existed, which read back as nil.
+	PageSpans []PageSpan `json:"page_spans,omitempty"`
+	Text      string     `json:"text"`
+	Vec       []float32  `json:"vec,omitempty"`
 }
 
 // PooledPage is one cached page's provenance. Image is an absolute source path on
@@ -333,7 +341,8 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 		return PooledDoc{}, err
 	}
 	for _, r := range frows {
-		pf := PooledFragment{Page: int(r.Page), Ord: int(r.Ord), StartOff: int(r.StartOff), EndOff: int(r.EndOff), Text: r.Text}
+		pf := PooledFragment{Page: int(r.Page), Ord: int(r.Ord), StartOff: int(r.StartOff),
+			EndOff: int(r.EndOff), PageSpans: DecodePageSpans(r.PageSpans), Text: r.Text}
 		if len(r.Vec) > 0 {
 			pf.Vec = decodeVec(r.Vec)
 		}
@@ -356,7 +365,8 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 	frags := make([]stagedFrag, len(doc.Fragments))
 	vecs := map[int][]float32{}
 	for i, f := range doc.Fragments {
-		frags[i] = stagedFrag{page: f.Page, ord: f.Ord, startOff: f.StartOff, endOff: f.EndOff, text: f.Text}
+		frags[i] = stagedFrag{page: f.Page, ord: f.Ord, startOff: f.StartOff, endOff: f.EndOff,
+			text: f.Text, pageSpans: f.PageSpans}
 		if len(f.Vec) > 0 {
 			vecs[i] = f.Vec
 		}
