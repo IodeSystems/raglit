@@ -65,7 +65,12 @@ func fragmentsToolDef() llm.ToolDef {
 type Segmenter struct {
 	Client     Chatter
 	MaxRetries int // JSON fix-loop attempts after the first try (default 2)
-	validator  *agent.SchemaValidator
+
+	// MaxTokens caps one unit's segmentation; 0 → maxTokensFor(the unit), i.e.
+	// scaled to the input, since the answer is the input re-emitted. See chat.go.
+	MaxTokens int
+
+	validator *agent.SchemaValidator
 }
 
 // NewSegmenter builds a Segmenter over a chat client (an *llm.Client).
@@ -89,14 +94,38 @@ func (sg *Segmenter) SegmentText(ctx context.Context, text, openText string) (Se
 // used when the model never yields valid JSON ("" → use its last raw output).
 func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback string) (SegResult, error) {
 	msgs := []llm.Message{{Role: "user", Parts: parts}}
+	// The answer is the prompt's content re-emitted, so the prompt sizes the cap.
+	maxTok := sg.MaxTokens
+	if maxTok <= 0 {
+		var in string
+		for _, p := range parts {
+			in += p.Text
+		}
+		maxTok = maxTokensFor(in)
+	}
 	var last string
 	var lastErr error
 	for attempt := 0; attempt <= sg.MaxRetries; attempt++ {
-		out, _, err := sg.Client.Chat(ctx, msgs, nil)
+		out, rep, err := collectStream(ctx, sg.Client, msgs, &llm.ChatOpts{MaxTokens: maxTok})
 		if err != nil {
 			return SegResult{}, err // infrastructure failure → propagate (job fails)
 		}
 		last = out
+		if rep != nil {
+			// A cut generation cannot hold complete JSON, so skip validation and
+			// say WHY in the re-prompt. Naming the repetition matters: the fix
+			// loop's only lever is the context, and at temperature 0 a retry that
+			// says nothing new reproduces the loop token for token.
+			lastErr = fmt.Errorf("you %s", rep)
+			msgs = append(msgs,
+				llm.Message{Role: "assistant", Content: out},
+				llm.Message{Role: "user", Content: fmt.Sprintf(
+					"Your answer was cut off: %v. Do NOT repeat any block of text. "+
+						"Emit each fragment once and output ONLY the JSON object %s.",
+					lastErr, `{"continues_previous":<bool>,"fragments":[{"text":"..."}]}`)},
+			)
+			continue
+		}
 		js := extractJSON(out)
 		if lastErr = sg.validator.ValidateArgs("emit_fragments", js); lastErr == nil {
 			var r SegResult

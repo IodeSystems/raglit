@@ -15,6 +15,21 @@ Status: SHIPPED 2026-07-24 (§1,2,4,5 + §3a inline figures + §3b media rows).
   stride 6000 / floor 3000, config-overridable, embed-limit-capped)`, boundaries
   snapped to line/paragraph edges, `[start_off,end_off)` on every fragment. Short
   doc → one fragment; sub-floor tail folds (no near-duplicate).
+- **Runaway bounds on the re-emission stages (`chat.go`).** MEASURED failure: one
+  4,112-token unit of a legal property description produced **162,000 tokens**
+  (~30 min GPU, ~40x the input) re-emitting an 85-char clause. Both stages that
+  ask the model to hand content back faithfully — OCR transcription and llm-seg —
+  now go through `Chatter.ChatStream` + `collectStream`, so agentkit's
+  `RepetitionGuard` sees the tokens arrive and CUTS the stream (closing the body
+  disconnects, and llama.cpp posts a real `SERVER_TASK_TYPE_CANCEL`). Every call
+  also carries `MaxTokens`: `maxTokensFor` = 2x the input estimate for the
+  segmenter (the answer IS the input re-emitted), `defaultOCRMaxTokens` = 8192
+  for a page image. The two bounds are independent — the guard catches exact
+  periodic repetition, the cap catches drift that never repeats byte-for-byte.
+  On a cut: the segmenter re-prompts NAMING the repetition (at `--temp 0` a
+  retry that says nothing new reproduces the loop token for token) and still
+  falls back to whole-unit-as-one-fragment; OCR ERRORS rather than index a page
+  with an unknown amount missing.
 - **Offsets fix get_document (§2).** `reassembleOffsets` (docget.go) reconstructs
   a text-overlap document exactly once from spans; llm-seg/synthetic (0/0) still
   join directly.

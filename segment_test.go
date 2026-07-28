@@ -14,13 +14,14 @@ type scriptChatter struct {
 	calls   int
 }
 
-func (c *scriptChatter) Chat(_ context.Context, _ []llm.Message, _ []llm.ToolDef) (string, []llm.ToolCall, error) {
+func (c *scriptChatter) ChatStream(_ context.Context, _ []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
 	r := ""
 	if c.calls < len(c.replies) {
 		r = c.replies[c.calls]
 	}
 	c.calls++
-	return r, nil, nil
+	return streamReply(r), nil
 }
 
 func TestSegmenter_ParsesValidJSON(t *testing.T) {

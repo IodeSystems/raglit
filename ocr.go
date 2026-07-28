@@ -14,12 +14,6 @@ import (
 const defaultOCRPrompt = "Transcribe all text visible in this document page image exactly as it appears, " +
 	"preserving reading order and line breaks. Output ONLY the transcription: no commentary, no headings you add yourself, no markdown code fences."
 
-// Chatter is the sliver of *llm.Client the OCR path needs — one multimodal
-// completion. An interface so the vision model can be stubbed in tests.
-type Chatter interface {
-	Chat(ctx context.Context, messages []llm.Message, tools []llm.ToolDef) (string, []llm.ToolCall, error)
-}
-
 // OCR transcribes page images to text. It runs a CASCADE: an optional cheap
 // first-pass engine (tesseract / paddleocr), gated by a gibberish detector, and
 // falls back to a vision-capable chat model (e.g. gemma-4-12b on bonsai, via
@@ -36,6 +30,10 @@ type OCR struct {
 	// TEXT quality); OFF by default because it flips such pages to the (costly)
 	// vision path and thus to llm-seg.
 	DescribeFigures bool
+
+	// MaxTokens caps one page transcription; 0 → defaultOCRMaxTokens. See
+	// chat.go for why an unbounded transcription is not a safe default.
+	MaxTokens int
 }
 
 // NewOCR wraps a Chatter (an *llm.Client) as an OCR transcriber. The cheap tier
@@ -89,9 +87,23 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 		llm.TextPart(prompt),
 		llm.ImageData(img.Mime, img.Data),
 	}}
-	text, _, err := o.Client.Chat(ctx, []llm.Message{msg}, nil)
+	maxTok := o.MaxTokens
+	if maxTok <= 0 {
+		maxTok = defaultOCRMaxTokens
+	}
+	text, rep, err := collectStream(ctx, o.Client, []llm.Message{msg},
+		&llm.ChatOpts{MaxTokens: maxTok})
 	if err != nil {
 		return "", fmt.Errorf("raglit: ocr page %d: %w", img.Page, err)
+	}
+	// A CUT transcription is not a short transcription — it is the page's text
+	// with an unknown amount missing. Indexing it would put a silently
+	// incomplete page into the index and mark the document done, which is worse
+	// than failing: nothing would ever revisit it. Fail loudly so the job
+	// retries or a human looks.
+	if rep != nil {
+		return "", fmt.Errorf("raglit: ocr page %d: the model %s — transcription cut, page NOT indexed",
+			img.Page, rep)
 	}
 	return strings.TrimSpace(text), nil
 }

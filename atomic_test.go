@@ -15,14 +15,15 @@ type failAfterChatter struct {
 	n       int
 }
 
-func (c *failAfterChatter) Chat(_ context.Context, _ []llm.Message, _ []llm.ToolDef) (string, []llm.ToolCall, error) {
+func (c *failAfterChatter) ChatStream(_ context.Context, _ []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
 	if c.n < len(c.replies) {
 		r := c.replies[c.n]
 		c.n++
-		return r, nil, nil
+		return streamReply(r), nil
 	}
 	c.n++
-	return "", nil, context.DeadlineExceeded // stand-in for "LLM unreachable"
+	return nil, context.DeadlineExceeded // stand-in for "LLM unreachable"
 }
 
 // okChatter always returns the same transcription — a stand-in vision OCR so the
@@ -30,8 +31,9 @@ func (c *failAfterChatter) Chat(_ context.Context, _ []llm.Message, _ []llm.Tool
 // happen); the searchable fragment text comes from the SEGMENTER, not this.
 type okChatter struct{ text string }
 
-func (c *okChatter) Chat(_ context.Context, _ []llm.Message, _ []llm.ToolDef) (string, []llm.ToolCall, error) {
-	return c.text, nil, nil
+func (c *okChatter) ChatStream(_ context.Context, _ []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	return streamReply(c.text), nil
 }
 
 // TestIngestUnits_FailedReingestKeepsPriorVersion is the torn-write regression:
