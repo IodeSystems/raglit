@@ -216,7 +216,7 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 			return 0, "", err
 		}
 		defer cleanup()
-		text, err := PandocText(ctx, path)
+		text, err := OfficeText(ctx, path)
 		if err != nil {
 			sl.Fail("extract", "pandoc", err)
 			return 0, "", err

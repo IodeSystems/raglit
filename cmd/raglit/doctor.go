@@ -95,6 +95,15 @@ func runDoctor(args []string) error {
 		fmt.Println("  · pandoc missing — office/markup formats won't be extracted (optional)")
 		fmt.Println("     install:  sudo apt-get install pandoc")
 	}
+	if raglit.HaveLegacyDoc() {
+		fmt.Println("  ✓ antiword/catdoc — legacy binary Word (.doc) → text")
+	} else {
+		fmt.Println("  · antiword missing — legacy .doc won't be extracted (optional)")
+		fmt.Println("     install:  sudo apt-get install antiword     (~200KB; catdoc also works)")
+		fmt.Println("     note:     LibreOffice can convert .doc too, but it is ~1GB, seconds")
+		fmt.Println("               per file, and serialises on one profile lock — antiword is")
+		fmt.Println("               the right size of tool for the job.")
+	}
 
 	// Verdict — which tiers are live.
 	fmt.Println("\nverdict:")

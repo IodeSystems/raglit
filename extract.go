@@ -34,6 +34,12 @@ var (
 		".webp": true, ".gif": true, ".bmp": true,
 	}
 	textExts = map[string]bool{".txt": true, ".md": true, ".markdown": true, ".text": true}
+	// legacyDocExts are pre-2007 binary Word documents. Deliberately NOT in
+	// officeExts: pandoc cannot read them — the format is an OLE2 compound file,
+	// not the zipped XML of .docx — and routing one there fails with a parse
+	// error that reads like a corrupt file rather than an unsupported format.
+	// Law firms still send .doc; the engagement letter in ardley-v-brannock is one.
+	legacyDocExts = map[string]bool{".doc": true}
 )
 
 // ClassifyDoc routes a source by extension first, then content-type. Extension
@@ -47,12 +53,13 @@ func ClassifyDoc(name, contentType string) DocKind {
 		return KindPDF
 	case imageExts[ext] || strings.HasPrefix(ct, "image/"):
 		return KindImage
-	case officeExts[ext]:
+	case officeExts[ext] || legacyDocExts[ext]:
 		return KindOffice
 	case textExts[ext] || strings.HasPrefix(ct, "text/plain") || strings.HasPrefix(ct, "text/markdown"):
 		return KindText
 	case strings.Contains(ct, "officedocument"), strings.Contains(ct, "opendocument"),
-		strings.Contains(ct, "epub"), strings.Contains(ct, "rtf"), strings.Contains(ct, "text/html"):
+		strings.Contains(ct, "epub"), strings.Contains(ct, "rtf"), strings.Contains(ct, "text/html"),
+		strings.Contains(ct, "application/msword"):
 		return KindOffice
 	}
 	return KindUnknown
@@ -65,6 +72,23 @@ func toolPath(bin string) string { p, _ := exec.LookPath(bin); return p }
 // so callers (and `raglit doctor`) can degrade gracefully.
 func HavePoppler() bool { return toolPath("pdftotext") != "" && toolPath("pdftoppm") != "" }
 func HavePandoc() bool  { return toolPath("pandoc") != "" }
+
+// legacyDocTools convert binary .doc, in preference order. antiword handles Word
+// 6/7/8/97-2003 and preserves paragraph breaks, which matters because the text
+// is about to be fragmented; catdoc is the fallback and flattens harder.
+var legacyDocTools = []string{"antiword", "catdoc"}
+
+func legacyDocTool() string {
+	for _, b := range legacyDocTools {
+		if p := toolPath(b); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// HaveLegacyDoc reports whether a binary .doc converter is on PATH.
+func HaveLegacyDoc() bool { return legacyDocTool() != "" }
 
 // pdfTextThreshold: a page's pdftotext output must carry at least this many
 // non-space characters to count as a real text layer; below it the page is
@@ -177,7 +201,7 @@ func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error
 		}
 		return unitsToPageText(ctx, units, ocr)
 	case KindOffice:
-		text, err := PandocText(ctx, path)
+		text, err := OfficeText(ctx, path)
 		if err != nil {
 			return nil, err
 		}
@@ -269,4 +293,39 @@ func PandocText(ctx context.Context, path string) (string, error) {
 		return "", fmt.Errorf("pandoc %s: %w", filepath.Ext(path), err)
 	}
 	return string(out), nil
+}
+
+// LegacyDocText converts a pre-2007 binary Word .doc to plain text.
+//
+// Why not LibreOffice. `libreoffice --headless --convert-to docx` is the
+// obvious answer and it is the wrong one here: it is a ~1GB dependency to read a
+// format that is almost always a letter, it costs seconds per file against
+// milliseconds, and it serialises on a single user-profile lock — so raglit's
+// concurrent workers would either collide or need a throwaway
+// -env:UserInstallation per job. antiword is ~200KB and does nothing else.
+//
+// The trade it makes: antiword drops embedded images, so a .doc whose content is
+// a scanned figure extracts as empty. That is the right trade for correspondence
+// and agreements; if a .doc ever matters for its figures, convert it to PDF and
+// let the PDF path rasterize and describe them.
+func LegacyDocText(ctx context.Context, path string) (string, error) {
+	tool := legacyDocTool()
+	if tool == "" {
+		return "", fmt.Errorf("no converter for legacy %s files (install antiword, or catdoc) — `raglit doctor` has the install hint", filepath.Ext(path))
+	}
+	out, err := exec.CommandContext(ctx, tool, path).Output()
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w", filepath.Base(tool), filepath.Ext(path), err)
+	}
+	return string(out), nil
+}
+
+// OfficeText extracts text from any KindOffice document, choosing the converter
+// by extension. Callers route KindOffice here rather than to PandocText directly,
+// so adding a format that pandoc cannot read is a change in one place.
+func OfficeText(ctx context.Context, path string) (string, error) {
+	if legacyDocExts[strings.ToLower(filepath.Ext(path))] {
+		return LegacyDocText(ctx, path)
+	}
+	return PandocText(ctx, path)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -93,5 +94,31 @@ func TestExtractPaged_ImageNoOCR(t *testing.T) {
 	}
 	if _, err := ExtractPaged(context.Background(), fp, &OCR{}); err == nil {
 		t.Error("want an error: scanned image + no vision/cheap engine")
+	}
+}
+
+// A legacy binary .doc classifies as KindOffice so it reaches the office path at
+// all, but must NOT be handed to pandoc — pandoc cannot read OLE2 and fails with
+// an error that reads like file corruption. This pins both halves.
+func TestLegacyDocRoutesAwayFromPandoc(t *testing.T) {
+	if got := ClassifyDoc("engagement-letter.doc", ""); got != KindOffice {
+		t.Errorf("ClassifyDoc(.doc) = %v, want KindOffice", got)
+	}
+	if got := ClassifyDoc("x", "application/msword"); got != KindOffice {
+		t.Errorf("ClassifyDoc(application/msword) = %v, want KindOffice", got)
+	}
+	if officeExts[".doc"] {
+		t.Error(".doc is in officeExts — it would be routed to pandoc, which cannot read it")
+	}
+	// With no converter installed, the error must name the missing tool rather
+	// than surfacing a pandoc parse failure.
+	if !HaveLegacyDoc() {
+		_, err := OfficeText(context.Background(), "whatever.doc")
+		if err == nil {
+			t.Fatal("OfficeText(.doc) with no converter: want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "antiword") {
+			t.Errorf("error should name the tool to install, got: %v", err)
+		}
 	}
 }
