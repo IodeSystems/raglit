@@ -280,12 +280,32 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 		}
 		return page
 	}
+	// The boundaries that fall INSIDE a fragment, as offsets into its own text.
+	//
+	// This function already knew where every page began — it computed `spans` to
+	// pick a start page and then discarded the rest. An overlap window is sized in
+	// characters and pays no attention to page breaks, so most fragments in a
+	// multi-page document straddle one; keeping only the start page made the page
+	// column wrong for everything after the first break inside each fragment.
+	spansWithin := func(start, end int) []PageSpan {
+		out := []PageSpan{{Off: 0, Page: pageForOffset(start)}}
+		for _, sp := range spans {
+			if sp.start > start && sp.start < end {
+				out = append(out, PageSpan{Off: sp.start - start, Page: sp.page})
+			}
+		}
+		if len(out) < 2 {
+			return nil // wholly on one page; `page` alone is authoritative
+		}
+		return out
+	}
 	ordByPage := map[int]int{}
 	for _, of := range OverlapFragments(src, window, stride, floor) {
 		page := pageForOffset(of.Start)
 		ord := ordByPage[page]
 		ordByPage[page] = ord + 1
-		sink(stagedFrag{page: page, ord: ord, startOff: of.Start, endOff: of.End, text: of.Text})
+		sink(stagedFrag{page: page, ord: ord, startOff: of.Start, endOff: of.End,
+			text: of.Text, pageSpans: spansWithin(of.Start, of.End)})
 	}
 }
 

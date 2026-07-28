@@ -80,3 +80,126 @@ func TestIngestUnits_NoEmbedderStillIndexes(t *testing.T) {
 		t.Fatalf("indexed without embedder: %+v", h)
 	}
 }
+
+// The overlap path is the one that runs without a vision segmenter, and it had
+// the same defect as the assembler: it computed where every page began, used
+// that to pick a START page, and discarded the rest. An overlap window is sized
+// in characters and ignores page breaks, so most fragments in a multi-page
+// document straddle one.
+func TestOverlapFragmentsCarryPageBoundaries(t *testing.T) {
+	pages := []resolvedPage{
+		{page: 1, text: strings.Repeat("alpha ", 300)},
+		{page: 2, text: strings.Repeat("bravo ", 300)},
+		{page: 3, text: strings.Repeat("charlie ", 300)},
+	}
+	var got []stagedFrag
+	fragmentOverlap(pages, 2000, 1500, 200, func(f stagedFrag) { got = append(got, f) })
+	if len(got) == 0 {
+		t.Fatal("no fragments produced")
+	}
+	var spanning int
+	for _, f := range got {
+		if len(f.pageSpans) < 2 {
+			continue
+		}
+		spanning++
+		if f.pageSpans[0].Off != 0 {
+			t.Errorf("first boundary must be offset 0, got %+v", f.pageSpans[0])
+		}
+		for i := 1; i < len(f.pageSpans); i++ {
+			s := f.pageSpans[i]
+			if s.Off <= f.pageSpans[i-1].Off {
+				t.Errorf("boundaries must advance: %+v", f.pageSpans)
+			}
+			if s.Off > len(f.text) {
+				t.Errorf("boundary %d is past the fragment text (%d)", s.Off, len(f.text))
+			}
+			// The offset must land on that page's actual words.
+			want := map[int]string{1: "alpha", 2: "bravo", 3: "charlie"}[s.Page]
+			if tail := f.text[s.Off:]; !strings.HasPrefix(strings.TrimSpace(tail), want) {
+				t.Errorf("boundary for page %d does not land on %q: %.30q", s.Page, want, tail)
+			}
+		}
+	}
+	if spanning == 0 {
+		t.Fatal("three pages under a 2000-char window must produce a page-spanning fragment")
+	}
+	// And the resolution the column exists for.
+	for _, f := range got {
+		if len(f.pageSpans) >= 2 {
+			last := f.pageSpans[len(f.pageSpans)-1]
+			if p := PageAt(f.page, f.pageSpans, last.Off+1); p != last.Page {
+				t.Errorf("offset past the last boundary should be page %d, got %d", last.Page, p)
+			}
+			break
+		}
+	}
+}
+
+// End-to-end for the column: boundaries computed by the fragmenter must survive
+// the commit and come back out of the database.
+//
+// The unit tests above prove the fragmenters COMPUTE spans; this proves they are
+// persisted, which is the half that a schema change and a regenerated INSERT can
+// silently get wrong.
+func TestPageBoundariesRoundTripThroughTheStore(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	pages := []resolvedPage{
+		{page: 1, text: strings.Repeat("alpha ", 300)},
+		{page: 2, text: strings.Repeat("bravo ", 300)},
+		{page: 3, text: strings.Repeat("charlie ", 300)},
+	}
+	var frags []stagedFrag
+	fragmentOverlap(pages, 2000, 1500, 200, func(f stagedFrag) { frags = append(frags, f) })
+	var want int
+	for _, f := range frags {
+		if len(f.pageSpans) >= 2 {
+			want++
+		}
+	}
+	if want == 0 {
+		t.Fatal("fixture produced no page-spanning fragment")
+	}
+	if err := s.commitDoc("/tmp/doc.pdf", "doc", "overlap", "", frags, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.db.Query(`SELECT page, text, page_spans FROM fragments ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got int
+	for rows.Next() {
+		var page int
+		var text, raw string
+		if err := rows.Scan(&page, &text, &raw); err != nil {
+			t.Fatal(err)
+		}
+		spans := DecodePageSpans(raw)
+		if len(spans) < 2 {
+			continue
+		}
+		got++
+		// The stored offsets must still land on the right page's words.
+		for _, sp := range spans[1:] {
+			want := map[int]string{1: "alpha", 2: "bravo", 3: "charlie"}[sp.Page]
+			if tail := strings.TrimSpace(text[sp.Off:]); !strings.HasPrefix(tail, want) {
+				t.Errorf("stored boundary for page %d lands on %.20q, want %q", sp.Page, tail, want)
+			}
+		}
+		// And an offset inside the last page resolves to it.
+		last := spans[len(spans)-1]
+		if p := PageAt(page, spans, last.Off+1); p != last.Page {
+			t.Errorf("PageAt after the last boundary = %d, want %d", p, last.Page)
+		}
+	}
+	if got != want {
+		t.Errorf("%d page-spanning fragments were computed but %d came back from the DB", want, got)
+	}
+}
