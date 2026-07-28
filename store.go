@@ -197,6 +197,21 @@ func OpenIndex(home Home, name string) (*Store, error) {
 	}
 	s.home = home
 	s.withHome = true
+	// Config decides the transcription writeback, per index if it says so and
+	// project-wide otherwise. Read here because this is where a Store learns which
+	// home and index it is — the flag existed and was never consulted, which is
+	// the same silent gap that made three earlier fixes no-ops.
+	if cfg, _, err := LoadConfig(home); err == nil {
+		on := cfg.WritebackTranscriptionMd
+		key := name
+		if key == "" {
+			key = "default"
+		}
+		if ic, ok := cfg.Indexes[key]; ok && ic.WritebackTranscriptionMd {
+			on = true
+		}
+		s.writebackTranscription = on
+	}
 	return s, nil
 }
 

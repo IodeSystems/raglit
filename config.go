@@ -47,6 +47,11 @@ type Config struct {
 	// `raglit watch`), the daemon re-scans the roots on an interval and re-ingests
 	// changed files / drops deleted ones. Needs `indexes` (the roots to watch).
 	Watch bool `json:"watch,omitempty"`
+
+	// WritebackTranscriptionMd materialises <doc>.raglit-transcription.md beside
+	// every ingested document, project-wide. A per-index setting of the same name
+	// overrides this for that index.
+	WritebackTranscriptionMd bool `json:"writeback_transcription_md,omitempty"`
 	// DaemonURL, when set, makes this a CLIENT config: commands route to the
 	// raglit daemon at this URL (http(s)://host:port) instead of opening a local
 	// index. The daemon owns storage (scoped per index, under its own home), so

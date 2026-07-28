@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,4 +90,39 @@ func WriteTranscription(docPath string, pages []TranscribedPage) (string, error)
 		return "", err
 	}
 	return out, nil
+}
+
+// writebackForDoc decides the transcription writeback for ONE document.
+//
+// The daemon runs from its own home (~/.raglit) and opens indexes by a
+// namespaced name; it never sees a project's own .raglit/config.json, because
+// home discovery picks the project home OR the default home and never overlays
+// them. That left a per-project setting only expressible in the daemon's global
+// config under a namespaced key — action at a distance, and nobody would find it.
+//
+// Whether to write a file NEXT TO a document is a property of that document's
+// project, and the document's own path can find it. So: walk up from the
+// document for a project config and let it decide; fall back to the store's
+// setting when there is none. A project can turn it on for itself without
+// touching the daemon, and off again the same way.
+func writebackForDoc(docPath string, fallback bool) bool {
+	dir := filepath.Dir(docPath)
+	for i := 0; i < 12 && dir != "" && dir != "/"; i++ {
+		p := filepath.Join(dir, ProjectHomeName, "config.json")
+		if b, err := os.ReadFile(p); err == nil {
+			var cfg struct {
+				Writeback *bool `json:"writeback_transcription_md"`
+			}
+			if json.Unmarshal(b, &cfg) == nil && cfg.Writeback != nil {
+				return *cfg.Writeback // the project has an opinion; it wins
+			}
+			return fallback // a project config with no opinion defers
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return fallback
 }

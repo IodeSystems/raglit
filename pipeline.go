@@ -158,7 +158,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	// The transcription, if this index asked for one. Written here because `pages`
 	// is exactly the per-page text a transcription is, and after fragmentation it
 	// is gone. Best-effort: a convenience file must never fail a good ingest.
-	if s.writebackTranscription && docPath != "" {
+	if docPath != "" && writebackForDoc(docPath, s.writebackTranscription) {
 		tp := make([]TranscribedPage, 0, len(pages))
 		for _, p := range pages {
 			if p.page >= 1 {
