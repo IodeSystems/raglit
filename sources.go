@@ -18,7 +18,13 @@ import (
 
 // builtinIgnore is always applied: dot-files/dirs anywhere, plus node_modules and
 // vendor trees. (Dot-dirs are also pruned during a non-git walk for speed.)
-var builtinIgnore = []string{".*", "**/.*", "**/node_modules/**", "**/vendor/**"}
+//
+// `*.raglit-transcription.md` is raglit's OWN output, written beside a document
+// when writeback is on. Indexing it would be a backlog that grows every time the
+// indexer runs: the file is ingested, which writes a transcription OF the
+// transcription, and so on. Generated output is never a source.
+var builtinIgnore = []string{".*", "**/.*", "**/node_modules/**", "**/vendor/**",
+	"*" + transcriptionSuffix, "**/*" + transcriptionSuffix}
 
 // PlanSources returns, per index name, the absolute file paths its configured
 // roots + rules select. baseDir is the project directory (relative roots resolve
@@ -152,7 +158,7 @@ func globToRegexp(glob string) string {
 			if i+1 < len(glob) && glob[i+1] == '*' {
 				i++ // consume the second '*'
 				if i+1 < len(glob) && glob[i+1] == '/' {
-					i++                     // consume the slash
+					i++                       // consume the slash
 					b.WriteString("(?:.*/)?") // **/ → an optional directory prefix (so **/x matches x at root too)
 				} else {
 					b.WriteString(".*") // bare ** → anything, separators included

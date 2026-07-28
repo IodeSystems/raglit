@@ -32,6 +32,11 @@ func TranscriptionPath(docPath string) string {
 	return docPath + transcriptionSuffix
 }
 
+// IsTranscription reports whether a path is raglit's own transcription output.
+func IsTranscription(path string) bool {
+	return strings.HasSuffix(path, transcriptionSuffix)
+}
+
 // TranscribedPage is one page of a transcription.
 type TranscribedPage struct {
 	Page    int
@@ -85,6 +90,13 @@ func RenderTranscription(docPath string, pages []TranscribedPage) string {
 // and failing an otherwise-good ingest because a convenience file could not be
 // written would be the wrong trade. The caller logs and continues.
 func WriteTranscription(docPath string, pages []TranscribedPage) (string, error) {
+	// Never transcribe a transcription. The ignore list keeps these out of
+	// discovery, but an explicit `raglit index <file>` bypasses discovery, and one
+	// slip would start writing x.md.raglit-transcription.md.raglit-transcription.md.
+	if IsTranscription(docPath) {
+		return "", fmt.Errorf("raglit: %s is a transcription; refusing to transcribe it",
+			filepath.Base(docPath))
+	}
 	out := TranscriptionPath(docPath)
 	if err := os.WriteFile(out, []byte(RenderTranscription(docPath, pages)), 0o644); err != nil {
 		return "", err

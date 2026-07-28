@@ -145,3 +145,35 @@ func TestProjectConfigDecidesWritebackForItsOwnDocuments(t *testing.T) {
 		t.Error("with no project config the store setting must stand")
 	}
 }
+
+// raglit must not index its own output. A transcription is written beside the
+// document; if discovery picked it up, ingesting it would write a transcription
+// OF the transcription, and the corpus would grow a new file every run.
+func TestTranscriptionsAreNeverIndexedOrReTranscribed(t *testing.T) {
+	var covered bool
+	for _, pat := range builtinIgnore {
+		if strings.Contains(pat, transcriptionSuffix) {
+			covered = true
+		}
+	}
+	if !covered {
+		t.Error("builtinIgnore must exclude raglit's own transcriptions")
+	}
+
+	// Discovery is one layer; an explicit `raglit index <file>` bypasses it, so
+	// the writer refuses too.
+	if _, err := WriteTranscription("/x/deed.pdf"+transcriptionSuffix,
+		[]TranscribedPage{{Page: 1, Text: "x"}}); err == nil {
+		t.Error("writing a transcription OF a transcription must be refused")
+	}
+	if !IsTranscription("/x/deed.pdf" + transcriptionSuffix) {
+		t.Error("IsTranscription should recognise its own suffix")
+	}
+	if IsTranscription("/x/deed.pdf") {
+		t.Error("a source document is not a transcription")
+	}
+	// The refusal must not have created anything.
+	if _, err := os.Stat("/x/deed.pdf" + transcriptionSuffix + transcriptionSuffix); err == nil {
+		t.Error("a doubled transcription was created")
+	}
+}
