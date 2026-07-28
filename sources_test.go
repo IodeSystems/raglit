@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,46 @@ func TestPlanSources_HonorsGitignore(t *testing.T) {
 	// build/out.go is .gitignored → excluded; main.go stays.
 	if got, want := basenames(plan["code"]), []string{"main.go"}; !eqStrings(got, want) {
 		t.Fatalf("with .gitignore: code = %v, want %v", got, want)
+	}
+}
+
+// Verifies the ignore is real, not just present in the slice: raglit's own
+// transcriptions must never be selected as sources by discovery, at any depth.
+func TestTranscriptionsAreExcludedFromDiscoveryByDefault(t *testing.T) {
+	root := t.TempDir()
+	must := func(rel string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("documents/order.pdf")
+	must("documents/order.pdf" + transcriptionSuffix)
+	must("deep/a/b/c/notes.pdf")
+	must("deep/a/b/c/notes.pdf" + transcriptionSuffix)
+
+	cfg := Config{Indexes: map[string]IndexConfig{
+		"default": {Roots: []Root{{Path: "."}}},
+	}}
+	plan, err := PlanSources(cfg, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawDoc bool
+	for _, paths := range plan {
+		for _, p := range paths {
+			if strings.HasSuffix(p, transcriptionSuffix) {
+				t.Errorf("discovery selected raglit's own transcription: %s", p)
+			}
+			if strings.HasSuffix(p, "order.pdf") {
+				sawDoc = true
+			}
+		}
+	}
+	if !sawDoc {
+		t.Fatal("the real document was not selected — the fixture, not the ignore, is wrong")
 	}
 }
