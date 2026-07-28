@@ -192,3 +192,61 @@ func mimeForImage(p string) string {
 		return "application/octet-stream"
 	}
 }
+
+// runTranscribe writes a document out as page-delineated markdown.
+//
+// The pipeline already produces this per page and then discards it once
+// fragments are built, which is why every consumer that needed "what is on page
+// 7" reimplemented rasterize-and-OCR outside raglit. `transcribe` is that
+// output, on purpose and on demand.
+func runTranscribe(args []string) error {
+	fs := flag.NewFlagSet("transcribe", flag.ExitOnError)
+	lf := addLLMFlags(fs)
+	homeFlag := fs.String("home", "", "config home dir (for defaults)")
+	write := fs.Bool("write", false, "write <doc>.raglit-transcription.md beside each document instead of stdout")
+	force := fs.Bool("force", false, "with --write, redo one that already exists")
+	fs.Parse(args)
+	if fs.NArg() == 0 {
+		return fmt.Errorf("transcribe: no files given")
+	}
+	home := raglit.DiscoverHome()
+	if *homeFlag != "" {
+		home = raglit.Home(*homeFlag)
+	}
+	lf.resolve(home)
+
+	// OCR is only needed for pages with no text layer. Build it when we can, and
+	// let ExtractPaged report the specific page if a scan turns up without one.
+	var ocr *raglit.OCR
+	if lf.requireVision() == nil {
+		ocr = raglit.NewOCR(lf.visionClient())
+		attachCheapOCR(ocr, home)
+	}
+
+	for _, path := range fs.Args() {
+		out := raglit.TranscriptionPath(path)
+		if *write && !*force {
+			if _, err := os.Stat(out); err == nil {
+				fmt.Fprintf(os.Stderr, "-- skip (has transcription): %s\n", filepath.Base(path))
+				continue
+			}
+		}
+		pages, err := raglit.ExtractPaged(context.Background(), path, ocr)
+		if err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(path), err)
+		}
+		tp := make([]raglit.TranscribedPage, 0, len(pages))
+		for _, p := range pages {
+			tp = append(tp, raglit.TranscribedPage{Page: p.Page, Text: p.Text})
+		}
+		if !*write {
+			fmt.Print(raglit.RenderTranscription(path, tp))
+			continue
+		}
+		if _, err := raglit.WriteTranscription(path, tp); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "   -> %s  (%d page(s))\n", filepath.Base(out), len(tp))
+	}
+	return nil
+}

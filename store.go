@@ -49,6 +49,10 @@ type Store struct {
 	// figure search; nil → figures fall back to embedding their DESCRIPTION with
 	// the text embedder (same space as fragments, so text queries can match).
 	imageEmbedder ImageEmbedder
+	// writebackTranscription materialises <doc>.raglit-transcription.md beside each
+	// ingested document. Off unless the index config asks for it: an indexer that
+	// writes into the corpus uninvited is a surprise nobody wants.
+	writebackTranscription bool
 	// parent, when set, makes this Store a BRANCH: reads overlay branch-over-
 	// parent at document grain (a branch doc / tombstone shadows the parent's).
 	// Writes go to the branch only (copy-on-write). See branch.go.
@@ -101,6 +105,9 @@ var schema string
 // Open opens (creating if needed) a raglit index at path. Use ":memory:" for a
 // throwaway index (tests). foreign_keys is ON so a document delete cascades to
 // its fragments; WAL keeps concurrent readers unblocked during ingest.
+// SetWritebackTranscription turns the per-document transcription writeback on.
+func (s *Store) SetWritebackTranscription(v bool) { s.writebackTranscription = v }
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {

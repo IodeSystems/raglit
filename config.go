@@ -79,6 +79,11 @@ type IndexConfig struct {
 	Roots   []Root   `json:"roots,omitempty"`
 	Include []string `json:"include,omitempty"` // a file must match one to be indexed
 	Ignore  []string `json:"ignore,omitempty"`  // merged with project + built-in ignore
+	// WritebackTranscriptionMd materialises <doc>.raglit-transcription.md beside
+	// each ingested document: the page-delineated text the pipeline already
+	// produced. Off by default because it writes into the corpus, which is not
+	// something an indexer should do uninvited.
+	WritebackTranscriptionMd bool `json:"writeback_transcription_md,omitempty"`
 }
 
 // Root is a source directory, optionally with its own include/ignore overriding

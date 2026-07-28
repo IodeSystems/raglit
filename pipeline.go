@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -153,6 +154,24 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			provenance = append(provenance, stagedPage{page: u.page, engine: "text"})
 		}
 		pages = append(pages, resolvedPage{page: u.page, text: text})
+	}
+	// The transcription, if this index asked for one. Written here because `pages`
+	// is exactly the per-page text a transcription is, and after fragmentation it
+	// is gone. Best-effort: a convenience file must never fail a good ingest.
+	if s.writebackTranscription && docPath != "" {
+		tp := make([]TranscribedPage, 0, len(pages))
+		for _, p := range pages {
+			if p.page >= 1 {
+				tp = append(tp, TranscribedPage{Page: p.page, Text: p.text})
+			}
+		}
+		if len(tp) > 0 {
+			if out, err := WriteTranscription(docPath, tp); err != nil {
+				sl.Fail("transcribe", "", err)
+			} else {
+				sl.Done("transcribe", "", filepath.Base(out))
+			}
+		}
 	}
 	if len(ocrEngines) > 0 {
 		n := 0
