@@ -48,18 +48,25 @@ INSERT INTO fragment_vectors(fragment_id, dim, vec) VALUES(?, ?, ?);
 INSERT INTO ingest_jobs(url, title, state, enqueued_at) VALUES(?, ?, 'pending', ?) RETURNING id;
 
 -- name: GetJob :one
-SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
+SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
 FROM ingest_jobs WHERE id = ?;
 
 -- name: ListJobs :many
-SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
+SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
 FROM ingest_jobs;
 
 -- name: GetOldestPendingJob :one
 SELECT id, url, title, enqueued_at FROM ingest_jobs WHERE state='pending' ORDER BY id LIMIT 1;
 
 -- name: SetJobRunning :exec
-UPDATE ingest_jobs SET state='running', started_at=? WHERE id=?;
+UPDATE ingest_jobs SET state='running', started_at=?, owner_pid=? WHERE id=?;
+
+-- name: ListRunningJobOwners :many
+SELECT id, url, owner_pid, started_at FROM ingest_jobs WHERE state='running';
+
+-- name: AbortJob :execrows
+UPDATE ingest_jobs SET state='error', error=?, finished_at=?
+WHERE id=? AND state='running';
 
 -- name: CompleteJob :exec
 UPDATE ingest_jobs SET state='done', fragments=?, mode=?, error='', finished_at=? WHERE id=?;

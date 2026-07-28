@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "embed"
@@ -127,7 +128,80 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("raglit: migrate: %w", err)
 	}
+	if err := reclaimOrphanedJobs(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("raglit: reclaim: %w", err)
+	}
 	return &Store{db: db, q: gen.New(db), path: path}, nil
+}
+
+// reclaimOrphanedJobs aborts 'running' jobs whose owning process is gone.
+//
+// A job row records the state of work, but the work lives in a process, and the
+// two part company the moment that process is killed: the row still says
+// 'running' and `raglit status` still reports it in flight, with a stale ETA,
+// forever. Three such rows survived a full daemon restart here and read as busy
+// while the queue was in fact idle — which is worse than an error, because an
+// error is something you go look at.
+//
+// Aborted rather than requeued, deliberately. A job that died mid-ingest may
+// have been killed BY the document (an OOM on a huge scan), so silently retrying
+// it on every daemon start is a crash loop. 'error' is visible, and `RetryJob`
+// already accepts it, so requeueing stays a decision someone makes.
+//
+// Own-pid rows are left alone so a running daemon reopening its own index does
+// not abort its own live work.
+func reclaimOrphanedJobs(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, owner_pid FROM ingest_jobs WHERE state='running'`)
+	if err != nil {
+		return err
+	}
+	type orphan struct{ id, pid int64 }
+	var orphans []orphan
+	self := int64(os.Getpid())
+	for rows.Next() {
+		var o orphan
+		if err := rows.Scan(&o.id, &o.pid); err != nil {
+			rows.Close()
+			return err
+		}
+		if o.pid == self || processAlive(o.pid) {
+			continue
+		}
+		orphans = append(orphans, o)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	now := time.Now().UnixNano()
+	for _, o := range orphans {
+		// pid 0 predates this column: the owner is unknown but provably not us.
+		msg := fmt.Sprintf("aborted — worker pid %d is gone (job was left 'running')", o.pid)
+		if o.pid == 0 {
+			msg = "aborted — left 'running' by a process that exited before job ownership was recorded"
+		}
+		if _, err := db.Exec(
+			`UPDATE ingest_jobs SET state='error', error=?, finished_at=? WHERE id=? AND state='running'`,
+			msg, now, o.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// processAlive reports whether a pid is a live process. Signal 0 performs the
+// existence and permission checks without delivering anything.
+func processAlive(pid int64) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(int(pid))
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // migrate applies additive schema changes that CREATE TABLE IF NOT EXISTS can't
@@ -143,6 +217,7 @@ func migrate(db *sql.DB) error {
 		{"fragments", "start_off", "INTEGER NOT NULL DEFAULT 0"},
 		{"fragments", "end_off", "INTEGER NOT NULL DEFAULT 0"},
 		{"fragments", "page_spans", "TEXT NOT NULL DEFAULT ''"},
+		{"ingest_jobs", "owner_pid", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

@@ -13,6 +13,25 @@ import (
 
 var _ = metaquery.Query{}
 
+var MetaAbortJob = metaquery.Query{
+	Name:    "AbortJob",
+	Cmd:     ":execrows",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `UPDATE ingest_jobs SET state='error', error=?, finished_at=?
+WHERE id=? AND state='running'`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "error", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapAbortJob returns a metaquery.Builder over MetaAbortJob, pre-bound with typed arguments.
+func WrapAbortJob(arg AbortJobParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaAbortJob, arg.Error, arg.FinishedAt, arg.ID)
+}
+
 var MetaCancelJob = metaquery.Query{
 	Name:    "CancelJob",
 	Cmd:     ":execrows",
@@ -367,7 +386,7 @@ var MetaGetJob = metaquery.Query{
 	Cmd:     ":one",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
+	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
 FROM ingest_jobs WHERE id = ?`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
@@ -380,6 +399,7 @@ FROM ingest_jobs WHERE id = ?`,
 		{Name: "enqueued_at", OriginalName: "enqueued_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "started_at", OriginalName: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "finished_at", OriginalName: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "owner_pid", OriginalName: "owner_pid", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
@@ -403,6 +423,7 @@ var GetJobCols = struct {
 	EnqueuedAt metaquery.IntCol
 	StartedAt  metaquery.IntCol
 	FinishedAt metaquery.IntCol
+	OwnerPid   metaquery.IntCol
 }{
 	ID:         metaquery.NewIntCol("id"),
 	Url:        metaquery.NewTextCol("url"),
@@ -414,6 +435,7 @@ var GetJobCols = struct {
 	EnqueuedAt: metaquery.NewIntCol("enqueued_at"),
 	StartedAt:  metaquery.NewIntCol("started_at"),
 	FinishedAt: metaquery.NewIntCol("finished_at"),
+	OwnerPid:   metaquery.NewIntCol("owner_pid"),
 }
 
 var MetaGetOldestPendingJob = metaquery.Query{
@@ -878,7 +900,7 @@ var MetaListJobs = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
+	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
 FROM ingest_jobs`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
@@ -891,6 +913,7 @@ FROM ingest_jobs`,
 		{Name: "enqueued_at", OriginalName: "enqueued_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "started_at", OriginalName: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "finished_at", OriginalName: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "owner_pid", OriginalName: "owner_pid", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 	},
 }
 
@@ -911,6 +934,7 @@ var ListJobsCols = struct {
 	EnqueuedAt metaquery.IntCol
 	StartedAt  metaquery.IntCol
 	FinishedAt metaquery.IntCol
+	OwnerPid   metaquery.IntCol
 }{
 	ID:         metaquery.NewIntCol("id"),
 	Url:        metaquery.NewTextCol("url"),
@@ -922,6 +946,7 @@ var ListJobsCols = struct {
 	EnqueuedAt: metaquery.NewIntCol("enqueued_at"),
 	StartedAt:  metaquery.NewIntCol("started_at"),
 	FinishedAt: metaquery.NewIntCol("finished_at"),
+	OwnerPid:   metaquery.NewIntCol("owner_pid"),
 }
 
 var MetaListMediaByDoc = metaquery.Query{
@@ -1053,6 +1078,38 @@ var ListOcrPagesByDocCols = struct {
 	Page:      metaquery.NewIntCol("page"),
 	Engine:    metaquery.NewTextCol("engine"),
 	ImagePath: metaquery.NewTextCol("image_path"),
+}
+
+var MetaListRunningJobOwners = metaquery.Query{
+	Name:    "ListRunningJobOwners",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT id, url, owner_pid, started_at FROM ingest_jobs WHERE state='running'`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "url", OriginalName: "url", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "owner_pid", OriginalName: "owner_pid", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "started_at", OriginalName: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+	},
+}
+
+// WrapListRunningJobOwners returns a metaquery.Builder over MetaListRunningJobOwners, pre-bound with typed arguments.
+func WrapListRunningJobOwners() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListRunningJobOwners)
+}
+
+// ListRunningJobOwnersCols gives typed, name-safe access to ListRunningJobOwners's output columns.
+var ListRunningJobOwnersCols = struct {
+	ID        metaquery.IntCol
+	Url       metaquery.TextCol
+	OwnerPid  metaquery.IntCol
+	StartedAt metaquery.IntCol
+}{
+	ID:        metaquery.NewIntCol("id"),
+	Url:       metaquery.NewTextCol("url"),
+	OwnerPid:  metaquery.NewIntCol("owner_pid"),
+	StartedAt: metaquery.NewIntCol("started_at"),
 }
 
 var MetaListTombstones = metaquery.Query{
@@ -1232,16 +1289,17 @@ var MetaSetJobRunning = metaquery.Query{
 	Cmd:     ":exec",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL:     `UPDATE ingest_jobs SET state='running', started_at=? WHERE id=?`,
+	SQL:     `UPDATE ingest_jobs SET state='running', started_at=?, owner_pid=? WHERE id=?`,
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true},
-		{Position: 2, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 2, Name: "owner_pid", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
 	},
 }
 
 // WrapSetJobRunning returns a metaquery.Builder over MetaSetJobRunning, pre-bound with typed arguments.
 func WrapSetJobRunning(arg SetJobRunningParams) *metaquery.Builder {
-	return metaquery.Wrap(&MetaSetJobRunning, arg.StartedAt, arg.ID)
+	return metaquery.Wrap(&MetaSetJobRunning, arg.StartedAt, arg.OwnerPid, arg.ID)
 }
 
 var MetaUpsertDocument = metaquery.Query{

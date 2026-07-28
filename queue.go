@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	gen "github.com/iodesystems/raglit/internal/db"
@@ -80,7 +81,12 @@ func (s *Store) claimNextJob() (*Job, error) {
 		return nil, err
 	}
 	now := time.Now().UnixNano()
-	if err := qtx.SetJobRunning(ctx, gen.SetJobRunningParams{StartedAt: now, ID: row.ID}); err != nil {
+	// Stamp the claiming process. If we die mid-ingest this row would otherwise
+	// read 'running' forever; reclaimOrphanedJobs uses the pid to tell a live
+	// worker from a dead one's leftovers.
+	if err := qtx.SetJobRunning(ctx, gen.SetJobRunningParams{
+		StartedAt: now, OwnerPid: int64(os.Getpid()), ID: row.ID,
+	}); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

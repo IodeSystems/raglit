@@ -68,7 +68,12 @@ CREATE TABLE IF NOT EXISTS ingest_jobs (
   mode        TEXT NOT NULL DEFAULT '',
   enqueued_at INTEGER NOT NULL,
   started_at  INTEGER NOT NULL DEFAULT 0,
-  finished_at INTEGER NOT NULL DEFAULT 0
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  -- The process that claimed this job. A 'running' row outlives the process that
+  -- owned it: kill the daemon mid-ingest and the row says running forever, so the
+  -- queue reports work in flight that nothing is doing. Recording the owner lets
+  -- a fresh daemon tell its own jobs from a dead one's and abort the orphans.
+  owner_pid   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ingest_jobs_state ON ingest_jobs(state, id);
 CREATE TABLE IF NOT EXISTS job_stages (

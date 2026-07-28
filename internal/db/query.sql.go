@@ -10,6 +10,25 @@ import (
 	"database/sql"
 )
 
+const abortJob = `-- name: AbortJob :execrows
+UPDATE ingest_jobs SET state='error', error=?, finished_at=?
+WHERE id=? AND state='running'
+`
+
+type AbortJobParams struct {
+	Error      string `db:"error" derived:"ingest_jobs.error" json:"error"`
+	FinishedAt int64  `db:"finished_at" derived:"ingest_jobs.finished_at" json:"finished_at"`
+	ID         int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+}
+
+func (q *Queries) AbortJob(ctx context.Context, arg AbortJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, abortJob, arg.Error, arg.FinishedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const cancelJob = `-- name: CancelJob :execrows
 DELETE FROM ingest_jobs WHERE id=? AND state='pending'
 `
@@ -247,7 +266,7 @@ func (q *Queries) GetDocumentHash(ctx context.Context, path string) (string, err
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
+SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
 FROM ingest_jobs WHERE id = ?
 `
 
@@ -265,6 +284,7 @@ func (q *Queries) GetJob(ctx context.Context, id int64) (IngestJob, error) {
 		&i.EnqueuedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.OwnerPid,
 	)
 	return i, err
 }
@@ -702,7 +722,7 @@ func (q *Queries) ListJobStages(ctx context.Context, jobID int64) ([]ListJobStag
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at
+SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
 FROM ingest_jobs
 `
 
@@ -726,6 +746,7 @@ func (q *Queries) ListJobs(ctx context.Context) ([]IngestJob, error) {
 			&i.EnqueuedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.OwnerPid,
 		); err != nil {
 			return nil, err
 		}
@@ -850,6 +871,45 @@ func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcr
 	for rows.Next() {
 		var i ListOcrPagesByDocRow
 		if err := rows.Scan(&i.Page, &i.Engine, &i.ImagePath); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunningJobOwners = `-- name: ListRunningJobOwners :many
+SELECT id, url, owner_pid, started_at FROM ingest_jobs WHERE state='running'
+`
+
+type ListRunningJobOwnersRow struct {
+	ID        int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+	Url       string `db:"url" derived:"ingest_jobs.url" json:"url"`
+	OwnerPid  int64  `db:"owner_pid" derived:"ingest_jobs.owner_pid" json:"owner_pid"`
+	StartedAt int64  `db:"started_at" derived:"ingest_jobs.started_at" json:"started_at"`
+}
+
+func (q *Queries) ListRunningJobOwners(ctx context.Context) ([]ListRunningJobOwnersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRunningJobOwners)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRunningJobOwnersRow
+	for rows.Next() {
+		var i ListRunningJobOwnersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Url,
+			&i.OwnerPid,
+			&i.StartedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1038,16 +1098,17 @@ func (q *Queries) SetDocumentHash(ctx context.Context, arg SetDocumentHashParams
 }
 
 const setJobRunning = `-- name: SetJobRunning :exec
-UPDATE ingest_jobs SET state='running', started_at=? WHERE id=?
+UPDATE ingest_jobs SET state='running', started_at=?, owner_pid=? WHERE id=?
 `
 
 type SetJobRunningParams struct {
 	StartedAt int64 `db:"started_at" derived:"ingest_jobs.started_at" json:"started_at"`
+	OwnerPid  int64 `db:"owner_pid" derived:"ingest_jobs.owner_pid" json:"owner_pid"`
 	ID        int64 `db:"id" derived:"ingest_jobs.id" json:"id"`
 }
 
 func (q *Queries) SetJobRunning(ctx context.Context, arg SetJobRunningParams) error {
-	_, err := q.db.ExecContext(ctx, setJobRunning, arg.StartedAt, arg.ID)
+	_, err := q.db.ExecContext(ctx, setJobRunning, arg.StartedAt, arg.OwnerPid, arg.ID)
 	return err
 }
 
