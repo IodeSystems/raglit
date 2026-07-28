@@ -96,7 +96,36 @@ func maxTokensFor(input string) int {
 	return n
 }
 
+// loopBreakSampling copies opts with sampling that gives the decoder a way OUT
+// of a repeating basin, for the ONE retry after a cut.
+//
+// Retrying a cut generation UNCHANGED is pointless, and we measured exactly
+// that: the same survey page was cut three times in 34 seconds (15:58:27,
+// 15:58:44, 15:59:01) with byte-identical output, because the server runs
+// --temp 0 and a greedy decoder cannot leave the basin it is in. The context
+// was the same, the weights were the same, so the output was the same.
+//
+// So the retry changes the SAMPLER, not the prompt. The temperature bump is
+// deliberately small: this is transcription, and a hot decoder invents text
+// that looks exactly like the survey it is supposed to be reading. Enough
+// entropy to break a tie, not enough to start composing.
+func loopBreakSampling(o *llm.ChatOpts) *llm.ChatOpts {
+	temp, freq := loopBreakTemp, loopBreakFreqPenalty
+	cp := llm.ChatOpts{}
+	if o != nil {
+		cp = *o
+	}
+	cp.Temperature = &temp
+	cp.FrequencyPenalty = &freq
+	return &cp
+}
+
 const (
+	// loopBreakTemp / loopBreakFreqPenalty are the retry's sampling. Small on
+	// purpose — see loopBreakSampling.
+	loopBreakTemp        = 0.3
+	loopBreakFreqPenalty = 0.5
+
 	// minReEmitTokens floors maxTokensFor so a tiny unit still has room for the
 	// JSON envelope and a fix-loop retry's preamble.
 	minReEmitTokens = 1024

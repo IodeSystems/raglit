@@ -91,10 +91,20 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 	if maxTok <= 0 {
 		maxTok = defaultOCRMaxTokens
 	}
-	text, rep, err := collectStream(ctx, o.Client, []llm.Message{msg},
-		&llm.ChatOpts{MaxTokens: maxTok})
+	opts := &llm.ChatOpts{MaxTokens: maxTok}
+	text, rep, err := collectStream(ctx, o.Client, []llm.Message{msg}, opts)
 	if err != nil {
 		return "", fmt.Errorf("raglit: ocr page %d: %w", img.Page, err)
+	}
+	if rep != nil {
+		// The page derailed. Retry ONCE with sampling that can actually escape
+		// the loop — the prompt is unchanged on purpose, because re-anchoring a
+		// transcription on a partial transcription is how a VLM starts inventing
+		// survey text that reads exactly like the real thing.
+		text, rep, err = collectStream(ctx, o.Client, []llm.Message{msg}, loopBreakSampling(opts))
+		if err != nil {
+			return "", fmt.Errorf("raglit: ocr page %d (loop-break retry): %w", img.Page, err)
+		}
 	}
 	// A CUT transcription is not a short transcription — it is the page's text
 	// with an unknown amount missing. Indexing it would put a silently
@@ -102,7 +112,8 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 	// than failing: nothing would ever revisit it. Fail loudly so the job
 	// retries or a human looks.
 	if rep != nil {
-		return "", fmt.Errorf("raglit: ocr page %d: the model %s — transcription cut, page NOT indexed",
+		return "", fmt.Errorf(
+			"raglit: ocr page %d: the model %s, on the loop-break retry too — page NOT indexed",
 			img.Page, rep)
 	}
 	return strings.TrimSpace(text), nil

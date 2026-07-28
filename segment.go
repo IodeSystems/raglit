@@ -103,10 +103,11 @@ func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback 
 		}
 		maxTok = maxTokensFor(in)
 	}
+	opts := &llm.ChatOpts{MaxTokens: maxTok}
 	var last string
 	var lastErr error
 	for attempt := 0; attempt <= sg.MaxRetries; attempt++ {
-		out, rep, err := collectStream(ctx, sg.Client, msgs, &llm.ChatOpts{MaxTokens: maxTok})
+		out, rep, err := collectStream(ctx, sg.Client, msgs, opts)
 		if err != nil {
 			return SegResult{}, err // infrastructure failure → propagate (job fails)
 		}
@@ -117,6 +118,10 @@ func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback 
 			// loop's only lever is the context, and at temperature 0 a retry that
 			// says nothing new reproduces the loop token for token.
 			lastErr = fmt.Errorf("you %s", rep)
+			// Change the SAMPLER as well as the prompt. The re-prompt alone can
+			// break the tie, but it does not have to: at --temp 0 the model is
+			// free to reproduce the loop despite the new instruction.
+			opts = loopBreakSampling(opts)
 			msgs = append(msgs,
 				llm.Message{Role: "assistant", Content: out},
 				llm.Message{Role: "user", Content: fmt.Sprintf(

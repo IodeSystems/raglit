@@ -100,33 +100,77 @@ func TestSegmenterRetriesACutGeneration(t *testing.T) {
 }
 
 // cuttingChatter cuts the first N generations for repetition, then delegates.
+// It records EVERY call's opts (cut ones included); the inner stub only sees
+// the delegated calls, so its canned replies stay in step.
 type cuttingChatter struct {
 	inner    *optsChatter
 	cutFirst int
 	n        int
+	opts     []*llm.ChatOpts
 }
 
 func (c *cuttingChatter) ChatStream(ctx context.Context, m []llm.Message, td []llm.ToolDef,
 	o *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
 	c.n++
+	c.opts = append(c.opts, o)
 	if c.n <= c.cutFirst {
-		c.inner.calls++
-		c.inner.opts = append(c.inner.opts, o)
 		return streamCut(`{"continues_previous":false,"fragments":[{"text":"aaaa`, 40, 12), nil
 	}
 	return c.inner.ChatStream(ctx, m, td, o)
 }
 
 // A cut TRANSCRIPTION is a page with an unknown amount missing. Indexing it
-// would mark the document done and nothing would ever revisit it.
+// would mark the document done and nothing would ever revisit it. It only
+// refuses after the loop-break retry ALSO fails.
 func TestOCRRefusesACutTranscription(t *testing.T) {
-	o := NewOCR(&cuttingChatter{inner: &optsChatter{}, cutFirst: 5})
+	cc := &cuttingChatter{inner: &optsChatter{}, cutFirst: 5}
+	o := NewOCR(cc)
 	_, err := o.Page(context.Background(), PageImage{Page: 3, Mime: "image/png", Data: []byte("x")})
 	if err == nil {
 		t.Fatal("a cut transcription was returned as if it were the page's text")
 	}
 	if !strings.Contains(err.Error(), "NOT indexed") {
 		t.Errorf("error does not say the page was skipped: %v", err)
+	}
+	if cc.n != 2 {
+		t.Errorf("made %d calls, want 2 (the attempt plus one loop-break retry)", cc.n)
+	}
+}
+
+// Retrying a cut generation UNCHANGED is pointless: measured, the same page was
+// cut three times in 34 seconds with byte-identical output, because the server
+// runs --temp 0. The retry has to move the SAMPLER.
+func TestOCRRetriesACutWithDifferentSampling(t *testing.T) {
+	cc := &cuttingChatter{inner: &optsChatter{replies: []string{"the page text"}}, cutFirst: 1}
+	o := NewOCR(cc)
+
+	got, err := o.Page(context.Background(), PageImage{Page: 1, Mime: "image/png", Data: []byte("x")})
+	if err != nil {
+		t.Fatalf("Page: %v", err)
+	}
+	if got != "the page text" {
+		t.Errorf("text = %q, want the retry's transcription", got)
+	}
+	if len(cc.opts) != 2 {
+		t.Fatalf("recorded %d calls, want 2", len(cc.opts))
+	}
+	first, retry := cc.opts[0], cc.opts[1]
+	if first.Temperature != nil || first.FrequencyPenalty != nil {
+		t.Error("the FIRST attempt should use the server's own sampling, not the loop-break knobs")
+	}
+	if retry.Temperature == nil || *retry.Temperature <= 0 {
+		t.Error("the retry did not raise temperature — a greedy decoder reproduces the loop exactly")
+	}
+	if retry.FrequencyPenalty == nil || *retry.FrequencyPenalty <= 0 {
+		t.Error("the retry did not set a repetition penalty")
+	}
+	// Transcription, not composition: a hot decoder invents survey text that
+	// reads exactly like the real thing.
+	if *retry.Temperature > 0.5 {
+		t.Errorf("retry temperature %v is high enough to invite fabrication", *retry.Temperature)
+	}
+	if retry.MaxTokens != first.MaxTokens {
+		t.Errorf("retry lost the token cap (%d vs %d)", retry.MaxTokens, first.MaxTokens)
 	}
 }
 
