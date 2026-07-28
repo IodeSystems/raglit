@@ -19,13 +19,14 @@ type Document struct {
 }
 
 type Fragment struct {
-	ID       int64  `db:"id" derived:"fragments.id" json:"id"`
-	DocID    int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
-	Page     int64  `db:"page" derived:"fragments.page" json:"page"`
-	Ord      int64  `db:"ord" derived:"fragments.ord" json:"ord"`
-	Text     string `db:"text" derived:"fragments.text" json:"text"`
-	StartOff int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
-	EndOff   int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
+	ID        int64  `db:"id" derived:"fragments.id" json:"id"`
+	DocID     int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
+	Page      int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord       int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text      string `db:"text" derived:"fragments.text" json:"text"`
+	StartOff  int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
+	EndOff    int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
+	PageSpans string `db:"page_spans" derived:"fragments.page_spans" json:"page_spans"`
 }
 
 type FragmentVector struct {

@@ -3,6 +3,7 @@ package raglit
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -43,6 +44,9 @@ type stagedFrag struct {
 	page, ord        int
 	startOff, endOff int
 	text             string
+	// pageSpans is where each page's content begins inside text, for a fragment
+	// that spans pages. Nil when it lies on one page.
+	pageSpans []PageSpan
 }
 
 // stagedPage is a page's provenance held in memory until the atomic swap.
@@ -227,10 +231,12 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 
 // segmentLLM runs the LLM segmenter over the resolved page texts, stitching the
 // open fragment across page boundaries (Assembler). Fragments carry no source
-// offsets (they are model-emitted text). page attribution is the start page.
+// offsets (they are model-emitted text). `page` is the START page, and
+// pageSpans records where every later page begins inside the text — without
+// them a hit in a stitched fragment resolves to the wrong page.
 func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, sink func(stagedFrag)) error {
-	a := NewAssembler(func(page, ord int, text string) error {
-		sink(stagedFrag{page: page, ord: ord, text: text})
+	a := NewAssembler(func(page, ord int, text string, spans []PageSpan) error {
+		sink(stagedFrag{page: page, ord: ord, text: text, pageSpans: spans})
 		return nil
 	})
 	for _, p := range pages {
@@ -319,6 +325,7 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		fid, err := q.InsertFragment(ctx, gen.InsertFragmentParams{
 			DocID: docID, Page: int64(f.page), Ord: int64(f.ord), Text: f.text,
 			StartOff: int64(f.startOff), EndOff: int64(f.endOff),
+			PageSpans: encodePageSpans(f.pageSpans),
 		})
 		if err != nil {
 			return fmt.Errorf("raglit: insert fragment: %w", err)
@@ -417,4 +424,45 @@ func runStagedEmbed(ctx context.Context, emb *Embedder, ch <-chan embedItem, don
 	}
 	flush()
 	done <- embedResult{vecs: vecs, err: firstErr}
+}
+
+// encodePageSpans serialises page boundaries for storage. Empty string when the
+// fragment lies on a single page, so the column costs nothing in the common case.
+func encodePageSpans(spans []PageSpan) string {
+	if len(spans) < 2 {
+		return ""
+	}
+	b, err := json.Marshal(spans)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// PageAt resolves a byte offset inside a fragment's text to the page it falls
+// on. This is the reason the column exists: a search hit is an offset, and
+// without the boundaries the only answer available was the fragment's start
+// page, which is wrong for everything after the first stitch.
+func PageAt(startPage int, spans []PageSpan, off int) int {
+	page := startPage
+	for _, s := range spans {
+		if off < s.Off {
+			break
+		}
+		page = s.Page
+	}
+	return page
+}
+
+// DecodePageSpans parses what encodePageSpans wrote; nil on empty or malformed,
+// so a caller degrades to the start page rather than failing.
+func DecodePageSpans(s string) []PageSpan {
+	if s == "" {
+		return nil
+	}
+	var out []PageSpan
+	if json.Unmarshal([]byte(s), &out) != nil {
+		return nil
+	}
+	return out
 }

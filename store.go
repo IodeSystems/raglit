@@ -135,6 +135,7 @@ func migrate(db *sql.DB) error {
 		{"documents", "frag_recipe", "TEXT NOT NULL DEFAULT ''"},
 		{"fragments", "start_off", "INTEGER NOT NULL DEFAULT 0"},
 		{"fragments", "end_off", "INTEGER NOT NULL DEFAULT 0"},
+		{"fragments", "page_spans", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

@@ -75,7 +75,7 @@ func TestAssembler_DefersAndMergesOpenFragment(t *testing.T) {
 		text      string
 	}
 	var got []sunk
-	a := NewAssembler(func(page, ord int, text string) error {
+	a := NewAssembler(func(page, ord int, text string, _ []PageSpan) error {
 		got = append(got, sunk{page, ord, text})
 		return nil
 	})
@@ -114,7 +114,7 @@ func TestAssembler_DefersAndMergesOpenFragment(t *testing.T) {
 
 func TestAssembler_NonContinuationClosesOpen(t *testing.T) {
 	var texts []string
-	a := NewAssembler(func(_, _ int, text string) error {
+	a := NewAssembler(func(_, _ int, text string, _ []PageSpan) error {
 		texts = append(texts, text)
 		return nil
 	})
@@ -132,7 +132,7 @@ func TestAssembler_NonContinuationClosesOpen(t *testing.T) {
 // carries enough context to concept-chain.
 func TestAssembler_SizeFloorMergesSmallSiblings(t *testing.T) {
 	var got []string
-	a := NewAssembler(func(_, _ int, text string) error {
+	a := NewAssembler(func(_, _ int, text string, _ []PageSpan) error {
 		got = append(got, text)
 		return nil
 	})
@@ -153,7 +153,7 @@ func TestAssembler_SizeFloorMergesSmallSiblings(t *testing.T) {
 
 func TestAssembler_CeilingStopsAbsorption(t *testing.T) {
 	var got []string
-	a := NewAssembler(func(_, _ int, text string) error {
+	a := NewAssembler(func(_, _ int, text string, _ []PageSpan) error {
 		got = append(got, text)
 		return nil
 	})
@@ -177,5 +177,79 @@ func TestExtractJSON(t *testing.T) {
 		if got := extractJSON(in); got != want {
 			t.Errorf("extractJSON(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A fragment that stitches across a page boundary must record WHERE the next
+// page begins inside it.
+//
+// The assembler absorbs a continuation, or a sub-floor sibling, from the
+// following page into the open fragment and keeps only the start page. That made
+// `fragments.page` correct for a fragment's beginning and wrong for the rest of
+// it, so a search hit inside a stitched fragment resolved to the wrong page —
+// which defeats the point of storing a page at all.
+func TestStitchedFragmentRecordsPageBoundaries(t *testing.T) {
+	var gotPage, gotOrd int
+	var gotText string
+	var gotSpans []PageSpan
+	a := NewAssembler(func(page, ord int, text string, spans []PageSpan) error {
+		gotPage, gotOrd, gotText, gotSpans = page, ord, text, spans
+		return nil
+	})
+	a.MinChars = 0 // no absorption; exercise the continuation path alone
+
+	if err := a.Feed(4, SegResult{Fragments: []Segment{{Text: "ends mid-sentence and"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Feed(5, SegResult{ContinuesPrevious: true,
+		Fragments: []Segment{{Text: "carries on over here"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotPage != 4 {
+		t.Errorf("the fragment still starts on page 4, got %d", gotPage)
+	}
+	if len(gotSpans) != 2 {
+		t.Fatalf("a fragment spanning two pages needs two boundaries, got %+v", gotSpans)
+	}
+	if gotSpans[0] != (PageSpan{Off: 0, Page: 4}) {
+		t.Errorf("first boundary must be the start page at offset 0, got %+v", gotSpans[0])
+	}
+	if gotSpans[1].Page != 5 {
+		t.Errorf("second boundary must name page 5, got %+v", gotSpans[1])
+	}
+	// The offset must actually point at page 5's text, not merely be non-zero.
+	if got := gotText[gotSpans[1].Off:]; got != "carries on over here" {
+		t.Errorf("boundary offset does not land on page 5's text: %q", got)
+	}
+	// And the resolution this exists for.
+	if p := PageAt(gotPage, gotSpans, 0); p != 4 {
+		t.Errorf("offset 0 is on page 4, got %d", p)
+	}
+	if p := PageAt(gotPage, gotSpans, gotSpans[1].Off+3); p != 5 {
+		t.Errorf("an offset past the boundary is on page 5, got %d", p)
+	}
+	_ = gotOrd
+}
+
+// A fragment wholly on one page stores nothing, so the column costs nothing in
+// the common case and `page` alone stays authoritative.
+func TestSinglePageFragmentStoresNoSpans(t *testing.T) {
+	var spans []PageSpan
+	a := NewAssembler(func(_, _ int, _ string, s []PageSpan) error { spans = s; return nil })
+	if err := a.Feed(2, SegResult{Fragments: []Segment{{Text: "all on one page"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if spans != nil {
+		t.Errorf("a single-page fragment needs no boundaries, got %+v", spans)
+	}
+	if encodePageSpans(spans) != "" {
+		t.Error("nothing should be persisted for a single-page fragment")
 	}
 }

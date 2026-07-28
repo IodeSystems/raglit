@@ -27,7 +27,17 @@ CREATE TABLE IF NOT EXISTS fragments (
   -- and same-doc dedup need exact spans); 0/0 on llm-seg, where a fragment is
   -- model-emitted text and not a span of anything.
   start_off INTEGER NOT NULL DEFAULT 0,
-  end_off   INTEGER NOT NULL DEFAULT 0
+  end_off   INTEGER NOT NULL DEFAULT 0,
+  -- Page boundaries WITHIN this fragment, as JSON [{"off":N,"page":P},...] where
+  -- off is a byte offset into `text` at which page P's content begins.
+  --
+  -- A fragment spans pages: the assembler absorbs a continuation, or a sub-floor
+  -- sibling, from the NEXT page into the open fragment and keeps only the start
+  -- page in `page`. That made `page` right for a fragment's beginning and wrong
+  -- for the rest of it, so a search hit inside one could not be resolved to the
+  -- page it is actually on — which is the whole point of storing a page.
+  -- Empty means the fragment lies entirely on `page`.
+  page_spans TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS fragments_doc ON fragments(doc_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS fragments_fts USING fts5(

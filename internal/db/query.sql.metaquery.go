@@ -482,7 +482,7 @@ var MetaInsertFragment = metaquery.Query{
 	Cmd:     ":one",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL:     `INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off) VALUES(?, ?, ?, ?, ?, ?) RETURNING id`,
+	SQL:     `INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans) VALUES(?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64"},
 	},
@@ -493,13 +493,14 @@ var MetaInsertFragment = metaquery.Query{
 		{Position: 4, Name: "text", GoType: "string", DBType: "TEXT", NotNull: true},
 		{Position: 5, Name: "start_off", GoType: "int64", DBType: "INTEGER", NotNull: true},
 		{Position: 6, Name: "end_off", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 7, Name: "page_spans", GoType: "string", DBType: "TEXT", NotNull: true},
 	},
 	Table: &metaquery.Table{Name: "fragments"},
 }
 
 // WrapInsertFragment returns a metaquery.Builder over MetaInsertFragment, pre-bound with typed arguments.
 func WrapInsertFragment(arg InsertFragmentParams) *metaquery.Builder {
-	return metaquery.Wrap(&MetaInsertFragment, arg.DocID, arg.Page, arg.Ord, arg.Text, arg.StartOff, arg.EndOff)
+	return metaquery.Wrap(&MetaInsertFragment, arg.DocID, arg.Page, arg.Ord, arg.Text, arg.StartOff, arg.EndOff, arg.PageSpans)
 }
 
 // InsertFragmentCols gives typed, name-safe access to InsertFragment's output columns.

@@ -183,8 +183,19 @@ const (
 	defaultMaxFragmentChars = 9000 // ~1500 words
 )
 
+// PageSpan marks where a page's content begins inside a fragment's text.
+//
+// A fragment spans pages whenever the assembler absorbs a continuation, or a
+// sub-floor sibling, from the following page. Keeping only the start page made
+// `fragments.page` right for the beginning of a fragment and wrong for the rest,
+// so a hit inside one could not be resolved to the page it actually sits on.
+type PageSpan struct {
+	Off  int `json:"off"`  // byte offset into the fragment's text
+	Page int `json:"page"` // the page whose content begins there
+}
+
 type Assembler struct {
-	sink func(page, ord int, text string) error
+	sink func(page, ord int, text string, spans []PageSpan) error
 	open *openFragment
 	ord  map[int]int
 	// MinChars: absorb sub-floor siblings up to this size (0 disables the floor).
@@ -195,11 +206,30 @@ type Assembler struct {
 type openFragment struct {
 	text      string
 	page, ord int
+	spans     []PageSpan // always starts with {0, page}
+}
+
+// absorb appends text from `page`, recording a boundary when the page changes.
+func (o *openFragment) absorb(sep, text string, page int) {
+	o.text += sep
+	if len(o.spans) == 0 || o.spans[len(o.spans)-1].Page != page {
+		o.spans = append(o.spans, PageSpan{Off: len(o.text), Page: page})
+	}
+	o.text += text
+}
+
+// spansOf returns the boundaries worth persisting: nil when the fragment lies
+// entirely on one page, so the common case costs nothing.
+func spansOf(o *openFragment) []PageSpan {
+	if len(o.spans) < 2 {
+		return nil
+	}
+	return o.spans
 }
 
 // NewAssembler builds an Assembler; sink finalizes a closed fragment
 // (e.g. insert row + hand to the embed pipeline).
-func NewAssembler(sink func(page, ord int, text string) error) *Assembler {
+func NewAssembler(sink func(page, ord int, text string, spans []PageSpan) error) *Assembler {
 	return &Assembler{
 		sink:     sink,
 		ord:      map[int]int{},
@@ -232,27 +262,29 @@ func (a *Assembler) Feed(page int, r SegResult) error {
 			continue
 		}
 		if a.open == nil {
-			a.open = &openFragment{text: text, page: page, ord: a.nextOrd(page)}
+			a.open = &openFragment{text: text, page: page, ord: a.nextOrd(page),
+				spans: []PageSpan{{Off: 0, Page: page}}}
 			continue
 		}
 		// Continuation: the model says this first fragment continues the open one
 		// (a mid-fragment span across the unit boundary). It keeps the open
 		// fragment's start page/ord.
 		if i == 0 && r.ContinuesPrevious {
-			a.open.text += "\n\n" + text
+			a.open.absorb("\n\n", text, page)
 			continue
 		}
 		// Size floor: absorb a sub-floor sibling instead of emitting a tiny
 		// fragment, as long as we stay under the ceiling.
 		if a.MinChars > 0 && len(a.open.text) < a.MinChars && len(a.open.text)+len(text) <= a.MaxChars {
-			a.open.text += "\n\n" + text
+			a.open.absorb("\n\n", text, page)
 			continue
 		}
 		// The open fragment clears the floor (or absorbing would overflow) → close it.
-		if err := a.sink(a.open.page, a.open.ord, a.open.text); err != nil {
+		if err := a.sink(a.open.page, a.open.ord, a.open.text, spansOf(a.open)); err != nil {
 			return err
 		}
-		a.open = &openFragment{text: text, page: page, ord: a.nextOrd(page)}
+		a.open = &openFragment{text: text, page: page, ord: a.nextOrd(page),
+			spans: []PageSpan{{Off: 0, Page: page}}}
 	}
 	return nil
 }
@@ -260,7 +292,7 @@ func (a *Assembler) Feed(page int, r SegResult) error {
 // Close finalizes the last open fragment (end of document).
 func (a *Assembler) Close() error {
 	if a.open != nil {
-		if err := a.sink(a.open.page, a.open.ord, a.open.text); err != nil {
+		if err := a.sink(a.open.page, a.open.ord, a.open.text, spansOf(a.open)); err != nil {
 			return err
 		}
 		a.open = nil

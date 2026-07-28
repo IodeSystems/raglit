@@ -31,7 +31,7 @@ SELECT COUNT(*) AS n FROM fragments;
 DELETE FROM fragments WHERE doc_id = ?;
 
 -- name: InsertFragment :one
-INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off) VALUES(?, ?, ?, ?, ?, ?) RETURNING id;
+INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans) VALUES(?, ?, ?, ?, ?, ?, ?) RETURNING id;
 
 -- name: ListFragmentTextByPage :many
 SELECT text FROM fragments WHERE doc_id = ? AND page = ? ORDER BY ord;

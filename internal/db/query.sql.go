@@ -308,16 +308,17 @@ func (q *Queries) GetPageImagePath(ctx context.Context, arg GetPageImagePathPara
 }
 
 const insertFragment = `-- name: InsertFragment :one
-INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off) VALUES(?, ?, ?, ?, ?, ?) RETURNING id
+INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans) VALUES(?, ?, ?, ?, ?, ?, ?) RETURNING id
 `
 
 type InsertFragmentParams struct {
-	DocID    int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
-	Page     int64  `db:"page" derived:"fragments.page" json:"page"`
-	Ord      int64  `db:"ord" derived:"fragments.ord" json:"ord"`
-	Text     string `db:"text" derived:"fragments.text" json:"text"`
-	StartOff int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
-	EndOff   int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
+	DocID     int64  `db:"doc_id" derived:"fragments.doc_id" json:"doc_id"`
+	Page      int64  `db:"page" derived:"fragments.page" json:"page"`
+	Ord       int64  `db:"ord" derived:"fragments.ord" json:"ord"`
+	Text      string `db:"text" derived:"fragments.text" json:"text"`
+	StartOff  int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
+	EndOff    int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
+	PageSpans string `db:"page_spans" derived:"fragments.page_spans" json:"page_spans"`
 }
 
 func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) (int64, error) {
@@ -328,6 +329,7 @@ func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) 
 		arg.Text,
 		arg.StartOff,
 		arg.EndOff,
+		arg.PageSpans,
 	)
 	var id int64
 	err := row.Scan(&id)
