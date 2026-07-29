@@ -110,6 +110,13 @@ func runDoctor(args []string) error {
 		fmt.Println("  · imagemagick missing — HEIC/HEIF photos won't be extracted (optional)")
 		fmt.Println("     install:  sudo apt-get install imagemagick")
 	}
+	fmt.Println("  ✓ .xlsx — read natively (stdlib zip+XML, no external tool needed)")
+	if raglit.HaveXLS() {
+		fmt.Println("  ✓ xls2csv — legacy binary Excel (.xls) → text")
+	} else {
+		fmt.Println("  · xls2csv missing — legacy .xls won't be extracted (optional)")
+		fmt.Println("     install:  sudo apt-get install catdoc     (same package as antiword's fallback)")
+	}
 
 	// Verdict — which tiers are live.
 	fmt.Println("\nverdict:")

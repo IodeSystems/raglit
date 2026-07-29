@@ -244,6 +244,27 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 		sl.Done("extract", "email", fmt.Sprintf("%d message(s)", len(pages)))
 		return w.ingestPlainText(ctx, job.URL, title, []byte(b.String()), sl)
 
+	case KindSpreadsheet:
+		ext := strings.ToLower(filepath.Ext(job.URL))
+		path, cleanup, err := writeTemp(f.Data, ext)
+		if err != nil {
+			return 0, "", err
+		}
+		defer cleanup()
+		pages, err := SpreadsheetPages(ctx, path)
+		if err != nil {
+			sl.Fail("extract", "spreadsheet", err)
+			return 0, "", err
+		}
+		// One page per sheet, same reasoning (and same flattening-with-markers
+		// shape) as KindEmail above.
+		var sb strings.Builder
+		for _, pg := range pages {
+			fmt.Fprintf(&sb, "## Page %d\n\n%s\n\n", pg.Page, pg.Text)
+		}
+		sl.Done("extract", "spreadsheet", fmt.Sprintf("%d sheet(s)", len(pages)))
+		return w.ingestPlainText(ctx, job.URL, title, []byte(sb.String()), sl)
+
 	case KindOffice:
 		path, cleanup, err := writeTemp(f.Data, strings.ToLower(filepath.Ext(job.URL)))
 		if err != nil {

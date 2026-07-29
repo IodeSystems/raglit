@@ -1,13 +1,16 @@
 package raglit
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -28,6 +31,14 @@ const (
 	// read as one page a quotation from the fifth message can only be located
 	// somewhere in the whole file.
 	KindEmail
+	// KindSpreadsheet is .xlsx/.xls: one PAGE per sheet, same reasoning as
+	// KindEmail — a fact on the "Q3 Budget" tab must be locatable to THAT tab,
+	// not buried in a single page mixing every sheet in the workbook. Not
+	// KindOffice: pandoc has no xlsx/xls reader at all (its own
+	// --list-input-formats omits both — csv is the only spreadsheet format it
+	// takes), and even if it did, OfficeText's one-flat-string-per-document
+	// shape is the wrong output for a multi-sheet source.
+	KindSpreadsheet
 	KindUnknown
 )
 
@@ -48,13 +59,29 @@ var (
 	// accept image/heic — so unlike every other image extension, a HEIC file must
 	// be transcoded before it reaches that path, not just relabeled.
 	heicExts = map[string]bool{".heic": true, ".heif": true}
-	textExts = map[string]bool{".txt": true, ".md": true, ".markdown": true, ".text": true}
+	// textExts includes .csv: it is already delimited plain text and the
+	// deterministic text fragmenter handles it fine as-is. Before this it
+	// classified KindUnknown, which IS still readable as text (the KindUnknown
+	// fallback), but expandIngestTargets skips anything ClassifyDoc calls
+	// KindUnknown — so a directory of .csv files silently enqueued nothing.
+	textExts = map[string]bool{".txt": true, ".md": true, ".markdown": true, ".text": true, ".csv": true}
 	// legacyDocExts are pre-2007 binary Word documents. Deliberately NOT in
 	// officeExts: pandoc cannot read them — the format is an OLE2 compound file,
 	// not the zipped XML of .docx — and routing one there fails with a parse
 	// error that reads like a corrupt file rather than an unsupported format.
 	// Law firms still send .doc; the engagement letter in ardley-v-brannock is one.
 	legacyDocExts = map[string]bool{".doc": true}
+	// xlsxExts/xlsExts are split the same way officeExts/legacyDocExts are: same
+	// KindSpreadsheet, different extractor. .xlsx is zipped XML, read natively
+	// (xlsxPages, stdlib only — no external tool exists for it here: pandoc
+	// doesn't read it, and neither libreoffice/soffice nor a python
+	// openpyxl/pandas stack is installed on the reference machine). .xls is the
+	// pre-2007 OLE2/BIFF binary format, same container family as legacy .doc but
+	// a different internal structure antiword cannot read — xls2csv (part of the
+	// same catdoc package as antiword's fallback) is the one tool on this
+	// machine that reads it.
+	xlsxExts = map[string]bool{".xlsx": true}
+	xlsExts  = map[string]bool{".xls": true}
 )
 
 // ClassifyDoc routes a source by extension first, then content-type. Extension
@@ -70,6 +97,8 @@ func ClassifyDoc(name, contentType string) DocKind {
 		return KindImage
 	case officeExts[ext] || legacyDocExts[ext]:
 		return KindOffice
+	case xlsxExts[ext] || xlsExts[ext] || strings.Contains(ct, "spreadsheetml") || strings.Contains(ct, "ms-excel"):
+		return KindSpreadsheet
 	case ext == ".eml" || ext == ".mbox" || strings.HasPrefix(ct, "message/rfc822"):
 		return KindEmail
 	case textExts[ext] || strings.HasPrefix(ct, "text/plain") || strings.HasPrefix(ct, "text/markdown"):
@@ -298,6 +327,8 @@ func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error
 		return unitsToPageText(ctx, units, ocr)
 	case KindEmail:
 		return EmailText(path)
+	case KindSpreadsheet:
+		return SpreadsheetPages(ctx, path)
 	case KindOffice:
 		text, err := OfficeText(ctx, path)
 		if err != nil {
@@ -465,4 +496,234 @@ func OfficeText(ctx context.Context, path string) (string, error) {
 		return LegacyDocText(ctx, path)
 	}
 	return PandocText(ctx, path)
+}
+
+// HaveXLS reports whether xls2csv (the legacy-.xls converter, part of the same
+// catdoc package as antiword's fallback) is on PATH.
+func HaveXLS() bool { return toolPath("xls2csv") != "" }
+
+// SpreadsheetPages extracts a workbook to one PageText per sheet. .xlsx is read
+// natively (no external tool exists for it — see xlsxExts); .xls goes through
+// xls2csv.
+func SpreadsheetPages(ctx context.Context, path string) ([]PageText, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".xlsx":
+		return xlsxPages(path)
+	case ".xls":
+		return xlsPages(ctx, path)
+	}
+	return nil, fmt.Errorf("not a spreadsheet: %s", path)
+}
+
+// xlsPages shells out to xls2csv, which separates sheets with a form feed by
+// default (`-b`, undocumented default is exactly the char pdftotext also uses
+// for page breaks) — so the split is the same one-liner as pdftotextPages.
+func xlsPages(ctx context.Context, path string) ([]PageText, error) {
+	if !HaveXLS() {
+		return nil, fmt.Errorf("no converter for legacy .xls files (install catdoc, which provides xls2csv) — `raglit doctor` has the install hint")
+	}
+	out, err := exec.CommandContext(ctx, "xls2csv", path).Output()
+	if err != nil {
+		return nil, fmt.Errorf("xls2csv: %w", err)
+	}
+	sheets := strings.Split(string(out), "\f")
+	if n := len(sheets); n > 0 && strings.TrimSpace(sheets[n-1]) == "" {
+		sheets = sheets[:n-1] // drop the trailing sheet-break's empty tail
+	}
+	pages := make([]PageText, 0, len(sheets))
+	for i, s := range sheets {
+		pages = append(pages, PageText{Page: i + 1, Text: strings.TrimSpace(s), Engine: "text"})
+	}
+	return pages, nil
+}
+
+// --- .xlsx: read natively (archive/zip + encoding/xml, stdlib only) ---
+//
+// An .xlsx is a zip of small XML parts. Three of them matter for text:
+// workbook.xml (sheet order + names + relationship ids), workbook.xml.rels
+// (relationship id → sheet file path), and each sheetN.xml itself (the cells).
+// sharedStrings.xml is a fourth, optional one — see xlSST below.
+
+// xlWorkbook is xl/workbook.xml — gives sheet order, names, and each sheet's
+// relationship id, which xl/_rels/workbook.xml.rels then resolves to a path.
+type xlWorkbook struct {
+	Sheets []struct {
+		Name string `xml:"name,attr"`
+		RID  string `xml:"http://schemas.openxmlformats.org/officeDocument/2006/relationships id,attr"`
+	} `xml:"sheets>sheet"`
+}
+
+// xlRelationships is xl/_rels/workbook.xml.rels.
+type xlRelationships struct {
+	Rel []struct {
+		ID     string `xml:"Id,attr"`
+		Target string `xml:"Target,attr"`
+	} `xml:"Relationship"`
+}
+
+// xlSST is xl/sharedStrings.xml. Excel itself dedupes strings here and cells
+// reference them by index (t="s"); some writers (openpyxl in its default mode,
+// observed while building this) skip the shared-string table entirely and
+// inline every string on the cell (t="inlineStr") instead — sharedStrings.xml
+// then doesn't exist at all, which is why loading it is tolerant of ENOENT.
+type xlSST struct {
+	SI []struct {
+		T string `xml:"t"` // direct text: <si><t>Hello</t></si>
+		R []struct {
+			T string `xml:"t"`
+		} `xml:"r"` // rich-text runs: <si><r><t>Hel</t></r><r><t>lo</t></r></si>
+	} `xml:"si"`
+}
+
+func (s xlSST) text(i int) string {
+	if i < 0 || i >= len(s.SI) {
+		return ""
+	}
+	si := s.SI[i]
+	if si.T != "" || len(si.R) == 0 {
+		return si.T
+	}
+	var b strings.Builder
+	for _, r := range si.R {
+		b.WriteString(r.T)
+	}
+	return b.String()
+}
+
+// xlWorksheet is one xl/worksheets/sheetN.xml.
+type xlWorksheet struct {
+	SheetData struct {
+		Row []struct {
+			C []struct {
+				Type string `xml:"t,attr"` // "s"=shared string, "inlineStr"=inline, else literal (number/bool/formula-result)
+				V    string `xml:"v"`
+				IS   struct {
+					T string `xml:"t"`
+				} `xml:"is"`
+			} `xml:"c"`
+		} `xml:"row"`
+	} `xml:"sheetData"`
+}
+
+// zipReadFile returns one archive entry's bytes, or ok=false if it isn't
+// present — callers decide whether that's an error (sharedStrings.xml is
+// legitimately optional; workbook.xml is not).
+func zipReadFile(zr *zip.Reader, name string) (data []byte, ok bool) {
+	for _, f := range zr.File {
+		if f.Name != name {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, false
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, false
+		}
+		return b, true
+	}
+	return nil, false
+}
+
+// xlsxSheetPath resolves a workbook.xml.rels Target to a zip entry name.
+// Targets are written either relative to xl/ (the common case: "worksheets/
+// sheet1.xml") or as a package-absolute path ("/xl/worksheets/sheet1.xml",
+// observed from openpyxl while building this) — both forms are legal OPC.
+func xlsxSheetPath(target string) string {
+	if strings.HasPrefix(target, "/") {
+		return strings.TrimPrefix(target, "/")
+	}
+	return "xl/" + target
+}
+
+// xlsxPages reads an .xlsx to one PageText per sheet, in workbook order, cells
+// tab-joined within a row and rows newline-joined. It does not evaluate
+// formulas (only the last-computed <v> a writer stored, if any), preserve
+// number formatting, or read merged cells / charts / comments — the same trade
+// antiword makes on embedded images: the right size of tool for making a
+// spreadsheet's text searchable and citable, not for reproducing it.
+func xlsxPages(path string) ([]PageText, error) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, fmt.Errorf("xlsx: open: %w", err)
+	}
+	defer zr.Close()
+
+	wbBytes, ok := zipReadFile(&zr.Reader, "xl/workbook.xml")
+	if !ok {
+		return nil, fmt.Errorf("xlsx: missing xl/workbook.xml")
+	}
+	var wb xlWorkbook
+	if err := xml.Unmarshal(wbBytes, &wb); err != nil {
+		return nil, fmt.Errorf("xlsx: parse workbook.xml: %w", err)
+	}
+
+	relBytes, ok := zipReadFile(&zr.Reader, "xl/_rels/workbook.xml.rels")
+	if !ok {
+		return nil, fmt.Errorf("xlsx: missing xl/_rels/workbook.xml.rels")
+	}
+	var rels xlRelationships
+	if err := xml.Unmarshal(relBytes, &rels); err != nil {
+		return nil, fmt.Errorf("xlsx: parse workbook.xml.rels: %w", err)
+	}
+	targetByRID := make(map[string]string, len(rels.Rel))
+	for _, r := range rels.Rel {
+		targetByRID[r.ID] = r.Target
+	}
+
+	var sst xlSST
+	if sstBytes, ok := zipReadFile(&zr.Reader, "xl/sharedStrings.xml"); ok {
+		if err := xml.Unmarshal(sstBytes, &sst); err != nil {
+			return nil, fmt.Errorf("xlsx: parse sharedStrings.xml: %w", err)
+		}
+	}
+
+	pages := make([]PageText, 0, len(wb.Sheets))
+	for i, sh := range wb.Sheets {
+		target, ok := targetByRID[sh.RID]
+		if !ok {
+			continue // a sheet with a dangling relationship id — skip rather than fail the whole workbook
+		}
+		sheetBytes, ok := zipReadFile(&zr.Reader, xlsxSheetPath(target))
+		if !ok {
+			continue
+		}
+		var ws xlWorksheet
+		if err := xml.Unmarshal(sheetBytes, &ws); err != nil {
+			return nil, fmt.Errorf("xlsx: parse sheet %q: %w", sh.Name, err)
+		}
+		var b strings.Builder
+		for _, row := range ws.SheetData.Row {
+			cells := make([]string, 0, len(row.C))
+			for _, c := range row.C {
+				switch c.Type {
+				case "s":
+					idx, err := strconv.Atoi(strings.TrimSpace(c.V))
+					if err != nil {
+						cells = append(cells, "")
+						continue
+					}
+					cells = append(cells, sst.text(idx))
+				case "inlineStr":
+					cells = append(cells, c.IS.T)
+				default:
+					cells = append(cells, c.V)
+				}
+			}
+			b.WriteString(strings.Join(cells, "\t"))
+			b.WriteByte('\n')
+		}
+		title := sh.Name
+		if title == "" {
+			title = fmt.Sprintf("Sheet %d", i+1)
+		}
+		pages = append(pages, PageText{
+			Page:   i + 1,
+			Text:   fmt.Sprintf("## %s\n\n%s", title, strings.TrimSpace(b.String())),
+			Engine: "text",
+		})
+	}
+	return pages, nil
 }

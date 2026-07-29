@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"image/png"
@@ -29,6 +30,12 @@ func TestClassifyDoc(t *testing.T) {
 		{"book.epub", "", KindOffice},
 		{"page.html", "", KindOffice},
 		{"x", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", KindOffice},
+		{"budget.xlsx", "", KindSpreadsheet},
+		{"budget.XLSX", "", KindSpreadsheet},
+		{"legacy.xls", "", KindSpreadsheet},
+		{"x", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", KindSpreadsheet},
+		{"x", "application/vnd.ms-excel", KindSpreadsheet},
+		{"data.csv", "", KindText},
 		{"notes.md", "", KindText},
 		{"readme.txt", "", KindText},
 		{"x", "text/plain", KindText},
@@ -283,5 +290,143 @@ func TestHEICToPNGEndToEnd(t *testing.T) {
 	}
 	if len(pages) != 1 || pages[0].Text != clean.Text {
 		t.Errorf("pages = %+v", pages)
+	}
+}
+
+// writeMinimalXLSX hand-builds a real, valid .xlsx with archive/zip + the
+// stdlib only — no external tool can WRITE one on this machine either (same
+// read-only situation as HEIC: no libreoffice/openpyxl/pandas is assumed
+// installed), so unlike the HEIC fixture, this one is built in Go directly
+// rather than shelled out to a generator.
+//
+// It deliberately exercises three things a real workbook can do that a lazier
+// fixture would paper over: a shared-string cell (t="s", the form Excel itself
+// writes), an inline-string cell (t="inlineStr", the form openpyxl was observed
+// writing while this was built — sharedStrings.xml can legitimately not exist
+// at all), and both a workbook.xml.rels Target form (relative "worksheets/
+// sheet2.xml" for sheet1, package-absolute "/xl/worksheets/sheet2.xml" for
+// sheet2 — both are legal OPC and real writers use either).
+func writeMinimalXLSX(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zw := zip.NewWriter(f)
+	files := map[string]string{
+		"xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Budget" sheetId="1" r:id="rId1"/><sheet name="Notes" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="/xl/worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>`,
+		"xl/sharedStrings.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2"><si><t>Line Item</t></si><si><t>Rent</t></si></sst>`,
+		"xl/worksheets/sheet1.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row><row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><v>1200</v></c></row></sheetData></worksheet>`,
+		"xl/worksheets/sheet2.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>remember the escrow deadline</t></is></c></row></sheetData></worksheet>`,
+	}
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The xlsx reader is pure stdlib (no external tool, no skip needed): shared
+// strings resolve, inline strings resolve, both rels-Target forms resolve, and
+// each sheet lands on its own page named after the sheet.
+func TestXLSXPagesNative(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "budget.xlsx")
+	writeMinimalXLSX(t, path)
+
+	pages, err := SpreadsheetPages(context.Background(), path)
+	if err != nil {
+		t.Fatalf("SpreadsheetPages: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("got %d pages, want 2: %+v", len(pages), pages)
+	}
+	if pages[0].Page != 1 || pages[0].Text != "## Budget\n\nLine Item\nRent\t1200" {
+		t.Errorf("page 1 = %+v", pages[0])
+	}
+	if pages[1].Page != 2 || pages[1].Text != "## Notes\n\nremember the escrow deadline" {
+		t.Errorf("page 2 = %+v", pages[1])
+	}
+	// Routes through ExtractPaged/ClassifyDoc the same way, end to end.
+	viaExtractPaged, err := ExtractPaged(context.Background(), path, nil)
+	if err != nil {
+		t.Fatalf("ExtractPaged(.xlsx): %v", err)
+	}
+	if len(viaExtractPaged) != 2 {
+		t.Errorf("ExtractPaged(.xlsx) = %d pages, want 2", len(viaExtractPaged))
+	}
+}
+
+// xls2csv can WRITE a real legacy .xls (unlike HEIC/imagemagick, python3's
+// xlwt can produce this binary format directly), so this end-to-end test is
+// gated only on the tool availability, not a second missing-generator skip.
+func skipUnlessXLSFixturesPossible(t *testing.T) {
+	t.Helper()
+	if !HaveXLS() {
+		t.Skip("xls2csv not on PATH — install catdoc")
+	}
+	if err := exec.Command("python3", "-c", "import xlwt").Run(); err != nil {
+		t.Skip("python3 xlwt not installed — needed to generate an .xls test fixture (`pip install xlwt`)")
+	}
+}
+
+func writeXLSFixture(t *testing.T, path string) {
+	t.Helper()
+	script := `
+import sys
+import xlwt
+wb = xlwt.Workbook()
+s1 = wb.add_sheet("Budget")
+s1.write(0, 0, "Line Item")
+s1.write(1, 0, "Rent")
+s1.write(1, 1, 1200)
+s2 = wb.add_sheet("Notes")
+s2.write(0, 0, "remember the escrow deadline")
+wb.save(sys.argv[1])
+`
+	cmd := exec.Command("python3", "-c", script, path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generating .xls fixture: %v: %s", err, out)
+	}
+}
+
+// End-to-end: a real legacy .xls in, one page per sheet out — xls2csv's
+// default sheet-break is a form feed, split the same way pdftotextPages splits
+// PDF pages, and this is worth pinning because the "-b" default is
+// undocumented behavior discovered empirically, not something obvious from
+// xls2csv's own --help text.
+func TestXLSToPagesEndToEnd(t *testing.T) {
+	skipUnlessXLSFixturesPossible(t)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "budget.xls")
+	writeXLSFixture(t, src)
+
+	pages, err := SpreadsheetPages(context.Background(), src)
+	if err != nil {
+		t.Fatalf("SpreadsheetPages(.xls): %v", err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("got %d pages, want 2 (one per sheet): %+v", len(pages), pages)
+	}
+	if !strings.Contains(pages[0].Text, "Line Item") || !strings.Contains(pages[0].Text, "Rent") {
+		t.Errorf("page 1 missing expected content: %q", pages[0].Text)
+	}
+	if !strings.Contains(pages[1].Text, "escrow deadline") {
+		t.Errorf("page 2 missing expected content: %q", pages[1].Text)
 	}
 }

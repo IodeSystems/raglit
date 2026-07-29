@@ -13,7 +13,10 @@ import (
 // makes a corpus look indexed when it is empty.
 func TestExpandIngestTargetsDiscoversEveryReadableFormat(t *testing.T) {
 	dir := t.TempDir()
-	readable := []string{"a.docx", "b.doc", "c.odt", "d.rtf", "e.pptx", "f.html", "g.png", "h.tif", "i.pdf", "j.txt", "k.md"}
+	readable := []string{
+		"a.docx", "b.doc", "c.odt", "d.rtf", "e.pptx", "f.html", "g.png", "h.tif", "i.pdf", "j.txt", "k.md",
+		"l.heic", "m.heif", "n.xlsx", "o.xls", "p.csv",
+	}
 	for _, n := range append(readable, "skip.bin", "skip.zip") {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
