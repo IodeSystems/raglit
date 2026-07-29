@@ -99,6 +99,22 @@ CREATE INDEX IF NOT EXISTS job_stages_job ON job_stages(job_id, seq);
 -- exactly the input the model saw, so it is correct across a renamed or moved
 -- file, and it MISSES when the page actually changes — which is when re-reading
 -- is the right answer. A page that renders differently is a different page.
+-- Per-index settings that are DISCOVERED rather than configured.
+--
+-- The embed model's input limit is the case this exists for. It is a property of
+-- the endpoint, not a preference, and getting it wrong is invisible until a
+-- document fails: fragments defaulted to 9000 characters with nothing checking
+-- them against what the model would actually accept, and the first symptom was a
+-- 500 about batch sizes that named nothing about fragments.
+--
+-- Keyed by model, so swapping the embed model re-probes instead of reusing a
+-- number that was true of a different model.
+CREATE TABLE IF NOT EXISTS index_meta (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS ocr_page_cache (
   img_sha    TEXT PRIMARY KEY,
   engine     TEXT NOT NULL DEFAULT '',

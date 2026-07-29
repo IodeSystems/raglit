@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -177,4 +178,113 @@ func TestEmbedDocsPreservesOrderAcrossChunks(t *testing.T) {
 	if len(vecs) != len(texts) {
 		t.Fatalf("want %d vectors, got %d", len(texts), len(vecs))
 	}
+}
+
+// The limit is a fact about the endpoint, so it is probed once and remembered —
+// keyed by MODEL, because a number probed for one model is a guess about
+// another.
+func TestEmbedLimitIsProbedOnceAndKeyedByModel(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	probes := 0
+	lim := func(max int) *Embedder {
+		e := NewEmbedder(&limitedVecClient{max: max, probes: &probes}, "m1")
+		return e
+	}
+	got := s.EmbedLimitChars(context.Background(), lim(4096), 0)
+	if got <= 0 {
+		t.Fatalf("probe returned %d", got)
+	}
+	after := probes
+	if again := s.EmbedLimitChars(context.Background(), lim(4096), 0); again != got {
+		t.Errorf("second call re-probed to a different answer: %d then %d", got, again)
+	}
+	if probes != after {
+		t.Errorf("the stored limit was ignored: %d more probes", probes-after)
+	}
+	// A different model must NOT reuse it.
+	e2 := NewEmbedder(&limitedVecClient{max: 1024, probes: &probes}, "m2")
+	if s.EmbedLimitChars(context.Background(), e2, 0) == got {
+		t.Error("a second model reused the first model's limit")
+	}
+}
+
+// An explicit setting wins: an operator who knows the number should not wait for
+// a probe, and an endpoint that truncates silently cannot be probed at all.
+func TestConfiguredEmbedLimitBeatsTheProbe(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	probes := 0
+	e := NewEmbedder(&limitedVecClient{max: 4096, probes: &probes}, "m")
+	if got := s.EmbedLimitChars(context.Background(), e, 777); got != 777 {
+		t.Errorf("configured limit ignored: %d", got)
+	}
+	if probes != 0 {
+		t.Errorf("probed despite an explicit limit: %d probes", probes)
+	}
+}
+
+// Probing without correcting the back catalogue leaves a corpus whose old
+// documents fail to embed and whose new ones do not.
+func TestOversizedDocsFindsWhatMustBeRefragmented(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Ingest(context.Background(), Document{Path: "big.pdf", Title: "Big",
+		Fragments: []Fragment{{Text: strings.Repeat("x", 9000)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest(context.Background(), Document{Path: "small.pdf", Title: "Small",
+		Fragments: []Fragment{{Text: "short"}}}); err != nil {
+		t.Fatal(err)
+	}
+	over, err := s.OversizedDocs(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := over["big.pdf"]; !ok {
+		t.Errorf("the oversized document was not found: %v", over)
+	}
+	if _, ok := over["small.pdf"]; ok {
+		t.Error("a document within the limit was listed")
+	}
+	// Clearing the hash is the dedup lever; the document and its pages survive.
+	if err := s.MarkForReingest("big.pdf"); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s.DocumentHash("big.pdf"); h != "" {
+		t.Errorf("content hash not cleared: %q", h)
+	}
+}
+
+// limitedVecClient accepts inputs up to max chars and rejects longer ones, like
+// an endpoint that reports rather than truncates.
+type limitedVecClient struct {
+	max    int
+	probes *int
+}
+
+func (c *limitedVecClient) Embed(_ context.Context, _ string, texts []string) ([][]float32, error) {
+	if c.probes != nil {
+		*c.probes++
+	}
+	for _, t := range texts {
+		if len(t) > c.max {
+			return nil, fmt.Errorf("input too large: %d > %d", len(t), c.max)
+		}
+	}
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = []float32{1, 0}
+	}
+	return out, nil
 }

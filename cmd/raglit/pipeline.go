@@ -96,8 +96,18 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home) {
 	}
 }
 
+// embedClientForProbe is the embed client with the same batch retry policy as
+// ingest. The embedder was the ONE client built without it, which is why its
+// failures logged a different retry cap than the OCR client and sent an
+// investigation down the wrong path.
+func (f *llmFlags) embedClientForProbe() *llm.Client {
+	c := llm.NewClient(*f.url, *f.key, *f.embedModel)
+	c.Retry5xxAttempts = visionRetry5xxAttempts
+	return c
+}
+
 func (f *llmFlags) embedder() *raglit.Embedder {
-	return raglit.NewEmbedder(llm.NewClient(*f.url, *f.key, *f.embedModel), *f.embedModel)
+	return raglit.NewEmbedder(f.embedClientForProbe(), *f.embedModel)
 }
 
 // buildImageEmbedder returns a figure IMAGE embedder from config (nomic-vision),

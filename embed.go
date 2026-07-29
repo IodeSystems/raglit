@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Semantic (vector) search — the opt-in tier above BM25.
@@ -214,4 +216,99 @@ func decodeVec(b []byte) []float32 {
 		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:]))
 	}
 	return v
+}
+
+// embedLimitKey names the stored probe for one model. Keyed by model because
+// the limit is a property of the model, and a number probed for one is a guess
+// about another.
+func embedLimitKey(model string) string { return "embed_limit_chars:" + model }
+
+// Meta reads a per-index setting.
+func (s *Store) Meta(key string) (string, bool) {
+	var v string
+	if err := s.db.QueryRow(`SELECT value FROM index_meta WHERE key = ?`, key).Scan(&v); err != nil {
+		return "", false
+	}
+	return v, true
+}
+
+// SetMeta records a per-index setting.
+func (s *Store) SetMeta(key, value string, now int64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO index_meta (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		key, value, now)
+	return err
+}
+
+// EmbedLimitChars returns the largest single input this index's embed model
+// accepts, probing once and remembering the answer.
+//
+// Discovered rather than configured, because it is a fact about the endpoint. It
+// was previously left at zero here — meaning "unknown", which ResolveFragParams
+// reads as "no cap" — so fragments were sized by taste (9000 characters) with
+// nothing checking them against what the model would take. The first symptom was
+// a document failing with a 500 about batch sizes.
+//
+// `configured` wins when set: an operator who knows the number should not have
+// to wait for a probe, and an endpoint that silently truncates cannot be probed
+// at all.
+func (s *Store) EmbedLimitChars(ctx context.Context, e *Embedder, configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	if e == nil || e.Model == "" {
+		return 0
+	}
+	key := embedLimitKey(e.Model)
+	if v, ok := s.Meta(key); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	n, err := e.DiscoverEmbedLimit(ctx)
+	if err != nil || n <= 0 {
+		// Unprobeable endpoints exist. Record nothing and carry on uncapped
+		// rather than guessing a limit that would silently split good fragments.
+		return 0
+	}
+	_ = s.SetMeta(key, strconv.Itoa(n), time.Now().Unix())
+	return n
+}
+
+// OversizedDocs lists documents holding a fragment larger than limit, with the
+// worst offender's size. These are the documents whose fragments were cut to a
+// standard the embed model does not accept.
+func (s *Store) OversizedDocs(limit int) (map[string]int, error) {
+	out := map[string]int{}
+	if limit <= 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT d.path, MAX(LENGTH(f.text)) AS worst
+		   FROM fragments f JOIN documents d ON d.id = f.doc_id
+		  GROUP BY d.id HAVING worst > ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		var n int
+		if err := rows.Scan(&p, &n); err != nil {
+			return nil, err
+		}
+		out[p] = n
+	}
+	return out, rows.Err()
+}
+
+// MarkForReingest clears a document's content hash so the next ingest redoes it.
+//
+// The hash is the dedup lever, so clearing it is the least destructive way to
+// force a re-read: the document row, its fragments and its OCR page cache all
+// survive, and the pages already transcribed are not read again.
+func (s *Store) MarkForReingest(path string) error {
+	_, err := s.db.Exec(`UPDATE documents SET content_hash = '' WHERE path = ?`, path)
+	return err
 }

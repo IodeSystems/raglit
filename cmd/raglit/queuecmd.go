@@ -66,11 +66,19 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	w := &raglit.Worker{Store: store}
 	// Deterministic text fragmenter params (config-or-default), with the fragment
 	// ceiling capped by the embed model's probed input limit.
+	// The embed model's input limit is DISCOVERED, not configured: it is a fact
+	// about the endpoint, and leaving it at zero means "no cap", which is how
+	// fragments came to be sized by taste with nothing checking them.
+	embedLimit := cfg.EmbedLimitChars
+	if *lf.embedModel != "" {
+		embedLimit = store.EmbedLimitChars(context.Background(),
+			raglit.NewEmbedder(lf.embedClientForProbe(), *lf.embedModel), cfg.EmbedLimitChars)
+	}
 	w.Frag = raglit.FragConfig{
 		Window:       cfg.FragWindow,
 		Stride:       cfg.FragStride,
 		Floor:        cfg.FragFloor,
-		EmbedLimit:   cfg.EmbedLimitChars,
+		EmbedLimit:   embedLimit,
 		FigurePrompt: raglit.FigurePromptVersion(),
 	}
 	if *lf.visionModel != "" {

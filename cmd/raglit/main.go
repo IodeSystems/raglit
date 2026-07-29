@@ -66,6 +66,8 @@ func main() {
 		err = runDemo(os.Args[2:])
 	case "pagify":
 		err = runPagify(os.Args[2:])
+	case "refragment":
+		err = runRefragment(os.Args[2:])
 	case "regions":
 		err = runRegions(os.Args[2:])
 	case "ocr":
@@ -119,6 +121,8 @@ usage:
   # --embedded (or --db) opts out for a single-session in-process index
   # add --daemon URL (or $RAGLIT_DAEMON) to ingest/search/status to call a daemon
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
+  raglit refragment [--dry-run]              re-ingest documents whose fragments are
+                larger than the embed model accepts (probes the limit, stores it)
   raglit regions [--page N] [--depth D] FILE   read a page as a TREE of regions —
                 for a sheet whose text is too small to survive one look. Asks the
                 model what is here and where to look closer, and descends.
