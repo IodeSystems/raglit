@@ -72,6 +72,8 @@ func main() {
 		err = runRegions(os.Args[2:])
 	case "region":
 		err = runRegion(os.Args[2:])
+	case "attest":
+		err = runAttest(os.Args[2:])
 	case "ocr":
 		err = runOcr(os.Args[2:])
 	case "transcribe":
@@ -133,6 +135,10 @@ usage:
                 a passage was read from: same bbox, same rotation, same dpi, and a
                 digest check that it IS that image. PNG to stdout, or --out FILE.
                 --locate says which region a quotation came from
+  raglit attest [--port N] FILE              hand a recorded region read to a person:
+                serves a review where each region can be confirmed, corrected or
+                marked unreadable, beside the exact crop its text was read from.
+                Verdicts append to <doc>.attest.jsonl; the region read is untouched
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
   raglit transcribe [--write] FILE...        page-delineated markdown of a document
                 (--write puts <doc>.raglit-transcription.md beside it; index option
