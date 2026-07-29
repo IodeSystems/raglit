@@ -34,8 +34,14 @@ import (
 // Rect is a region of a page in normalized coordinates — 0..1 of the page's
 // width and height. Normalized rather than pixels so a region survives being
 // re-rendered at a different dpi, which is exactly what a transform does.
+//
+// Lowercase in JSON, matching RegionProposal: the model answers in x/y/w/h and
+// the record has no business spelling the same four numbers differently.
 type Rect struct {
-	X, Y, W, H float64
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
 }
 
 func (r Rect) area() float64 { return r.W * r.H }
