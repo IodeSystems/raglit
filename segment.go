@@ -123,7 +123,7 @@ func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback 
 			// free to reproduce the loop despite the new instruction.
 			opts = loopBreakSampling(opts)
 			msgs = append(msgs,
-				llm.Message{Role: "assistant", Content: out},
+				llm.Message{Role: "assistant", Content: excerptForRetry(out)},
 				llm.Message{Role: "user", Content: fmt.Sprintf(
 					"Your answer was cut off: %v. Do NOT repeat any block of text. "+
 						"Emit each fragment once and output ONLY the JSON object %s.",
@@ -144,7 +144,7 @@ func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback 
 		}
 		// Re-prompt with the specific failure.
 		msgs = append(msgs,
-			llm.Message{Role: "assistant", Content: out},
+			llm.Message{Role: "assistant", Content: excerptForRetry(out)},
 			llm.Message{Role: "user", Content: fmt.Sprintf(
 				"That was not valid: %v. Output ONLY the JSON object %s.",
 				lastErr, `{"continues_previous":<bool>,"fragments":[{"text":"..."}]}`)},
@@ -156,6 +156,30 @@ func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback 
 		fb = strings.TrimSpace(last)
 	}
 	return SegResult{ContinuesPrevious: false, Fragments: []Segment{{Text: fb}}}, nil
+}
+
+// retryExcerptChars bounds what a re-prompt quotes back at the model.
+//
+// Three attempts, each appending the previous answer IN FULL, is unbounded
+// growth on exactly the input that triggers it: a cut generation is cut because
+// it ran long, and `maxTokensFor` scales that cap to the window, so the failing
+// answer is the biggest one. Measured on a live corpus, twelve jobs died at
+// "request (180273 tokens) exceeds the available context size (180224)" — the
+// fix loop, not the document, filled the context.
+//
+// A bounded excerpt keeps what the re-prompt is for. The model needs to see
+// THAT its answer was malformed and roughly how; it does not need its own
+// twenty thousand tokens of repetition read back to it. This also brings the
+// segmenter in line with the OCR path, which deliberately does not re-anchor a
+// retry on a bad generation.
+const retryExcerptChars = 800
+
+// excerptForRetry is the head of a failed answer, marked when truncated.
+func excerptForRetry(s string) string {
+	if len(s) <= retryExcerptChars {
+		return s
+	}
+	return s[:retryExcerptChars] + "\n…[truncated: the rest of this answer is not repeated back to you]"
 }
 
 // segPrompt is the segmentation instruction, with the open fragment appended

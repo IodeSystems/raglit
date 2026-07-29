@@ -254,3 +254,70 @@ func TestSinglePageFragmentStoresNoSpans(t *testing.T) {
 		t.Error("nothing should be persisted for a single-page fragment")
 	}
 }
+
+// growingChatter records the total prompt bytes of every attempt, so a test can
+// assert the fix loop does not feed the model its own failures back.
+type growingChatter struct {
+	promptBytes []int
+	replies     []string
+	n           int
+}
+
+func (g *growingChatter) ChatStream(_ context.Context, msgs []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	total := 0
+	for _, m := range msgs {
+		total += len(m.Content)
+		for _, p := range m.Parts {
+			total += len(p.Text)
+		}
+	}
+	g.promptBytes = append(g.promptBytes, total)
+	r := g.replies[min(g.n, len(g.replies)-1)]
+	g.n++
+	return streamReply(r), nil
+}
+
+// The fix loop used to append each failed answer IN FULL. On the input that
+// triggers it — a cut generation, cut because it ran long — that is unbounded
+// growth, and twelve jobs on a live corpus died at "request (180273 tokens)
+// exceeds the available context size (180224)". The document was not the
+// problem; the retry was.
+func TestSegmenterFixLoopDoesNotGrowTheContextByTheFailedAnswer(t *testing.T) {
+	huge := strings.Repeat("NOT JSON. ", 6000) // ~60 KB per failed answer
+	gc := &growingChatter{replies: []string{huge, huge, huge}}
+	sg := NewSegmenter(gc)
+
+	if _, err := sg.SegmentText(context.Background(), "a page of text", ""); err != nil {
+		t.Fatalf("segmentation should fall back, not error: %v", err)
+	}
+	if len(gc.promptBytes) < 3 {
+		t.Fatalf("expected the fix loop to retry, saw %d attempts", len(gc.promptBytes))
+	}
+	first, last := gc.promptBytes[0], gc.promptBytes[len(gc.promptBytes)-1]
+	// Each retry may add a bounded excerpt plus an instruction; it must not add
+	// the whole answer. Two retries of a 60 KB answer would be +120 KB.
+	if grew := last - first; grew > 8*retryExcerptChars {
+		t.Errorf("the fix loop grew the prompt by %d bytes across %d attempts — "+
+			"it is feeding failed answers back in full", grew, len(gc.promptBytes))
+	}
+}
+
+// The excerpt still has to carry enough for the model to see what it did.
+func TestExcerptForRetryKeepsTheHeadAndMarksTheCut(t *testing.T) {
+	short := "{\"fragments\":[]}"
+	if got := excerptForRetry(short); got != short {
+		t.Errorf("a short answer must pass through unchanged, got %q", got)
+	}
+	long := strings.Repeat("x", retryExcerptChars*3)
+	got := excerptForRetry(long)
+	if len(got) >= len(long) {
+		t.Error("a long answer was not truncated")
+	}
+	if !strings.HasPrefix(got, strings.Repeat("x", 100)) {
+		t.Error("the head of the answer was not kept")
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Error("the truncation was not marked, so the model cannot tell it was cut")
+	}
+}
