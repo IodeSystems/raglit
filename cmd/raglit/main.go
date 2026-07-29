@@ -50,6 +50,8 @@ func main() {
 		err = runWatch(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "retry":
+		err = runRetry(os.Args[2:])
 	case "work":
 		err = runWork(os.Args[2:])
 	case "search":
@@ -98,6 +100,8 @@ usage:
                 (daemon only; namespaced + scoped to this project)
   raglit watch  [start|list|stop]            daemon auto re-ingests this project's
                 roots on change (config "watch":true; sync auto-registers)
+  raglit retry  [--home DIR] [--dry-run] [--match S]   requeue failed ingest jobs
+                (skips jobs whose file is gone — a rename outlives the row)
   raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"

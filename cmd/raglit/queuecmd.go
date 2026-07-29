@@ -314,3 +314,89 @@ func firstSentence(s string) string {
 	}
 	return s
 }
+
+// runRetry requeues failed ingest jobs.
+//
+// The case this exists for: a transient outage — the vision model unloaded
+// during a restart — failed 72 PDFs in one window with "pdf ingest needs a
+// vision model". Nothing surfaced `RetryJob`, so recovering meant reading URLs
+// out of SQLite by hand and feeding them back to `ingest`.
+//
+// A vanished path is SKIPPED, not fatal. Failed rows outlive renames, and
+// `ingest` aborts on the first missing file — one stale path in a batch of 122
+// killed the whole retry. Reporting the skips is the point: after a rename
+// sweep, "11 gone" is the answer, not an error.
+func runRetry(args []string) error {
+	fs := flag.NewFlagSet("retry", flag.ExitOnError)
+	openStore, _ := addStoreFlags(fs)
+	dryRun := fs.Bool("dry-run", false, "list what would be requeued, change nothing")
+	state := fs.String("state", "error", "which state to requeue: error|done")
+	limit := fs.Int("limit", 0, "cap how many are requeued (0 = all)")
+	match := fs.String("match", "", "only jobs whose error contains this substring")
+	fs.Parse(args)
+
+	store, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	jobs, err := store.Jobs(*state, 100000)
+	if err != nil {
+		return err
+	}
+
+	var requeued, missing, filtered int
+	for _, j := range jobs {
+		if *match != "" && !strings.Contains(j.Error, *match) {
+			filtered++
+			continue
+		}
+		if p := localPath(j.URL); p != "" {
+			if _, err := os.Stat(p); err != nil {
+				missing++
+				fmt.Printf("  gone     %s\n", p)
+				continue
+			}
+		}
+		if *limit > 0 && requeued >= *limit {
+			break
+		}
+		if *dryRun {
+			fmt.Printf("  would    #%d %s\n", j.ID, j.URL)
+			requeued++
+			continue
+		}
+		if err := store.RetryJob(j.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "  failed   #%d: %v\n", j.ID, err)
+			continue
+		}
+		requeued++
+	}
+
+	verb := "requeued"
+	if *dryRun {
+		verb = "would requeue"
+	}
+	fmt.Printf("%s %d · %d gone (skipped)", verb, requeued, missing)
+	if filtered > 0 {
+		fmt.Printf(" · %d filtered out by --match", filtered)
+	}
+	fmt.Println()
+	if missing > 0 {
+		fmt.Println("  gone = the row outlived the file, usually a rename. Nothing to do.")
+	}
+	return nil
+}
+
+// localPath returns the filesystem path a job URL refers to, or "" when the job
+// is not a local file (http(s) targets have nothing to stat).
+func localPath(u string) string {
+	switch {
+	case strings.HasPrefix(u, "file://"):
+		return strings.TrimPrefix(u, "file://")
+	case strings.HasPrefix(u, "/"):
+		return u
+	}
+	return ""
+}
