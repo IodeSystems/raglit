@@ -12,6 +12,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,8 @@ func main() {
 		err = runWatch(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "reread":
+		err = runReread(os.Args[2:])
 	case "retry":
 		err = runRetry(os.Args[2:])
 	case "work":
@@ -105,6 +108,9 @@ usage:
   raglit watch  [start|list|stop]            daemon auto re-ingests this project's
                 roots on change (config "watch":true; sync auto-registers)
   raglit retry  [--home DIR] [--dry-run] [--match S]   requeue failed ingest jobs
+  raglit reread [--suspect] [--dry-run] <path>...      purge cached page OCR and read again
+                                                       (a re-index alone CANNOT fix a bad read —
+                                                        the page cache returns the same answer)
                 (skips jobs whose file is gone — a rename outlives the row)
   raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
@@ -350,4 +356,95 @@ func clip(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// runReread purges the cached page OCR for a document and reads it again.
+//
+// `raglit index` on a document whose OCR was wrong is a NO-OP: the page cache is
+// keyed by the image's SHA, so the same pixels get the same answer back. That is
+// right when the answer was right, and it is why re-ingesting a 200-page scan is
+// free — but it means a bad read is permanent until somebody purges it, and
+// nothing offered a way to. Observed: five documents re-indexed to fix
+// watermark-only reads, four "completed" in twenty seconds, not one byte changed.
+//
+// Purge, then hand off to runIndex. Deliberately NOT a second ingest path — the
+// point is to make the normal path do the work again, and a parallel pipeline
+// here would be one more thing to keep in step with the real one.
+//
+// --suspect takes its targets from the transcription plausibility check instead
+// of making somebody name them, which is the pairing that makes the check worth
+// having.
+func runReread(args []string) error {
+	// Split our own flags out and pass everything else through to index, so
+	// --home, --index, --model and friends keep working without being restated.
+	var passthrough, targets []string
+	suspectRoot, dry := "", false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--dry-run", a == "-dry-run":
+			dry = true
+		case strings.HasPrefix(a, "--suspect="), strings.HasPrefix(a, "-suspect="):
+			suspectRoot = a[strings.Index(a, "=")+1:]
+		case a == "--suspect", a == "-suspect":
+			if i+1 < len(args) {
+				i++
+				suspectRoot = args[i]
+			}
+		case strings.HasPrefix(a, "-"):
+			passthrough = append(passthrough, a)
+			// A flag that takes a value: keep the value with it.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && strings.Contains(a, "=") == false {
+				i++
+				passthrough = append(passthrough, args[i])
+			}
+		default:
+			targets = append(targets, a)
+		}
+	}
+
+	if suspectRoot != "" {
+		found, err := raglit.SuspectDocs(suspectRoot)
+		if err != nil {
+			return err
+		}
+		for doc, pages := range found {
+			fmt.Printf("  page(s) %v look wrong: %s\n", pages, doc)
+			targets = append(targets, doc)
+		}
+		if len(targets) == 0 {
+			fmt.Println("no suspect transcriptions under", suspectRoot)
+			return nil
+		}
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("reread: name a document, or pass --suspect DIR")
+	}
+	if dry {
+		fmt.Printf("would re-read %d document(s)\n", len(targets))
+		return nil
+	}
+
+	// Purge first, with a store opened only for that, then close it before index
+	// opens its own — two writers on one sqlite file is a lock fight for no gain.
+	purge := flag.NewFlagSet("reread-purge", flag.ContinueOnError)
+	purge.SetOutput(io.Discard)
+	openStore, _ := addStoreFlags(purge)
+	_ = purge.Parse(passthrough)
+	store, err := openStore()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	for _, t := range targets {
+		n, err := store.PurgeDocPageCache(ctx, t)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %v\n", err)
+			continue
+		}
+		fmt.Printf("  purged %d cached page(s): %s\n", n, t)
+	}
+	store.Close()
+
+	return runIndex(append(passthrough, targets...))
 }
