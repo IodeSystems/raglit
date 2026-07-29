@@ -31,6 +31,7 @@ func runRegions(args []string) error {
 	depth := fs.Int("depth", 3, "maximum descent depth")
 	calls := fs.Int("max-calls", 40, "model calls allowed for the whole page")
 	asJSON := fs.Bool("json", false, "emit the region tree as JSON")
+	write := fs.Bool("write", false, "record the read in <doc>.raglit-regions.json beside the document")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: raglit regions [flags] FILE")
@@ -59,8 +60,21 @@ func runRegions(args []string) error {
 		MaxDepth: *depth, MaxCalls: *calls,
 	}
 	root, rerr := rr.Read(context.Background(), img, *page)
-	// A partial tree is still worth printing: the whole design is that a failed
-	// descent costs detail rather than coverage.
+	// A partial tree is still worth printing — and worth RECORDING: the whole
+	// design is that a failed descent costs detail rather than coverage, and a
+	// region that was read before the failure has text somebody may have to
+	// attest.
+	if *write {
+		text, spans := raglit.RegionTranscript(root)
+		out, werr := raglit.WriteRegionDoc(path, raglit.RegionPage{
+			Page: *page, WidthIn: wIn, HeightIn: hIn, DPI: *dpi,
+			PxW: b.Dx(), PxH: b.Dy(), Root: root, Text: text, Spans: spans,
+		})
+		if werr != nil {
+			return werr
+		}
+		fmt.Fprintf(os.Stderr, "recorded %d region(s) → %s\n", len(root.Flatten()), out)
+	}
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
