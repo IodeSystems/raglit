@@ -34,6 +34,10 @@ type Embedder struct {
 	Model       string
 	DocPrefix   string
 	QueryPrefix string
+	// BatchLimitChars caps ONE embed request's total input. 0 → a conservative
+	// default. The server's limit applies to the whole request, so this bounds
+	// the batch, not the individual fragment.
+	BatchLimitChars int
 }
 
 // NewEmbedder builds an Embedder with the nomic prefixes.
@@ -46,20 +50,65 @@ func NewEmbedder(c VectorClient, model string) *Embedder {
 	}
 }
 
+// defaultEmbedBatchChars bounds ONE embed request.
+//
+// The server applies its batch limit to the WHOLE request, not to each input.
+// llama.cpp reports it as: "input (35871 tokens) is too large to process.
+// increase the physical batch size (current batch size: 8192)" — and 35871 is
+// sixteen ordinary fragments added together, not one big one. The caller was
+// batching by ITEM COUNT, so a document with large fragments overflowed a limit
+// nothing was measuring.
+//
+// Sized in characters because that is what the caller has without tokenizing:
+// ~3 chars per token against an 8192-token batch, with headroom for the
+// DocPrefix each input carries. Override with BatchLimitChars when the endpoint
+// is known to allow more.
+const defaultEmbedBatchChars = 24000
+
+// batchLimitChars is the effective per-request character budget.
+func (e *Embedder) batchLimitChars() int {
+	if e.BatchLimitChars > 0 {
+		return e.BatchLimitChars
+	}
+	return defaultEmbedBatchChars
+}
+
 // EmbedDocs embeds document fragments (DocPrefix), normalized.
+//
+// Splits into as many requests as the endpoint's batch budget needs. Chunking
+// lives HERE rather than at the call sites so every caller is covered by
+// construction — there are three, and the one that overflowed was the only one
+// anybody would have thought to fix.
 func (e *Embedder) EmbedDocs(ctx context.Context, texts []string) ([][]float32, error) {
 	in := make([]string, len(texts))
 	for i, t := range texts {
 		in[i] = e.DocPrefix + t
 	}
-	vecs, err := e.Client.Embed(ctx, e.Model, in)
-	if err != nil {
-		return nil, err
+	budget := e.batchLimitChars()
+	out := make([][]float32, 0, len(in))
+	for start := 0; start < len(in); {
+		end, n := start, 0
+		for end < len(in) {
+			// An input larger than the whole budget still goes, alone. It will
+			// fail if the endpoint really cannot take it, and that is a genuine
+			// error about that fragment rather than a batching artefact.
+			if end > start && n+len(in[end]) > budget {
+				break
+			}
+			n += len(in[end])
+			end++
+		}
+		vecs, err := e.Client.Embed(ctx, e.Model, in[start:end])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vecs...)
+		start = end
 	}
-	for _, v := range vecs {
+	for _, v := range out {
 		normalize(v)
 	}
-	return vecs, nil
+	return out, nil
 }
 
 // EmbedQuery embeds a search query (QueryPrefix), normalized.
