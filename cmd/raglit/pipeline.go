@@ -54,8 +54,24 @@ func (f *llmFlags) requireEmbed() error {
 }
 
 func (f *llmFlags) visionClient() *llm.Client {
-	return llm.NewClient(*f.url, *f.key, *f.visionModel)
+	c := llm.NewClient(*f.url, *f.key, *f.visionModel)
+	// Ingest is a BATCH, not a chat turn, and agentkit's default 5xx cap of five
+	// attempts is tuned for the latter. A 33-page document is ~33 requests, so
+	// one upstream blip outlasting ~15s of backoff kills the whole document —
+	// measured on a real corpus, nothing over 20 pages ever completed.
+	//
+	// The wall clock is still bounded by RetryBudget, which is the guard that
+	// should bind here. Raising attempts trades a longer wait on a sick upstream
+	// for finishing the document, which for a transcription backlog is the right
+	// trade: the alternative is not "fail fast", it is "re-read 30 pages".
+	c.Retry5xxAttempts = visionRetry5xxAttempts
+	return c
 }
+
+// visionRetry5xxAttempts rides out an upstream episode of roughly two minutes.
+// With exponential backoff capped at 30s the schedule is about
+// 1+2+4+8+16+30+30+30s; RetryBudget still stops it after that.
+const visionRetry5xxAttempts = 9
 
 // attachCheapOCR enables the cascade's cheap first-pass engine on an OCR from the
 // home's config (config.OCR). A misconfigured engine degrades to VLM-only with a

@@ -2,7 +2,9 @@ package raglit
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -124,6 +126,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	var pages []resolvedPage
 	var provenance []stagedPage
 	ocrEngines := map[string]int{}
+	cachedHits := 0
 	sawVision := false
 	for _, u := range units {
 		text := u.text
@@ -132,10 +135,15 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 				sl.Fail("ocr", "", fmt.Errorf("page %d is an image but no OCR is configured", u.page))
 				return 0, "", fmt.Errorf("page %d is an image but no OCR is configured", u.page)
 			}
-			t, engine, err := ocr.PageWithEngine(ctx, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
+			t, engine, fromCache, err := s.ocrPageCached(ctx, ocr, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
 			if err != nil {
-				sl.Fail("ocr", engine, err)
+				// Pages already transcribed on this run are in the cache, so the
+				// retry resumes here rather than starting the document again.
+				sl.Fail("ocr", engine, fmt.Errorf("page %d: %w (%d page(s) already cached and will not be re-read)", u.page, err, cachedHits))
 				return 0, "", err
+			}
+			if fromCache {
+				cachedHits++
 			}
 			text = t
 			ocrEngines[engine]++
@@ -178,7 +186,11 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		for _, c := range ocrEngines {
 			n += c
 		}
-		sl.Done("ocr", engineSummary(ocrEngines), fmt.Sprintf("%d page(s)", n))
+		msg := fmt.Sprintf("%d page(s)", n)
+		if cachedHits > 0 {
+			msg += fmt.Sprintf(", %d from cache", cachedHits)
+		}
+		sl.Done("ocr", engineSummary(ocrEngines), msg)
 	}
 
 	// Concurrent embed pipeline (only when a store has an embedder). It embeds
@@ -504,4 +516,55 @@ func DecodePageSpans(s string) []PageSpan {
 		return nil
 	}
 	return out
+}
+
+// pageImageSHA identifies a page by the bytes the model would see.
+func pageImageSHA(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// cachedPageOCR returns a previously transcribed page, if this exact image has
+// been read before.
+func (s *Store) cachedPageOCR(sha string) (text, engine string, ok bool) {
+	row := s.db.QueryRow(`SELECT text, engine FROM ocr_page_cache WHERE img_sha = ?`, sha)
+	if err := row.Scan(&text, &engine); err != nil {
+		return "", "", false
+	}
+	return text, engine, true
+}
+
+// putPageOCR records a transcribed page so a later failure does not throw it
+// away. Best-effort: a cache write must never fail an ingest that succeeded.
+func (s *Store) putPageOCR(sha, engine, text string, now int64) {
+	_, _ = s.db.Exec(
+		`INSERT INTO ocr_page_cache (img_sha, engine, text, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(img_sha) DO UPDATE SET engine = excluded.engine, text = excluded.text`,
+		sha, engine, text, now)
+}
+
+// ocrPageCached is OCR with the page cache in front of it.
+//
+// This is what makes a long document survivable. The transcription of a page is
+// a pure function of the page image, so a page read once never needs reading
+// again — and after a failure the retry resumes at the first page it has not
+// already done instead of starting over.
+//
+// An empty transcription is NOT cached. A page that legitimately has no text is
+// indistinguishable here from a page whose OCR returned nothing because the
+// upstream was unwell, and caching the second one would make a transient failure
+// permanent.
+func (s *Store) ocrPageCached(ctx context.Context, ocr *OCR, img PageImage) (text, engine string, cached bool, err error) {
+	sha := pageImageSHA(img.Data)
+	if t, e, ok := s.cachedPageOCR(sha); ok {
+		return t, e, true, nil
+	}
+	t, e, err := ocr.PageWithEngine(ctx, img)
+	if err != nil {
+		return "", e, false, err
+	}
+	if strings.TrimSpace(t) != "" {
+		s.putPageOCR(sha, e, t, time.Now().Unix())
+	}
+	return t, e, false, nil
 }

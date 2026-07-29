@@ -2,8 +2,11 @@ package raglit
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/iodesystems/agentkit/llm"
 )
 
 func TestIngestUnits_SegmentedWithContinuationAndEmbed(t *testing.T) {
@@ -201,5 +204,135 @@ func TestPageBoundariesRoundTripThroughTheStore(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("%d page-spanning fragments were computed but %d came back from the DB", want, got)
+	}
+}
+
+// flakyOCR fails the Nth page once, then succeeds on every later call. It counts
+// how many times the model was actually asked, which is what the cache changes.
+type flakyOCR struct {
+	failOnCall int
+	calls      int
+}
+
+func (f *flakyOCR) ChatStream(_ context.Context, _ []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	f.calls++
+	if f.calls == f.failOnCall {
+		return nil, fmt.Errorf("llm: status 500 (after 4 retries)")
+	}
+	return streamReply(fmt.Sprintf("page text %d", f.calls)), nil
+}
+
+func imageUnits(n int) []ingestUnit {
+	u := make([]ingestUnit, 0, n)
+	for i := 1; i <= n; i++ {
+		// Distinct bytes per page, so each has its own cache key.
+		u = append(u, ingestUnit{page: i, mime: "image/png", data: []byte(fmt.Sprintf("PNGPAGE%03d", i))})
+	}
+	return u
+}
+
+// The failure this exists for: a document that dies partway used to discard
+// every page it had already transcribed, and the retry started at page 1.
+func TestIngestResumesFromTheOCRCacheAfterAFailure(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	units := imageUnits(6)
+	flaky := &flakyOCR{failOnCall: 5}
+	ocr := NewOCR(flaky)
+	// A SEPARATE client for segmentation, so flaky.calls counts OCR only. Sharing
+	// one stub made the segmenter's calls look like re-read pages.
+	seg := NewSegmenter(&stubChatter{reply: `{"continues_previous":false,"fragments":[{"text":"t"}]}`})
+
+	// First run dies on page 5.
+	if _, _, err := s.ingestUnits(context.Background(), seg, ocr,
+		"", "doc", units, FragConfig{}, nil); err == nil {
+		t.Fatal("expected the ingest to fail on page 5")
+	}
+	firstRunCalls := flaky.calls
+	if firstRunCalls != 5 {
+		t.Fatalf("expected 5 model calls before the failure, got %d", firstRunCalls)
+	}
+
+	// The four pages that succeeded must be on disk.
+	var cached int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ocr_page_cache`).Scan(&cached); err != nil {
+		t.Fatal(err)
+	}
+	if cached != 4 {
+		t.Fatalf("want 4 pages cached after failing on the 5th, got %d", cached)
+	}
+
+	// Second run must ask the model only for the pages it never got.
+	before := flaky.calls
+	if _, _, err := s.ingestUnits(context.Background(), seg, ocr,
+		"", "doc", units, FragConfig{}, nil); err != nil {
+		t.Fatalf("the retry should succeed: %v", err)
+	}
+	// Pages 1-4 come from the cache; only 5 and 6 reach the model.
+	if reread := flaky.calls - before; reread != 2 {
+		t.Errorf("the retry made %d OCR calls; want 2 (pages 5 and 6 only)", reread)
+	}
+}
+
+// A page is keyed by its IMAGE, so the same bytes under a different document or
+// page number are not re-read, and CHANGED bytes are.
+func TestOCRCacheIsKeyedOnThePageImage(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	stub := &stubChatter{reply: "transcribed"}
+	ocr := NewOCR(stub)
+
+	img := PageImage{Page: 1, Mime: "image/png", Data: []byte("SAMEBYTES")}
+	if _, _, cached, err := s.ocrPageCached(context.Background(), ocr, img); err != nil || cached {
+		t.Fatalf("first read should miss the cache (cached=%v err=%v)", cached, err)
+	}
+	// Same bytes, different page number and document: still the same page.
+	again := PageImage{Page: 9, Mime: "image/png", Data: []byte("SAMEBYTES")}
+	txt, _, cached, err := s.ocrPageCached(context.Background(), ocr, again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cached {
+		t.Error("identical page bytes were read twice")
+	}
+	if txt != "transcribed" {
+		t.Errorf("cached text = %q", txt)
+	}
+	// Different bytes must miss — a page that renders differently is a new page.
+	other := PageImage{Page: 1, Mime: "image/png", Data: []byte("OTHERBYTES")}
+	if _, _, cached, _ := s.ocrPageCached(context.Background(), ocr, other); cached {
+		t.Error("different page bytes hit the cache")
+	}
+}
+
+// An empty transcription is not cached: a page that genuinely has no text is
+// indistinguishable here from one whose OCR returned nothing because the
+// upstream was unwell, and caching the second makes a transient failure
+// permanent.
+func TestOCRCacheDoesNotStoreAnEmptyTranscription(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	empty := &stubChatter{reply: "   \n  "}
+	if _, _, _, err := s.ocrPageCached(context.Background(), NewOCR(empty),
+		PageImage{Page: 1, Mime: "image/png", Data: []byte("BLANKPAGE")}); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ocr_page_cache`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("an empty transcription was cached (%d rows)", n)
 	}
 }

@@ -87,6 +87,25 @@ CREATE TABLE IF NOT EXISTS job_stages (
   at      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS job_stages_job ON job_stages(job_id, seq);
+-- Page-level OCR cache, keyed by the SHA-256 of the PAGE IMAGE.
+--
+-- An ingest that fails on page 31 of 33 used to discard the thirty pages it had
+-- already transcribed, and the retry started again from page 1. Measured on a
+-- real corpus: every document over 20 pages failed that way and none ever
+-- completed, because ~33 requests is enough exposure that one upstream blip is
+-- near-certain, and a blip killed the whole document.
+--
+-- Keyed on the image bytes rather than on (document, page) deliberately. It is
+-- exactly the input the model saw, so it is correct across a renamed or moved
+-- file, and it MISSES when the page actually changes — which is when re-reading
+-- is the right answer. A page that renders differently is a different page.
+CREATE TABLE IF NOT EXISTS ocr_page_cache (
+  img_sha    TEXT PRIMARY KEY,
+  engine     TEXT NOT NULL DEFAULT '',
+  text       TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS ocr_pages (
   doc_id     INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   page       INTEGER NOT NULL,
