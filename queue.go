@@ -49,17 +49,73 @@ type Job struct {
 
 // Enqueue adds a pending ingest job for url and returns its id. It does not
 // fetch or index anything — a worker does that later (lazy).
+//
+// A url already waiting is NOT queued again; the existing job's id is returned.
+// Without this the queue inflates every time anything requeues — a watch fires,
+// a batch is re-run, a sweep is retried — and the work is done two and three
+// times over. Measured on the ardley corpus before the check: 162 queued rows
+// for 115 distinct documents, one court memorandum queued FIVE times, roughly
+// 29% of a nine-hour backlog that was pure repetition.
+//
+// Deduped against pending and running only, never against done. Re-indexing a
+// document that has changed is legitimate and must stay possible; what is never
+// useful is the same file sitting in the queue twice at once.
 func (s *Store) Enqueue(url, title string) (int64, error) {
 	if url == "" {
 		return 0, fmt.Errorf("raglit: enqueue: empty url")
 	}
-	id, err := s.q.EnqueueJob(context.Background(), gen.EnqueueJobParams{
+	// One transaction, so two callers racing on the same url cannot both see an
+	// empty queue and both insert.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("raglit: enqueue: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var existing int64
+	err = tx.QueryRow(
+		`SELECT id FROM ingest_jobs WHERE url = ? AND state IN ('pending','running') ORDER BY id LIMIT 1`,
+		url,
+	).Scan(&existing)
+	switch {
+	case err == nil:
+		return existing, tx.Commit()
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, fmt.Errorf("raglit: enqueue: %w", err)
+	}
+
+	id, err := gq(tx).EnqueueJob(context.Background(), gen.EnqueueJobParams{
 		Url: url, Title: title, EnqueuedAt: time.Now().UnixNano(),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("raglit: enqueue: %w", err)
 	}
-	return id, nil
+	return id, tx.Commit()
+}
+
+// DedupeQueue collapses duplicate pending jobs for the same url, keeping the
+// oldest, and returns how many rows it removed.
+//
+// For queues that grew before Enqueue deduped. A running job is left alone: a
+// worker owns it, and deleting a row out from under one is how a job ends up
+// stuck in `running` forever with nothing to finish it.
+func (s *Store) DedupeQueue() (int, error) {
+	res, err := s.db.Exec(`
+		DELETE FROM ingest_jobs
+		WHERE state = 'pending'
+		  AND id NOT IN (
+		    SELECT MIN(id) FROM ingest_jobs WHERE state = 'pending' GROUP BY url
+		  )
+		  AND url IN (
+		    SELECT url FROM ingest_jobs WHERE state = 'running'
+		    UNION
+		    SELECT url FROM ingest_jobs WHERE state = 'pending'
+		  )`)
+	if err != nil {
+		return 0, fmt.Errorf("raglit: dedupe: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // claimNextJob atomically moves the oldest pending job to running and returns
