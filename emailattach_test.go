@@ -254,6 +254,43 @@ func TestSafeNameKeepsTheExtensionAndInventsOneWhenItMust(t *testing.T) {
 	}
 }
 
+// An attachment that declared no filename must still land with an extension
+// its media type justifies. Without one an unnamed PDF extracts as a suffixless
+// file, ClassifyDoc calls it KindUnknown, and no sync ever indexes it — which
+// silently undoes the whole point of extracting it.
+func TestUnnamedAttachmentGetsAnExtensionFromItsMediaType(t *testing.T) {
+	eml := "From: a@example.com\r\nSubject: X\r\n" +
+		"Content-Type: multipart/mixed; boundary=B\r\n\r\n" +
+		"--B\r\nContent-Type: text/plain\r\n\r\nTwo unnamed parts follow.\r\n" +
+		"--B\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment\r\n" +
+		"Content-Transfer-Encoding: base64\r\n\r\n" + b64("%PDF-1.4 unnamed") + "\r\n" +
+		"--B\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment\r\n" +
+		"Content-Transfer-Encoding: base64\r\n\r\n" + b64("opaque") + "\r\n" +
+		"--B--\r\n"
+	arc := writeArchive(t, eml)
+	_, dir, err := ExtractEmailAttachments(arc, arc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := dirNames(t, dir)
+	want := []string{"MANIFEST.md", "p01-01-unnamed.pdf", "p01-02-unnamed.bin"}
+	if strings.Join(names, " ") != strings.Join(want, " ") {
+		t.Fatalf("extracted %v, want %v", names, want)
+	}
+	// The extension is not decoration — it is what routes the file.
+	if k := ClassifyDoc(filepath.Join(dir, "p01-01-unnamed.pdf"), ""); k != KindPDF {
+		t.Errorf("an unnamed PDF extracted as %v, so no sync will read it as a PDF", k)
+	}
+	// And the manifest still says the message declared nothing.
+	b, err := os.ReadFile(filepath.Join(dir, manifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "none declared") {
+		t.Errorf("manifest invented a declared name:\n%s", b)
+	}
+}
+
 // An archive with nothing attached must not leave an empty directory sitting in
 // the corpus.
 func TestArchiveWithNoAttachmentsLeavesNoDirectory(t *testing.T) {

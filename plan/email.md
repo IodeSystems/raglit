@@ -117,16 +117,34 @@ Quoted-printable inside a multipart part was already correct, and stays correct:
 `multipart.Part` decodes it AND removes the header, so re-reading the header
 cannot double-decode. `TestQuotedPrintableIsNotDecodedTwice` pins that.
 
-## Not done
+## Limits, stated rather than discovered later
 
 - **Charset coverage is `golang.org/x/text/encoding/ianaindex`** (promoted to a
-  direct dependency), which covers the labels that appear in real mail. An
-  unrecognised label leaves the bytes alone: raw is recoverable, a wrong
-  transliteration is not.
+  direct dependency), which covers the labels that appear in real mail, in bodies
+  and in RFC 2047 encoded-words. An unrecognised label leaves the bytes alone:
+  raw is recoverable, a wrong transliteration is not. A *mis-declared* charset —
+  a Windows client claiming utf-8 — is not detected and cannot be, short of
+  guessing.
 - **Extraction re-parses the archive.** `EmailText` stays pure — the `ocr` MCP
   tool calls it and a read tool must not write files — so the attachment pass is a
   second walk. Milliseconds on 24 MB; not worth threading a sink through a
-  function two callers use differently.
-- **An mbox's pages are still all held in memory.** `[]PageText` is the return
-  type; the split streams, the result does not. Fine at mailbox scale, wrong at
-  mail-server scale. If that ever matters the return type is what has to change.
+  function whose two callers want opposite things from it.
+- **Memory is proportional to the archive, not to the largest message.**
+  `[]PageText` holds every page, extraction holds every attachment's bytes until
+  the directory is written, and an enclosed message is buffered where it is found
+  (that buffering is the truncation fix, not an oversight). The mbox *split*
+  streams — one message at a time, no `bufio.Scanner` 64 KB cap — but the result
+  does not. Fine at mailbox scale, wrong at mail-server scale; the return type is
+  what would have to change.
+- **Stale extracted files are reported, not deleted.** If an archive changes and
+  an attachment disappears, the old file stays on disk and simply stops appearing
+  in `MANIFEST.md`, which says so at the top. Deleting files out of somebody's
+  corpus is not a thing an indexer should do on a heuristic.
+- **A `From ` line that was never stuffed can still split a message.** The
+  blank-line guard covers the common case and nothing covers all of them —
+  mbox has no framing. A message split this way appears as two pages, the second
+  with no headers.
+- **Not attempted: S/MIME or PGP.** `multipart/signed` recurses, so a signed
+  message's text is read normally; an opaque `application/pkcs7-mime` or
+  `application/pgp-encrypted` part reads as an unnamed attachment carrying its
+  media type. Decrypting would mean holding keys, which raglit does not do.

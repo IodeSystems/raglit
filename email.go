@@ -60,6 +60,12 @@ type emailPart struct {
 // are recorded even when the bytes are not kept — "a 4 MB PDF called survey.pdf
 // was sent on this date" is itself evidence, and it is the only trace left when
 // extraction is off.
+//
+// Name is exactly what the message DECLARED, empty included. Substituting a
+// placeholder here would reach the extractor, which builds a filename from it
+// and would then have no idea it was free to invent an extension from the media
+// type — leaving an unnamed PDF on disk with no suffix and invisible to
+// discovery. The placeholder belongs at the point of display.
 type emailAttachment struct {
 	Name  string
 	Mime  string
@@ -144,7 +150,11 @@ func (a emailAttachment) describe() string {
 	if mt == "" {
 		mt = "unknown type"
 	}
-	return fmt.Sprintf("%s (%s, %d bytes)", a.Name, mt, a.Size)
+	name := a.Name
+	if name == "" {
+		name = "(unnamed)"
+	}
+	return fmt.Sprintf("%s (%s, %d bytes)", name, mt, a.Size)
 }
 
 // readArchive parses .eml or .mbox into flattened messages. keepBytes decides
@@ -475,9 +485,6 @@ func isAttachment(part *multipart.Part, pmt string) bool {
 // attachments of a 24 MB archive of scans costs a hash, not 24 MB of heap.
 func readAttachment(part *multipart.Part, pmt string, r io.Reader, keepBytes bool) emailAttachment {
 	a := emailAttachment{Name: decodeWord(part.FileName()), Mime: pmt}
-	if a.Name == "" {
-		a.Name = "(unnamed)"
-	}
 	var buf bytes.Buffer
 	var sink io.Writer = io.Discard
 	if keepBytes {

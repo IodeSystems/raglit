@@ -167,7 +167,7 @@ func citeMessage(page int, p emailPart) string {
 }
 
 func declaredName(a emailAttachment) string {
-	if a.Name == "" || a.Name == "(unnamed)" {
+	if a.Name == "" {
 		return "_(none declared)_"
 	}
 	return a.Name
