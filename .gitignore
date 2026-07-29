@@ -11,3 +11,5 @@
 
 # poly-lsp-mcp workspace cache
 /.poly-lsp-mcp/
+go.work
+go.work.sum
