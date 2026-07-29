@@ -104,6 +104,12 @@ func runDoctor(args []string) error {
 		fmt.Println("               per file, and serialises on one profile lock — antiword is")
 		fmt.Println("               the right size of tool for the job.")
 	}
+	if raglit.HaveHEIC() {
+		fmt.Println("  ✓ magick/convert — HEIC/HEIF (iPhone photos) → PNG for OCR")
+	} else {
+		fmt.Println("  · imagemagick missing — HEIC/HEIF photos won't be extracted (optional)")
+		fmt.Println("     install:  sudo apt-get install imagemagick")
+	}
 
 	// Verdict — which tiers are live.
 	fmt.Println("\nverdict:")

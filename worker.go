@@ -204,9 +204,23 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 			sl.Fail("extract", "image", err)
 			return 0, "", err
 		}
+		mime, data := mimeForExt(filepath.Ext(job.URL)), f.Data
+		// HEIC/HEIF needs a real file on disk — the converter is a CLI tool, not
+		// a library call — so only pay for writeTemp on the format that needs it.
+		if heicExts[strings.ToLower(filepath.Ext(job.URL))] {
+			path, cleanup, err := writeTemp(f.Data, strings.ToLower(filepath.Ext(job.URL)))
+			if err != nil {
+				return 0, "", err
+			}
+			defer cleanup()
+			if data, err = HEICToPNG(ctx, path); err != nil {
+				sl.Fail("extract", "image", err)
+				return 0, "", err
+			}
+			mime = "image/png"
+		}
 		sl.Done("extract", "image", "1 page")
-		mime := mimeForExt(filepath.Ext(job.URL))
-		units := []ingestUnit{{page: 1, mime: mime, data: f.Data}}
+		units := []ingestUnit{{page: 1, mime: mime, data: data}}
 		// ingestUnits OCRs the image → text, then fragments it (records ocr/segment/…).
 		return w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), w.OCR, job.URL, title, units, w.Frag, sl)
 

@@ -1,8 +1,10 @@
 package raglit
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,6 +41,13 @@ var (
 		".png": true, ".jpg": true, ".jpeg": true, ".tif": true, ".tiff": true,
 		".webp": true, ".gif": true, ".bmp": true,
 	}
+	// heicExts are Apple's HEIC/HEIF photos — every iPhone photo since iOS 11.
+	// Deliberately NOT in imageExts: the OCR path below (and the OCR/vision HTTP
+	// clients further downstream) reads raw bytes and calls it image/<ext>. None
+	// of tesseract (leptonica), the paddleocr sidecar, or a vision-model API
+	// accept image/heic — so unlike every other image extension, a HEIC file must
+	// be transcoded before it reaches that path, not just relabeled.
+	heicExts = map[string]bool{".heic": true, ".heif": true}
 	textExts = map[string]bool{".txt": true, ".md": true, ".markdown": true, ".text": true}
 	// legacyDocExts are pre-2007 binary Word documents. Deliberately NOT in
 	// officeExts: pandoc cannot read them — the format is an OLE2 compound file,
@@ -57,7 +66,7 @@ func ClassifyDoc(name, contentType string) DocKind {
 	switch {
 	case ext == ".pdf" || strings.Contains(ct, "application/pdf"):
 		return KindPDF
-	case imageExts[ext] || strings.HasPrefix(ct, "image/"):
+	case imageExts[ext] || heicExts[ext] || strings.HasPrefix(ct, "image/"):
 		return KindImage
 	case officeExts[ext] || legacyDocExts[ext]:
 		return KindOffice
@@ -97,6 +106,60 @@ func legacyDocTool() string {
 
 // HaveLegacyDoc reports whether a binary .doc converter is on PATH.
 func HaveLegacyDoc() bool { return legacyDocTool() != "" }
+
+// heicTools convert HEIC/HEIF, in preference order. Both are ImageMagick — v7's
+// `magick` first, v6's `convert` as a fallback for a machine that only has the
+// older package. Neither vips nor heif-convert is assumed installed.
+//
+// Both builds can only READ heic/heif (`magick -list format` reports `HEIC r--`,
+// `HEIF r--` — no encode delegate). Verified on this machine: asking either to
+// WRITE a .heic does not error out cleanly, it silently writes a plain PNG under
+// the .heic name and exits 0. That is only a hazard for code that tries to
+// PRODUCE heic; HEICToPNG below only ever reads one, so it does not hit it — but
+// it means neither tool is a candidate for round-tripping a test fixture, only
+// for decoding one.
+var heicTools = []string{"magick", "convert"}
+
+func heicTool() string {
+	for _, b := range heicTools {
+		if p := toolPath(b); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// HaveHEIC reports whether a HEIC/HEIF → PNG converter is on PATH.
+func HaveHEIC() bool { return heicTool() != "" }
+
+// HEICToPNG decodes a HEIC/HEIF photo to PNG bytes for the OCR path. PNG, not
+// JPEG: these are photographed surveys, plats, permits and correspondence headed
+// straight for OCR, and a second lossy generation ahead of OCR costs accuracy on
+// exactly the small print that matters — the first (HEIC's own) generation is
+// unavoidable, a second is not.
+//
+// -auto-orient matters and is not a no-op to skip: a phone's sensor is
+// landscape, and a portrait shot only reads right-side-up because of a rotation
+// signal carried alongside the pixels — an OCR pass over the raw sensor
+// orientation reads sideways text and transcribes it to nothing. HEIF carries
+// that signal two ways: a container-level irot/imir transform (the MIAF-compliant
+// mechanism nearly all camera-generated HEIC actually uses) or, occasionally, a
+// bare Exif Orientation tag as compatibility metadata. -auto-orient applies
+// either; ImageMagick's HEIC decoder historically only honored the container
+// form (github.com/ImageMagick/ImageMagick issue #1232, fixed by commit
+// ba470aad in the version this machine has), which is the form real camera
+// output actually carries, so this is not a synthetic concern.
+func HEICToPNG(ctx context.Context, path string) ([]byte, error) {
+	tool := heicTool()
+	if tool == "" {
+		return nil, fmt.Errorf("no HEIC/HEIF converter for %s (install imagemagick — `magick` or `convert`) — `raglit doctor` has the install hint", filepath.Ext(path))
+	}
+	out, err := exec.CommandContext(ctx, tool, path, "-auto-orient", "png:-").Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", filepath.Base(tool), filepath.Ext(path), err)
+	}
+	return out, nil
+}
 
 // pdfTextThreshold: a page's pdftotext output must carry at least this many
 // LETTERS AND DIGITS to count as a real text layer; below it the page is treated
@@ -242,11 +305,11 @@ func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error
 		}
 		return []PageText{{Page: 1, Text: strings.TrimSpace(text), Engine: "text"}}, nil
 	case KindImage:
-		data, err := os.ReadFile(path)
+		mime, data, err := imageUnitBytes(ctx, path)
 		if err != nil {
 			return nil, err
 		}
-		return unitsToPageText(ctx, []ingestUnit{{page: 1, mime: mimeForExt(filepath.Ext(path)), data: data}}, ocr)
+		return unitsToPageText(ctx, []ingestUnit{{page: 1, mime: mime, data: data}}, ocr)
 	default: // text / unknown
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -254,6 +317,20 @@ func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error
 		}
 		return []PageText{{Page: 1, Text: strings.TrimSpace(string(data)), Engine: "text"}}, nil
 	}
+}
+
+// imageUnitBytes reads an image file as an OCR-ready (mime, data) pair. A
+// HEIC/HEIF is transcoded to PNG first (see HEICToPNG); every other image
+// extension is read as-is and labeled by its extension — the OCR/vision path
+// already accepts those formats directly, so converting them too would just be
+// a second lossy generation for no reason.
+func imageUnitBytes(ctx context.Context, path string) (mime string, data []byte, err error) {
+	if heicExts[strings.ToLower(filepath.Ext(path))] {
+		data, err = HEICToPNG(ctx, path)
+		return "image/png", data, err
+	}
+	data, err = os.ReadFile(path)
+	return mimeForExt(filepath.Ext(path)), data, err
 }
 
 // unitsToPageText turns ingest units into paged text: text units pass through
@@ -355,11 +432,36 @@ func LegacyDocText(ctx context.Context, path string) (string, error) {
 	return string(out), nil
 }
 
+// ole2Magic is the first eight bytes of an OLE2 compound file — the container
+// format of every pre-2007 binary Office document (.doc, .xls, .ppt). People
+// rename a .doc to .docx by hand hoping it will "just open" in something that
+// only reads .docx; the extension then lies about the format underneath.
+var ole2Magic = [8]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}
+
+// isOLE2 sniffs the header, ignoring the extension. It exists because pandoc
+// fails on a mislabeled OLE2 file with a parse error that reads like the file is
+// corrupt, when what actually happened is knowable in eight bytes and cheap
+// enough to check on every KindOffice file, not just ones already named .doc.
+func isOLE2(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var buf [8]byte
+	if _, err := io.ReadFull(f, buf[:]); err != nil {
+		return false
+	}
+	return bytes.Equal(buf[:], ole2Magic[:])
+}
+
 // OfficeText extracts text from any KindOffice document, choosing the converter
-// by extension. Callers route KindOffice here rather than to PandocText directly,
-// so adding a format that pandoc cannot read is a change in one place.
+// by extension — except an OLE2 header overrides the extension, because a
+// renamed .doc is still a .doc underneath and pandoc still cannot read it.
+// Callers route KindOffice here rather than to PandocText directly, so adding a
+// format that pandoc cannot read is a change in one place.
 func OfficeText(ctx context.Context, path string) (string, error) {
-	if legacyDocExts[strings.ToLower(filepath.Ext(path))] {
+	if legacyDocExts[strings.ToLower(filepath.Ext(path))] || isOLE2(path) {
 		return LegacyDocText(ctx, path)
 	}
 	return PandocText(ctx, path)
