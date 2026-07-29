@@ -5,13 +5,13 @@ go 1.26.2
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.0
 	github.com/go-chi/chi/v5 v5.3.1
-	github.com/iodesystems/agentkit v0.0.0
+	github.com/iodesystems/agentkit v0.3.0
 	github.com/iodesystems/gwag v0.0.0-00010101000000-000000000000
 	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/pdfcpu/pdfcpu v0.13.0
 	golang.org/x/image v0.41.0
-	modernc.org/sqlite v1.54.0
+	modernc.org/sqlite v1.55.0
 )
 
 require (
@@ -58,8 +58,6 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	nhooyr.io/websocket v1.8.17 // indirect
 )
-
-replace github.com/iodesystems/agentkit => ../agentkit
 
 replace github.com/iodesystems/sqlc-go-codegen-metaquery => ../sqlc-go-codegen-metaquery
 
