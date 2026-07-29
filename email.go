@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"fmt"
@@ -17,7 +18,7 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// Reading an .eml.
+// Reading a mail archive (.eml, .mbox).
 //
 // An email archive is not one document, and treating it as one is the trap. The
 // broker's own communication log in ardley-v-brannock is a single 24 MB .eml
@@ -36,8 +37,8 @@ import (
 // whole question, and a transcription that keeps only the body has silently
 // discarded the part a dispute turns on.
 //
-// The decisions behind this reader, and the list
-// of what it used to get silently wrong, are in plan/email.md.
+// The decisions behind the mbox split and the attachment sidecar, and the list
+// of what this reader used to get silently wrong, are in plan/email.md.
 
 // emailPart is one message in an archive, flattened in reading order.
 type emailPart struct {
@@ -78,9 +79,12 @@ const (
 	// maxParts bounds ONE multipart container. A generator loop can emit
 	// millions of empty parts; a real message has tens.
 	maxParts = 4096
+	// maxMessages bounds an mbox. Past this the split stops and says so rather
+	// than building an unbounded []PageText.
+	maxMessages = 100000
 )
 
-// EmailText renders an .eml as paged text, one page per nested message.
+// EmailText renders a mail archive as paged text, one page per message.
 //
 // Pure: it reads and returns, and writes nothing. That is load-bearing — the
 // `ocr` MCP tool calls this to read a file the user named, and a read tool that
@@ -139,7 +143,7 @@ func (a emailAttachment) describe() string {
 	return fmt.Sprintf("%s (%s, %d bytes)", a.Name, mt, a.Size)
 }
 
-// readArchive parses an archive into flattened messages. keepBytes decides
+// readArchive parses .eml or .mbox into flattened messages. keepBytes decides
 // whether attachment payloads are retained; false streams them past a counter
 // and throws them away, which is what keeps a 24 MB archive of scans from
 // costing 24 MB of heap just to list its filenames.
@@ -150,16 +154,120 @@ func readArchive(path string, keepBytes bool) ([]emailPart, error) {
 	}
 	defer f.Close()
 
+	br := bufio.NewReader(f)
 	var parts []emailPart
-	msg, err := mail.ReadMessage(f)
-	if err != nil {
-		return nil, fmt.Errorf("%s: not a readable email: %w", path, err)
+	if isMbox(br) {
+		if err := eachMboxMessage(br, func(raw []byte) error {
+			msg, err := mail.ReadMessage(bytes.NewReader(raw))
+			if err != nil {
+				// One unparseable message must not lose the other 9,999. Record it
+				// as a page of its own so the numbering — which citations depend
+				// on — does not shift under every message after it.
+				parts = append(parts, emailPart{notes: []string{
+					fmt.Sprintf("[unreadable message, %d bytes: %v]", len(raw), err)}})
+				return nil
+			}
+			walkMessage(msg, 0, &parts, keepBytes)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	} else {
+		msg, err := mail.ReadMessage(br)
+		if err != nil {
+			return nil, fmt.Errorf("%s: not a readable email: %w", path, err)
+		}
+		walkMessage(msg, 0, &parts, keepBytes)
 	}
-	walkMessage(msg, 0, &parts, keepBytes)
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("%s: no readable message parts", path)
 	}
 	return parts, nil
+}
+
+// isMbox sniffs the RFC 4155 signature: a "From " line at column 0.
+//
+// Sniffed rather than taken from the extension because ingest materialises
+// fetched bytes to a temp file whose name RAGLIT chose (raglit-*.eml) — by the
+// time this runs the extension is not the corpus's. Peeks, so the reader is
+// still positioned at byte 0 either way.
+func isMbox(br *bufio.Reader) bool {
+	head, _ := br.Peek(5)
+	return bytes.Equal(head, []byte("From "))
+}
+
+// eachMboxMessage splits an mbox and hands each message's bytes to fn.
+//
+// An mbox has no length header and no escape that every writer applies, so a
+// "From " line at column 0 is the only separator there is. Two guards stop a
+// body sentence beginning "From the outset," from cutting a message in half:
+// the separator must be preceded by a blank line (or start the file), and a
+// body line stuffed to ">From " is unstuffed on the way past. Neither is
+// airtight — nothing about mbox is — but together they are what every real
+// parser does.
+//
+// Streams: one message is held at a time, not the file.
+func eachMboxMessage(br *bufio.Reader, fn func(raw []byte) error) error {
+	var cur bytes.Buffer
+	prevBlank := true // start of file counts as a boundary
+	n := 0
+	flush := func() error {
+		if cur.Len() == 0 {
+			return nil
+		}
+		raw := append([]byte(nil), cur.Bytes()...)
+		cur.Reset()
+		n++
+		return fn(raw)
+	}
+	for {
+		line, err := readLine(br)
+		if len(line) == 0 && err != nil {
+			break
+		}
+		if prevBlank && bytes.HasPrefix(line, []byte("From ")) {
+			if err := flush(); err != nil {
+				return err
+			}
+			if n >= maxMessages {
+				return fmt.Errorf("mbox holds more than %d messages; refusing to read further", maxMessages)
+			}
+			prevBlank = false
+			if err != nil {
+				break
+			}
+			continue // the separator itself is not part of the message
+		}
+		// From-unstuffing. mboxo quotes a body "From " as ">From "; mboxrd also
+		// quotes ">From " as ">>From ". Stripping exactly one ">" is right for
+		// both in the case that actually occurs.
+		if body := bytes.TrimLeft(line, ">"); len(body) < len(line) && bytes.HasPrefix(body, []byte("From ")) {
+			line = line[1:]
+		}
+		cur.Write(line)
+		prevBlank = len(bytes.TrimRight(line, "\r\n")) == 0
+		if err != nil {
+			break
+		}
+	}
+	return flush()
+}
+
+// readLine reads one line INCLUDING its terminator, without the 64 KB cap a
+// bufio.Scanner imposes — a base64 attachment written as one long line is
+// legal, and a Scanner would fail the whole archive on it.
+func readLine(br *bufio.Reader) ([]byte, error) {
+	var out []byte
+	for {
+		chunk, isPrefix, err := br.ReadLine()
+		out = append(out, chunk...)
+		if err != nil {
+			return out, err
+		}
+		if !isPrefix {
+			return append(out, '\n'), nil
+		}
+	}
 }
 
 // walkMessage flattens a message and everything enclosed in it, in reading
