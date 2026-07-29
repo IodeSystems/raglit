@@ -52,6 +52,11 @@ type Config struct {
 	// every ingested document, project-wide. A per-index setting of the same name
 	// overrides this for that index.
 	WritebackTranscriptionMd bool `json:"writeback_transcription_md,omitempty"`
+	// ExtractEmailAttachments writes a mail archive's attachments into
+	// <archive>.raglit-attachments/ beside it, project-wide, so the documents
+	// inside an .eml/.mbox become ordinary files the next sync indexes. A
+	// per-index setting of the same name overrides this for that index.
+	ExtractEmailAttachments bool `json:"extract_email_attachments,omitempty"`
 	// DaemonURL, when set, makes this a CLIENT config: commands route to the
 	// raglit daemon at this URL (http(s)://host:port) instead of opening a local
 	// index. The daemon owns storage (scoped per index, under its own home), so
@@ -89,6 +94,14 @@ type IndexConfig struct {
 	// produced. Off by default because it writes into the corpus, which is not
 	// something an indexer should do uninvited.
 	WritebackTranscriptionMd bool `json:"writeback_transcription_md,omitempty"`
+	// ExtractEmailAttachments writes a mail archive's attachments into
+	// <archive>.raglit-attachments/ beside it, with a MANIFEST.md recording which
+	// message each came from. Off by default for the same reason: an archive can
+	// carry 69 files and putting them in somebody's corpus uninvited is not an
+	// indexer's call. Unlike a transcription the extracted files ARE indexable —
+	// they are originals that travelled inside an envelope, not derived output —
+	// so the next `sync` picks them up as ordinary files.
+	ExtractEmailAttachments bool `json:"extract_email_attachments,omitempty"`
 }
 
 // Root is a source directory, optionally with its own include/ignore overriding

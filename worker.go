@@ -211,6 +211,9 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 		return w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), w.OCR, job.URL, title, units, w.Frag, sl)
 
 	case KindEmail:
+		// The extension here is raglit's, not the corpus's — an .mbox fetched by
+		// URL lands in a raglit-*.eml temp file all the same. The reader sniffs
+		// the RFC 4155 signature rather than trusting a name it did not choose.
 		path, cleanup, err := writeTemp(f.Data, ".eml")
 		if err != nil {
 			return 0, "", err
@@ -228,6 +231,7 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 			fmt.Fprintf(&b, "## Page %d\n\n%s\n\n", pg.Page, pg.Text)
 		}
 		sl.Done("extract", "email", fmt.Sprintf("%d message(s)", len(pages)))
+		w.extractAttachments(job.URL, path, sl)
 		return w.ingestPlainText(ctx, job.URL, title, []byte(b.String()), sl)
 
 	case KindOffice:
@@ -248,6 +252,30 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 	// KindText / KindUnknown: read as text.
 	sl.Done("extract", "text", fmt.Sprintf("%d bytes", len(f.Data)))
 	return w.ingestPlainText(ctx, job.URL, title, f.Data, sl)
+}
+
+// extractAttachments writes a mail archive's attachments beside it, when this
+// archive's project asked for that. url is the document's identity in the
+// corpus; srcPath is the temp file holding the bytes.
+//
+// Best-effort, exactly like the transcription writeback: a sidecar that could
+// not be written — a read-only corpus, a mount that went away — must not fail an
+// ingest that otherwise read the archive correctly. The failure is recorded as a
+// stage so it is visible rather than assumed.
+func (w *Worker) extractAttachments(url, srcPath string, sl *StageLog) {
+	corpus := archiveCorpusPath(url)
+	if corpus == "" || !extractAttachmentsForDoc(corpus, w.Store.extractEmailAttachments) {
+		return
+	}
+	n, dir, err := ExtractEmailAttachments(srcPath, corpus)
+	switch {
+	case err != nil:
+		sl.Fail("attachments", "email", err)
+	case n > 0:
+		sl.Done("attachments", "email", fmt.Sprintf("%d file(s) → %s/", n, filepath.Base(dir)))
+	default:
+		sl.Skip("attachments", "no attachments in this archive")
+	}
 }
 
 // ingestPlainText fragments a text/code document with the deterministic

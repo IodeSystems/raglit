@@ -63,6 +63,19 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   `text-overlap` | `llm-seg`, shown in `list_documents`); window / stride / floor
   are config-tunable and capped by the embed model's probed input limit. Every
   stage and its engine is recorded per job.
+- **Mail archives (`.eml`, `.mbox`) are read as PAGES, one per message** — an
+  archive is not one document. A 24 MB `.eml` holding a decade of nested forwards
+  read as "page 1" is unciteable; read as pages, a quotation lands on *which*
+  message. Headers are kept (for mail the routing IS the evidence), enclosed
+  `message/rfc822` messages become pages of their own, transfer encodings and
+  non-UTF-8 charsets are decoded, and `multipart/alternative` indexes the plain
+  text rather than the same words twice. Attachments are **named** with their
+  media type and size; set `extract_email_attachments` (project-wide or per index)
+  and they are also **extracted byte-for-byte** into
+  `<archive>.raglit-attachments/` with a `MANIFEST.md` recording which message,
+  sender, date and sha256 each came from — so the survey inside the archive
+  becomes an ordinary file the next `sync` indexes, with its chain intact. Off by
+  default: one archive can carry 69 files.
 - **Figures explained into the index** — while the VLM transcribes a scanned page
   it also **describes each figure/diagram/chart inline** (`[FIGURE: …]`), so a
   diagram becomes searchable text with no extra infrastructure. Each figure is also

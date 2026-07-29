@@ -46,6 +46,10 @@ type emailPart struct {
 	headers []string
 	body    string
 	attach  []emailAttachment
+	// from/date/subject are kept apart from the rendered headers because the
+	// attachment manifest cites a message by them, and re-parsing a formatted
+	// header line back into fields would be a second, divergent parser.
+	from, date, subject string
 	// notes record structure this reader could not parse. They go into the page
 	// text on purpose: a transcription that drops content silently is worse than
 	// one that says it dropped it, because only the second is recoverable.
@@ -277,7 +281,13 @@ func walkMessage(msg *mail.Message, depth int, out *[]emailPart, keepBytes bool)
 		return
 	}
 	i := len(*out)
-	*out = append(*out, emailPart{depth: depth, headers: renderHeaders(msg.Header)})
+	*out = append(*out, emailPart{
+		depth:   depth,
+		headers: renderHeaders(msg.Header),
+		from:    decodeWord(msg.Header.Get("From")),
+		date:    msg.Header.Get("Date"),
+		subject: decodeWord(msg.Header.Get("Subject")),
+	})
 	r := decodeTransfer(msg.Header.Get("Content-Transfer-Encoding"), msg.Body)
 	body, attach, nested, notes := readBody(msg.Header.Get("Content-Type"), r, depth, keepBytes)
 	(*out)[i].body, (*out)[i].attach, (*out)[i].notes = body, attach, notes

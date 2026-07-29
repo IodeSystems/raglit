@@ -54,6 +54,10 @@ type Store struct {
 	// ingested document. Off unless the index config asks for it: an indexer that
 	// writes into the corpus uninvited is a surprise nobody wants.
 	writebackTranscription bool
+	// extractEmailAttachments writes a mail archive's attachments into
+	// <archive>.raglit-attachments/ beside it. Off for the same reason, and with
+	// more force — one archive can carry 69 files.
+	extractEmailAttachments bool
 	// parent, when set, makes this Store a BRANCH: reads overlay branch-over-
 	// parent at document grain (a branch doc / tombstone shadows the parent's).
 	// Writes go to the branch only (copy-on-write). See branch.go.
@@ -108,6 +112,9 @@ var schema string
 // its fragments; WAL keeps concurrent readers unblocked during ingest.
 // SetWritebackTranscription turns the per-document transcription writeback on.
 func (s *Store) SetWritebackTranscription(v bool) { s.writebackTranscription = v }
+
+// SetExtractEmailAttachments turns the mail-archive attachment sidecar on.
+func (s *Store) SetExtractEmailAttachments(v bool) { s.extractEmailAttachments = v }
 
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
@@ -272,20 +279,26 @@ func OpenIndex(home Home, name string) (*Store, error) {
 	}
 	s.home = home
 	s.withHome = true
-	// Config decides the transcription writeback, per index if it says so and
+	// Config decides the sidecars raglit may write into the corpus — the
+	// transcription and the attachment directory — per index if it says so and
 	// project-wide otherwise. Read here because this is where a Store learns which
 	// home and index it is — the flag existed and was never consulted, which is
 	// the same silent gap that made three earlier fixes no-ops.
 	if cfg, _, err := LoadConfig(home); err == nil {
-		on := cfg.WritebackTranscriptionMd
+		s.writebackTranscription = cfg.WritebackTranscriptionMd
+		s.extractEmailAttachments = cfg.ExtractEmailAttachments
 		key := name
 		if key == "" {
 			key = "default"
 		}
-		if ic, ok := cfg.Indexes[key]; ok && ic.WritebackTranscriptionMd {
-			on = true
+		if ic, ok := cfg.Indexes[key]; ok {
+			if ic.WritebackTranscriptionMd {
+				s.writebackTranscription = true
+			}
+			if ic.ExtractEmailAttachments {
+				s.extractEmailAttachments = true
+			}
 		}
-		s.writebackTranscription = on
 	}
 	return s, nil
 }
