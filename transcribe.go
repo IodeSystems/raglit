@@ -61,12 +61,36 @@ func RenderTranscription(docPath string, pages []TranscribedPage) string {
 	b.WriteString("Page-delineated transcription written by raglit during ingest.\n" +
 		"One `## Page N` section per page, in order, including empty pages — a consumer\n" +
 		"resolving a match to a page depends on the numbering being complete.\n\n" +
-		"This is a TRANSCRIPTION, not an analysis. Cite the source document.\n\n---\n")
+		"This is a TRANSCRIPTION, not an analysis. Cite the source document.\n")
 
 	sorted := append([]TranscribedPage(nil), pages...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Page < sorted[j].Page })
+
+	// A read can succeed and still not be the page. Where it looks wrong, say so
+	// AT THE TOP as well as on the page — a reader who opens this file to check a
+	// quotation must not have to scroll to discover that page 3 is a watermark.
+	if sus := SuspectPages(sorted); len(sus) > 0 {
+		nums := make([]int, 0, len(sus))
+		for n := range sus {
+			nums = append(nums, n)
+		}
+		sort.Ints(nums)
+		b.WriteString("\n> ⚠ **This transcription may be incomplete.** ")
+		fmt.Fprintf(&b, "%d of %d page(s) do not look like a page of text: ", len(nums), len(sorted))
+		strs := make([]string, len(nums))
+		for i, n := range nums {
+			strs[i] = fmt.Sprintf("%d", n)
+		}
+		b.WriteString(strings.Join(strs, ", "))
+		b.WriteString(". See the note under each. Read the original before quoting from them.\n")
+	}
+	b.WriteString("\n---\n")
+
 	for _, p := range sorted {
 		fmt.Fprintf(&b, "\n## Page %d\n\n", p.Page)
+		if why := Suspicion(p.Text); why != "" && len(p.Figures) == 0 {
+			fmt.Fprintf(&b, "> ⚠ **Check this page against the original.** %s\n\n", why)
+		}
 		if t := strings.TrimSpace(p.Text); t != "" {
 			b.WriteString(t)
 			b.WriteString("\n")
