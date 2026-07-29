@@ -23,8 +23,13 @@ import (
 // when writeback is on. Indexing it would be a backlog that grows every time the
 // indexer runs: the file is ingested, which writes a transcription OF the
 // transcription, and so on. Generated output is never a source.
+//
+// `*.raglit-regions.json` is the same rule for the region read — a record of
+// where a document's text was cropped from, which is about the document and is
+// not itself one.
 var builtinIgnore = []string{".*", "**/.*", "**/node_modules/**", "**/vendor/**",
-	"*" + transcriptionSuffix, "**/*" + transcriptionSuffix}
+	"*" + transcriptionSuffix, "**/*" + transcriptionSuffix,
+	"*" + regionsSuffix, "**/*" + regionsSuffix}
 
 // PlanSources returns, per index name, the absolute file paths its configured
 // roots + rules select. baseDir is the project directory (relative roots resolve
