@@ -106,6 +106,49 @@ The existing per-page image cache already keys on the SHA of the image bytes, so
 every region — being an image — is cached by construction and a re-run costs
 nothing for regions that have not changed.
 
+## Descent versus transform — and the cycle it creates
+
+Observed: the model will propose, as a "sub-region", the region it was just
+given — re-rotated, or thresholded, or simply asked for again. Sometimes that is
+the right instruction. A faint scan genuinely reads better binarized; a block
+whose text runs at 30° genuinely needs re-rotating. But as a CHILD it is not a
+descent, and treating it as one recurses forever on the same pixels.
+
+So they are two different operations and must be counted separately.
+
+**Descent** narrows the field of view: a child bbox materially smaller than its
+parent. Bounded by depth and by a minimum region size.
+
+**Transform** re-renders the SAME region differently — rotation, threshold,
+contrast, dpi. Bounded by its own per-region budget, and subject to two rules
+that descent does not need.
+
+### A transform must be new
+
+Cheap and exact, because the page cache already keys on the SHA-256 of the image
+bytes: **if a proposed transform renders to bytes already seen in this
+document's descent, it is a cycle — refuse it.** Rotating 90° four times returns
+the original SHA. Re-asking for the same bbox at the same dpi and rotation
+returns the original SHA. The cache that makes retries cheap is also the cycle
+detector, at no extra cost.
+
+### A transform must make progress
+
+A transform is justified by a FLAG it is meant to clear — `low-resolution` wants
+more dpi, `repetition` wants a narrower field or a different rotation,
+`disagreement` wants a threshold. If the result carries the same flags as the
+input, the transform bought nothing and the branch stops. Two transforms that
+each fail to clear a flag end the region: it is a leaf, flagged, and a human
+reads it.
+
+### The boundary between them
+
+A child whose bbox covers most of its parent is a transform wearing a descent's
+clothes. Route by geometry, not by what the model called it: below some fraction
+of the parent's area it is a descent and spends depth; at or above it, it is a
+transform and spends transform budget. Anything the model proposes that is
+neither smaller nor differently rendered is refused outright.
+
 ## Confidence: flags, not a number
 
 A score here would be an invented statistic. What is actually computable:
@@ -121,6 +164,9 @@ A score here would be an invented statistic. What is actually computable:
   measure and it is exactly what the verification tile hit.
 - **`disagreement`** — the cheap engine (tesseract) and the VLM produce
   materially different text. raglit already runs both and has a gibberish gate.
+- **`cycled`** — a proposed transform rendered to bytes already seen, or two
+  transforms in a row cleared no flag. Records that descent stopped because it
+  stopped paying, which is different from stopping because it finished.
 - **`exhausted`** — the model proposed no further regions. The one positive
   signal, and the only one that means "this is as good as it gets".
 
