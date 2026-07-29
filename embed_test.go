@@ -330,3 +330,52 @@ func TestCharBudgetHoldsForTheDensestText(t *testing.T) {
 		t.Errorf("estimator says %d tokens for text measured at 8252 — it under-reports", got)
 	}
 }
+
+// The endpoint states its own limit when it refuses. That figure beats a table
+// and beats a probe, because it is not an inference.
+func TestLearnLimitFromTheEndpointsOwnRejection(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// The exact wording captured from the live endpoint.
+	msg := "input (8302 tokens) is too large to process. increase the physical batch size (current batch size: 8192)"
+	got, ok := s.LearnLimitFromError("some-model", msg)
+	if !ok {
+		t.Fatalf("did not parse the stated limit from %q", msg)
+	}
+	if want := TokensToChars(8192); got != want {
+		t.Errorf("learned %d chars, want %d", got, want)
+	}
+	// And it must be remembered, so the next ingest is sized correctly.
+	if v, ok := s.Meta(embedLimitKey("some-model")); !ok || v == "" {
+		t.Error("the learned limit was not stored")
+	}
+	// Unrelated errors must not be mistaken for a limit.
+	if _, ok := s.LearnLimitFromError("m", "connection reset by peer"); ok {
+		t.Error("a transport error was read as a limit")
+	}
+}
+
+// The wording says "batch size" but the limit is PER INPUT — measured, sixteen
+// inputs totalling 48k tokens pass while a single 8.3k input fails. The parser
+// must read it as the per-input ceiling, which is what the number means.
+func TestPerInputLimitParsesTheStatedNumber(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"input (35871 tokens) is too large to process. increase the physical batch size (current batch size: 8192)", 8192, true},
+		{"increase the physical batch size (current batch size: 512)", 512, true},
+		{"request (200012 tokens) exceeds the available context size (180224 tokens), try increasing it", 0, false},
+		{"", 0, false},
+	} {
+		got, ok := perInputTokenLimit(tc.in)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("perInputTokenLimit(%.40q) = %d,%v want %d,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}

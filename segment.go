@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -66,6 +68,15 @@ func fragmentsToolDef() llm.ToolDef {
 type Segmenter struct {
 	Client     Chatter
 	MaxRetries int // JSON fix-loop attempts after the first try (default 2)
+
+	// MaxFragChars is the ceiling a fragment must respect, already converted
+	// from the embed model's token limit. 0 → unchecked.
+	//
+	// Enforced by asking the model again rather than by cutting, for as long as
+	// the fix loop allows: a model re-splitting its own fragment cuts at a
+	// heading or a paragraph, and splitAtBoundary cuts at whatever falls near
+	// the character count.
+	MaxFragChars int
 
 	// MaxTokens caps one unit's segmentation; 0 → maxTokensFor(the unit), i.e.
 	// scaled to the input, since the answer is the input re-emitted. See chat.go.
@@ -139,6 +150,13 @@ func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback 
 				lastErr = fmt.Errorf("unparseable: %v", err)
 			} else if len(r.Fragments) == 0 {
 				lastErr = fmt.Errorf("no fragments")
+			} else if over := oversizedFragments(r.Fragments, sg.MaxFragChars); len(over) > 0 {
+				// The model cannot gauge tokens, and asking it to would be asking
+				// for a guess. It CAN act on "this one is 240% of the maximum,
+				// cut it into at least three" — a proportion, in the unit it
+				// produced. Re-prompting keeps the split on a semantic boundary;
+				// the deterministic fallback does not.
+				lastErr = oversizeComplaint(over)
 			} else {
 				return r, nil
 			}
@@ -453,3 +471,53 @@ func splitAtBoundary(s string, limit int) []string {
 // sizing disagreeing about the unit is how a limit gets enforced in one place
 // and ignored in the other.
 const worstCaseCharsPerTokenLocal = worstCaseCharsPerToken
+
+// segTargetHeadroom is how much of the ceiling the PROMPT asks for.
+//
+// A model cannot count tokens, so it is asked for words, and words vary. Aiming
+// at the ceiling means half the fragments breach it and every document pays for
+// a retry; aiming at two thirds means variance lands inside the limit and the
+// retry is for genuine outliers.
+const segTargetHeadroom = 0.66
+
+// oversizedFragments reports which fragments breached the ceiling, and by how
+// much, as a proportion.
+func oversizedFragments(frags []Segment, limit int) map[int]float64 {
+	if limit <= 0 {
+		return nil
+	}
+	out := map[int]float64{}
+	for i, f := range frags {
+		// Measured in TOKENS, because that is what the limit is really about;
+		// the character ceiling is only its safe expression.
+		if EstimateTokens(f.Text) > limit/worstCaseCharsPerTokenLocal {
+			out[i] = float64(len(f.Text)) / float64(limit)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// oversizeComplaint phrases the breach as an instruction the model can follow.
+//
+// A percentage and a piece count, not a token budget: "fragment 2 is 240% of the
+// maximum — split it into at least 3" is actionable, where "keep it under 8192
+// tokens" asks for an estimate the model has no way to make.
+func oversizeComplaint(over map[int]float64) error {
+	idx := make([]int, 0, len(over))
+	for i := range over {
+		idx = append(idx, i)
+	}
+	sort.Ints(idx)
+	parts := make([]string, 0, len(idx))
+	for _, i := range idx {
+		ratio := over[i]
+		pieces := int(math.Ceil(ratio/segTargetHeadroom)) + 1
+		parts = append(parts, fmt.Sprintf("fragment %d is %.0f%% of the maximum length — split it into at least %d",
+			i+1, ratio*100, pieces))
+	}
+	return fmt.Errorf("%s. Split at headings or paragraph breaks, keep every word, and do not merge anything else",
+		strings.Join(parts, "; "))
+}

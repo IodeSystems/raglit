@@ -6,6 +6,7 @@ import (
 	"fmt"
 	agent "github.com/iodesystems/agentkit/agent"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -53,19 +54,21 @@ func NewEmbedder(c VectorClient, model string) *Embedder {
 	}
 }
 
-// defaultEmbedBatchChars bounds ONE embed request.
+// defaultEmbedBatchChars bounds ONE embed request — for latency and memory, NOT
+// for correctness.
 //
-// The server applies its batch limit to the WHOLE request, not to each input.
-// llama.cpp reports it as: "input (35871 tokens) is too large to process.
-// increase the physical batch size (current batch size: 8192)" — and 35871 is
-// sixteen ordinary fragments added together, not one big one. The caller was
-// batching by ITEM COUNT, so a document with large fragments overflowed a limit
-// nothing was measuring.
+// Correcting an earlier claim of mine, since the code was built on it: the
+// endpoint's limit is PER INPUT, not per request. Measured directly — 16 inputs
+// of ~3k tokens each (48k in total) embed fine, one input of 8.3k tokens does
+// not. The error's wording is what misled me: llama.cpp says "input (35871
+// tokens) is too large to process. increase the physical batch size (current
+// batch size: 8192)", and "batch size" there is n_batch applied to a single
+// sequence, not a sum over the request.
 //
-// Sized in characters at the WORST-CASE ratio, so the budget holds whatever the
-// text is: 8192 tokens x 2 chars/token. A budget built on the prose ratio would
-// pass a dense batch at twice its assumed size, which is the overflow this
-// exists to stop. Override with BatchLimitChars when the endpoint allows more.
+// So the 35,871-token failure was ONE fragment of about 67,000 characters — the
+// largest that `raglit refragment` later found — and not sixteen ordinary ones
+// added together. The fix that matters is the per-fragment ceiling; chunking a
+// request is only about keeping any single call small.
 const defaultEmbedBatchChars = 16384
 
 // batchLimitChars is the effective per-request character budget.
@@ -401,4 +404,46 @@ func (s *Store) OversizedDocs(limit int) (map[string]int, error) {
 func (s *Store) MarkForReingest(path string) error {
 	_, err := s.db.Exec(`UPDATE documents SET content_hash = '' WHERE path = ?`, path)
 	return err
+}
+
+// perInputTokenLimit reads the endpoint's own limit out of a rejection.
+//
+// The authoritative number, from the only party that knows it: llama.cpp
+// answers an over-long input with "input (8302 tokens) is too large to process.
+// increase the physical batch size (current batch size: 8192)". The trailing
+// figure is the real per-input ceiling, whatever a table or a probe believed.
+//
+// Note the wording is misleading and cost an hour: "batch size" is n_batch
+// applied to ONE sequence. Measured, sixteen inputs totalling 48k tokens pass
+// while a single 8.3k input fails.
+var batchSizeRe = regexp.MustCompile(`(?i)batch size:\s*(\d+)`)
+
+func perInputTokenLimit(errText string) (int, bool) {
+	m := batchSizeRe.FindStringSubmatch(errText)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// LearnLimitFromError records a limit the endpoint stated in a rejection.
+//
+// Better than the table and better than the probe, because it is not an
+// inference: the server named its own number. Called on an embed failure so the
+// next ingest is sized correctly even if the model was unknown or was swapped
+// under a stored value.
+func (s *Store) LearnLimitFromError(model, errText string) (int, bool) {
+	tok, ok := perInputTokenLimit(errText)
+	if !ok || model == "" {
+		return 0, false
+	}
+	chars := TokensToChars(tok)
+	if err := s.SetMeta(embedLimitKey(model), strconv.Itoa(chars), time.Now().Unix()); err != nil {
+		return 0, false
+	}
+	return chars, true
 }
