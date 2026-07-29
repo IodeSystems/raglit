@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -74,6 +75,10 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	}
 	if *lf.visionModel != "" {
 		client := lf.visionClient()
+		// Printed once per index worker so the effective retry policy is visible
+		// in the log. Without it, "5xx attempt 2/5" in a log is ambiguous between
+		// "the cap was not raised" and "this is not the client you think it is".
+		log.Printf("raglit: ocr client model=%s 5xx-attempts=%d", *lf.visionModel, client.Retry5xxAttempts)
 		w.OCR = raglit.NewOCR(client)
 		attachCheapOCR(w.OCR, home)
 		// Only used when a page escalates to the VLM (llm-seg); text never does.
