@@ -1,8 +1,13 @@
 package raglit
 
 import (
+	"bytes"
+	"image"
+	"image/png"
+
 	"context"
 	"fmt"
+	xdraw "golang.org/x/image/draw"
 	"strings"
 
 	"github.com/iodesystems/agentkit/llm"
@@ -93,6 +98,20 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 	}
 	opts := &llm.ChatOpts{MaxTokens: maxTok}
 	text, rep, err := collectStream(ctx, o.Client, []llm.Message{msg}, opts)
+	// A page image can be too large for the model's context — observed at 180273
+	// tokens against a 180224 limit, over by 49. Nothing about that is a document
+	// problem and retrying it unchanged fails identically forever, so the page is
+	// re-rendered smaller and re-sent. Downscaling loses detail, which is why it
+	// is a fallback and not the default resolution.
+	for shrink := 0; shrink < maxContextShrinks && err != nil && isContextOverflow(err); shrink++ {
+		smaller, serr := downscalePNG(img.Data, contextShrinkFactor)
+		if serr != nil {
+			return "", fmt.Errorf("raglit: ocr page %d: too large for the model context and cannot be downscaled: %w", img.Page, serr)
+		}
+		img.Data = smaller
+		msg.Parts[1] = llm.ImageData(img.Mime, img.Data)
+		text, rep, err = collectStream(ctx, o.Client, []llm.Message{msg}, opts)
+	}
 	if err != nil {
 		return "", fmt.Errorf("raglit: ocr page %d: %w", img.Page, err)
 	}
@@ -101,20 +120,104 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 		// the loop — the prompt is unchanged on purpose, because re-anchoring a
 		// transcription on a partial transcription is how a VLM starts inventing
 		// survey text that reads exactly like the real thing.
+		cut := unloopedLen(text, rep)
 		text, rep, err = collectStream(ctx, o.Client, []llm.Message{msg}, loopBreakSampling(opts))
 		if err != nil {
 			return "", fmt.Errorf("raglit: ocr page %d (loop-break retry): %w", img.Page, err)
 		}
-	}
-	// A CUT transcription is not a short transcription — it is the page's text
-	// with an unknown amount missing. Indexing it would put a silently
-	// incomplete page into the index and mark the document done, which is worse
-	// than failing: nothing would ever revisit it. Fail loudly so the job
-	// retries or a human looks.
-	if rep != nil {
-		return "", fmt.Errorf(
-			"raglit: ocr page %d: the model %s, on the loop-break retry too — page NOT indexed",
-			img.Page, rep)
+		// A CUT transcription is not a short transcription — it is the page's text
+		// with an unknown amount missing. Indexing it would put a silently
+		// incomplete page into the index and mark the document done, which is worse
+		// than failing: nothing would ever revisit it. Fail loudly so the job
+		// retries or a human looks.
+		if rep != nil {
+			return "", fmt.Errorf(
+				"raglit: ocr page %d: the model %s, on the loop-break retry too — page NOT indexed",
+				img.Page, rep)
+		}
+		// And a retry that comes back CLEAN is not automatically correct.
+		//
+		// This is the failure that made the check necessary. A recorded survey
+		// looped on the first pass; the loop-break retry returned tidy,
+		// well-formed prose — and it had silently dropped the entire legal
+		// description, replaced it with a one-line figure caption, and invented
+		// plausible auditor file numbers (A#200308270057 for AF#9308270057). It
+		// read as a complete transcription of a page whose most important text
+		// was simply absent, and the job reported success.
+		//
+		// The model that just derailed is the same model producing the retry, so a
+		// retry that comes back with LESS than the first pass had already
+		// transcribed is evidence it gave up on the page rather than recovered it.
+		//
+		// Measured against the first pass with the REPEATED BLOCK REMOVED, which
+		// matters: a loop pads the cut output with the same span over and over, so
+		// comparing raw lengths would flag every genuine recovery as a failure —
+		// the successful retry is routinely shorter than the garbage it replaces.
+		if got := len(strings.TrimSpace(text)); cut > 0 && got < cut {
+			return "", fmt.Errorf(
+				"raglit: ocr page %d: the loop-break retry returned %d chars where the cut pass had already transcribed %d "+
+					"before it started repeating — a shorter retry means the page was dropped, not recovered; page NOT indexed",
+				img.Page, got, cut)
+		}
 	}
 	return strings.TrimSpace(text), nil
+}
+
+// unloopedLen is how much of a cut generation was real transcription: its length
+// with the repeated span discounted.
+//
+// A loop inflates the output by the same block N times, so raw length overstates
+// what the model actually read off the page — and using it as the bar to clear
+// would reject the recoveries this retry exists to produce. Returns 0 when the
+// repetition accounts for everything, which correctly imposes no bar at all.
+func unloopedLen(text string, rep *llm.RepetitionInfo) int {
+	n := len(strings.TrimSpace(text))
+	if rep == nil || rep.Period <= 0 || rep.Reps <= 1 {
+		return n
+	}
+	if loop := rep.Period * (rep.Reps - 1); loop < n {
+		return n - loop
+	}
+	return 0
+}
+
+// maxContextShrinks bounds the downscale loop. Two halvings take a 200-DPI page
+// to about 100 DPI, below which a survey's lettering stops being legible and a
+// "successful" transcription would be worse than a failure.
+const maxContextShrinks = 2
+
+// contextShrinkFactor is how much smaller each retry renders the page. 0.75 on
+// each axis is ~44% of the pixels, which clears an overflow of a few dozen
+// tokens with room to spare without throwing away detail unnecessarily.
+const contextShrinkFactor = 0.75
+
+// isContextOverflow reports whether the model refused because the request did
+// not fit. Matched on the server's wording rather than a status code: a 400 has
+// many causes and only this one is fixed by sending a smaller image.
+func isContextOverflow(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "exceed_context_size") ||
+		strings.Contains(s, "exceeds the available context")
+}
+
+// downscalePNG re-renders a PNG at `factor` of its dimensions.
+func downscalePNG(data []byte, factor float64) ([]byte, error) {
+	src, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	b := src.Bounds()
+	w, h := int(float64(b.Dx())*factor), int(float64(b.Dy())*factor)
+	if w < 1 || h < 1 {
+		return nil, fmt.Errorf("page would scale to %dx%d", w, h)
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	// CatmullRom over a cheaper kernel on purpose: this runs on scanned text, and
+	// the whole point of the smaller image is that it still has to be readable.
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, b, xdraw.Over, nil)
+	var out bytes.Buffer
+	if err := png.Encode(&out, dst); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }

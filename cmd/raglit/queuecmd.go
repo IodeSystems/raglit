@@ -328,18 +328,25 @@ func firstSentence(s string) string {
 // sweep, "11 gone" is the answer, not an error.
 func runRetry(args []string) error {
 	fs := flag.NewFlagSet("retry", flag.ExitOnError)
-	openStore, _ := addStoreFlags(fs)
+	openStore, homeOf := addStoreFlags(fs)
+	client := addClientFlags(fs) // --daemon + --embedded + --project
 	dryRun := fs.Bool("dry-run", false, "list what would be requeued, change nothing")
 	state := fs.String("state", "error", "which state to requeue: error|done")
 	limit := fs.Int("limit", 0, "cap how many are requeued (0 = all)")
 	match := fs.String("match", "", "only jobs whose error contains this substring")
 	fs.Parse(args)
 
-	store, err := openStore()
+	store, where, err := openQueueStore(openStore, homeOf, client,
+		fs.Lookup("db").Value.String() != "", fs.Lookup("index").Value.String())
 	if err != nil {
 		return err
 	}
 	defer store.Close()
+	// Which index is this? Printed because its absence hid the bug: `status` is
+	// daemon-routed and reported 131 failures while `retry` opened the
+	// project-local home and reported 21, and nothing on either output said they
+	// were different indexes.
+	fmt.Printf("index: %s\n", where)
 
 	jobs, err := store.Jobs(*state, 100000)
 	if err != nil {
@@ -399,4 +406,48 @@ func localPath(u string) string {
 		return u
 	}
 	return ""
+}
+
+// openQueueStore opens the SAME index the daemon queues into.
+//
+// `retry` mutates the jobs table, so it opens a store directly rather than
+// calling the daemon. But "directly" used to mean `addStoreFlags`, which
+// resolves the project-LOCAL home — and when a daemon is running, ingest and
+// status use its project-NAMESPACED index instead. The two diverged silently:
+// one index had 131 failed jobs and the other, which retry was requeuing, had
+// 21 and nothing writing to it.
+//
+// So: if a daemon owns this project, open its scoped index by path. Otherwise
+// fall back to the local home, which is what --embedded and --db already mean.
+func openQueueStore(openStore func() (*raglit.Store, error), homeOf func() raglit.Home,
+	client func(func() raglit.Home, bool) (string, string, error),
+	dbSet bool, indexFlag string) (*raglit.Store, string, error) {
+
+	durl, ns, err := client(homeOf, dbSet)
+	// No daemon, no project, or an explicit --db/--embedded: the local home is
+	// the right answer and a resolution error here is not fatal.
+	if err != nil || durl == "" || ns == "" {
+		st, oerr := openStore()
+		if oerr != nil {
+			return nil, "", oerr
+		}
+		return st, string(homeOf()) + " (local)", nil
+	}
+	root := raglit.DefaultRoot()
+	if st, ok := readDaemonState(root); ok && st.Root != "" {
+		root = st.Root
+	}
+	name := ns + nsSep + raglit.NormalizeIndexName(resolveIndexName(indexFlag, homeOf))
+	home := raglit.Home(filepath.Join(root, "indexes", name))
+	// A namespaced index that does not exist yet would be CREATED by OpenHome,
+	// leaving an empty index and a retry that requeues nothing while reporting
+	// success. Say so instead.
+	if _, serr := os.Stat(home.IndexPath()); serr != nil {
+		return nil, "", fmt.Errorf("no index %q under %s — is the daemon holding this project's queue? (%v)", name, root, serr)
+	}
+	st, oerr := raglit.OpenHome(home)
+	if oerr != nil {
+		return nil, "", oerr
+	}
+	return st, string(home) + " (daemon-scoped)", nil
 }
