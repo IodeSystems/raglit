@@ -210,6 +210,26 @@ func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, titl
 		// ingestUnits OCRs the image → text, then fragments it (records ocr/segment/…).
 		return w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), w.OCR, job.URL, title, units, w.Frag, sl)
 
+	case KindEmail:
+		path, cleanup, err := writeTemp(f.Data, ".eml")
+		if err != nil {
+			return 0, "", err
+		}
+		defer cleanup()
+		pages, err := EmailText(path)
+		if err != nil {
+			sl.Fail("extract", "email", err)
+			return 0, "", err
+		}
+		// One page per nested message, so a citation can name WHICH message —
+		// the point of reading an archive as pages rather than as one blob.
+		var b strings.Builder
+		for _, pg := range pages {
+			fmt.Fprintf(&b, "## Page %d\n\n%s\n\n", pg.Page, pg.Text)
+		}
+		sl.Done("extract", "email", fmt.Sprintf("%d message(s)", len(pages)))
+		return w.ingestPlainText(ctx, job.URL, title, []byte(b.String()), sl)
+
 	case KindOffice:
 		path, cleanup, err := writeTemp(f.Data, strings.ToLower(filepath.Ext(job.URL)))
 		if err != nil {

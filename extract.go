@@ -20,6 +20,11 @@ const (
 	KindPDF                   // .pdf → per-page hybrid (text layer or OCR)
 	KindImage                 // .png/.jpg/… → OCR
 	KindOffice                // .docx/.odt/.epub/.html/… → pandoc → text
+	// KindEmail is an .eml archive: one PAGE per nested message, headers kept.
+	// Not KindText — read as plain text an email archive is mostly base64, and
+	// read as one page a quotation from the fifth message can only be located
+	// somewhere in the whole file.
+	KindEmail
 	KindUnknown
 )
 
@@ -55,6 +60,8 @@ func ClassifyDoc(name, contentType string) DocKind {
 		return KindImage
 	case officeExts[ext] || legacyDocExts[ext]:
 		return KindOffice
+	case ext == ".eml" || ext == ".mbox" || strings.HasPrefix(ct, "message/rfc822"):
+		return KindEmail
 	case textExts[ext] || strings.HasPrefix(ct, "text/plain") || strings.HasPrefix(ct, "text/markdown"):
 		return KindText
 	case strings.Contains(ct, "officedocument"), strings.Contains(ct, "opendocument"),
@@ -200,6 +207,8 @@ func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error
 			return nil, err
 		}
 		return unitsToPageText(ctx, units, ocr)
+	case KindEmail:
+		return EmailText(path)
 	case KindOffice:
 		text, err := OfficeText(ctx, path)
 		if err != nil {
