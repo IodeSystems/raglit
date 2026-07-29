@@ -122,3 +122,34 @@ func TestLegacyDocRoutesAwayFromPandoc(t *testing.T) {
 		}
 	}
 }
+
+// The worst corruption found in a live corpus, and it was one wrong measurement.
+//
+// `pdftotext -layout` pads with spaces to preserve position, so a diagonal
+// "UNOFFICIAL DOCUMENT" watermark — eighteen letters spread corner to corner —
+// comes back 144 characters long. `len(strings.TrimSpace(t))` counts that padding,
+// clears a threshold of 24, and the page is accepted as a real text layer that
+// never goes near OCR. Three recorded instruments were "transcribed" to nothing
+// but their watermark, with no error, and re-indexing them changed nothing
+// because the text layer was being taken every time.
+func TestAWatermarkTextLayerDoesNotCountAsContent(t *testing.T) {
+	// Verbatim shape of what pdftotext -layout returned for the SJ order.
+	watermark := "AL\n  CI\n   FI\n\n     OF\n\n      UN\n\n T\n\n  EN\n\n   M\n    CU\n     DO\n" +
+		strings.Repeat(" ", 60)
+	if got := textLayerContent(watermark); got >= pdfTextThreshold {
+		t.Errorf("content = %d, threshold %d — a watermark passed as a text layer", got, pdfTextThreshold)
+	}
+	// And the measurement that was being used would have passed it.
+	if len(strings.TrimSpace(watermark)) < pdfTextThreshold {
+		t.Skip("the old measurement no longer passes this fixture; the regression is gone another way")
+	}
+}
+
+// A page with even a caption keeps its cheap, exact text layer rather than paying
+// the VLM. The threshold is deliberately low and must stay that way.
+func TestARealTextLayerStillCountsAsContent(t *testing.T) {
+	const caption = "Figure 3 — the disputed 25-foot strip, looking north from West View Boulevard."
+	if got := textLayerContent(caption); got < pdfTextThreshold {
+		t.Errorf("content = %d, threshold %d — a real caption would be sent for OCR", got, pdfTextThreshold)
+	}
+}

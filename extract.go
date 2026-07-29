@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // DocKind is how a source document should be extracted to text. raglit routes
@@ -98,10 +99,35 @@ func legacyDocTool() string {
 func HaveLegacyDoc() bool { return legacyDocTool() != "" }
 
 // pdfTextThreshold: a page's pdftotext output must carry at least this many
-// non-space characters to count as a real text layer; below it the page is
-// treated as scanned and rasterized for OCR. Low, so a page with even a caption
-// keeps its (cheap, exact) text layer rather than paying the VLM.
+// LETTERS AND DIGITS to count as a real text layer; below it the page is treated
+// as scanned and rasterized for OCR. Low, so a page with even a caption keeps its
+// (cheap, exact) text layer rather than paying the VLM.
 const pdfTextThreshold = 24
+
+// textLayerContent counts the characters that are actually CONTENT.
+//
+// The obvious `len(strings.TrimSpace(t))` is wrong, and wrong in a way that
+// produced the worst corruption in a live legal corpus. `pdftotext -layout` pads
+// with spaces to preserve position on the page, so a diagonal "UNOFFICIAL
+// DOCUMENT" watermark — eighteen letters spread corner to corner — comes back as
+// 144 characters. TrimSpace only trims the ENDS; the internal padding stays,
+// sails past the threshold, and the page is accepted as a text layer that never
+// goes near OCR.
+//
+// The result: a six-page summary-judgment order, a vesting deed and a record of
+// survey all "transcribed" to nothing but their watermark, no error anywhere, and
+// re-indexing them changed nothing because there was nothing to re-read — the
+// text layer was being taken every time. Measured on all three: raw length 144,
+// content 18.
+func textLayerContent(t string) int {
+	n := 0
+	for _, r := range t {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			n++
+		}
+	}
+	return n
+}
 
 // pdfUnits extracts a PDF as per-page ingest units via the "text-layer first,
 // OCR the rest" hybrid: pdftotext gives each page's text layer; a page with real
@@ -137,7 +163,7 @@ func pdfUnits(ctx context.Context, pdfPath string, describeFigures bool) ([]inge
 	units := make([]ingestUnit, 0, len(texts))
 	for i, t := range texts {
 		page := i + 1
-		if len(strings.TrimSpace(t)) >= pdfTextThreshold && !figurePages[page] {
+		if textLayerContent(t) >= pdfTextThreshold && !figurePages[page] {
 			units = append(units, ingestUnit{page: page, text: t})
 			continue
 		}
