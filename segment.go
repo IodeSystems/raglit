@@ -382,13 +382,32 @@ func SplitOversized(frags []Segment, limitChars int) []Segment {
 	}
 	out := make([]Segment, 0, len(frags))
 	for _, f := range frags {
-		if len(f.Text) <= limitChars {
-			out = append(out, f)
+		out = append(out, splitToFit(f.Text, limitChars)...)
+	}
+	return out
+}
+
+// splitToFit cuts text until every piece is inside the limit BY TOKENS.
+//
+// Character length is the first cut because it is cheap, but the check that
+// decides is EstimateTokens, which never under-reports. A piece that is short
+// enough in characters and still too many tokens gets cut again — the loop
+// terminates because each pass halves the target and a single character is
+// always inside any positive budget.
+func splitToFit(text string, limitChars int) []Segment {
+	limitTokens := limitChars / worstCaseCharsPerTokenLocal
+	if len(text) <= limitChars && EstimateTokens(text) <= limitTokens {
+		return []Segment{{Text: text}}
+	}
+	var out []Segment
+	target := limitChars
+	for _, piece := range splitAtBoundary(text, target) {
+		if EstimateTokens(piece) <= limitTokens || target <= 1 {
+			out = append(out, Segment{Text: piece})
 			continue
 		}
-		for _, piece := range splitAtBoundary(f.Text, limitChars) {
-			out = append(out, Segment{Text: piece})
-		}
+		// Still over on tokens despite fitting on characters: cut it again.
+		out = append(out, splitToFit(piece, target/2)...)
 	}
 	return out
 }
@@ -428,3 +447,9 @@ func splitAtBoundary(s string, limit int) []string {
 	}
 	return out
 }
+
+// worstCaseCharsPerTokenLocal mirrors the embed package constant so segment.go
+// converts the same way. One ratio, two callers: fragment sizing and batch
+// sizing disagreeing about the unit is how a limit gets enforced in one place
+// and ignored in the other.
+const worstCaseCharsPerTokenLocal = worstCaseCharsPerToken

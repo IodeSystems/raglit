@@ -206,10 +206,18 @@ func TestEmbedLimitIsProbedOnceAndKeyedByModel(t *testing.T) {
 	if probes != after {
 		t.Errorf("the stored limit was ignored: %d more probes", probes-after)
 	}
-	// A different model must NOT reuse it.
+	// The stored key is per MODEL, so a second model gets its own answer rather
+	// than inheriting one probed for different weights.
 	e2 := NewEmbedder(&limitedVecClient{max: 1024, probes: &probes}, "m2")
-	if s.EmbedLimitChars(context.Background(), e2, 0) == got {
-		t.Error("a second model reused the first model's limit")
+	got2 := s.EmbedLimitChars(context.Background(), e2, 0)
+	if got2 <= 0 {
+		t.Fatalf("second model got no limit: %d", got2)
+	}
+	if _, ok := s.Meta(embedLimitKey("m2")); !ok {
+		t.Error("the second model's limit was not stored under its own key")
+	}
+	if got2 >= got {
+		t.Errorf("a model with a smaller window got a limit of %d against the first model's %d", got2, got)
 	}
 }
 
@@ -287,4 +295,38 @@ func (c *limitedVecClient) Embed(_ context.Context, _ string, texts []string) ([
 		out[i] = []float32{1, 0}
 	}
 	return out, nil
+}
+
+// A model whose native context is documented needs no probe — and must not be
+// given another model's number.
+func TestKnownModelsUseTheirNativeContext(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	probes := 0
+	e := NewEmbedder(&limitedVecClient{max: 999999, probes: &probes}, "nomic-embed-text")
+	got := s.EmbedLimitChars(context.Background(), e, 0)
+	if want := TokensToChars(8192); got != want {
+		t.Errorf("nomic native limit = %d chars, want %d", got, want)
+	}
+	if probes != 0 {
+		t.Errorf("probed a model whose context is documented: %d probes", probes)
+	}
+}
+
+// The guarantee: whatever the text, a fragment inside the char budget is inside
+// the token cap. Measured ground truth — 16,500 chars of "a " is 8,252 tokens —
+// so the budget has to hold at two characters per token, not four.
+func TestCharBudgetHoldsForTheDensestText(t *testing.T) {
+	budget := TokensToChars(8192)
+	dense := strings.Repeat("a ", budget)[:budget]
+	if got := EstimateTokens(dense); got > 8192 {
+		t.Errorf("a fragment at the char budget estimates %d tokens, over the 8192 cap", got)
+	}
+	// And the estimator must never under-report against the measured truth.
+	if got := EstimateTokens(strings.Repeat("a ", 8250)[:16500]); got < 8252 {
+		t.Errorf("estimator says %d tokens for text measured at 8252 — it under-reports", got)
+	}
 }

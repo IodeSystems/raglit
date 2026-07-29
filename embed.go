@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	agent "github.com/iodesystems/agentkit/agent"
 	"math"
 	"strconv"
 	"strings"
@@ -61,11 +62,11 @@ func NewEmbedder(c VectorClient, model string) *Embedder {
 // batching by ITEM COUNT, so a document with large fragments overflowed a limit
 // nothing was measuring.
 //
-// Sized in characters because that is what the caller has without tokenizing:
-// ~3 chars per token against an 8192-token batch, with headroom for the
-// DocPrefix each input carries. Override with BatchLimitChars when the endpoint
-// is known to allow more.
-const defaultEmbedBatchChars = 24000
+// Sized in characters at the WORST-CASE ratio, so the budget holds whatever the
+// text is: 8192 tokens x 2 chars/token. A budget built on the prose ratio would
+// pass a dense batch at twice its assumed size, which is the overflow this
+// exists to stop. Override with BatchLimitChars when the endpoint allows more.
+const defaultEmbedBatchChars = 16384
 
 // batchLimitChars is the effective per-request character budget.
 func (e *Embedder) batchLimitChars() int {
@@ -129,6 +130,72 @@ func (e *Embedder) EmbedQuery(ctx context.Context, text string) ([]float32, erro
 // maxEmbedProbeChars bounds DiscoverEmbedLimit so a tolerant endpoint (one that
 // silently truncates instead of erroring) terminates rather than growing forever.
 const maxEmbedProbeChars = 200000
+
+// defaultEmbedLimitTokens is nomic-embed-text's NATIVE context, kept as the
+// documented figure behind nativeEmbedTokens. Anything above
+// it is RoPE-extended — supported by some builds, but the quality of an
+// extended embedding is not the quality of a native one, and the endpoint here
+// reports 8192 as its batch size outright.
+//
+// Stated rather than probed because the probe cannot express this honestly. It
+// grows a filler string of "a ", which tokenizes at about TWO characters per
+// token; real prose runs past four. Measured on the live endpoint: 16,500 chars
+// of filler is 8,252 tokens and rejected, while 34,000 chars of legal prose fits
+// inside the same 8192. A character limit calibrated on filler is therefore less
+// than half the real budget — safe, but it splits fragments that were fine.
+const defaultEmbedLimitTokens = 8192
+
+// worstCaseCharsPerToken is the FLOOR, measured against the live endpoint, and
+// it is what makes a character budget a guarantee rather than a hope.
+//
+// agentkit's estimator is len/4, which is right for prose and half the truth for
+// anything denser. Measured: 16,500 characters of "a " is 8,252 tokens — two
+// characters per token — while 35,700 characters of legal prose is about 8,900.
+// A budget built on the prose ratio would let a dense fragment through at twice
+// its assumed size, which is exactly the overflow this is supposed to prevent.
+//
+// The cost is real and worth stating: for ordinary prose this splits at ~16k
+// characters where ~32k would have fitted. That is the price of never failing,
+// paid in slightly smaller fragments, and it is the right way round — an
+// oversized fragment does not degrade, it errors and takes its document with it.
+const worstCaseCharsPerToken = 2
+
+// EstimateTokens is the token count raglit assumes for a piece of text.
+//
+// Deliberately an OVER-estimate: it must never say a string is smaller than the
+// tokenizer will. Shared so fragment sizing and batch sizing agree, because
+// disagreeing about the unit is how a limit gets enforced in one place and
+// ignored in another.
+func EstimateTokens(s string) int {
+	n := len(s)/worstCaseCharsPerToken + specialTokenAllowance
+	if est := agent.Default().Estimate(s); est > n {
+		n = est
+	}
+	return n
+}
+
+// specialTokenAllowance covers what the tokenizer adds beyond the text itself.
+//
+// Even the worst-case ratio is not quite worst enough: measured, 16,500
+// characters of "a " is 8,252 tokens where len/2 predicts 8,250. Two tokens, from
+// the BOS/EOS pair the encoder wraps every input in. That is a rounding error
+// everywhere except exactly at the boundary, which is the one place it would
+// ever be noticed — as an occasional rejection with no apparent pattern.
+const specialTokenAllowance = 16
+
+// TokensToChars converts a token budget to the character budget that cannot
+// exceed it, whatever the text.
+//
+// The exact inverse of EstimateTokens, allowance included. Without subtracting
+// it the budget overshot its own cap by the allowance — a budget that fails its
+// own check is worse than no budget, because it looks like a guarantee.
+func TokensToChars(tokens int) int {
+	n := (tokens - specialTokenAllowance) * worstCaseCharsPerToken
+	if n < 1 {
+		return 1
+	}
+	return n
+}
 
 // DiscoverEmbedLimit probes the largest single input (in characters) the embed
 // endpoint accepts without error — the same shape as llm.DiscoverContext. It
@@ -266,14 +333,37 @@ func (s *Store) EmbedLimitChars(ctx context.Context, e *Embedder, configured int
 			return n
 		}
 	}
+	// A model whose native context is known needs no probe.
+	if tok, ok := nativeEmbedTokens[e.Model]; ok {
+		n := TokensToChars(tok)
+		_ = s.SetMeta(key, strconv.Itoa(n), time.Now().Unix())
+		return n
+	}
+	// Otherwise probe — and the probe is exactly right for this purpose, which
+	// took a wrong turn to see. It grows a filler of "a ", which tokenizes at
+	// two characters per token: the WORST case, and therefore the number that
+	// holds for any text. Reading its answer as "too conservative for prose"
+	// was the error; conservative is what a guarantee is made of.
 	n, err := e.DiscoverEmbedLimit(ctx)
 	if err != nil || n <= 0 {
-		// Unprobeable endpoints exist. Record nothing and carry on uncapped
-		// rather than guessing a limit that would silently split good fragments.
+		// Unprobeable endpoints exist — some truncate silently rather than
+		// reporting. Record nothing and stay uncapped rather than inventing a
+		// limit that would split good fragments for no reason.
 		return 0
 	}
 	_ = s.SetMeta(key, strconv.Itoa(n), time.Now().Unix())
 	return n
+}
+
+// nativeEmbedTokens is the NATIVE context of models whose limit is known.
+//
+// Native, not extended: a build may accept more through RoPE interpolation, but
+// the quality of an extended embedding is not the quality of a native one, and
+// this endpoint reports 8192 as its batch size outright.
+var nativeEmbedTokens = map[string]int{
+	"nomic-embed-text":      8192,
+	"nomic-embed-text-v1":   8192,
+	"nomic-embed-text-v1.5": 8192,
 }
 
 // OversizedDocs lists documents holding a fragment larger than limit, with the
