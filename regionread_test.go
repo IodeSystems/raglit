@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+func nearly(a, b float64) bool { return a-b < 0.002 && b-a < 0.002 }
+
 // blankPage is a white sheet; renderRegion only needs something to crop.
 func blankPage(w, h int) image.Image {
 	im := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -243,16 +245,23 @@ func TestChildCoordinatesAreLiftedIntoPageSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Children are PADDED, so the bbox is the proposal grown by descentPad of
+	// its own size on each side: 0.5 wide -> 0.485..1.0 (clamped at the page).
 	child := root.Children[0]
-	if child.BBox.X != 0.5 || child.BBox.W != 0.5 {
-		t.Fatalf("child bbox wrong: %+v", child.BBox)
+	if !nearly(child.BBox.X, 0.485) {
+		t.Fatalf("child bbox not lifted+padded as expected: %+v", child.BBox)
 	}
 	if len(child.Children) != 1 {
 		t.Fatalf("want a grandchild, got %d", len(child.Children))
 	}
+	// The grandchild's 0.5,0.5,0.5,0.5 is expressed in the CHILD's frame, so it
+	// must land in the child's second half, not the page's.
 	g := child.Children[0].BBox
-	if g.X != 0.75 || g.W != 0.25 {
-		t.Errorf("grandchild not lifted into page space: %+v (want x=0.75 w=0.25)", g)
+	if g.X < child.BBox.X+child.BBox.W*0.4 {
+		t.Errorf("grandchild not lifted into page space: %+v within child %+v", g, child.BBox)
+	}
+	if g.X+g.W > 1.0001 {
+		t.Errorf("grandchild escaped the page: %+v", g)
 	}
 }
 
@@ -292,5 +301,49 @@ func TestLeavesAndFlattenAgree(t *testing.T) {
 	}
 	if root.Text == "" {
 		t.Error("the root's own description must survive; it is the coverage guarantee")
+	}
+}
+
+// A model asked for a text block returns the block, not the block plus a
+// margin. The first verification tile cut mid-word ("REPLAT OF BLO"), so
+// descents are grown to overlap their neighbours.
+func TestDescentsArePaddedToAvoidCuttingText(t *testing.T) {
+	ask, _ := scriptedAsk(
+		RegionReading{Description: "sheet", Regions: []RegionProposal{
+			{X: 0.25, Y: 0.25, W: 0.25, H: 0.25, Kind: "text-block"},
+		}},
+		RegionReading{Description: "block"},
+	)
+	rr := surveyReader(ask)
+	root, err := rr.Read(context.Background(), blankPage(800, 1080), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := root.Children[0].BBox
+	if got.W <= 0.25 || got.X >= 0.25 {
+		t.Errorf("descent was not padded: %+v (proposal was x=.25 w=.25)", got)
+	}
+}
+
+// The model names the same block twice under different reasons, and each
+// proposal costs a model call.
+func TestOverlappingProposalsAreDeduped(t *testing.T) {
+	ask, calls := scriptedAsk(
+		RegionReading{Description: "sheet", Regions: []RegionProposal{
+			{X: 0.1, Y: 0.1, W: 0.3, H: 0.3, Reason: "text block"},
+			{X: 0.11, Y: 0.11, W: 0.3, H: 0.3, Reason: "the legal description"},
+		}},
+		RegionReading{Description: "block"},
+	)
+	rr := surveyReader(ask)
+	root, err := rr.Read(context.Background(), blankPage(800, 1080), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Children) != 1 {
+		t.Errorf("near-identical proposals were both read: %d children", len(root.Children))
+	}
+	if *calls != 2 {
+		t.Errorf("want 2 calls (root + one block), got %d", *calls)
 	}
 }

@@ -1,12 +1,10 @@
 package raglit
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"image"
-	"image/png"
 	"regexp"
 	"strings"
 )
@@ -112,10 +110,6 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	if err != nil {
 		return err
 	}
-	if sub, derr := png.Decode(bytes.NewReader(img)); derr == nil && inkAtEdge(sub, 0x8000) {
-		reg.addFlag(FlagClipped)
-	}
-
 	sha := imageSHA(img)
 	if rr.seen[sha] {
 		// This exact rendering has been read already. Refusing here is what stops
@@ -221,7 +215,13 @@ func (rr *RegionReader) route(parent *Region, props []RegionProposal) ([]descent
 			continue
 		}
 		if isDescent(Rect{0, 0, 1, 1}, r) {
-			ds = append(ds, descent{bbox: page, rotation: p.Rotation, kind: p.Kind})
+			padded := parent.BBox.within(r.padded(descentPad))
+			// Duplicate proposals are common — the model names the same block
+			// twice under different reasons — and each one costs a model call.
+			if dup := indexOfOverlap(ds, padded, 0.6); dup >= 0 {
+				continue
+			}
+			ds = append(ds, descent{bbox: padded, rotation: p.Rotation, kind: p.Kind})
 			continue
 		}
 		if p.Rotation != parent.Rotation {
@@ -252,6 +252,17 @@ func transformHelped(orig, alt *Region) bool {
 		return true
 	}
 	return len(strings.TrimSpace(alt.Text)) > len(strings.TrimSpace(orig.Text))
+}
+
+// indexOfOverlap finds an existing descent covering substantially the same
+// ground, so the same block is not read twice at the cost of two model calls.
+func indexOfOverlap(ds []descent, r Rect, iou float64) int {
+	for i, d := range ds {
+		if d.bbox.overlaps(r) >= iou {
+			return i
+		}
+	}
+	return -1
 }
 
 // clearsAny reports whether the new flag set dropped any of the old ones — the

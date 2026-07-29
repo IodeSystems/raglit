@@ -97,10 +97,17 @@ const (
 	// FlagRepetition — the model looped. On a page this fails the document; on a
 	// region it is a reason to descend.
 	FlagRepetition = "repetition"
-	// FlagClipped — ink touches the region boundary, so text may be cut. The
-	// first verification tile clipped mid-word ("REPLAT OF BLO"), which is what
-	// this measures.
-	FlagClipped = "clipped"
+	// There was a FlagClipped here, meant to catch text cut at a region
+	// boundary. It measured ink touching the border and it did not work:
+	// measured on the survey, a blank margin scored 0.196, a text block 0.161
+	// and the drawing interior 0.055 — ANTI-correlated, because what it actually
+	// found was the sheet's own border frame. It fired on every region of the
+	// first real run, and a flag that is always on trains people to ignore
+	// flags.
+	//
+	// Removed rather than tuned. The underlying problem — a cut like "REPLAT OF
+	// BLO" — is now PREVENTED by padding descents (see descentPad) instead of
+	// reported after the fact.
 	// FlagCycled — descent stopped because it stopped paying: a transform
 	// rendered to bytes already seen, or cleared no flag.
 	FlagCycled = "cycled"
@@ -259,26 +266,33 @@ func rotateImage(src image.Image, deg int) image.Image {
 	return dst
 }
 
-// inkAtEdge reports whether dark pixels touch the region's border, meaning text
-// may be cut. Sampled rather than exhaustive: a border row either has ink on it
-// or it does not, and one pixel in four is enough to tell.
-func inkAtEdge(img image.Image, threshold uint32) bool {
-	b := img.Bounds()
-	dark := func(x, y int) bool {
-		r, g, bl, _ := img.At(x, y).RGBA()
-		return (r+g+bl)/3 < threshold
+// descentPad grows a proposed child so a word is not cut at the seam.
+//
+// The first verification tile clipped mid-word — "REPLAT OF BLO", "NORTHEA",
+// "SOU" — because the cut had no idea where the paragraph was. A model asked for
+// a text block returns the block, not the block plus a margin, so the margin has
+// to be added here.
+//
+// 3% of the parent on each side: about a line of text at these scales, and small
+// enough that the overlap between neighbouring children stays cheap.
+const descentPad = 0.03
+
+// padded grows r by frac of its own size on every side, clamped to the unit
+// square.
+func (r Rect) padded(frac float64) Rect {
+	dx, dy := r.W*frac, r.H*frac
+	return Rect{X: r.X - dx, Y: r.Y - dy, W: r.W + 2*dx, H: r.H + 2*dy}.clampToUnit()
+}
+
+// overlaps reports intersection-over-union, for dropping duplicate proposals.
+func (r Rect) overlaps(o Rect) float64 {
+	x0, y0 := math.Max(r.X, o.X), math.Max(r.Y, o.Y)
+	x1, y1 := math.Min(r.X+r.W, o.X+o.W), math.Min(r.Y+r.H, o.Y+o.H)
+	if x1 <= x0 || y1 <= y0 {
+		return 0
 	}
-	for x := b.Min.X; x < b.Max.X; x += 4 {
-		if dark(x, b.Min.Y) || dark(x, b.Max.Y-1) {
-			return true
-		}
-	}
-	for y := b.Min.Y; y < b.Max.Y; y += 4 {
-		if dark(b.Min.X, y) || dark(b.Max.X-1, y) {
-			return true
-		}
-	}
-	return false
+	inter := (x1 - x0) * (y1 - y0)
+	return inter / (r.area() + o.area() - inter)
 }
 
 // imageSHA identifies a rendering by its bytes.
