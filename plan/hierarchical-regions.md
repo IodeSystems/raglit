@@ -1,8 +1,10 @@
 # Hierarchical regions — reading an image that does not fit in one look
 
-Status: **design, not built.** Opened 2026-07-29 after a recorded land survey
-produced a confident, complete-looking transcription that had silently dropped
-the clause the matter turns on.
+Status: **built** (`regions.go`, `regionread.go`, `regiondoc.go`, `raglit
+regions`, `raglit region`). Not yet wired into ingest — the descent runs only
+when asked for. Opened 2026-07-29 after a recorded land survey produced a
+confident, complete-looking transcription that had silently dropped the clause
+the matter turns on.
 
 ## The failure this answers
 
@@ -174,6 +176,57 @@ A region carrying `low-resolution` or `repetition` is a descent trigger. A leaf
 that still carries them after descent is a region a HUMAN should look at, which
 is the honest end state for a six-point bearing on a scanned plat.
 
+## Showing a human the image the words came from
+
+The consuming system asks a person to ATTEST that a document really contains the
+words a fact quotes. It hands them the page. That is the wrong artifact as soon
+as the machine did not read a page: text transcribed from a rotated, zoomed crop
+was read at a resolution the whole sheet never had, and the whole sheet is where
+the legal description vanished in the first place. A person checking against it
+is checking a different image than the one that produced the text.
+
+So the tree is durable and every region is addressable.
+
+- **`<doc>.raglit-regions.json`**, beside the document, the same convention as
+  the transcription. JSON, not markdown: a tree of geometry is data, and a
+  drawing has no reading order to render as prose — which is the reason regions
+  exist at all.
+- **`p1`, `p1.0`, `p1.0.2`** — page, then the path down. Readable in a diff, and
+  the path IS the ancestry, so a hit reports as *sheet → drawing interior → lot C
+  corner* without a lookup. It addresses a position in a RECORDED tree, not a
+  piece of paper: a second read proposes different regions and renumbers. The
+  digest is what says whether an id still points at the pixels the text came from.
+- **The digest was already being computed.** It is the descent's cycle detector.
+  Keeping it rather than discarding it is the whole of what turns "same
+  coordinates" into "same image".
+- **Attribution is spans in the sidecar, never markers in the markdown.**
+  `## Page N` is a contract two separate consumers parse, and anything
+  interleaved with the text lands inside the quotations they match against.
+- **The transcript keeps interior overviews, not only leaves.** Dropping them
+  would undo the coverage guarantee above. It duplicates, and that is the honest
+  artifact — an overview read at four tokens per square inch is exactly where
+  invented text lives, and the spans are what let a reader see that a sentence
+  came from a low-resolution region and ask for that crop.
+
+### What is reproducible, and what is not
+
+- **The crop is.** `pdftoppm -png -r <dpi>` is byte-identical run to run at a
+  fixed version (measured), and the crop-plus-rotation off it is pure Go with no
+  resampling. A re-render hashes to the recorded digest. Across renderer
+  VERSIONS there is no such guarantee, so the read also records the page's pixel
+  dimensions: a rasterization that comes out a different size at the same nominal
+  dpi is reported as that, rather than discovered downstream as an unexplained
+  digest mismatch.
+- **The image the MODEL saw may not be.** A page too large for the context is
+  re-rendered smaller mid-call (`maxContextShrinks`). That is recorded per region
+  as a count and replayed by `RerenderRegionAsSeen`, deterministically. It is
+  deliberately not what the digest covers: the digest is taken BEFORE the call,
+  because it is also the cycle detector and a cycle has to be caught before the
+  call is paid for.
+- **The crop is the attestation image**; the as-seen image answers the different
+  question of whether the model could have read it at all. Where they differ the
+  crop is SHARPER — more detail on the same pixels, never different pixels.
+
 ## What this costs
 
 More requests per sheet, and an unbounded shape if the model is generous with
@@ -185,16 +238,27 @@ than nothing, because it reads as complete.
 
 ## Open decisions
 
-- **Is it worth building here?** raglit's corpora hold a handful of large-format
-  plats. Marking them READ BY EYE — which the evidence rules already require for
-  anything a filing quotes — may be cheaper than this subsystem. That is a
-  judgement about the corpus, not about the design.
 - **Do leaves replace fragments, or feed them?** Leaves-as-fragments is honest
   for a drawing and changes what a search hit means. Stitching leaves back into
   prose keeps behaviour uniform and re-invents the reading order a drawing does
-  not have.
+  not have. `RegionTranscript` assembles a page's text and deliberately decides
+  nothing here — it is a transcription, not a fragmentation.
 - **Who decides rotation?** The model can propose it per region; tesseract OSD
   can measure it cheaply for text-dominated regions and says nothing useful for
   a drawing interior.
 - **Trigger.** Physical size alone (> ~1.2 letter pages) is a crude but
-  sufficient gate, and it needs no model call to evaluate.
+  sufficient gate, and it needs no model call to evaluate. Nothing evaluates it
+  yet: the descent runs only when `raglit regions` is invoked, so a large sheet
+  ingested normally is still read whole.
+- **Does the transcription sidecar carry the region-assembled text?** Today
+  `--write` records the assembled text in the REGIONS sidecar, and ingest still
+  writes `## Page N` from the ordinary per-page read. Merging them means deciding
+  the fragments question above first.
+
+## Settled
+
+- **Is it worth building here?** Yes, and the reason turned out not to be the
+  transcription quality. It is that a person cannot attest a quotation against an
+  image the quotation did not come from, and without the region record there is
+  no way to produce that image at all. Marking a plat READ BY EYE still applies;
+  it is now a check somebody can actually perform.
