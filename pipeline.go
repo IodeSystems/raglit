@@ -224,7 +224,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	fragMode := fragModeOverlap
 	if sawVision && sg != nil {
 		fragMode = fragModeLLM
-		if err := segmentLLM(ctx, sg, pages, sink); err != nil {
+		if err := segmentLLM(ctx, sg, pages, window, sink); err != nil {
 			drainEmbed()
 			sl.Fail("segment", "llm", err)
 			return 0, "", err
@@ -265,7 +265,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 // offsets (they are model-emitted text). `page` is the START page, and
 // pageSpans records where every later page begins inside the text — without
 // them a hit in a stitched fragment resolves to the wrong page.
-func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, sink func(stagedFrag)) error {
+func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedLimit int, sink func(stagedFrag)) error {
 	a := NewAssembler(func(page, ord int, text string, spans []PageSpan) error {
 		sink(stagedFrag{page: page, ord: ord, text: text, pageSpans: spans})
 		return nil
@@ -276,6 +276,10 @@ func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, sink f
 		if err != nil {
 			return err
 		}
+		// The model is ASKED for 400-800 words and is not bound by the request.
+		// Bound it here, before anything downstream has to survive a fragment no
+		// embedder will accept.
+		r.Fragments = SplitOversized(r.Fragments, embedLimit)
 		if err := a.Feed(p.page, r); err != nil {
 			return err
 		}

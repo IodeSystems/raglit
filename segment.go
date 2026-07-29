@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/iodesystems/agentkit/agent"
 	"github.com/iodesystems/agentkit/llm"
@@ -356,4 +357,74 @@ func (a *Assembler) Close() error {
 		a.open = nil
 	}
 	return nil
+}
+
+// SplitOversized bounds fragments the model returned, so a fragment can never be
+// larger than the embedding model will take as one input.
+//
+// The deterministic windower is already capped by ResolveFragParams. The LLM
+// path was not: it asks for "roughly 400-800 words" and takes whatever comes
+// back, so a dense page could yield a fragment no embedder would accept. The
+// failure was silent in the worst way — the fragment reached the API, the API
+// returned a 500, and the whole document failed with a message about batch
+// sizes.
+//
+// Splitting rather than TRUNCATING is the point. A truncated fragment is
+// indexed, searchable, and quietly missing its tail, which is the same class of
+// failure as a transcription that reads complete. A split fragment keeps every
+// character; only the boundary is arbitrary.
+//
+// Deterministic, and that is what makes it safe to run after the model: a fixed
+// window cannot propose another oversized piece, so this cannot loop.
+func SplitOversized(frags []Segment, limitChars int) []Segment {
+	if limitChars <= 0 {
+		return frags
+	}
+	out := make([]Segment, 0, len(frags))
+	for _, f := range frags {
+		if len(f.Text) <= limitChars {
+			out = append(out, f)
+			continue
+		}
+		for _, piece := range splitAtBoundary(f.Text, limitChars) {
+			out = append(out, Segment{Text: piece})
+		}
+	}
+	return out
+}
+
+// splitAtBoundary cuts s into pieces of at most limit characters, preferring a
+// paragraph break, then a sentence end, then whitespace — so a piece rarely ends
+// mid-word and never ends mid-character.
+func splitAtBoundary(s string, limit int) []string {
+	var out []string
+	for len(s) > limit {
+		cut := -1
+		// Look for a boundary in the last third of the window: earlier than that
+		// and the pieces get needlessly small.
+		lo := limit * 2 / 3
+		for _, sep := range []string{"\n\n", ". ", ".\n", "\n", " "} {
+			if i := strings.LastIndex(s[lo:limit], sep); i >= 0 {
+				cut = lo + i + len(sep)
+				break
+			}
+		}
+		if cut <= 0 {
+			// No boundary at all — a single unbroken run. Cut on a rune boundary
+			// so the piece stays valid UTF-8.
+			cut = limit
+			for cut > 0 && !utf8.RuneStart(s[cut]) {
+				cut--
+			}
+			if cut == 0 {
+				cut = limit
+			}
+		}
+		out = append(out, strings.TrimSpace(s[:cut]))
+		s = s[cut:]
+	}
+	if t := strings.TrimSpace(s); t != "" {
+		out = append(out, t)
+	}
+	return out
 }

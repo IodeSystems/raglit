@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/iodesystems/agentkit/llm"
 )
@@ -39,7 +40,7 @@ func TestSegmenter_ParsesValidJSON(t *testing.T) {
 
 func TestSegmenter_FixLoopRetries(t *testing.T) {
 	c := &scriptChatter{replies: []string{
-		"not json at all",                                    // attempt 0: invalid
+		"not json at all", // attempt 0: invalid
 		`{"continues_previous":true,"fragments":[{"text":"x"}]}`, // attempt 1: valid
 	}}
 	r, err := NewSegmenter(c).SegmentText(context.Background(), "t", "open")
@@ -119,8 +120,8 @@ func TestAssembler_NonContinuationClosesOpen(t *testing.T) {
 		texts = append(texts, text)
 		return nil
 	})
-	a.MinChars = 0 // pure continuation, not the size floor
-	a.Feed(1, SegResult{Fragments: []Segment{{Text: "P"}}})           // P open
+	a.MinChars = 0                                                                    // pure continuation, not the size floor
+	a.Feed(1, SegResult{Fragments: []Segment{{Text: "P"}}})                           // P open
 	a.Feed(2, SegResult{ContinuesPrevious: false, Fragments: []Segment{{Text: "Q"}}}) // P closes, Q open
 	a.Close()
 	if len(texts) != 2 || texts[0] != "P" || texts[1] != "Q" {
@@ -169,10 +170,10 @@ func TestAssembler_CeilingStopsAbsorption(t *testing.T) {
 
 func TestExtractJSON(t *testing.T) {
 	cases := map[string]string{
-		`{"a":1}`:                          `{"a":1}`,
-		"```json\n{\"a\":1}\n```":          `{"a":1}`,
-		"here you go: {\"a\":1} thanks":    `{"a":1}`,
-		"```\n{\"a\":[1,2]}\n```":          `{"a":[1,2]}`,
+		`{"a":1}`:                       `{"a":1}`,
+		"```json\n{\"a\":1}\n```":       `{"a":1}`,
+		"here you go: {\"a\":1} thanks": `{"a":1}`,
+		"```\n{\"a\":[1,2]}\n```":       `{"a":[1,2]}`,
 	}
 	for in, want := range cases {
 		if got := extractJSON(in); got != want {
@@ -319,5 +320,67 @@ func TestExcerptForRetryKeepsTheHeadAndMarksTheCut(t *testing.T) {
 	}
 	if !strings.Contains(got, "truncated") {
 		t.Error("the truncation was not marked, so the model cannot tell it was cut")
+	}
+}
+
+// The deterministic windower is capped by ResolveFragParams; the LLM path was
+// not. It asks for "roughly 400-800 words" and takes whatever comes back, so a
+// dense page could yield a fragment no embedder would accept — and the failure
+// surfaced as a 500 about batch sizes, with the whole document lost.
+func TestSplitOversizedBoundsAModelsFragments(t *testing.T) {
+	long := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 400) // ~17.6k chars
+	in := []Segment{{Text: "short one"}, {Text: long}, {Text: "short two"}}
+	out := SplitOversized(in, 4000)
+
+	if len(out) <= len(in) {
+		t.Fatalf("the oversized fragment was not split: %d -> %d", len(in), len(out))
+	}
+	for i, f := range out {
+		if len(f.Text) > 4000 {
+			t.Errorf("fragment %d is %d chars, over the 4000 limit", i, len(f.Text))
+		}
+	}
+	// Splitting, not truncating: a truncated fragment is indexed, searchable and
+	// quietly missing its tail.
+	var joined int
+	for _, f := range out {
+		joined += len(strings.ReplaceAll(f.Text, " ", ""))
+	}
+	want := len(strings.ReplaceAll("short one"+long+"short two", " ", ""))
+	if joined < want-50 {
+		t.Errorf("content was lost: kept %d non-space chars of %d", joined, want)
+	}
+}
+
+// A fragment already inside the limit is passed through untouched, so ordinary
+// documents are unaffected.
+func TestSplitOversizedLeavesNormalFragmentsAlone(t *testing.T) {
+	in := []Segment{{Text: "one"}, {Text: "two"}}
+	out := SplitOversized(in, 4000)
+	if len(out) != 2 || out[0].Text != "one" || out[1].Text != "two" {
+		t.Errorf("normal fragments were altered: %+v", out)
+	}
+	if got := SplitOversized(in, 0); len(got) != 2 {
+		t.Errorf("an unknown limit must be a no-op, got %+v", got)
+	}
+}
+
+// Cuts prefer a paragraph, then a sentence, then whitespace — a piece should
+// rarely end mid-word and must never end mid-rune.
+func TestSplitAtBoundaryPrefersRealBreaks(t *testing.T) {
+	s := strings.Repeat("alpha beta gamma. ", 60) // sentences every 18 chars
+	for _, p := range splitAtBoundary(s, 200) {
+		if !utf8.ValidString(p) {
+			t.Fatalf("split produced invalid UTF-8: %q", p)
+		}
+		if strings.HasSuffix(p, "alph") || strings.HasSuffix(p, "gam") {
+			t.Errorf("cut mid-word: %q", p[max(0, len(p)-20):])
+		}
+	}
+	// An unbroken run has no boundary to find and must still be cut safely.
+	for _, p := range splitAtBoundary(strings.Repeat("é", 500), 100) {
+		if !utf8.ValidString(p) {
+			t.Fatalf("cut a multi-byte rune in half: %q", p)
+		}
 	}
 }
