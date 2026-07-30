@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"image"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,6 +40,8 @@ func runAttest(args []string) error {
 	listen := fs.String("listen", "127.0.0.1", "host to bind")
 	port := fs.String("port", "", "fixed port; default is one chosen by the OS and printed")
 	writeOnly := fs.Bool("write-only", false, "write the reading and exit, without serving a review")
+	cert := fs.String("tls-cert", "", "serve over TLS with this certificate (see --tls-key)")
+	key := fs.String("tls-key", "", "the certificate's private key")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `usage: raglit attest [--port N] FILE
 
@@ -110,14 +111,14 @@ page say THIS IS the image the words came from, or refuse to.
 	router.Method(http.MethodGet, "/", svc.UI("/api", "/source"))
 	router.Method(http.MethodGet, "/source", svc.AssetBytes())
 
-	ln, url, err := attestListen(*listen, *port)
+	ln, url, err := attest.ListenOn(*listen, *port, *cert != "")
 	if err != nil {
 		return err
 	}
 	fmt.Printf("raglit attest → %s?asset=%s\n", url, filepath.Base(path))
 	fmt.Printf("  verdicts: %s  (appended, never rewritten)\n", attest.LogPath(path))
 	fmt.Printf("  authorized guest — every ruling must name the person making it\n")
-	return http.Serve(ln, router)
+	return attest.Serve(ln, router, *cert, *key)
 }
 
 // readingFromRegions converts a recorded region tree into attest's shape.
@@ -325,20 +326,4 @@ func extraJSON(v map[string]any) json.RawMessage {
 		return nil
 	}
 	return b
-}
-
-// attestListen binds a fixed port when one is given, and one chosen by the OS
-// otherwise. A fixed port is what lets an open review page survive a restart:
-// the page keeps posting to the port it loaded from, so coming back on a NEW
-// port silently breaks every save while the tab still looks fine.
-func attestListen(host, port string) (net.Listener, string, error) {
-	if port == "" {
-		port = "0"
-	}
-	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
-	if err != nil {
-		return nil, "", err
-	}
-	_, bound, _ := net.SplitHostPort(ln.Addr().String())
-	return ln, fmt.Sprintf("http://%s:%s", host, bound), nil
 }
