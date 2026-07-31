@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,5 +85,64 @@ func TestTheExportSaysEditsAreLost(t *testing.T) {
 		if !strings.Contains(md, want) {
 			t.Errorf("the export must warn (%q missing):\n%s", want, md[:400])
 		}
+	}
+}
+
+// The daemon has no working directory in the corpus and cannot use ProjectDir().
+// What it always has is the document's absolute path, and the corpus layout
+// answers the rest.
+func TestTheProjectIsFoundFromTheDocumentPath(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "matter")
+	deep := filepath.Join(proj, "documents", "records")
+	if err := os.MkdirAll(filepath.Join(proj, ProjectHomeName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := filepath.Join(deep, "survey.pdf")
+
+	if got := ProjectDirForDoc(doc); got != proj {
+		t.Errorf("got %q, want %q", got, proj)
+	}
+	// A document under no project is a real state, not an error.
+	if got := ProjectDirForDoc(filepath.Join(root, "loose.pdf")); got != "" {
+		t.Errorf("want no project for a loose file, got %q", got)
+	}
+}
+
+// An INGEST must re-issue corrections too. Writing an uncorrected export from
+// the ingest path would undo checked work exactly as the old unconditional
+// overwrite did — the same loss arriving through the other door.
+func TestAnIngestWritebackReissuesCorrections(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ProjectHomeName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := filepath.Join(root, "survey.pdf")
+	if err := os.WriteFile(doc, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	js, err := OpenJudgements(JudgementsPath(root), AuditPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := js.PutPageCorrection(PageCorrection{
+		Doc: doc, Page: 1, Text: "AF 200808180120 KEVIN G. HALVOR", By: "carl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	js.Close()
+
+	// What the ingest path loads for this document, found from its path alone.
+	got := correctionsForDoc(doc)
+	if len(got) != 1 {
+		t.Fatalf("ingest found %d correction(s), want 1", len(got))
+	}
+	md := RenderTranscriptionCorrected(doc, []TranscribedPage{{Page: 1, Text: "AF 2008081020 HALVR"}}, got)
+	if !strings.Contains(md, "KEVIN G. HALVOR") {
+		t.Errorf("the ingest writeback dropped the correction:\n%s", md)
 	}
 }

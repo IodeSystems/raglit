@@ -271,6 +271,31 @@ type projectFlags struct {
 // lets it decide, falling back to the store's setting when there is none. See
 // writebackForDoc for why the document's path, and not the daemon's config, is
 // the right place to ask.
+// ProjectDirForDoc finds the project a document belongs to, by walking up from
+// the document itself until it meets a .raglit/ directory.
+//
+// The daemon needs this and cannot use ProjectDir(): it runs from its own home
+// and its working directory has nothing to do with the corpus. What it always
+// has is the document's absolute path, and the corpus layout answers the rest —
+// the same walk that already decides per-project writeback settings.
+//
+// Returns "" when the document sits under no project, which is a real state (an
+// ad-hoc file ingested by path) and not an error.
+func ProjectDirForDoc(docPath string) string {
+	dir := filepath.Dir(docPath)
+	for i := 0; i < 12 && dir != "" && dir != "/"; i++ {
+		if fi, err := os.Stat(filepath.Join(dir, ProjectHomeName)); err == nil && fi.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
 func projectFlagForDoc(docPath string, pick func(projectFlags) *bool, fallback bool) bool {
 	dir := filepath.Dir(docPath)
 	for i := 0; i < 12 && dir != "" && dir != "/"; i++ {

@@ -207,6 +207,33 @@ func WriteTranscriptionCorrected(docPath string, pages []TranscribedPage, correc
 //
 // projectFlagForDoc (emailattach.go) is that walk; the attachment sidecar is
 // decided the same way, for the same reason.
+// correctionsForDoc loads a document's hand corrections from the project that
+// owns it, so an INGEST re-issues them the same way `raglit transcribe` does.
+//
+// Without this the two paths disagree: a person corrects a page, and the next
+// ingest silently writes an export without the correction — which is the exact
+// loss the correction store was built to end, arriving through the other door.
+//
+// Best-effort. A document under no project, an unreadable store, a corpus on a
+// read-only mount: all render uncorrected rather than failing an ingest, because
+// a transcription without corrections is still a transcription.
+func correctionsForDoc(docPath string) map[int]PageCorrection {
+	dir := ProjectDirForDoc(docPath)
+	if dir == "" {
+		return nil
+	}
+	js, err := OpenJudgements(JudgementsPath(dir), AuditPath(dir))
+	if err != nil {
+		return nil
+	}
+	defer js.Close()
+	c, err := js.PageCorrections(docPath)
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
 func writebackForDoc(docPath string, fallback bool) bool {
 	return projectFlagForDoc(docPath, func(f projectFlags) *bool { return f.Writeback }, fallback)
 }

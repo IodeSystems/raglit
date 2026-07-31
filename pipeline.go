@@ -174,10 +174,18 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			}
 		}
 		if len(tp) > 0 {
-			if out, err := WriteTranscription(docPath, tp); err != nil {
+			// Re-issue whatever a person corrected. An ingest that wrote an
+			// uncorrected export would undo checked work exactly as the old
+			// unconditional overwrite did.
+			corr := correctionsForDoc(docPath)
+			if out, err := WriteTranscriptionCorrected(docPath, tp, corr); err != nil {
 				sl.Fail("transcribe", "", err)
 			} else {
-				sl.Done("transcribe", "", filepath.Base(out))
+				detail := filepath.Base(out)
+				if len(corr) > 0 {
+					detail += fmt.Sprintf(" (%d corrected page(s) re-issued)", len(corr))
+				}
+				sl.Done("transcribe", "", detail)
 			}
 		}
 	}
