@@ -105,11 +105,73 @@ func EmailText(path string) ([]PageText, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]PageText, 0, len(parts))
+	// Page 1 is the MANIFEST: what this archive carries, and where.
+	//
+	// An archive is a CONTAINER, not a composition. A scanned bundle is several
+	// instruments printed onto one run of paper, so carving it by page range
+	// yields the instrument itself — that is what `raglit slice` is for. An
+	// archive holds separate documents whole, in their own encodings, and its own
+	// text is a transcript that REFERS to them. Reading it end to end tells you
+	// what was said and never what was enclosed.
+	//
+	// So the container states its contents first, in one place a person or a
+	// search can land on: every message, and every document each one carries.
+	// Without it, "what is in this archive" is answerable only by reading all 25
+	// messages, and "which message carried the preapproval letter" is answerable
+	// only by reading them twice.
+	out := make([]PageText, 0, len(parts)+1)
+	out = append(out, PageText{Page: 1, Text: manifestPage(parts), Engine: "email"})
 	for i, p := range parts {
-		out = append(out, PageText{Page: i + 1, Text: renderPart(p), Engine: "email"})
+		out = append(out, PageText{Page: i + 2, Text: renderPart(p), Engine: "email"})
 	}
 	return out, nil
+}
+
+// manifestPage lists what the archive holds, message by message.
+//
+// Message numbers here are PAGE numbers, so the manifest is usable as an index:
+// "the preapproval letter is on page 4" is a citation, not a hint. That is why
+// the manifest takes page 1 rather than being appended — a reader who lands on
+// page 1 of a container should be told what the container is before reading a
+// word of it.
+func manifestPage(parts []emailPart) string {
+	var b strings.Builder
+	b.WriteString("ARCHIVE MANIFEST\n\n")
+	fmt.Fprintf(&b, "This is a container: %d message(s), listed below with the documents each\n", len(parts))
+	b.WriteString("carries. The messages follow on the pages named here. An enclosed document\n")
+	b.WriteString("is a SEPARATE document that travelled inside this archive; it is not part of\n")
+	b.WriteString("the text of the message that carried it.\n\n")
+
+	total := 0
+	for i, p := range parts {
+		page := i + 2
+		subject, from, date := "", "", ""
+		for _, h := range p.headers {
+			switch {
+			case strings.HasPrefix(h, "Subject:"):
+				subject = strings.TrimSpace(strings.TrimPrefix(h, "Subject:"))
+			case strings.HasPrefix(h, "From:"):
+				from = strings.TrimSpace(strings.TrimPrefix(h, "From:"))
+			case strings.HasPrefix(h, "Date:"), strings.HasPrefix(h, "Sent:"):
+				if date == "" {
+					date = strings.TrimSpace(h[strings.Index(h, ":")+1:])
+				}
+			}
+		}
+		if subject == "" {
+			subject = "(no subject)"
+		}
+		fmt.Fprintf(&b, "Page %d: %s\n", page, subject)
+		if from != "" || date != "" {
+			fmt.Fprintf(&b, "  from %s  %s\n", from, date)
+		}
+		for _, a := range p.attach {
+			total++
+			fmt.Fprintf(&b, "  encloses: %s\n", a.describe())
+		}
+	}
+	fmt.Fprintf(&b, "\n%d message(s), %d enclosed document(s) in total.\n", len(parts), total)
+	return b.String()
 }
 
 // renderPart is the page text for one message.

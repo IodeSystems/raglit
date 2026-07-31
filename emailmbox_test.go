@@ -18,7 +18,12 @@ func writeMbox(t *testing.T, name, body string) []PageText {
 	if err != nil {
 		t.Fatalf("EmailText(%s): %v", name, err)
 	}
-	return pages
+	// Drop the container's manifest: these tests are about the MESSAGES an mbox
+	// splits into, not about what page 1 says the container holds.
+	if len(pages) == 0 {
+		t.Fatalf("EmailText(%s): no pages", name)
+	}
+	return pages[1:]
 }
 
 // ClassifyDoc routed .mbox to KindEmail while EmailText called mail.ReadMessage,
@@ -117,7 +122,10 @@ func TestMboxMessagesGetTheFullEmlTreatment(t *testing.T) {
 		t.Errorf("enclosed message not given its own page inside an mbox:\n%s", pages[2].Text)
 	}
 	for i, p := range pages {
-		if p.Page != i+1 {
+		// Messages begin at page 2 — page 1 is the container's manifest — and run
+		// continuously from there. Complete numbering is the contract a consumer
+		// resolving a match to a page depends on.
+		if p.Page != i+2 {
 			t.Errorf("page numbering is not continuous across the mailbox: page %d at index %d", p.Page, i)
 		}
 	}
@@ -133,13 +141,13 @@ func TestMboxIsRecognisedByContentNotExtension(t *testing.T) {
 		"From b@example.com Sun May 16 09:00:00 2021\r\n" +
 		"From: B <b@example.com>\r\nSubject: Two\r\n\r\nSecond.\r\n"
 	if n := len(writeMbox(t, "raglit-12345.eml", mb)); n != 2 {
-		t.Errorf("an mbox named .eml yielded %d page(s), want 2", n)
+		t.Errorf("an mbox named .eml yielded %d page(s), want a manifest plus 2", n)
 	}
 	// And the converse: an .eml is not sniffed as an mbox just because it has a
 	// From header.
 	const eml = "From: A <a@example.com>\r\nSubject: One\r\n\r\nOnly one message.\r\n"
 	if n := len(writeMbox(t, "one.mbox", eml)); n != 1 {
-		t.Errorf("a single message named .mbox yielded %d page(s), want 1", n)
+		t.Errorf("a single message named .mbox yielded %d page(s), want a manifest plus 1", n)
 	}
 }
 

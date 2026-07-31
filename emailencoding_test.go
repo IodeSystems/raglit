@@ -7,7 +7,11 @@ import (
 	"testing"
 )
 
-// writeEml materialises a message and reads it back as pages.
+// writeEml materialises a message and reads back its MESSAGE pages.
+//
+// Page 1 of an archive is the container's manifest, and every test in this file
+// is about what a message body decodes to rather than about the container. It is
+// dropped here so those tests index messages from 0 and say what they mean.
 func writeEml(t *testing.T, name, body string) []PageText {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), name)
@@ -18,7 +22,10 @@ func writeEml(t *testing.T, name, body string) []PageText {
 	if err != nil {
 		t.Fatalf("EmailText(%s): %v", name, err)
 	}
-	return pages
+	if len(pages) == 0 {
+		t.Fatalf("EmailText(%s): no pages", name)
+	}
+	return pages[1:]
 }
 
 // mail.ReadMessage does no transfer decoding at all, so the commonest shape
