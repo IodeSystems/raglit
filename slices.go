@@ -1,7 +1,9 @@
 package raglit
 
 import (
+	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -157,4 +159,84 @@ func sliceCoverage(parent string, pages int, slices []Slice) Coverage {
 		}
 	}
 	return c
+}
+
+// ParseRange reads "3-6" or "3" as an inclusive page range.
+//
+// Inclusive because that is how a person reads a document: "pages 3-6" is four
+// pages, and a half-open range here would silently drop the last page of every
+// slice anybody declared by eye.
+func ParseRange(s string) (from, to int, err error) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "p")
+	if i := strings.IndexAny(s, "-–"); i > 0 {
+		a, e1 := strconv.Atoi(strings.TrimSpace(s[:i]))
+		b, e2 := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(s[i:], "-")))
+		if e1 != nil || e2 != nil || a < 1 || b < a {
+			return 0, 0, fmt.Errorf("bad page range %q — want N or N-M with 1 <= N <= M", s)
+		}
+		return a, b, nil
+	}
+	n, e := strconv.Atoi(s)
+	if e != nil || n < 1 {
+		// n < 1 catches "-4", which Atoi happily reads as negative four. Page
+		// numbers are the parent's own and start at 1, so a non-positive one is
+		// a typo, not a range.
+		return 0, 0, fmt.Errorf("bad page range %q — want N or N-M, pages start at 1", s)
+	}
+	return n, n, nil
+}
+
+// MaterializeSlice writes the derived child document for a declaration.
+//
+// The child's text is the parent's pages, carried over unchanged, and its page
+// numbers stay the PARENT's: a child of pages 3-6 has pages 3, 4, 5, 6. Never
+// renumbered to 1-4 — a quotation cited from the child has to be checkable
+// against the exhibit as filed, and renumbering makes "p. 1" mean two different
+// sheets depending on which document you are holding.
+//
+// One fragment per page rather than the windowing fragmenter. The child exists
+// to be cited and scoped, and the parent is already indexed at fragment grain
+// for deep search; keeping page and fragment the same unit here means an offset
+// in a child result needs no translation to become a page in the bundle.
+//
+// Idempotent: Ingest replaces a document's fragments, so re-running after the
+// parent is re-read refreshes the child. That is the whole reason the bundle
+// stays the single source of bytes — one thing to fix, and the children follow.
+func MaterializeSlice(s *Store, sl Slice) (int, error) {
+	if err := sl.validate(); err != nil {
+		return 0, err
+	}
+	pages, err := s.TruePages(sl.Parent)
+	if err != nil {
+		return 0, fmt.Errorf("slice %s: %w", sl.ID, err)
+	}
+	var frags []Fragment
+	var have []int
+	for _, p := range pages {
+		if p.Page < sl.From || p.Page > sl.To {
+			continue
+		}
+		have = append(have, p.Page)
+		if strings.TrimSpace(p.Text) == "" {
+			// A blank page inside the range is still IN the child: page numbering
+			// has to stay complete or a later alignment reports the wrong page.
+			continue
+		}
+		frags = append(frags, Fragment{Page: p.Page, Ord: 0, Text: p.Text})
+	}
+	if len(have) == 0 {
+		return 0, fmt.Errorf("slice %s: the parent has no pages in %d-%d (it has %d page(s))",
+			sl.ID, sl.From, sl.To, len(pages))
+	}
+	title := sl.Title
+	if title == "" {
+		title = fmt.Sprintf("%s p%d-%d", filepath.Base(sl.Parent), sl.From, sl.To)
+	}
+	if err := s.Ingest(context.Background(), Document{
+		Path: sl.ChildPath(), Title: title, Fragments: frags,
+	}); err != nil {
+		return 0, err
+	}
+	return len(frags), nil
 }

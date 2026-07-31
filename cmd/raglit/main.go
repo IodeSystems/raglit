@@ -67,6 +67,10 @@ func main() {
 		err = runMark(os.Args[2:])
 	case "marks":
 		err = runMarks(os.Args[2:])
+	case "slice":
+		err = runSlice(os.Args[2:])
+	case "slices":
+		err = runSlices(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "daemon":
@@ -159,6 +163,17 @@ usage:
                 the index already knows the hashes. This is the one relation with
                 no judgement in it, so --write records them as copies attributed
                 to raglit rather than to you; a person's ruling still overrides.
+
+  raglit slice <DOC> <FROM-TO> [--title T] [--id ID] [--no-materialize]
+                declare that a page range of a bundle is a document, and build a
+                citable child from it. The bundle is never cut up — it is what
+                was filed — and the child keeps the PARENT's page numbers, so a
+                quotation from it stays checkable against the exhibit as filed.
+
+  raglit slices [DOC] [--materialize] [--json]
+                declared sub-documents, with coverage: which pages of a bundle
+                no slice claims. That is what says a bundle is fully linearized
+                rather than merely started.
 
   raglit mark <A> <B> <copy|version|unrelated> [--supersedes PATH] [--note ...]
                 record that ruling. Appended to raglit-audit.jsonl beside the

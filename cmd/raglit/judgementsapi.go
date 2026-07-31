@@ -136,3 +136,73 @@ func listSlicesOp(_ context.Context, in *slicesIn) (*slicesOut, error) {
 	}
 	return out, nil
 }
+
+// Materializing slices, daemon-side.
+//
+// The child of a slice is a document in the INDEX, and the daemon owns the
+// index. A client cannot build one itself without opening the index file
+// directly, which is the second writer the whole daemon arrangement exists to
+// prevent — and on a project-local checkout it silently writes to a DIFFERENT
+// index from the one search reads, so the child is built and then invisible.
+//
+// So the client declares (that is a judgement, and it goes through the audit
+// trail) and asks the daemon to build. One writer, one index, and a child that
+// search can actually find.
+
+type materializeIn struct {
+	Project string `query:"project" required:"true" doc:"project directory holding the judgement store"`
+	Index   string `query:"index" doc:"index name (default: the default index)"`
+	ID      string `query:"id" doc:"only this slice; default rebuilds every slice in the project"`
+}
+
+type materializeOut struct {
+	Body struct {
+		Built  int      `json:"built"`
+		Pages  int      `json:"pages"`
+		Failed []string `json:"failed,omitempty"`
+	}
+}
+
+func materializeSlicesOp(reg *raglit.Registry) func(context.Context, *materializeIn) (*materializeOut, error) {
+	return func(_ context.Context, in *materializeIn) (*materializeOut, error) {
+		js, err := openProjectJudgements(in.Project)
+		if err != nil {
+			return nil, huma.Error400BadRequest("open judgements", err)
+		}
+		defer js.Close()
+
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+
+		var slices []raglit.Slice
+		if in.ID != "" {
+			sl, ok, err := js.Slice(in.ID)
+			if err != nil {
+				return nil, huma.Error500InternalServerError("read slice", err)
+			}
+			if !ok {
+				return nil, huma.Error404NotFound("no slice " + in.ID)
+			}
+			slices = []raglit.Slice{sl}
+		} else if slices, err = js.Slices(); err != nil {
+			return nil, huma.Error500InternalServerError("read slices", err)
+		}
+
+		out := &materializeOut{}
+		for _, sl := range slices {
+			n, err := raglit.MaterializeSlice(st, sl)
+			if err != nil {
+				// One unbuildable slice must not abandon the rest — a parent that
+				// has not been ingested yet is an ordinary state, not a failure of
+				// the whole operation.
+				out.Body.Failed = append(out.Body.Failed, fmt.Sprintf("%s: %v", sl.ID, err))
+				continue
+			}
+			out.Body.Built++
+			out.Body.Pages += n
+		}
+		return out, nil
+	}
+}

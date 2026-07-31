@@ -62,16 +62,18 @@ func runMark(args []string) error {
 	supersedes := fs.String("supersedes", "", "for a version pair: the path that GOVERNS")
 	note := fs.String("note", "", "why — the reasoning, for whoever reads this later")
 	by := fs.String("by", "", "who ruled (default $RAGLIT_BY, else the OS user)")
-	fs.Parse(args)
-
-	if fs.NArg() != 3 {
-		return fmt.Errorf("mark: want <A> <B> <copy|version|unrelated>")
-	}
-	a, b, kind := fs.Arg(0), fs.Arg(1), raglit.MarkKind(fs.Arg(2))
-
-	js, err := openJudgements()
+	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
+	}
+	if len(pos) != 3 {
+		return fmt.Errorf("mark: want <A> <B> <copy|version|unrelated>")
+	}
+	a, b, kind := pos[0], pos[1], raglit.MarkKind(pos[2])
+
+	js, err2 := openJudgements()
+	if err2 != nil {
+		return err2
 	}
 	defer js.Close()
 	if prev, ok, _ := js.Relation(a, b); ok {
