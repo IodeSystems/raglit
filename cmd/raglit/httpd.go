@@ -191,6 +191,8 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("findDocuments", http.MethodGet, "/api/find-documents", "Find documents by name substring (MCP list_documents)."), findDocumentsOp(reg))
 	gat.Register(api, g, op("getDocument", http.MethodGet, "/api/get-document", "Get a document's indexed text (MCP get_document)."), getDocumentOp(reg))
 	gat.Register(api, g, op("ocr", http.MethodPost, "/api/ocr", "Extract a document (path or base64 data) to paged text (MCP ocr)."), ocrToolOp(lf, home))
+	gat.Register(api, g, op("listRelations", http.MethodGet, "/api/relations", "Rulings on which documents are copies or versions."), listRelationsOp)
+	gat.Register(api, g, op("listSlices", http.MethodGet, "/api/slices", "Declared sub-documents: page ranges of a bundle."), listSlicesOp)
 	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
