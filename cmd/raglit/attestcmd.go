@@ -68,16 +68,10 @@ page say THIS IS the image the words came from, or refuse to.
 	}
 	path := fs.Arg(0)
 
-	doc, ok, err := raglit.ReadRegionDoc(path)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("no region read recorded for %s — run `raglit regions --write --page N %s` first",
-			path, path)
-	}
-
-	rd, err := readingFromRegions(path, doc)
+	// Two producers, chosen by what the asset IS. A sheet is reviewed against
+	// its crops and needs a recorded region read first; a text document is
+	// reviewed against its own bytes and needs nothing but the file.
+	rd, note, err := readingFor(path)
 	if err != nil {
 		return err
 	}
@@ -85,7 +79,7 @@ page say THIS IS the image the words came from, or refuse to.
 	if err != nil {
 		return err
 	}
-	fmt.Printf("wrote %s (%d regions across %d page(s))\n", out, len(rd.Units), len(doc.Pages))
+	fmt.Printf("wrote %s (%s)\n", out, note)
 	if *writeOnly {
 		return nil
 	}
@@ -101,7 +95,7 @@ page say THIS IS the image the words came from, or refuse to.
 	if err != nil {
 		return err
 	}
-	svc := &attest.Service{Root: abs, Ident: attest.Guest{}, Ev: &regionEvidence{root: abs}}
+	svc := &attest.Service{Root: abs, Ident: attest.Guest{}, Ev: evidenceFor(path, abs)}
 
 	router := chi.NewRouter()
 	api := humachi.New(router, huma.DefaultConfig("raglit attest", version))
@@ -326,4 +320,43 @@ func extraJSON(v map[string]any) json.RawMessage {
 		return nil
 	}
 	return b
+}
+
+// readingFor picks the producer for an asset and builds its reading.
+//
+// The split is on the asset, not on what happens to be recorded beside it. A
+// PDF with no region read is an error telling you to run `raglit regions`, NOT a
+// fallback to reading its transcription sidecar as text: for a scanned page the
+// crop is the evidence, and quietly reviewing the sidecar instead would put a
+// person in front of characters when the open question is whether the pixels say
+// them.
+func readingFor(path string) (*attest.Reading, string, error) {
+	if isTextAsset(path) {
+		rd, err := readingFromText(path)
+		if err != nil {
+			return nil, "", err
+		}
+		return rd, fmt.Sprintf("%d paragraphs", len(rd.Units)), nil
+	}
+	doc, ok, err := raglit.ReadRegionDoc(path)
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok {
+		return nil, "", fmt.Errorf("no region read recorded for %s — run `raglit regions --write --page N %s` first",
+			path, path)
+	}
+	rd, err := readingFromRegions(path, doc)
+	if err != nil {
+		return nil, "", err
+	}
+	return rd, fmt.Sprintf("%d regions across %d page(s)", len(rd.Units), len(doc.Pages)), nil
+}
+
+// evidenceFor supplies the rendering for whichever producer read the asset.
+func evidenceFor(path, root string) attest.Evidence {
+	if isTextAsset(path) {
+		return textEvidence{root: root}
+	}
+	return &regionEvidence{root: root}
 }
