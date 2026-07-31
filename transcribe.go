@@ -1,7 +1,6 @@
 package raglit
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -141,24 +140,9 @@ func WriteTranscription(docPath string, pages []TranscribedPage) (string, error)
 // document for a project config and let it decide; fall back to the store's
 // setting when there is none. A project can turn it on for itself without
 // touching the daemon, and off again the same way.
+//
+// projectFlagForDoc (emailattach.go) is that walk; the attachment sidecar is
+// decided the same way, for the same reason.
 func writebackForDoc(docPath string, fallback bool) bool {
-	dir := filepath.Dir(docPath)
-	for i := 0; i < 12 && dir != "" && dir != "/"; i++ {
-		p := filepath.Join(dir, ProjectHomeName, "config.json")
-		if b, err := os.ReadFile(p); err == nil {
-			var cfg struct {
-				Writeback *bool `json:"writeback_transcription_md"`
-			}
-			if json.Unmarshal(b, &cfg) == nil && cfg.Writeback != nil {
-				return *cfg.Writeback // the project has an opinion; it wins
-			}
-			return fallback // a project config with no opinion defers
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return fallback
+	return projectFlagForDoc(docPath, func(f projectFlags) *bool { return f.Writeback }, fallback)
 }
