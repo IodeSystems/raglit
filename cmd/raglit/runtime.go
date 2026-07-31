@@ -42,7 +42,11 @@ func writeDaemonState(root, addr string) (func(), error) {
 		Addr:      addr,
 		Root:      root,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Version:   version,
+		// The build that is actually running, not the `version` literal — which
+		// has read "0.1.0" for every build ever made and so cannot tell a
+		// months-old daemon from a fresh one. Someone reading daemon.json to
+		// answer "what is this thing" should get an answer that changes.
+		Version: thisBuild.String(),
 	}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
