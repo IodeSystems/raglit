@@ -240,15 +240,35 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 
 // ── operations ─────────────────────────────────────────────────────────
 
+// healthOut answers liveness, and identifies the build answering it.
+//
+// The build fields ride along on the probe every client already makes before it
+// routes anything, so detecting a client/daemon mismatch costs no extra round
+// trip. They are additive and optional: an older client ignores them, and a
+// newer client treats their absence as "unknown" and stays quiet rather than
+// guessing which side is older.
 type healthOut struct {
 	Body struct {
 		Status string `json:"status"`
+		// Revision is the daemon's vcs.revision, "" if the binary is unstamped.
+		Revision string `json:"revision,omitempty"`
+		// BuildTime is the daemon's vcs.time (RFC3339), the field that orders
+		// two builds. "" if unstamped.
+		BuildTime string `json:"build_time,omitempty"`
+		// Modified reports a daemon built from a tree with uncommitted edits,
+		// whose commit time therefore understates what it contains.
+		Modified bool `json:"modified,omitempty"`
 	}
 }
 
 func health(_ context.Context, _ *struct{}) (*healthOut, error) {
 	out := &healthOut{}
 	out.Body.Status = "ok"
+	out.Body.Revision = thisBuild.Revision
+	if !thisBuild.Time.IsZero() {
+		out.Body.BuildTime = thisBuild.Time.UTC().Format(time.RFC3339)
+	}
+	out.Body.Modified = thisBuild.Modified
 	return out, nil
 }
 

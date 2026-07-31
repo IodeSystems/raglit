@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -138,13 +139,16 @@ func ensureDaemon(flagVal string, homeOf func() raglit.Home) (string, error) {
 		// on a non-default port is found instead of a duplicate spawned on 7420. Only
 		// trust it if the pid is alive AND it answers health (guards a stale file).
 		if st, ok := readDaemonState(raglit.DefaultRoot()); ok && pidAlive(st.PID) {
-			if u := "http://" + st.Addr; daemonHealthy(u) {
+			u := "http://" + st.Addr
+			if id, ok := probeDaemon(u); ok {
+				warnSkew(id, u)
 				return u, nil
 			}
 		}
 		base = defaultDaemonURL
 	}
-	if daemonHealthy(base) {
+	if id, ok := probeDaemon(base); ok {
+		warnSkew(id, base)
 		return base, nil
 	}
 	u, err := url.Parse(base)
@@ -168,16 +172,57 @@ func ensureDaemon(flagVal string, homeOf func() raglit.Home) (string, error) {
 }
 
 // daemonHealthy reports whether a daemon answers /api/health at base.
-func daemonHealthy(base string) bool {
+func daemonHealthy(base string) bool { _, ok := probeDaemon(base); return ok }
+
+// probeDaemon answers /api/health and returns the daemon's build alongside its
+// liveness. Liveness is the contract callers depend on; the build is what makes
+// a version mismatch visible, and it costs nothing extra because every client
+// already makes this call before routing anything.
+//
+// A daemon too old to report a build answers with the fields absent, which
+// unmarshals to a zero buildID — indistinguishable from unstamped, and treated
+// the same way: unknown, so say nothing.
+func probeDaemon(base string) (buildID, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/api/health", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false
+		return buildID{}, false
 	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return buildID{}, false
+	}
+	var body struct {
+		Revision  string `json:"revision"`
+		BuildTime string `json:"build_time"`
+		Modified  bool   `json:"modified"`
+	}
+	// A body that will not parse is not a health failure: the daemon answered
+	// 200. Report it up, with an unknown build.
+	if b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16)); err == nil {
+		_ = json.Unmarshal(b, &body)
+	}
+	id := buildID{Revision: body.Revision, Modified: body.Modified}
+	if body.BuildTime != "" {
+		id.Time, _ = time.Parse(time.RFC3339, body.BuildTime)
+	}
+	return id, true
+}
+
+// warnSkewOnce prints the client/daemon build mismatch, at most once per
+// process. ensureDaemon can be reached more than once in a single command, and
+// the same three lines repeated reads as a fault in the warning rather than in
+// the daemon.
+var warnSkewOnce sync.Once
+
+func warnSkew(daemon buildID, addr string) {
+	warnSkewOnce.Do(func() {
+		if note := skewNote(thisBuild, daemon, addr); note != "" {
+			fmt.Fprint(os.Stderr, note)
+		}
+	})
 }
 
 func isLoopback(host string) bool {
