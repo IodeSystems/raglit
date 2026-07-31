@@ -184,6 +184,46 @@ model described a record of survey as "a vicinity map showing a grid of
 sections" — true of one inset, silent about the survey. The region root is asked
 a different question: account for everything here.
 
+### The cheap OCR tier cannot serve a corpus of drawings
+
+Reading a page has three tiers: the PDF text layer (no model), a cheap OCR
+engine (`tesseract` or `paddleocr`, no LLM), and the vision model. The cascade
+exists to keep the expensive call rare, and for scanned prose it works — a
+declaration, a letter, an order all read fine on the cheap tier.
+
+**It cannot work for a page whose content is a drawing, and the reason is not
+that OCR is bad at drawings.** Tesseract will happily return the labels,
+bearings and lot numbers off a plan sheet. What it cannot return is what the
+sheet DEPICTS, because a description is not a transcription — it is an answer to
+a question nobody asked the glyph recogniser.
+
+The trap is in the escalation gate. `GibberishConfig` decides when a cheap read
+is untrustworthy enough to re-run on the vision model, and it is deliberately
+precision-biased: mean recogniser confidence, fraction of word-like tokens,
+"only clearly-bad pages (handwriting, degraded scans, garbled figures)". Every
+one of those measures LEGIBILITY.
+
+A plan sheet read cheaply is legible. Short labels, clean print, high
+confidence. It passes the gate, does not escalate, and is recorded as a
+successfully read page — with no description of the drawing that is the entire
+content of the sheet. The gate asks "is this text trustworthy?" when the
+question that matters here is "does this page need describing?", and for a
+drawing the first answers yes while the second also answers yes.
+
+So on a corpus of recorded surveys, plats and exhibits, the cheap tier is not a
+cost optimisation with a quality cost. It is a silent loss of the content, of
+exactly the kind this file keeps cataloguing: no error, a page that reads as
+complete, and the thing that mattered absent.
+
+Two consequences worth stating plainly:
+
+- **Diagram pages must reach the vision model**, whatever else is configured.
+  Any cheap-tier rollout has to route them there by document class, not by
+  legibility score.
+- **`DescribeFigures` is off by default**, so a born-digital PDF carrying an
+  embedded diagram reads its text layer, never escalates, and its figures go
+  undescribed. That is the same loss arriving through the other tier.
+
 **Root descriptions are not quotable.** A sheet read whole returns `HALVR` for
 Halvor and drops digits from auditor file numbers. That is the division of
 labour: the root says what is on the sheet, a crop says what it says, and
