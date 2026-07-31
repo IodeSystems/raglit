@@ -331,9 +331,22 @@ func runCorrectPage(doc string, page int, note, by string) error {
 		if _, ok := prev[page]; ok {
 			// Said out loud: replacing somebody's checked reading silently is how
 			// the work this exists to preserve gets lost a third way.
-			fmt.Fprintf(os.Stderr, "note: page %d was already corrected — recording the new text over it\n", page)
+			fmt.Fprintf(os.Stderr, "note: page %d was already corrected — the previous reading is kept, marked superseded\n", page)
 		}
 	}
+
+	// Prefer the daemon. It owns the index, and a correction changes the ACTIVE
+	// reading — whose row history lives there. Falling back to a local append
+	// keeps the correction durable when no daemon is reachable; the rows are
+	// then written by whichever ingest next sees it.
+	if n, derr := daemonCorrectPage(abs, page, note, who(by), text); derr == nil {
+		fmt.Printf("page %d of %s corrected (%d chars)\n", page, filepath.Base(doc), len(text))
+		fmt.Printf("  %d reading(s) on record for that page; the newest is active\n", n)
+		return nil
+	} else {
+		fmt.Fprintf(os.Stderr, "note: no daemon (%v) — recording locally; reading rows follow on next ingest\n", derr)
+	}
+
 	if err := js.PutPageCorrection(raglit.PageCorrection{
 		Doc: abs, Page: page, Text: string(text), Note: note,
 		By: who(by), At: time.Now().UTC().Format("2006-01-02"),

@@ -193,6 +193,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("ocr", http.MethodPost, "/api/ocr", "Extract a document (path or base64 data) to paged text (MCP ocr)."), ocrToolOp(lf, home))
 	gat.Register(api, g, op("listRelations", http.MethodGet, "/api/relations", "Rulings on which documents are copies or versions."), listRelationsOp)
 	gat.Register(api, g, op("listSlices", http.MethodGet, "/api/slices", "Declared sub-documents: page ranges of a bundle."), listSlicesOp)
+	gat.Register(api, g, op("correctPage", http.MethodPost, "/api/transcribe/correct", "Record a corrected reading for one page."), correctPageOp(reg))
 	gat.Register(api, g, op("sketch", http.MethodPost, "/api/similar/build", "Build page sketches for near-duplicate detection."), sketchOp(reg))
 	gat.Register(api, g, op("reread", http.MethodPost, "/api/reread", "Purge a document's cached page OCR and re-read it."), rereadOp(reg))
 	gat.Register(api, g, op("materializeSlices", http.MethodPost, "/api/slices/materialize", "Build child documents for declared slices."), materializeSlicesOp(reg))

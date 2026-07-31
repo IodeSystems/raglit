@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/iodesystems/raglit"
@@ -300,6 +301,70 @@ func sketchOp(reg *raglit.Registry) func(context.Context, *sketchIn) (*sketchOut
 		for _, e := range errs {
 			out.Body.Skipped = append(out.Body.Skipped, e.Error())
 		}
+		return out, nil
+	}
+}
+
+// Recording a page correction, daemon-side.
+//
+// The correction itself is durable the moment it reaches raglit-audit.jsonl, and
+// the CLI could append that alone. But a correction also changes the ACTIVE
+// reading of a page, and the row history of readings lives in the index — which
+// the daemon owns as single writer. A CLI writing those rows would be the second
+// writer the daemon exists to prevent.
+//
+// So both halves happen here: append to the trail, and let the change hook write
+// the new reading row and mark the previous one superseded.
+
+type correctIn struct {
+	Project string `query:"project" required:"true" doc:"project directory holding the audit trail"`
+	Index   string `query:"index" doc:"index name (default: the default index)"`
+	Doc     string `query:"doc" required:"true" doc:"document path the correction is for"`
+	Page    int    `query:"page" required:"true" doc:"page number, the document's own"`
+	Note    string `query:"note" doc:"how the correction was established"`
+	By      string `query:"by" doc:"who checked it"`
+	RawBody []byte `doc:"the corrected text for that page"`
+}
+
+type correctOut struct {
+	Body struct {
+		Doc      string `json:"doc"`
+		Page     int    `json:"page"`
+		Chars    int    `json:"chars"`
+		Readings int    `json:"readings"`
+	}
+}
+
+func correctPageOp(reg *raglit.Registry) func(context.Context, *correctIn) (*correctOut, error) {
+	return func(ctx context.Context, in *correctIn) (*correctOut, error) {
+		if len(in.RawBody) == 0 {
+			return nil, huma.Error400BadRequest("no corrected text in the request body")
+		}
+		js, err := openProjectJudgements(in.Project)
+		if err != nil {
+			return nil, huma.Error400BadRequest("open judgements", err)
+		}
+		defer js.Close()
+
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		// The hook that turns a changed active reading into rows. Registered
+		// before the write, so this correction is the first one it sees.
+		raglit.RecordReadingsInto(js, st)
+
+		if err := js.PutPageCorrection(raglit.PageCorrection{
+			Doc: in.Doc, Page: in.Page, Text: string(in.RawBody),
+			Note: in.Note, By: in.By, At: time.Now().UTC().Format("2006-01-02"),
+		}); err != nil {
+			return nil, huma.Error400BadRequest("record correction", err)
+		}
+
+		readings, _ := st.PageReadings(ctx, in.Doc, in.Page)
+		out := &correctOut{}
+		out.Body.Doc, out.Body.Page = in.Doc, in.Page
+		out.Body.Chars, out.Body.Readings = len(in.RawBody), len(readings)
 		return out, nil
 	}
 }

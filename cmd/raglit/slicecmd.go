@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -520,4 +523,41 @@ func runProposeSlices(fs *flag.FlagSet, target string, write bool, asJSON bool) 
 		fmt.Fprintf(os.Stderr, "  declared but not built: %v\n", err)
 	}
 	return nil
+}
+
+// daemonCorrectPage asks the daemon to record a page correction.
+//
+// The daemon does it rather than the CLI because a correction changes the ACTIVE
+// reading, and the row history of readings lives in the index — which the daemon
+// owns as single writer.
+func daemonCorrectPage(doc string, page int, note, by string, text []byte) (readings int, err error) {
+	dir, ok := raglit.ProjectDir()
+	if !ok {
+		return 0, fmt.Errorf("no .raglit/ found from here")
+	}
+	base, err := ensureDaemon("", raglit.DiscoverHome)
+	if err != nil {
+		return 0, err
+	}
+	idx, err := daemonIndexName()
+	if err != nil {
+		return 0, err
+	}
+	q := urlValues("project", dir, "index", idx, "doc", doc,
+		"page", fmt.Sprintf("%d", page), "note", note, "by", by)
+	resp, err := http.Post(strings.TrimRight(base, "/")+"/api/transcribe/correct?"+q.Encode(),
+		"text/plain", bytes.NewReader(text))
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("daemon correct: %s", strings.TrimSpace(string(b)))
+	}
+	var out struct {
+		Readings int `json:"readings"`
+	}
+	_ = json.Unmarshal(b, &out)
+	return out.Readings, nil
 }
