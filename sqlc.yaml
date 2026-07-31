@@ -16,3 +16,15 @@ sql:
       emit_db_tags: true
       emit_json_tags: true
       emit_metaquery: cols
+- schema: sql/judgements.sql
+  queries: sql/judgements_query.sql
+  engine: sqlite
+  codegen:
+  - plugin: metaquery
+    out: internal/jdb
+    options:
+      package: jdb
+      sql_package: database/sql
+      emit_db_tags: true
+      emit_json_tags: true
+      emit_metaquery: cols

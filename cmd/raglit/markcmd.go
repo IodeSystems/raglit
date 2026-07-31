@@ -24,12 +24,36 @@ import (
 // the ruling. Rulings go to relations.jsonl beside the documents — never into
 // .raglit/, which is gitignored and rebuilt.
 
-func openRelations() (*raglit.Relations, error) {
+// openJudgements opens this project's judgement database, migrating a legacy
+// relations.jsonl into it on first open.
+//
+// The migration is one-shot and idempotent: rulings upsert by pair, so running
+// it twice records nothing new. The old file is left on disk rather than
+// deleted — it is somebody's decisions, and a conversion that removes the only
+// other copy of them is not a conversion anyone should trust.
+func openJudgements() (*raglit.JudgementStore, error) {
 	dir, ok := raglit.ProjectDir()
 	if !ok {
 		return nil, fmt.Errorf("no .raglit/ found from here — run this inside a project (raglit init)")
 	}
-	return raglit.LoadRelations(raglit.RelationsPath(dir))
+	js, err := raglit.OpenJudgements(raglit.JudgementsPath(dir), raglit.AuditPath(dir))
+	if err != nil {
+		return nil, err
+	}
+	legacy, err := raglit.ReadLegacyRelations(raglit.LegacyRelationsPath(dir))
+	if err != nil {
+		js.Close()
+		return nil, err
+	}
+	for _, m := range legacy {
+		if _, ok, err := js.Relation(m.A, m.B); err == nil && !ok {
+			if err := js.PutRelation(m); err != nil {
+				js.Close()
+				return nil, fmt.Errorf("migrating relations.jsonl: %w", err)
+			}
+		}
+	}
+	return js, nil
 }
 
 func runMark(args []string) error {
@@ -44,11 +68,12 @@ func runMark(args []string) error {
 	}
 	a, b, kind := fs.Arg(0), fs.Arg(1), raglit.MarkKind(fs.Arg(2))
 
-	rel, err := openRelations()
+	js, err := openJudgements()
 	if err != nil {
 		return err
 	}
-	if prev, ok := rel.Get(a, b); ok {
+	defer js.Close()
+	if prev, ok, _ := js.Relation(a, b); ok {
 		// Not an error: a correction is exactly what the append-only file is for.
 		// But it is said out loud, because silently reversing an earlier ruling is
 		// how a corpus ends up with two beliefs and no record of the change.
@@ -62,14 +87,14 @@ func runMark(args []string) error {
 		By:         who(*by),
 		At:         time.Now().UTC().Format("2006-01-02"),
 	}
-	if err := rel.Add(m); err != nil {
+	if err := js.PutRelation(m); err != nil {
 		return fmt.Errorf("mark: %w", err)
 	}
 	fmt.Printf("%s: %s\n     %s\n", kind, m.A, m.B)
 	if m.Supersedes != "" {
 		fmt.Printf("  governed by %s\n", m.Supersedes)
 	}
-	fmt.Printf("  recorded in %s\n", rel.Path)
+	fmt.Printf("  recorded in the judgement database\n")
 	return nil
 }
 
@@ -78,14 +103,27 @@ func runMarks(args []string) error {
 	openStore, _ := addStoreFlags(fs)
 	todo := fs.Bool("todo", false, "overlapping pairs nobody has ruled on yet, with a proposal for each")
 	identical := fs.Bool("identical", false, "documents held more than once, BYTE for byte — needs no sketches")
+	rebuild := fs.Bool("rebuild", false, "drop the projected database and replay the audit trail into it")
 	write := fs.Bool("write", false, "with --identical: record them as copies (attributed to raglit, not to you)")
 	asJSON := fs.Bool("json", false, "emit as JSON")
 	minCov := fs.Float64("min-coverage", 0, "only pairs reaching this block coverage")
 	fs.Parse(args)
 
-	rel, err := openRelations()
+	js, err := openJudgements()
 	if err != nil {
 		return err
+	}
+	defer js.Close()
+
+	if *rebuild {
+		n, err := js.Rebuild()
+		if err != nil {
+			return err
+		}
+		rels, _ := js.Relations()
+		sls, _ := js.Slices()
+		fmt.Printf("replayed %d event(s) → %d relation(s), %d slice(s)\n", n, len(rels), len(sls))
+		return nil
 	}
 
 	if *identical {
@@ -94,13 +132,18 @@ func runMarks(args []string) error {
 			return err
 		}
 		defer store.Close()
-		return runIdentical(store, rel, *write, *asJSON)
+		return runIdentical(store, js, *write, *asJSON)
 	}
 
 	if !*todo {
-		marks := rel.All()
+		marks, err := js.Relations()
+		if err != nil {
+			return err
+		}
 		if fs.NArg() > 0 {
-			marks = rel.For(fs.Arg(0))
+			if marks, err = js.RelationsFor(fs.Arg(0)); err != nil {
+				return err
+			}
 		}
 		if *asJSON {
 			return emitJSON(marks)
@@ -112,7 +155,7 @@ func runMarks(args []string) error {
 		for _, m := range marks {
 			printMark(m)
 		}
-		fmt.Printf("\n%d ruling(s) in %s\n", len(marks), rel.Path)
+		fmt.Printf("\n%d ruling(s)\n", len(marks))
 		return nil
 	}
 
@@ -151,7 +194,7 @@ func runMarks(args []string) error {
 	}
 	var todos []open
 	for _, pr := range pairs {
-		if _, ruled := rel.Get(pr.A, pr.B); ruled {
+		if _, ruled, _ := js.Relation(pr.A, pr.B); ruled {
 			continue
 		}
 		if cov := maxf(pr.M.BlockCoverProbe, pr.M.BlockCoverMatch); cov < *minCov {
@@ -172,7 +215,8 @@ func runMarks(args []string) error {
 		return emitJSON(todos)
 	}
 	if len(todos) == 0 {
-		fmt.Printf("every overlapping pair has been ruled on (%d ruling(s) in %s)\n", len(rel.All()), rel.Path)
+		all, _ := js.Relations()
+		fmt.Printf("every overlapping pair has been ruled on (%d ruling(s))\n", len(all))
 		return nil
 	}
 	fmt.Printf("%d pair(s) awaiting a ruling\n\n", len(todos))
@@ -256,7 +300,7 @@ func firstWord(s string) string {
 //
 // A person can still overrule it — relations.jsonl is append-only and the later
 // line wins — which is what makes the automatic write safe rather than final.
-func runIdentical(store *raglit.Store, rel *raglit.Relations, write, asJSON bool) error {
+func runIdentical(store *raglit.Store, js *raglit.JudgementStore, write, asJSON bool) error {
 	groups, err := store.IdenticalGroups()
 	if err != nil {
 		return err
@@ -273,7 +317,7 @@ func runIdentical(store *raglit.Store, rel *raglit.Relations, write, asJSON bool
 		for i := 0; i < len(g); i++ {
 			for j := i + 1; j < len(g); j++ {
 				total++
-				if _, ruled := rel.Get(g[i], g[j]); ruled {
+				if _, ruled, _ := js.Relation(g[i], g[j]); ruled {
 					already++
 					continue
 				}
@@ -310,10 +354,10 @@ func runIdentical(store *raglit.Store, rel *raglit.Relations, write, asJSON bool
 		for i := 0; i < len(g.Paths); i++ {
 			for j := i + 1; j < len(g.Paths); j++ {
 				a, b := g.Paths[i], g.Paths[j]
-				if _, ruled := rel.Get(a, b); ruled {
+				if _, ruled, _ := js.Relation(a, b); ruled {
 					continue
 				}
-				if err := rel.Add(raglit.Mark{
+				if err := js.PutRelation(raglit.Mark{
 					A: a, B: b, Kind: raglit.MarkCopy,
 					Note:     "identical source bytes (sha256)",
 					By:       "raglit",
@@ -330,7 +374,7 @@ func runIdentical(store *raglit.Store, rel *raglit.Relations, write, asJSON bool
 		fmt.Printf("nothing to record (%d pair(s) already ruled)\n", already)
 		return nil
 	}
-	fmt.Printf("recorded %d pair(s) as copies in %s\n", wrote, rel.Path)
+	fmt.Printf("recorded %d pair(s) as copies\n", wrote)
 	fmt.Println("  attributed to raglit — a person's ruling on any of them still overrides it")
 	return nil
 }

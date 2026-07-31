@@ -29,13 +29,11 @@ import (
 // consistent with either — so the separation has to come from WHAT disagrees,
 // and then from a person.
 //
-// This file holds the ruling, not the measurement. Rulings are durable: they are
-// the one thing here that cannot be recomputed from the corpus, so they do not
-// live in the SQLite index, which is derived, gitignored, per-machine and thrown
-// away by a reindex. They live in a JSONL file beside the documents, which is
-// the shape `kg attest` already established for a human verdict in this corpus —
-// append-only, line-oriented so three machines syncing a folder merge it without
-// a conflict, and greppable.
+// This file holds the SHAPE of a ruling and the proposal that precedes it; the
+// storage is judgements.go. Rulings are durable — the one thing here that cannot
+// be recomputed from the corpus — so they live in their own database beside the
+// documents rather than in the index, which is derived, gitignored, per-machine
+// and thrown away by a reindex.
 
 // MarkKind is a person's ruling on an overlapping pair.
 type MarkKind string
@@ -53,7 +51,7 @@ const (
 	MarkUnrelated MarkKind = "unrelated"
 )
 
-// Mark is one ruling, as written to relations.jsonl.
+// Mark is one ruling on a pair of documents.
 //
 // A and B are index-relative document paths, ORDER-NORMALIZED (A < B) so the pair
 // is one fact rather than two and is found from either side. Supersedes is not
@@ -105,37 +103,25 @@ func (m Mark) Other(doc string) (string, bool) {
 	return "", false
 }
 
-// Relations is the rulings for one index, loaded from its relations.jsonl.
-type Relations struct {
-	Path  string
-	marks map[string]Mark
-}
-
-// RelationsPath is where an index's rulings live: beside the documents, NOT
-// inside .raglit/. The index directory is derived data and is gitignored in
-// every project that has one, so a ruling written there would be lost to the
-// next reindex and would never reach the other machines.
-func RelationsPath(projectDir string) string {
+// LegacyRelationsPath is the append-only file rulings used to live in, kept
+// only so an existing corpus can be migrated into the database once.
+func LegacyRelationsPath(projectDir string) string {
 	return filepath.Join(projectDir, "relations.jsonl")
 }
 
-// LoadRelations reads the rulings. A missing file is not an error — it is a
-// corpus nobody has ruled on yet.
-//
-// Later lines win. The file is append-only, so a correction is a new line rather
-// than an edit, and the history of what was believed stays readable — the same
-// property attestations.jsonl relies on.
-func LoadRelations(path string) (*Relations, error) {
-	r := &Relations{Path: path, marks: map[string]Mark{}}
+// ReadLegacyRelations parses the retired relations.jsonl. Later lines win, as
+// the append-only format intended. Missing file is not an error.
+func ReadLegacyRelations(path string) ([]Mark, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return r, nil
+			return nil, nil
 		}
 		return nil, err
 	}
 	defer f.Close()
-
+	seen := map[string]Mark{}
+	var order []string
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64<<10), 4<<20)
 	for n := 1; sc.Scan(); n++ {
@@ -151,52 +137,26 @@ func LoadRelations(path string) (*Relations, error) {
 			return nil, fmt.Errorf("%s:%d: a mark needs both sides", path, n)
 		}
 		m = m.Normalize()
-		r.marks[pairKey(m.A, m.B)] = m
-	}
-	return r, sc.Err()
-}
-
-// Get returns the ruling on a pair, in either order.
-func (r *Relations) Get(a, b string) (Mark, bool) {
-	m, ok := r.marks[pairKey(a, b)]
-	return m, ok
-}
-
-// For returns every ruling involving doc, sorted by the other side's path.
-func (r *Relations) For(doc string) []Mark {
-	var out []Mark
-	for _, m := range r.marks {
-		if _, ok := m.Other(doc); ok {
-			out = append(out, m)
+		k := m.A + "\x00" + m.B
+		if _, ok := seen[k]; !ok {
+			order = append(order, k)
 		}
+		seen[k] = m
 	}
-	sort.Slice(out, func(i, j int) bool {
-		oi, _ := out[i].Other(doc)
-		oj, _ := out[j].Other(doc)
-		return oi < oj
-	})
-	return out
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]Mark, 0, len(order))
+	for _, k := range order {
+		out = append(out, seen[k])
+	}
+	return out, nil
 }
 
-// All returns every ruling, in a stable order.
-func (r *Relations) All() []Mark {
-	out := make([]Mark, 0, len(r.marks))
-	for _, m := range r.marks {
-		out = append(out, m)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].A != out[j].A {
-			return out[i].A < out[j].A
-		}
-		return out[i].B < out[j].B
-	})
-	return out
-}
-
-// Add records a ruling by appending one line. It does not rewrite the file: an
-// append is atomic enough for a line this size, survives being interrupted, and
-// leaves the previous ruling visible.
-func (r *Relations) Add(m Mark) error {
+// check validates a ruling independently of where it is stored. Extracted from
+// the old append-only writer so the database and any future writer enforce one
+// definition rather than two that drift.
+func (m Mark) check() error {
 	if m.A == "" || m.B == "" {
 		return fmt.Errorf("a mark needs both sides")
 	}
@@ -216,24 +176,6 @@ func (r *Relations) Add(m Mark) error {
 			return fmt.Errorf("superseding side %q is not one of the pair", m.Supersedes)
 		}
 	}
-	m = m.Normalize()
-
-	if err := os.MkdirAll(filepath.Dir(r.Path), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(r.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	b, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		return err
-	}
-	r.marks[pairKey(m.A, m.B)] = m
 	return nil
 }
 

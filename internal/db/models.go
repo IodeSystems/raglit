@@ -39,6 +39,12 @@ type FragmentsFt struct {
 	Text string `db:"text" derived:"fragments_fts.text" json:"text"`
 }
 
+type IndexMetum struct {
+	Key       string `db:"key" derived:"index_meta.key" json:"key"`
+	Value     string `db:"value" derived:"index_meta.value" json:"value"`
+	UpdatedAt int64  `db:"updated_at" derived:"index_meta.updated_at" json:"updated_at"`
+}
+
 type IngestJob struct {
 	ID         int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
 	Url        string `db:"url" derived:"ingest_jobs.url" json:"url"`
@@ -88,6 +94,28 @@ type OcrPage struct {
 	Page      int64  `db:"page" derived:"ocr_pages.page" json:"page"`
 	Engine    string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
 	ImagePath string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
+}
+
+type OcrPageCache struct {
+	ImgSha    string `db:"img_sha" derived:"ocr_page_cache.img_sha" json:"img_sha"`
+	Engine    string `db:"engine" derived:"ocr_page_cache.engine" json:"engine"`
+	Text      string `db:"text" derived:"ocr_page_cache.text" json:"text"`
+	CreatedAt int64  `db:"created_at" derived:"ocr_page_cache.created_at" json:"created_at"`
+}
+
+type ShingleIndex struct {
+	Hash  int64 `db:"hash" derived:"shingle_index.hash" json:"hash"`
+	DocID int64 `db:"doc_id" derived:"shingle_index.doc_id" json:"doc_id"`
+	Page  int64 `db:"page" derived:"shingle_index.page" json:"page"`
+}
+
+type ShinglePage struct {
+	DocID   int64  `db:"doc_id" derived:"shingle_pages.doc_id" json:"doc_id"`
+	Page    int64  `db:"page" derived:"shingle_pages.page" json:"page"`
+	Chars   int64  `db:"chars" derived:"shingle_pages.chars" json:"chars"`
+	Total   int64  `db:"total" derived:"shingle_pages.total" json:"total"`
+	Sampled int64  `db:"sampled" derived:"shingle_pages.sampled" json:"sampled"`
+	Recipe  string `db:"recipe" derived:"shingle_pages.recipe" json:"recipe"`
 }
 
 type Tombstone struct {

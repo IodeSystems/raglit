@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -13,19 +12,24 @@ import (
 // is a different filing that happens to share most of its text.
 func TestRulingsDistinguishACopyFromAVersion(t *testing.T) {
 	dir := t.TempDir()
-	rel, err := raglit.LoadRelations(filepath.Join(dir, "relations.jsonl"))
+	js, err := raglit.OpenJudgements(filepath.Join(dir, "judgements.db"), filepath.Join(dir, "raglit-audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rel.Add(raglit.Mark{A: "scan.pdf", B: "original.pdf", Kind: raglit.MarkCopy}); err != nil {
+	defer js.Close()
+	if err := js.PutRelation(raglit.Mark{A: "scan.pdf", B: "original.pdf", Kind: raglit.MarkCopy}); err != nil {
 		t.Fatal(err)
 	}
-	if err := rel.Add(raglit.Mark{A: "scan.pdf", B: "refiled.pdf", Kind: raglit.MarkVersion, Supersedes: "refiled.pdf"}); err != nil {
+	if err := js.PutRelation(raglit.Mark{A: "scan.pdf", B: "refiled.pdf", Kind: raglit.MarkVersion, Supersedes: "refiled.pdf"}); err != nil {
 		t.Fatal(err)
 	}
 
+	rels, err := js.RelationsFor("scan.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := map[string]bool{}
-	for _, m := range rel.For("scan.pdf") {
+	for _, m := range rels {
 		o, _ := m.Other("scan.pdf")
 		got[o] = true
 		if o == "original.pdf" && m.Kind != raglit.MarkCopy {
@@ -61,11 +65,16 @@ func TestTheSuggestedCommandIsRunnable(t *testing.T) {
 // would bury the case where copies really do exist.
 func TestSilentWhenThereAreNoOtherCopies(t *testing.T) {
 	dir := t.TempDir()
-	rel, _ := raglit.LoadRelations(filepath.Join(dir, "relations.jsonl"))
-	if n := len(rel.For("lonely.pdf")); n != 0 {
-		t.Errorf("invented %d relations", n)
+	js, err := raglit.OpenJudgements(filepath.Join(dir, "judgements.db"), filepath.Join(dir, "raglit-audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "relations.jsonl")); !os.IsNotExist(err) {
-		t.Error("loading a missing ruling file should not create it")
+	defer js.Close()
+	rels, err := js.RelationsFor("lonely.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("invented %d relations", len(rels))
 	}
 }

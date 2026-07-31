@@ -31,7 +31,7 @@ import (
 // announceOtherCopies reports documents holding the same content as path, and
 // what to do about them. Best-effort throughout: a failure to look is never a
 // reason to fail the reread that already happened.
-func announceOtherCopies(store *raglit.Store, rel *raglit.Relations, path string) {
+func announceOtherCopies(store *raglit.Store, js *raglit.JudgementStore, path string) {
 	type other struct {
 		path string
 		why  string
@@ -50,8 +50,9 @@ func announceOtherCopies(store *raglit.Store, rel *raglit.Relations, path string
 	// read is now the odd one out. A version is a DIFFERENT instrument that
 	// happens to share most of its text, so it is reported with that word and
 	// not lumped in — re-reading it may be exactly the wrong move.
-	if rel != nil {
-		for _, m := range rel.For(path) {
+	if js != nil {
+		rels, _ := js.RelationsFor(path)
+		for _, m := range rels {
 			p, ok := m.Other(path)
 			if !ok {
 				continue

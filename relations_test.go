@@ -1,82 +1,101 @@
 package raglit
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func tmpRelations(t *testing.T) *Relations {
+func tmpJudgements(t *testing.T) *JudgementStore {
 	t.Helper()
-	r, err := LoadRelations(filepath.Join(t.TempDir(), "relations.jsonl"))
+	js, err := OpenJudgements(filepath.Join(t.TempDir(), "judgements.db"), filepath.Join(t.TempDir(), "raglit-audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return r
+	t.Cleanup(func() { js.Close() })
+	return js
 }
 
 // A pair is ONE fact. Ruled from either direction it is the same ruling, or the
 // corpus ends up holding "A is a copy of B" and "B is unrelated to A" at once.
 func TestAPairIsOneFactWhicheverWayItIsGiven(t *testing.T) {
-	r := tmpRelations(t)
-	if err := r.Add(Mark{A: "z.pdf", B: "a.pdf", Kind: MarkCopy}); err != nil {
+	js := tmpJudgements(t)
+	if err := js.PutRelation(Mark{A: "z.pdf", B: "a.pdf", Kind: MarkCopy}); err != nil {
 		t.Fatal(err)
 	}
 	for _, order := range [][2]string{{"z.pdf", "a.pdf"}, {"a.pdf", "z.pdf"}} {
-		m, ok := r.Get(order[0], order[1])
-		if !ok {
-			t.Fatalf("%v: not found", order)
+		m, ok, err := js.Relation(order[0], order[1])
+		if err != nil || !ok {
+			t.Fatalf("%v: not found (%v)", order, err)
 		}
 		if m.Kind != MarkCopy {
 			t.Errorf("%v: got %q", order, m.Kind)
 		}
 	}
-	if all := r.All(); len(all) != 1 {
-		t.Fatalf("one ruling became %d", len(all))
-	} else if all[0].A != "a.pdf" {
+	all, err := js.Relations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("one ruling became %d — the UNIQUE(a,b) constraint is what prevents that", len(all))
+	}
+	if all[0].A != "a.pdf" {
 		t.Errorf("sides not normalized: %+v", all[0])
 	}
 }
 
 // Rulings must outlive the process that made them, and a correction is a new
 // line rather than an edit — the earlier belief stays readable.
-func TestRulingsPersistAndLaterLineWins(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "relations.jsonl")
-	r, _ := LoadRelations(path)
-	if err := r.Add(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkCopy, Note: "first look"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Add(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkVersion, Supersedes: "b.pdf", Note: "AF# differs"}); err != nil {
-		t.Fatal(err)
-	}
-
-	back, err := LoadRelations(path)
+// A correction must replace the live answer AND leave the earlier belief
+// readable. The append-only file gave the second property for free; a table has
+// to keep it on purpose, which is what judgement_log is for.
+func TestACorrectionReplacesTheAnswerAndKeepsTheHistory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "judgements.db")
+	audit := filepath.Join(dir, "raglit-audit.jsonl")
+	js, err := OpenJudgements(path, audit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, ok := back.Get("a.pdf", "b.pdf")
-	if !ok {
-		t.Fatal("ruling did not survive a reload")
+	if err := js.PutRelation(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkCopy, Note: "first look"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := js.PutRelation(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkVersion, Supersedes: "b.pdf", Note: "AF# differs"}); err != nil {
+		t.Fatal(err)
+	}
+	js.Close()
+
+	back, err := OpenJudgements(path, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer back.Close()
+	m, ok, err := back.Relation("a.pdf", "b.pdf")
+	if err != nil || !ok {
+		t.Fatalf("ruling did not survive a reopen (%v)", err)
 	}
 	if m.Kind != MarkVersion || m.Supersedes != "b.pdf" {
-		t.Errorf("later line did not win: %+v", m)
+		t.Errorf("the correction did not win: %+v", m)
 	}
-	raw, _ := os.ReadFile(path)
-	if n := strings.Count(strings.TrimSpace(string(raw)), "\n") + 1; n != 2 {
-		t.Errorf("want both lines kept for history, file has %d", n)
+	hist, err := back.History("relation", "a.pdf\x00b.pdf")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "first look") {
+	if len(hist) != 2 {
+		t.Fatalf("want both rulings in the history, got %d", len(hist))
+	}
+	if !strings.Contains(hist[0].Payload, "first look") {
 		t.Error("the superseded ruling was erased instead of kept")
 	}
 }
 
-func TestMissingFileIsAnUnruledCorpusNotAnError(t *testing.T) {
-	r, err := LoadRelations(filepath.Join(t.TempDir(), "nope.jsonl"))
+func TestAFreshDatabaseIsAnUnruledCorpusNotAnError(t *testing.T) {
+	js := tmpJudgements(t)
+	all, err := js.Relations()
 	if err != nil {
 		t.Fatalf("a corpus nobody has ruled on is not an error: %v", err)
 	}
-	if len(r.All()) != 0 {
+	if len(all) != 0 {
 		t.Error("invented rulings from nothing")
 	}
 }
@@ -84,17 +103,17 @@ func TestMissingFileIsAnUnruledCorpusNotAnError(t *testing.T) {
 // Supersedes names a SIDE. A value that is not one of the pair is a typo that
 // would otherwise be stored and read later as an ordering.
 func TestSupersedesIsValidated(t *testing.T) {
-	r := tmpRelations(t)
-	if err := r.Add(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkVersion, Supersedes: "c.pdf"}); err == nil {
+	r := tmpJudgements(t)
+	if err := r.PutRelation(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkVersion, Supersedes: "c.pdf"}); err == nil {
 		t.Error("accepted a superseding side that is not in the pair")
 	}
-	if err := r.Add(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkCopy, Supersedes: "a.pdf"}); err == nil {
+	if err := r.PutRelation(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkCopy, Supersedes: "a.pdf"}); err == nil {
 		t.Error("accepted an ordering on a copy, which has no ordering")
 	}
-	if err := r.Add(Mark{A: "a.pdf", B: "a.pdf", Kind: MarkCopy}); err == nil {
+	if err := r.PutRelation(Mark{A: "a.pdf", B: "a.pdf", Kind: MarkCopy}); err == nil {
 		t.Error("accepted a document as a copy of itself")
 	}
-	if err := r.Add(Mark{A: "a.pdf", B: "b.pdf", Kind: "probably"}); err == nil {
+	if err := r.PutRelation(Mark{A: "a.pdf", B: "b.pdf", Kind: "probably"}); err == nil {
 		t.Error("accepted an unknown kind")
 	}
 }
