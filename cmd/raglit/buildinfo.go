@@ -1,9 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
+	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +33,20 @@ type buildID struct {
 	Revision string    // vcs.revision, full 40-char sha ("" if unstamped)
 	Time     time.Time // vcs.time — commit time; the only orderable field
 	Modified bool      // vcs.modified — built from a tree with uncommitted edits
+
+	// ExeHash is the sha256 of the running executable, and it is the only field
+	// here that can prove two builds are the SAME.
+	//
+	// Commit metadata cannot. Rebuild-from-a-dirty-tree then restart is the
+	// ordinary development loop, and it leaves client and daemon both reading
+	// "<rev> (dirty)" — identical binaries that the commit fields cannot
+	// distinguish from genuinely divergent ones. Warning on every command in
+	// that state is worse than not warning at all: it trains the reader to skip
+	// the message, and then it is not there when the builds really do differ.
+	//
+	// Empty when unavailable (the binary was replaced or removed since start),
+	// which falls back to the commit comparison rather than claiming a match.
+	ExeHash string
 }
 
 // thisBuild is this process's own identity, read once. The health handler is on
@@ -83,11 +102,53 @@ func (b buildID) String() string {
 	return s
 }
 
-// sameBuild reports whether two builds are the same code. Two dirty builds of
-// one revision are NOT the same code — the uncommitted part is invisible here —
-// so a dirty build on either side never compares equal, and the caller falls
-// through to the warning.
+// exeHash is the sha256 of this process's executable, computed at most once.
+//
+// Lazy, not eager: it reads 40 MB off disk, and paying that on every CLI
+// invocation to answer a question that almost never needs asking would be a
+// worse bug than the one it fixes. Callers reach it only when the commit fields
+// are about to produce an ambiguous answer.
+//
+// Read via os.Executable at first use rather than at startup. The window where
+// that is wrong — the binary replaced between start and first check — reports no
+// hash rather than a wrong one, because a replaced file usually cannot be opened
+// under the running process's path at all.
+var exeHashOnce sync.Once
+var exeHashVal string
+
+func exeHash() string {
+	exeHashOnce.Do(func() {
+		p, err := os.Executable()
+		if err != nil {
+			return
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return
+		}
+		exeHashVal = hex.EncodeToString(h.Sum(nil))
+	})
+	return exeHashVal
+}
+
+// sameBuild reports whether two builds are the same code.
+//
+// The executable hash is authoritative when both sides have one: identical bytes
+// ARE the same build, whatever the commit metadata says about dirty trees. This
+// is the case the commit fields get wrong, and it is the common one.
+//
+// Without hashes it falls back to the commit comparison, where two dirty builds
+// of one revision are NOT provably the same — the uncommitted part is invisible
+// there — so a dirty build on either side never compares equal.
 func sameBuild(a, b buildID) bool {
+	if a.ExeHash != "" && b.ExeHash != "" {
+		return a.ExeHash == b.ExeHash
+	}
 	return a.Revision == b.Revision && !a.Modified && !b.Modified
 }
 

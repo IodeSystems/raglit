@@ -258,6 +258,11 @@ type healthOut struct {
 		// Modified reports a daemon built from a tree with uncommitted edits,
 		// whose commit time therefore understates what it contains.
 		Modified bool `json:"modified,omitempty"`
+		// ExeHash is the sha256 of the running daemon binary — the only field
+		// that can prove a client and this daemon are the SAME build when both
+		// were built from dirty trees, which is the ordinary state during
+		// development and the case commit metadata gets wrong.
+		ExeHash string `json:"exe_hash,omitempty"`
 	}
 }
 
@@ -269,6 +274,8 @@ func health(_ context.Context, _ *struct{}) (*healthOut, error) {
 		out.Body.BuildTime = thisBuild.Time.UTC().Format(time.RFC3339)
 	}
 	out.Body.Modified = thisBuild.Modified
+	// Computed at most once per daemon, on the first probe that asks.
+	out.Body.ExeHash = exeHash()
 	return out, nil
 }
 

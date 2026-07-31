@@ -198,13 +198,14 @@ func probeDaemon(base string) (buildID, bool) {
 		Revision  string `json:"revision"`
 		BuildTime string `json:"build_time"`
 		Modified  bool   `json:"modified"`
+		ExeHash   string `json:"exe_hash"`
 	}
 	// A body that will not parse is not a health failure: the daemon answered
 	// 200. Report it up, with an unknown build.
 	if b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16)); err == nil {
 		_ = json.Unmarshal(b, &body)
 	}
-	id := buildID{Revision: body.Revision, Modified: body.Modified}
+	id := buildID{Revision: body.Revision, Modified: body.Modified, ExeHash: body.ExeHash}
 	if body.BuildTime != "" {
 		id.Time, _ = time.Parse(time.RFC3339, body.BuildTime)
 	}
@@ -219,7 +220,13 @@ var warnSkewOnce sync.Once
 
 func warnSkew(daemon buildID, addr string) {
 	warnSkewOnce.Do(func() {
-		if note := skewNote(thisBuild, daemon, addr); note != "" {
+		me := thisBuild
+		// Only hash our own binary when the daemon offered one to compare it
+		// against. Otherwise this is 40 MB of reading to answer nothing.
+		if daemon.ExeHash != "" {
+			me.ExeHash = exeHash()
+		}
+		if note := skewNote(me, daemon, addr); note != "" {
 			fmt.Fprint(os.Stderr, note)
 		}
 	})

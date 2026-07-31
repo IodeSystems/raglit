@@ -108,3 +108,53 @@ func TestRoughly(t *testing.T) {
 		}
 	}
 }
+
+// The regression this fixes. Rebuild from a dirty tree, restart the daemon on
+// that same binary, and both sides report "<rev> (dirty)". The commit fields
+// cannot tell identical binaries from divergent ones, so every command warned —
+// and a warning that fires constantly is one the reader stops seeing.
+func TestIdenticalBinariesAreSilentEvenWhenBothTreesAreDirty(t *testing.T) {
+	ts := at("2026-07-31T18:17:00Z")
+	b := buildID{Revision: "44916b0", Time: ts, Modified: true, ExeHash: "deadbeef"}
+	if note := skewNote(b, b, "http://127.0.0.1:7420"); note != "" {
+		t.Errorf("identical binaries warned:\n%s", note)
+	}
+}
+
+// The hash is authoritative in BOTH directions: same revision, same commit
+// time, different bytes is real skew that the commit fields would call a match.
+func TestDifferentBytesAtOneRevisionStillWarns(t *testing.T) {
+	ts := at("2026-07-31T18:17:00Z")
+	a := buildID{Revision: "44916b0", Time: ts, ExeHash: "aaaa"}
+	b := buildID{Revision: "44916b0", Time: ts, ExeHash: "bbbb"}
+	if note := skewNote(a, b, "addr"); note == "" {
+		t.Error("different executables at one revision were treated as a match")
+	}
+}
+
+// A daemon too old to report a hash must not be assumed identical — the
+// comparison falls back to commit metadata rather than to optimism.
+func TestFallsBackToCommitFieldsWhenAHashIsMissing(t *testing.T) {
+	ts := at("2026-07-31T18:17:00Z")
+	withHash := buildID{Revision: "44916b0", Time: ts, Modified: true, ExeHash: "aaaa"}
+	noHash := buildID{Revision: "44916b0", Time: ts, Modified: true}
+	if note := skewNote(withHash, noHash, "addr"); note == "" {
+		t.Error("a missing hash on one side was read as proof of a match")
+	}
+	// Clean trees at one revision still match with no hashes at all.
+	cleanA := buildID{Revision: "44916b0", Time: ts}
+	cleanB := buildID{Revision: "44916b0", Time: ts}
+	if note := skewNote(cleanA, cleanB, "addr"); note != "" {
+		t.Errorf("clean identical revisions warned:\n%s", note)
+	}
+}
+
+// The daemon-is-older case must survive the change — it is the original bug.
+func TestOlderDaemonStillNamedWithHashesPresent(t *testing.T) {
+	client := buildID{Revision: "7327842", Time: at("2026-07-29T22:33:10Z"), ExeHash: "aaaa"}
+	daemon := buildID{Revision: "884fb70", Time: at("2026-07-29T15:51:57Z"), ExeHash: "bbbb"}
+	note := skewNote(client, daemon, "addr")
+	if !strings.Contains(note, "DAEMON is older") {
+		t.Errorf("lost the ordering:\n%s", note)
+	}
+}
