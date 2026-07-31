@@ -48,6 +48,10 @@ type RegionReading struct {
 	// Repeated is set when the generation looped. On a page that fails the
 	// document; on a region it is a reason to descend.
 	Repeated bool `json:"-"`
+	// Downscales is how many times the reader shrank the image before the model
+	// could read it. Reported back so the region can record what was actually
+	// looked at rather than what was handed over.
+	Downscales int `json:"-"`
 }
 
 // RegionProposal is one sub-region the model thinks is worth a closer look.
@@ -91,10 +95,12 @@ func (rr *RegionReader) defaults() {
 func (rr *RegionReader) Read(ctx context.Context, page image.Image, pageNo int) (*Region, error) {
 	rr.defaults()
 	root := &Region{Page: pageNo, BBox: Rect{0, 0, 1, 1}, Depth: 0}
-	if err := rr.visit(ctx, page, root, 0); err != nil {
-		return root, err
-	}
-	return root, nil
+	err := rr.visit(ctx, page, root, 0)
+	// Number even a partial tree. A descent that failed half way still produced
+	// regions whose text somebody may have to attest, and an unaddressable region
+	// is one nobody can be shown.
+	root.assignIDs(fmt.Sprintf("p%d", pageNo))
+	return root, err
 }
 
 // visit reads one region and descends into what it proposes.
@@ -111,6 +117,10 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		return err
 	}
 	sha := imageSHA(img)
+	// What this region was rendered from, kept rather than discarded: the crop
+	// geometry alone does not identify an image, and a human attesting a quote
+	// has to be shown the image, not something with the same coordinates.
+	reg.DPI, reg.SHA256 = rr.DPI, sha
 	if rr.seen[sha] {
 		// This exact rendering has been read already. Refusing here is what stops
 		// the model's "re-rotate/filter the same section" proposal from
@@ -130,6 +140,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		return err
 	}
 	reg.Text = reading.Description
+	reg.Downscales = reading.Downscales
 	if reg.Kind == "" {
 		reg.Kind = reading.Kind
 	}
@@ -167,8 +178,12 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 			reg.addFlag(FlagCycled)
 			break
 		}
-		// It helped: keep the better reading and its flags.
+		// It helped: keep the better reading and its flags — and the render it
+		// came from. Keeping the text without the digest would leave the region
+		// claiming its words were read off the image it REPLACED, which is the
+		// false attestation this whole record exists to make impossible.
 		reg.Text, reg.Flags, reg.Rotation = alt.Text, alt.Flags, alt.Rotation
+		reg.SHA256, reg.Downscales = alt.SHA256, alt.Downscales
 		reg.Children = append(reg.Children, alt.Children...)
 	}
 
@@ -336,15 +351,17 @@ func (o *OCR) AskWithOCR() func(context.Context, PageImage, int) (RegionReading,
 		prev := o.Prompt
 		o.Prompt = regionPrompt
 		defer func() { o.Prompt = prev }()
-		text, _, err := o.PageWithEngine(ctx, img)
+		text, _, shrinks, err := o.PageAsSeen(ctx, img)
 		if err != nil {
 			// A looped region is not a failed one: the guard fired, which is
 			// itself the signal to descend rather than to give up on the page.
 			if strings.Contains(err.Error(), "NOT indexed") || strings.Contains(err.Error(), "repeat") {
-				return RegionReading{Repeated: true}, nil
+				return RegionReading{Repeated: true, Downscales: shrinks}, nil
 			}
 			return RegionReading{}, fmt.Errorf("region read: %w", err)
 		}
-		return ParseRegionReading(text), nil
+		out := ParseRegionReading(text)
+		out.Downscales = shrinks
+		return out, nil
 	}
 }

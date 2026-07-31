@@ -73,6 +73,10 @@ func main() {
 		err = runRefragment(os.Args[2:])
 	case "regions":
 		err = runRegions(os.Args[2:])
+	case "region":
+		err = runRegion(os.Args[2:])
+	case "attest":
+		err = runAttest(os.Args[2:])
 	case "ocr":
 		err = runOcr(os.Args[2:])
 	case "transcribe":
@@ -129,9 +133,18 @@ usage:
   raglit pagify [--out DIR] FILE.pdf...      extract page images (image/scanned PDFs)
   raglit refragment [--dry-run]              re-ingest documents whose fragments are
                 larger than the embed model accepts (probes the limit, stores it)
-  raglit regions [--page N] [--depth D] FILE   read a page as a TREE of regions —
-                for a sheet whose text is too small to survive one look. Asks the
-                model what is here and where to look closer, and descends.
+  raglit regions [--page N] [--depth D] [--write] FILE   read a page as a TREE of
+                regions — for a sheet whose text is too small to survive one look.
+                Asks the model what is here and where to look closer, and descends.
+                --write records the tree in <doc>.raglit-regions.json beside it
+  raglit region [--list|--locate TEXT] FILE [REGION-ID]   re-render the exact crop
+                a passage was read from: same bbox, same rotation, same dpi, and a
+                digest check that it IS that image. PNG to stdout, or --out FILE.
+                --locate says which region a quotation came from
+  raglit attest [--port N] FILE              hand a recorded region read to a person:
+                serves a review where each region can be confirmed, corrected or
+                marked unreadable, beside the exact crop its text was read from.
+                Verdicts append to <doc>.attest.jsonl; the region read is untouched
   raglit ocr    [--llm-*] IMAGE...           transcribe page images via a vision model
   raglit transcribe [--write] FILE...        page-delineated markdown of a document
                 (--write puts <doc>.raglit-transcription.md beside it; index option

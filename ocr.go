@@ -56,28 +56,45 @@ func (o *OCR) Page(ctx context.Context, img PageImage) (string, error) {
 // "vision". The cascade never drops a page — a cheap-engine error or a
 // gibberish verdict escalates to the VLM rather than returning the bad text.
 func (o *OCR) PageWithEngine(ctx context.Context, img PageImage) (text, engine string, err error) {
+	text, engine, _, err = o.PageAsSeen(ctx, img)
+	return text, engine, err
+}
+
+// PageAsSeen is PageWithEngine plus the one thing a caller needs to reproduce
+// what the model actually looked at: how many times the image was downscaled to
+// fit the context before it was read.
+//
+// Separate rather than a wider PageWithEngine because only the region walk cares
+// — it records the number per region so the crop can be re-rendered exactly, and
+// every other caller wants the text and the engine and nothing else.
+func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine string, shrinks int, err error) {
 	if o.Cheap != nil {
 		if po, cerr := o.Cheap.OCRPage(ctx, img); cerr == nil {
 			// A non-gibberish result (including a legitimately empty page) is
 			// trusted — do not pay the VLM for clean or blank pages.
 			if gib, _ := o.Gate.IsGibberish(po); !gib {
-				return strings.TrimSpace(po.Text), o.Cheap.Name(), nil
+				// The cheap engine reads the image as given; nothing was shrunk.
+				return strings.TrimSpace(po.Text), o.Cheap.Name(), 0, nil
 			}
 		}
 		// cheap error or gibberish → fall through to the VLM.
 	}
-	t, verr := o.visionPage(ctx, img)
+	t, n, verr := o.visionPage(ctx, img)
 	if verr != nil {
-		return "", "", verr
+		return "", "", 0, verr
 	}
-	return t, "vision", nil
+	return t, "vision", n, nil
 }
 
 // visionPage is the VLM transcription: agentkit's multimodal llm.Message — a
 // text instruction + the page as an inline image part.
-func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
+//
+// Reports the number of context downscales it had to apply, which is the only
+// part of the image the model saw that a caller cannot reconstruct from what it
+// passed in.
+func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, int, error) {
 	if o.Client == nil {
-		return "", fmt.Errorf("raglit: ocr page %d needs the vision model but none is configured", img.Page)
+		return "", 0, fmt.Errorf("raglit: ocr page %d needs the vision model but none is configured", img.Page)
 	}
 	prompt := o.Prompt
 	if prompt == "" {
@@ -103,17 +120,18 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 	// problem and retrying it unchanged fails identically forever, so the page is
 	// re-rendered smaller and re-sent. Downscaling loses detail, which is why it
 	// is a fallback and not the default resolution.
-	for shrink := 0; shrink < maxContextShrinks && err != nil && isContextOverflow(err); shrink++ {
+	shrinks := 0
+	for ; shrinks < maxContextShrinks && err != nil && isContextOverflow(err); shrinks++ {
 		smaller, serr := downscalePNG(img.Data, contextShrinkFactor)
 		if serr != nil {
-			return "", fmt.Errorf("raglit: ocr page %d: too large for the model context and cannot be downscaled: %w", img.Page, serr)
+			return "", shrinks, fmt.Errorf("raglit: ocr page %d: too large for the model context and cannot be downscaled: %w", img.Page, serr)
 		}
 		img.Data = smaller
 		msg.Parts[1] = llm.ImageData(img.Mime, img.Data)
 		text, rep, err = collectStream(ctx, o.Client, []llm.Message{msg}, opts)
 	}
 	if err != nil {
-		return "", fmt.Errorf("raglit: ocr page %d: %w", img.Page, err)
+		return "", shrinks, fmt.Errorf("raglit: ocr page %d: %w", img.Page, err)
 	}
 	if rep != nil {
 		// The page derailed. Retry ONCE with sampling that can actually escape
@@ -123,7 +141,7 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 		cut := unloopedLen(text, rep)
 		text, rep, err = collectStream(ctx, o.Client, []llm.Message{msg}, loopBreakSampling(opts))
 		if err != nil {
-			return "", fmt.Errorf("raglit: ocr page %d (loop-break retry): %w", img.Page, err)
+			return "", shrinks, fmt.Errorf("raglit: ocr page %d (loop-break retry): %w", img.Page, err)
 		}
 		// A CUT transcription is not a short transcription — it is the page's text
 		// with an unknown amount missing. Indexing it would put a silently
@@ -131,7 +149,7 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 		// than failing: nothing would ever revisit it. Fail loudly so the job
 		// retries or a human looks.
 		if rep != nil {
-			return "", fmt.Errorf(
+			return "", shrinks, fmt.Errorf(
 				"raglit: ocr page %d: the model %s, on the loop-break retry too — page NOT indexed",
 				img.Page, rep)
 		}
@@ -154,13 +172,13 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, error) {
 		// comparing raw lengths would flag every genuine recovery as a failure —
 		// the successful retry is routinely shorter than the garbage it replaces.
 		if got := len(strings.TrimSpace(text)); cut > 0 && got < cut {
-			return "", fmt.Errorf(
+			return "", shrinks, fmt.Errorf(
 				"raglit: ocr page %d: the loop-break retry returned %d chars where the cut pass had already transcribed %d "+
 					"before it started repeating — a shorter retry means the page was dropped, not recovered; page NOT indexed",
 				img.Page, got, cut)
 		}
 	}
-	return strings.TrimSpace(text), nil
+	return strings.TrimSpace(text), shrinks, nil
 }
 
 // unloopedLen is how much of a cut generation was real transcription: its length

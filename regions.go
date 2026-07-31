@@ -34,8 +34,14 @@ import (
 // Rect is a region of a page in normalized coordinates — 0..1 of the page's
 // width and height. Normalized rather than pixels so a region survives being
 // re-rendered at a different dpi, which is exactly what a transform does.
+//
+// Lowercase in JSON, matching RegionProposal: the model answers in x/y/w/h and
+// the record has no business spelling the same four numbers differently.
 type Rect struct {
-	X, Y, W, H float64
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
 }
 
 func (r Rect) area() float64 { return r.W * r.H }
@@ -73,7 +79,23 @@ func (r Rect) within(child Rect) Rect {
 
 // Region is one node of the read: a piece of a page, at a rotation and scale,
 // with what the model said about it.
+//
+// Everything needed to RE-RENDER the region is on the node, because a human
+// asked to attest that a document says what a fact quotes must be shown the
+// image the words came from. When the text was read off a rotated, zoomed crop,
+// handing the human the whole page hands them a different artifact — one where
+// the passage is at the resolution that produced the failure in the first place.
 type Region struct {
+	// ID addresses this region within its document: "p1" for a page's root,
+	// "p1.0" and "p1.0.2" for what descent found under it.
+	//
+	// Path-shaped rather than a digest because a diff of two reads has to stay
+	// readable, and because the path IS the ancestry — a hit can be reported as
+	// sheet → drawing interior → lot C corner without a lookup. It addresses a
+	// position in a RECORDED tree, not a piece of paper: a second read of the
+	// same sheet proposes different regions and renumbers. SHA256 is what says
+	// whether an id still points at the pixels the text came from.
+	ID       string   `json:"id,omitempty"`
 	Page     int      `json:"page"`
 	BBox     Rect     `json:"bbox"` // page coordinates
 	Rotation int      `json:"rotation"`
@@ -81,6 +103,32 @@ type Region struct {
 	Text     string   `json:"text,omitempty"`
 	Flags    []string `json:"flags,omitempty"`
 	Depth    int      `json:"depth"`
+	// DPI is what the PAGE was rasterized at before this region was cropped out
+	// of it. Recorded per region rather than per document because a re-render
+	// that gets the crop right and the resolution wrong reproduces the geometry
+	// and not the detail, and detail is the entire subject here.
+	DPI int `json:"dpi,omitempty"`
+	// SHA256 digests the PNG this region was cropped to before it was read.
+	//
+	// The descent already computes it to detect a cycle; keeping it rather than
+	// discarding it is what makes attestation possible. A re-render that hashes
+	// to this is the image that produced Text. One that does not is a different
+	// artifact, and saying so is more useful than quietly showing it anyway.
+	//
+	// BEFORE the read, not after: it has to be, because it is also the cycle
+	// detector and the cycle has to be caught before the call is paid for. Where
+	// a context downscale intervened, Downscales says so and
+	// RerenderRegionAsSeen replays it.
+	SHA256 string `json:"sha256,omitempty"`
+	// Downscales is how many times the rendered crop had to be shrunk to fit the
+	// model's context before it could be read.
+	//
+	// The one part of what the model saw that the crop geometry does not capture:
+	// an overflowing page is re-rendered smaller MID-CALL (see maxContextShrinks),
+	// so a re-render that skips the shrink is sharper than the image the text
+	// came from. Recorded rather than prevented, because refusing to shrink would
+	// fail the page instead of reading it.
+	Downscales int `json:"downscales,omitempty"`
 	// TokensPerSqIn is what this region was actually seen at. Recorded because
 	// it is the one quality number available BEFORE any model call, and on its
 	// own it condemns a transcription taken at four.
@@ -327,6 +375,85 @@ func (r *Region) Flatten() []*Region {
 	return out
 }
 
+// assignIDs numbers a finished tree, parent before children.
+//
+// After the walk, not during it: children are re-ordered into reading order when
+// their parent finishes (sortRegions), so an id handed out mid-descent would name
+// a different region than the one the sidecar records under it.
+func (r *Region) assignIDs(prefix string) {
+	r.ID = prefix
+	for i, c := range r.Children {
+		c.assignIDs(fmt.Sprintf("%s.%d", prefix, i))
+	}
+}
+
+// FindByID resolves a region id within this tree, or nil.
+func (r *Region) FindByID(id string) *Region {
+	for _, n := range r.Flatten() {
+		if n.ID == id {
+			return n
+		}
+	}
+	return nil
+}
+
+// RerenderRegion reproduces the crop a region was read from: same bbox, same
+// rotation, same page rasterization.
+//
+// page must be the page rasterized at reg.DPI — the caller owns that, because
+// rasterizing a PDF needs a native renderer this package deliberately does not
+// link (see pagify.go). The result is byte-identical to what the descent
+// produced; VerifyRegionRender is how you find out, rather than assuming.
+//
+// This is the image to put in front of a human. It is the passage at the
+// resolution it was read at, which is the whole point, and where a context
+// downscale intervened it is SHARPER than what the model got — more detail on
+// the same pixels, never different pixels. RerenderRegionAsSeen is for the other
+// question.
+func RerenderRegion(page image.Image, reg *Region) ([]byte, error) {
+	return renderRegion(page, reg.BBox, reg.Rotation)
+}
+
+// RerenderRegionAsSeen is the crop with the context downscales replayed: what
+// the model was actually given, rather than what was cropped for it.
+//
+// A diagnostic, not the attestation image. It answers "could this have been read
+// at all", which is a different question from "does the document say this", and
+// it is deliberately NOT what reg.SHA256 covers: the digest is taken before the
+// call, because it is also the descent's cycle detector. So this is reproducible
+// — same crop, same factor, same count — but verifiable only through the crop it
+// is derived from.
+func RerenderRegionAsSeen(page image.Image, reg *Region) ([]byte, error) {
+	img, err := RerenderRegion(page, reg)
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; i < reg.Downscales; i++ {
+		if img, err = downscalePNG(img, contextShrinkFactor); err != nil {
+			return nil, fmt.Errorf("raglit: region %s: replaying downscale %d: %w", reg.ID, i+1, err)
+		}
+	}
+	return img, nil
+}
+
+// VerifyRegionRender reports whether a re-render is the image the region's text
+// was read from.
+//
+// Byte equality, via the digest the read itself recorded. A weaker check — same
+// bbox, same rotation — would pass an image cropped from a page rasterized by a
+// different tool at the same nominal dpi, which is precisely the substitution a
+// human attesting a quotation is being asked to rule out.
+func VerifyRegionRender(reg *Region, data []byte) error {
+	if reg.SHA256 == "" {
+		return fmt.Errorf("raglit: region %s recorded no digest; it was never read", reg.ID)
+	}
+	if got := imageSHA(data); got != reg.SHA256 {
+		return fmt.Errorf("raglit: region %s re-rendered to %s, but its text was read from %s — "+
+			"this is not the image that produced it", reg.ID, got[:12], reg.SHA256[:12])
+	}
+	return nil
+}
+
 // Leaves are the regions with no children — what gets embedded and searched.
 // Interior nodes stay searchable through their own overview text, which is why
 // a missed region costs detail rather than coverage.
@@ -345,8 +472,10 @@ func (r *Region) Leaves() []*Region {
 func (r *Region) String() string {
 	var b strings.Builder
 	for _, n := range r.Flatten() {
-		fmt.Fprintf(&b, "%s%s %.0fx%.0f%% @%d° %.0ft/in²",
-			strings.Repeat("  ", n.Depth), orDashKind(n.Kind),
+		// The id leads, because it is what `raglit region` is given to re-render
+		// the crop, and a tree printed without it cannot be acted on.
+		fmt.Fprintf(&b, "%s%s %s %.0fx%.0f%% @%d° %.0ft/in²",
+			strings.Repeat("  ", n.Depth), orDash(n.ID, "?"), orDashKind(n.Kind),
 			n.BBox.W*100, n.BBox.H*100, n.Rotation, n.TokensPerSqIn)
 		if len(n.Flags) > 0 {
 			fmt.Fprintf(&b, "  [%s]", strings.Join(n.Flags, " "))
@@ -367,6 +496,13 @@ func orDashKind(k string) string {
 		return "region"
 	}
 	return k
+}
+
+func orDash(s, dash string) string {
+	if s == "" {
+		return dash
+	}
+	return s
 }
 
 func firstLine(s string) string {

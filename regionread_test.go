@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"bytes"
 	"context"
 	"image"
 	"image/color"
@@ -345,5 +346,155 @@ func TestOverlappingProposalsAreDeduped(t *testing.T) {
 	}
 	if *calls != 2 {
 		t.Errorf("want 2 calls (root + one block), got %d", *calls)
+	}
+}
+
+// --- what the model actually saw ---------------------------------------------
+
+// A human asked to attest that a document says what a fact quotes must be shown
+// the image the words came from. That is only possible if every region records
+// what it was rendered from — and the descent already computed the digest, for
+// the cycle detector, and threw it away.
+func TestEveryRegionRecordsWhatItWasReadFrom(t *testing.T) {
+	ask, _ := scriptedAsk(
+		RegionReading{Description: "sheet", Regions: []RegionProposal{
+			{X: 0, Y: 0, W: 0.4, H: 0.4}, {X: 0.5, Y: 0.5, W: 0.4, H: 0.4},
+		}},
+		RegionReading{Description: "block one"},
+		RegionReading{Description: "block two"},
+	)
+	rr := surveyReader(ask)
+	root, err := rr.Read(context.Background(), blankPage(800, 1080), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"p3", "p3.0", "p3.1"}
+	var got []string
+	for _, n := range root.Flatten() {
+		got = append(got, n.ID)
+		if n.SHA256 == "" {
+			t.Errorf("region %s recorded no digest; nothing can attest to its text", n.ID)
+		}
+		if n.DPI != 200 {
+			t.Errorf("region %s recorded dpi %d, want the 200 it was rendered at", n.ID, n.DPI)
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("ids %v, want %v — the id is the page and the path down to the region", got, want)
+	}
+	if root.FindByID("p3.1") == nil {
+		t.Error("a recorded id must resolve back to its region")
+	}
+	if root.FindByID("p3.9") != nil {
+		t.Error("an id that names nothing must not resolve")
+	}
+}
+
+// The core deliverable: re-rendering a region reproduces the bytes it was read
+// from, so what a human is shown is the artifact and not something that merely
+// has the same coordinates.
+func TestRerenderReproducesTheBytesTheRegionWasReadFrom(t *testing.T) {
+	page := blankPage(800, 1080)
+	ask, _ := scriptedAsk(
+		RegionReading{Description: "sheet", Regions: []RegionProposal{
+			{X: 0.1, Y: 0.1, W: 0.3, H: 0.3, Rotation: 90},
+		}},
+		RegionReading{Description: "PARCEL A"},
+	)
+	root, err := surveyReader(ask).Read(context.Background(), page, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range root.Flatten() {
+		img, err := RerenderRegion(page, n)
+		if err != nil {
+			t.Fatalf("region %s: %v", n.ID, err)
+		}
+		if err := VerifyRegionRender(n, img); err != nil {
+			t.Errorf("region %s did not reproduce: %v", n.ID, err)
+		}
+	}
+	// And a crop taken at the WRONG rotation must be reported, not shown.
+	wrong := *root.Children[0]
+	wrong.Rotation = 180
+	img, err := RerenderRegion(page, &wrong)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRegionRender(root.Children[0], img); err == nil {
+		t.Error("a crop at a different rotation passed verification")
+	}
+}
+
+// A page too large for the model's context is re-rendered SMALLER mid-call, and
+// nothing about the crop geometry records that. Unrecorded, the diagnostic
+// question — could this have been read at all — has no answer.
+func TestTheContextDownscalesAreRecordedAndReplayable(t *testing.T) {
+	page := blankPage(400, 540)
+	ask := func(_ context.Context, _ PageImage, _ int) (RegionReading, error) {
+		return RegionReading{Description: "shrunk twice", Downscales: 2}, nil
+	}
+	root, err := surveyReader(ask).Read(context.Background(), page, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Downscales != 2 {
+		t.Fatalf("the shrink was not recorded: %d", root.Downscales)
+	}
+	crop, err := RerenderRegion(page, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The digest is taken before the call, so the CROP is what verifies.
+	if err := VerifyRegionRender(root, crop); err != nil {
+		t.Errorf("the crop must still reproduce exactly: %v", err)
+	}
+	seen, err := RerenderRegionAsSeen(page, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) >= len(crop) {
+		t.Error("the replay did not shrink; it is a sharper image than the model was given")
+	}
+	again, err := RerenderRegionAsSeen(page, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(seen, again) {
+		t.Error("replaying the downscales is not deterministic")
+	}
+}
+
+// The transform keeps the better reading. Keeping its TEXT without its digest
+// would leave the region claiming its words were read off the image it replaced
+// — a false attestation, reached without anyone editing anything.
+func TestATransformCarriesItsRenderRecordOntoTheRegion(t *testing.T) {
+	page := blankPage(400, 540)
+	ask, _ := scriptedAsk(
+		RegionReading{Description: "sideways", Regions: []RegionProposal{
+			{X: 0, Y: 0, W: 1, H: 1, Rotation: 90, Reason: "text runs sideways"},
+		}},
+		RegionReading{Description: "PARCEL A: THE EASTERLY 25 FEET"},
+	)
+	root, err := surveyReader(ask).Read(context.Background(), page, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Rotation != 90 {
+		t.Fatalf("the transform was not adopted: %d", root.Rotation)
+	}
+	upright, err := renderRegion(page, root.BBox, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.SHA256 == imageSHA(upright) {
+		t.Error("the region kept the rotated text but the unrotated digest")
+	}
+	img, err := RerenderRegion(page, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRegionRender(root, img); err != nil {
+		t.Errorf("the adopted transform does not reproduce: %v", err)
 	}
 }
