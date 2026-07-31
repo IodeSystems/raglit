@@ -142,6 +142,49 @@ CREATE TABLE IF NOT EXISTS page_readings (
 CREATE INDEX IF NOT EXISTS page_readings_doc ON page_readings(doc, page, seq);
 CREATE INDEX IF NOT EXISTS page_readings_active ON page_readings(doc, page) WHERE active = 1;
 
+-- A verdict is a person ruling on one claim a machine made.
+--
+-- The same discipline as page_readings, one level up: rows accumulate, nothing
+-- is rewritten, and the jsonl beside the asset stays the record this projects.
+-- A ruling cannot be recomputed, so it has to outlive a reindex and reach the
+-- other machines; sqlite is the queryable view and can be rebuilt from the log.
+--
+-- Keyed by attest's CONTENT-ADDRESSED unit id, not by a page or an offset. That
+-- is what makes a re-read safe: a unit's id is a digest of its locator, text and
+-- evidence, so changing any of them mints a new unit and the old verdicts stay
+-- pinned to units that no longer exist. Those orphans are KEPT and are not
+-- rebound. Rebinding would silently carry a confirmation across a change in the
+-- words it confirmed, which is the one thing this whole table exists to prevent.
+--
+-- So "how much of this document is reviewed" is never the row count here. It is
+-- a join against the CURRENT reading, and a re-read correctly shows the work as
+-- undone rather than inherited.
+--
+-- No `active` column, unlike page_readings. Entries are not versions of one
+-- another: a later `retract` does not replace an earlier `confirmed` row, it is
+-- another fact about the same unit, and attest.Resolve folds the ordered log
+-- into a state. Storing a winner here would duplicate that logic in SQL and let
+-- the two disagree.
+CREATE TABLE IF NOT EXISTS attestations (
+  id         INTEGER PRIMARY KEY,
+  doc        TEXT NOT NULL,
+  seq        INTEGER NOT NULL,             -- position in the asset's log, 1,2,3…
+  unit       TEXT NOT NULL DEFAULT '',     -- attest unit id; empty for a blanket
+  kind       TEXT NOT NULL,                -- confirmed|corrected|affirmed|unclear|unsupported|retract|resegment
+  blanket    INTEGER NOT NULL DEFAULT 0,   -- covers every unit unruled earlier in the log
+  text       TEXT NOT NULL DEFAULT '',     -- correction; empty means not disputed
+  label      TEXT NOT NULL DEFAULT '',
+  note       TEXT NOT NULL DEFAULT '',     -- the reason
+  statement  TEXT NOT NULL DEFAULT '',     -- the terms a blanket affirmation was made under, verbatim
+  payload    TEXT NOT NULL DEFAULT '',     -- resegment units/supersedes, as JSON
+  ruled_by   TEXT NOT NULL DEFAULT '',     -- the PERSON, self-declared
+  auth       TEXT NOT NULL DEFAULT '',     -- the authenticated account, from the host
+  ruled_at   TEXT NOT NULL DEFAULT '',     -- RFC3339
+  UNIQUE(doc, seq)
+);
+CREATE INDEX IF NOT EXISTS attestations_doc ON attestations(doc, seq);
+CREATE INDEX IF NOT EXISTS attestations_unit ON attestations(doc, unit);
+
 CREATE TABLE IF NOT EXISTS ocr_page_cache (
   img_sha    TEXT PRIMARY KEY,
   engine     TEXT NOT NULL DEFAULT '',
