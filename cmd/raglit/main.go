@@ -479,6 +479,9 @@ func runReread(args []string) error {
 		return err
 	}
 	ctx := context.Background()
+	// Rulings, for the copy announcement below. A project without any is the
+	// normal state and must not stop a reread, so a failure here is not fatal.
+	rel, _ := openRelations()
 	for _, t := range targets {
 		n, err := store.PurgeDocPageCache(ctx, t)
 		if err != nil {
@@ -486,6 +489,7 @@ func runReread(args []string) error {
 			continue
 		}
 		fmt.Printf("  purged %d cached page(s): %s\n", n, t)
+		announceOtherCopies(store, rel, t)
 	}
 	store.Close()
 
