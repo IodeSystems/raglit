@@ -287,15 +287,9 @@ func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, ki
 			sl.Fail("extract", "email", err)
 			return 0, "", err
 		}
-		// One page per nested message, so a citation can name WHICH message —
-		// the point of reading an archive as pages rather than as one blob.
-		var b strings.Builder
-		for _, pg := range pages {
-			fmt.Fprintf(&b, "## Page %d\n\n%s\n\n", pg.Page, pg.Text)
-		}
 		sl.Done("extract", "email", fmt.Sprintf("%d message(s)", len(pages)))
 		w.extractAttachments(job.URL, path, sl)
-		return w.ingestPlainText(ctx, job.URL, title, []byte(b.String()), sl)
+		return w.ingestPaged(ctx, job.URL, title, pages, sl)
 
 	case KindSpreadsheet:
 		ext := strings.ToLower(filepath.Ext(job.URL))
@@ -309,14 +303,8 @@ func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, ki
 			sl.Fail("extract", "spreadsheet", err)
 			return 0, "", err
 		}
-		// One page per sheet, same reasoning (and same flattening-with-markers
-		// shape) as KindEmail above.
-		var sb strings.Builder
-		for _, pg := range pages {
-			fmt.Fprintf(&sb, "## Page %d\n\n%s\n\n", pg.Page, pg.Text)
-		}
 		sl.Done("extract", "spreadsheet", fmt.Sprintf("%d sheet(s)", len(pages)))
-		return w.ingestPlainText(ctx, job.URL, title, []byte(sb.String()), sl)
+		return w.ingestPaged(ctx, job.URL, title, pages, sl)
 
 	case KindOffice:
 		path, cleanup, err := writeTemp(f.Data, strings.ToLower(filepath.Ext(job.URL)))
@@ -368,6 +356,28 @@ func (w *Worker) extractAttachments(url, srcPath string, sl *StageLog) {
 // configured. mode is the fragmenter chosen ("text-overlap").
 func (w *Worker) ingestPlainText(ctx context.Context, url, title string, data []byte, sl *StageLog) (int, string, error) {
 	return w.Store.ingestText(ctx, url, title, string(data), w.Frag, sl)
+}
+
+// ingestPaged indexes a document that already knows its own pages, keeping the
+// page numbers.
+//
+// Email and spreadsheets both arrive pre-paginated for the same reason — one
+// page per nested message, one per sheet — and both used to be flattened into a
+// single string with "## Page N" written into the text, then handed to the plain
+// text path. That preserved the pagination as CHARACTERS and lost it as
+// metadata: every fragment came back page 0, so a quotation from the fifth
+// message of a 24-message archive could be located only somewhere in 105,000
+// characters. The marker in the text says the page; nothing could query it.
+//
+// The 24 MB broker log is the case that shows it: 24 nested messages, ingested
+// as one page. `similar` reports its alignments as "p0", `raglit slice` cannot
+// name a range, and "which message said that" has no answer.
+func (w *Worker) ingestPaged(ctx context.Context, url, title string, pages []PageText, sl *StageLog) (int, string, error) {
+	units := make([]ingestUnit, 0, len(pages))
+	for _, pg := range pages {
+		units = append(units, ingestUnit{page: pg.Page, text: pg.Text})
+	}
+	return w.Store.ingestUnits(ctx, w.Segmenter, w.OCR, url, title, units, w.Frag, sl)
 }
 
 // writeTemp materializes bytes to a temp file with the given extension (external
