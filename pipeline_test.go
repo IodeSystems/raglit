@@ -40,13 +40,16 @@ func TestIngestUnits_SegmentedWithContinuationAndEmbed(t *testing.T) {
 		t.Fatalf("want 3 fragments, got %d", n)
 	}
 
-	// Continuation merged: the funcB fragment carries page-2 text but keeps page 1.
+	// Continuation merged: the funcB fragment STARTS on page 1 and carries page-2
+	// text. A hit on that page-2 text is cited as page 2, resolved through the
+	// fragment's recorded page spans — the fragment's start page is where the
+	// window opened, not where the quotation is.
 	hits, _ := s.Search("revokes old", 5)
 	if len(hits) == 0 {
 		t.Fatal("merged continuation not searchable")
 	}
-	if hits[0].Page != 1 {
-		t.Errorf("merged fragment should keep its start page (1), got %d", hits[0].Page)
+	if hits[0].Page != 2 {
+		t.Errorf("a match in page-2 text must cite page 2, got %d", hits[0].Page)
 	}
 
 	// funcC landed on page 2.

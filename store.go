@@ -513,7 +513,7 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 	args := append([]any{match}, pargs...)
 	args = append(args, limit)
 	rows, err := s.db.Query(
-		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, bm25(fragments_fts) AS score
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, bm25(fragments_fts) AS score
 		 FROM fragments_fts
 		 JOIN fragments f ON f.id = fragments_fts.rowid
 		 JOIN documents d ON d.id = f.doc_id
@@ -528,9 +528,13 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 	for rows.Next() {
 		var h Hit
 		var bm25 float64
-		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &bm25); err != nil {
+		var spans string
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &bm25); err != nil {
 			return nil, err
 		}
+		// A fragment can cross page boundaries; f.page is only where it started.
+		// Resolve the page the match is actually on — see hitpage.go.
+		h.Page = HitPage(h.Page, spans, h.Text, query)
 		h.Score = -bm25 // flip so higher = better
 		hits = append(hits, h)
 	}
@@ -567,7 +571,7 @@ func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, lim
 		where = " WHERE " + pred
 	}
 	rows, err := s.db.Query(
-		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, fv.vec
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, fv.vec
 		 FROM fragment_vectors fv
 		 JOIN fragments f ON f.id = fv.fragment_id
 		 JOIN documents d ON d.id = f.doc_id`+where, pargs...)
@@ -579,9 +583,15 @@ func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, lim
 	for rows.Next() {
 		var h Hit
 		var blob []byte
-		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &blob); err != nil {
+		var spans string
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &blob); err != nil {
 			return nil, err
 		}
+		// A vector hit has no literal terms to locate, so this usually falls back
+		// to the fragment's start page. It is wired anyway: a semantic query whose
+		// words DO appear gets the right page, and the two search paths must not
+		// cite the same fragment differently.
+		h.Page = HitPage(h.Page, spans, h.Text, query)
 		h.Score = float64(dot(qv, decodeVec(blob)))
 		hits = append(hits, h)
 	}
