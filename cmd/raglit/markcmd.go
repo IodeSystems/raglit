@@ -21,8 +21,9 @@ import (
 //
 // The two verbs mirror `kg attest`, which already solved this shape in this
 // corpus: `marks --todo` is the queue of pairs nobody has ruled on, `mark` is
-// the ruling. Rulings go to relations.jsonl beside the documents — never into
-// .raglit/, which is gitignored and rebuilt.
+// the ruling. Rulings are appended to raglit-audit.jsonl beside the documents
+// and projected into judgements.db — never into .raglit/, which is gitignored
+// and rebuilt. The trail is the record; the database is what replaying it makes.
 
 // openJudgements opens this project's judgement database, migrating a legacy
 // relations.jsonl into it on first open.
@@ -298,8 +299,9 @@ func firstWord(s string) string {
 // bytes, and `by: Carl Taylor` says a person formed a view. Collapsing the two
 // would put a human's name on findings they never looked at.
 //
-// A person can still overrule it — relations.jsonl is append-only and the later
-// line wins — which is what makes the automatic write safe rather than final.
+// A person can still overrule it — a later ruling on the same pair supersedes
+// the earlier one, and both stay in the trail — which is what makes the
+// automatic write safe rather than final.
 func runIdentical(store *raglit.Store, js *raglit.JudgementStore, write, asJSON bool) error {
 	groups, err := store.IdenticalGroups()
 	if err != nil {

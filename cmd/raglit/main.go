@@ -161,9 +161,11 @@ usage:
                 to raglit rather than to you; a person's ruling still overrides.
 
   raglit mark <A> <B> <copy|version|unrelated> [--supersedes PATH] [--note ...]
-                record that ruling. Written to relations.jsonl beside the
-                documents, not into .raglit/ — a ruling cannot be recomputed, so
-                it must outlive a reindex and reach the other machines.
+                record that ruling. Appended to raglit-audit.jsonl beside the
+                documents and projected into judgements.db, never into .raglit/ —
+                a ruling cannot be recomputed, so it must outlive a reindex and
+                reach the other machines. The trail is the record: marks
+                --rebuild reconstructs the database from it.
   raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
   raglit daemon [--root DIR|--home DIR] [--addr :7420] [--embed]   multi-protocol daemon:
                 REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
