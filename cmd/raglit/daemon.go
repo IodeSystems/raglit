@@ -325,8 +325,8 @@ func projectShared(homeOf func() raglit.Home) []string {
 	return out
 }
 
-func daemonIngest(base string, targets []string, index, title string) error {
-	body, _ := json.Marshal(map[string]any{"targets": targets, "index": index, "title": title})
+func daemonIngest(base string, targets []string, index, title string, fresh bool) error {
+	body, _ := json.Marshal(map[string]any{"targets": targets, "index": index, "title": title, "fresh": fresh})
 	resp, err := http.Post(strings.TrimRight(base, "/")+"/ingest", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err

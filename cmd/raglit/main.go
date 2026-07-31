@@ -111,6 +111,9 @@ usage:
   raglit demo                                self-contained offline tour
   raglit index  [--home DIR] [--embed] FILE|DIR...   ingest local files (+ PDFs via OCR)
   raglit ingest [--home DIR] [--now] TARGET...  queue folders/files/URLs (file://, http(s)://)
+                --fresh re-reads a document even if nothing changed: skips the
+                unchanged-bytes check AND the cross-index pool. Use it when a cached
+                result is wrong for a reason the cache key cannot see.
   raglit sync   [--home DIR] [--index N] [--dry-run]   ingest the config's [indexes] roots
                 (per-index include/ignore globs, honors .gitignore; dedup skips unchanged)
   raglit branch list|fork NAME|delete NAME   manage copy-on-write branch indexes

@@ -45,6 +45,10 @@ type Job struct {
 	EnqueuedAt int64
 	StartedAt  int64
 	FinishedAt int64
+	// Fresh re-reads the document even when nothing changed: it skips both the
+	// unchanged-bytes fast path and the cross-index pool. The escape hatch for a
+	// cached result that is wrong for a reason the cache key cannot see.
+	Fresh bool
 }
 
 // Enqueue adds a pending ingest job for url and returns its id. It does not
@@ -61,6 +65,13 @@ type Job struct {
 // document that has changed is legitimate and must stay possible; what is never
 // useful is the same file sitting in the queue twice at once.
 func (s *Store) Enqueue(url, title string) (int64, error) {
+	return s.EnqueueFresh(url, title, false)
+}
+
+// EnqueueFresh is Enqueue with an explicit re-read flag. A fresh job never
+// dedupes against a pending one: the caller is asking for work the queued job
+// would specifically NOT do.
+func (s *Store) EnqueueFresh(url, title string, fresh bool) (int64, error) {
 	if url == "" {
 		return 0, fmt.Errorf("raglit: enqueue: empty url")
 	}
@@ -74,8 +85,8 @@ func (s *Store) Enqueue(url, title string) (int64, error) {
 
 	var existing int64
 	err = tx.QueryRow(
-		`SELECT id FROM ingest_jobs WHERE url = ? AND state IN ('pending','running') ORDER BY id LIMIT 1`,
-		url,
+		`SELECT id FROM ingest_jobs WHERE url = ? AND state IN ('pending','running') AND fresh >= ? ORDER BY id LIMIT 1`,
+		url, boolInt(fresh),
 	).Scan(&existing)
 	switch {
 	case err == nil:
@@ -90,7 +101,19 @@ func (s *Store) Enqueue(url, title string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("raglit: enqueue: %w", err)
 	}
+	if fresh {
+		if _, err := tx.Exec(`UPDATE ingest_jobs SET fresh = 1 WHERE id = ?`, id); err != nil {
+			return 0, fmt.Errorf("raglit: enqueue: %w", err)
+		}
+	}
 	return id, tx.Commit()
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // DedupeQueue collapses duplicate pending jobs for the same url, keeping the
@@ -145,10 +168,19 @@ func (s *Store) claimNextJob() (*Job, error) {
 	}); err != nil {
 		return nil, err
 	}
+	// Read the fresh flag inside the same transaction that claims the row. Raw
+	// SQL because the generated query layer predates the column (see migrate);
+	// a job that cannot report it would silently take the cached path, which is
+	// the one thing --fresh exists to prevent.
+	var fresh int
+	if err := tx.QueryRow(`SELECT fresh FROM ingest_jobs WHERE id = ?`, row.ID).Scan(&fresh); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &Job{ID: row.ID, URL: row.Url, Title: row.Title, State: JobRunning, EnqueuedAt: row.EnqueuedAt, StartedAt: now}, nil
+	return &Job{ID: row.ID, URL: row.Url, Title: row.Title, State: JobRunning,
+		EnqueuedAt: row.EnqueuedAt, StartedAt: now, Fresh: fresh != 0}, nil
 }
 
 // completeJob marks a job done with the fragment count it produced and the

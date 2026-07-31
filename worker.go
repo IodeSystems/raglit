@@ -137,23 +137,32 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 		title = f.Title
 	}
 
+	// Route BEFORE anything caches on it. What this document is read AS is part
+	// of what the cached result means, so the decision has to exist before the
+	// key that stores it — see poolRecipe.
+	kind := w.route(job, f)
+
 	// Fast path — same index, identical bytes: skip entirely (nothing to do).
-	if prev, _ := w.Store.DocumentHash(job.URL); prev != "" && prev == hash {
-		sl.Skip("extract", "unchanged — source hash match")
-		return 0, "unchanged", nil
+	// --fresh skips it, because "nothing changed" is exactly what a caller
+	// re-reading a document already knows and is overriding.
+	if !job.Fresh {
+		if prev, _ := w.Store.DocumentHash(job.URL); prev != "" && prev == hash {
+			sl.Skip("extract", "unchanged — source hash match")
+			return 0, "unchanged", nil
+		}
 	}
 
 	// Cross-index reuse — this (recipe, file) was processed anywhere before: copy
 	// the cached fragments + vectors + page images in (cheap), no LLM.
-	if w.Pool != nil && w.RecipeHash != "" {
-		if doc, ok, _ := w.Pool.Get(w.RecipeHash, hash); ok {
+	if !job.Fresh && w.Pool != nil && w.RecipeHash != "" {
+		if doc, ok, _ := w.Pool.Get(w.poolRecipe(kind), hash); ok {
 			t := title
 			if job.Title == "" && doc.Title != "" {
 				t = doc.Title
 			}
 			if n, err := w.Store.IngestPooled(ctx, job.URL, t, doc, w.Pool.FileDir(hash)); err == nil {
 				_ = w.Store.SetDocumentHash(job.URL, hash)
-				sl.Skip("extract", "pooled — reused cached processing (recipe+file match)")
+				sl.Skip("extract", "pooled — reused cached processing (recipe+kind+file match)")
 				return n, "pooled", nil
 			}
 			// copy failed → fall through and reprocess.
@@ -161,26 +170,66 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	}
 
 	// Process fresh, then remember it (per-index hash + shared pool).
-	n, mode, ierr := w.extractAndIngest(ctx, job, f, title, sl)
+	n, mode, ierr := w.extractAndIngestAs(ctx, job, f, kind, title, sl)
 	if ierr == nil {
 		_ = w.Store.SetDocumentHash(job.URL, hash)
 		if w.Pool != nil && w.RecipeHash != "" {
 			if doc, e := w.Store.ExportDoc(job.URL); e == nil {
-				_ = w.Pool.Put(w.RecipeHash, hash, doc)
+				_ = w.Pool.Put(w.poolRecipe(kind), hash, doc)
 			}
 		}
 	}
 	return n, mode, ierr
 }
 
+// route decides what a fetched document is, once per ingest.
+func (w *Worker) route(job *Job, f Fetched) DocKind {
+	kind := ClassifyDoc(job.URL, f.ContentType)
+	if kind == KindUnknown {
+		// Nothing in the name or the content type said what this is, and the
+		// text fall-through would index a PDF's `%PDF-1.7` and `endobj` while the
+		// document stayed unsearchable — silently, because reading bytes as text
+		// never fails. The first eight bytes usually know.
+		kind = SniffBytes(f.Data)
+	}
+	if f.IsPDF {
+		kind = KindPDF
+	}
+	return kind
+}
+
+// poolRecipe folds the ROUTING DECISION into the pool key.
+//
+// Without it a misrouted read is permanent. The pool is keyed by (recipe, file
+// bytes), and the recipe captured the models and the fragmenter — everything
+// that shapes the output EXCEPT the choice of which reader produced it. So a PDF
+// once read as plain text cached `%PDF-1.7` under those bytes, and every later
+// ingest of that content, on any path and in any index, replayed the cached
+// garbage. Fixing the router changed nothing, and nothing said so: the job
+// reported `done`.
+//
+// A routing change must therefore be a cache miss, which is what including the
+// kind buys. The cost is one extra entry for any file whose kind legitimately
+// changes, which is rare and is the case where reprocessing is correct anyway.
+func (w *Worker) poolRecipe(kind DocKind) string {
+	if w.RecipeHash == "" {
+		return ""
+	}
+	return HashHex([]byte(w.RecipeHash + "|kind=" + kind.String()))
+}
+
 // extractAndIngest routes a fetched document by kind (extract.go) and indexes it:
 // a PDF runs the text-layer/OCR hybrid, an office/markup file goes through
 // pandoc, an image through OCR, and anything else is treated as text.
 func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, title string, sl *StageLog) (int, string, error) {
-	kind := ClassifyDoc(job.URL, f.ContentType)
-	if f.IsPDF {
-		kind = KindPDF
-	}
+	return w.extractAndIngestAs(ctx, job, f, w.route(job, f), title, sl)
+}
+
+// extractAndIngestAs is extractAndIngest with the routing already decided, so
+// the kind the pool keyed on is the kind that actually reads the document. Two
+// separate decisions could disagree, and a cache key that describes a different
+// read than the one performed is worse than no key at all.
+func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, kind DocKind, title string, sl *StageLog) (int, string, error) {
 	switch kind {
 	case KindPDF:
 		if w.OCR == nil {

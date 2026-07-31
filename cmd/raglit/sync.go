@@ -77,7 +77,7 @@ func runSync(args []string) error {
 			continue
 		}
 		if dURL != "" {
-			if err := daemonIngest(dURL, files, nsIndex(ns, name), ""); err != nil {
+			if err := daemonIngest(dURL, files, nsIndex(ns, name), "", false); err != nil {
 				return err
 			}
 		} else {

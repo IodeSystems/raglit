@@ -225,6 +225,12 @@ func migrate(db *sql.DB) error {
 		{"fragments", "end_off", "INTEGER NOT NULL DEFAULT 0"},
 		{"fragments", "page_spans", "TEXT NOT NULL DEFAULT ''"},
 		{"ingest_jobs", "owner_pid", "INTEGER NOT NULL DEFAULT 0"},
+		// --fresh: re-read this document even if nothing about it changed. Raw
+		// ALTER rather than a regenerated query layer, following the precedent
+		// TruePages set — `sqlc generate` with the installed toolchain corrupts
+		// the SQL text of every existing query, so a new column pays for itself
+		// in raw SQL rather than in sixty broken ones.
+		{"ingest_jobs", "fresh", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

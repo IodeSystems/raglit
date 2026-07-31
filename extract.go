@@ -42,6 +42,32 @@ const (
 	KindUnknown
 )
 
+// String names a kind stably, for the pool key.
+//
+// These strings are part of a CACHE KEY, so they are written out by hand rather
+// than derived from the constant's position: renumbering the iota, or inserting
+// a kind in the middle, must not silently re-key every cached document. Adding a
+// new name here is free; changing an existing one invalidates that kind's cache,
+// which is the correct behaviour if the routing itself changed and a mistake
+// otherwise.
+func (k DocKind) String() string {
+	switch k {
+	case KindText:
+		return "text"
+	case KindPDF:
+		return "pdf"
+	case KindImage:
+		return "image"
+	case KindOffice:
+		return "office"
+	case KindEmail:
+		return "email"
+	case KindSpreadsheet:
+		return "spreadsheet"
+	}
+	return "unknown"
+}
+
 var (
 	officeExts = map[string]bool{
 		".docx": true, ".odt": true, ".epub": true, ".html": true, ".htm": true,
@@ -109,6 +135,80 @@ func ClassifyDoc(name, contentType string) DocKind {
 		return KindOffice
 	}
 	return KindUnknown
+}
+
+// fileMagic maps a leading byte signature to what the file actually is.
+//
+// ZIP (PK\x03\x04) is deliberately absent. .docx, .xlsx, .odt and .epub are all
+// zips, and so is a plain archive of unrelated files; routing on the container
+// alone would send a backup zip to pandoc. Deciding between them means reading
+// the archive's member names, which is a different and heavier question than
+// "what are the first few bytes", and it is not the failure seen here.
+var fileMagic = []struct {
+	prefix []byte
+	kind   DocKind
+}{
+	{[]byte("%PDF-"), KindPDF},
+	{[]byte("\x89PNG\r\n\x1a\n"), KindImage},
+	{[]byte{0xFF, 0xD8, 0xFF}, KindImage}, // JPEG
+	{[]byte("GIF87a"), KindImage},
+	{[]byte("GIF89a"), KindImage},
+	{[]byte{0x49, 0x49, 0x2A, 0x00}, KindImage}, // TIFF, little-endian
+	{[]byte{0x4D, 0x4D, 0x00, 0x2A}, KindImage}, // TIFF, big-endian
+	{ole2Magic[:], KindOffice},
+}
+
+// SniffKind reads a file's leading bytes and says what it is, ignoring its name.
+//
+// ClassifyDoc routes on the extension because for a local file the extension is
+// the most reliable signal available — but it is only a signal, and a file that
+// has NO extension gets KindUnknown, which the worker reads as plain text.
+//
+// For a PDF that is not a near-miss, it is garbage: the index fills with
+// `%PDF-1.7`, `obj` and `endobj` while the document's actual text stays
+// unsearchable, and nothing reports an error because reading bytes as text
+// always "works". Two attachments in ardley-v-brannock arrived exactly this way,
+// their names truncated at 102 characters by the tool that unpacked them, losing
+// the `.pdf` — the same class of defect the email extractor's own fix names
+// ("an unnamed attachment kept no extension, so nothing indexed it").
+//
+// Returns KindUnknown when nothing matches, so the caller keeps its existing
+// behaviour and this can only ever add routing, never redirect a file that the
+// extension already classified.
+func SniffKind(path string) DocKind {
+	f, err := os.Open(path)
+	if err != nil {
+		return KindUnknown
+	}
+	defer f.Close()
+	var buf [8]byte
+	n, _ := io.ReadFull(f, buf[:])
+	return SniffBytes(buf[:n])
+}
+
+// SniffBytes is SniffKind for content already in hand — the ingest path holds
+// the bytes and never the file, so a path-only sniff would not reach it.
+func SniffBytes(head []byte) DocKind {
+	for _, m := range fileMagic {
+		if len(head) >= len(m.prefix) && bytes.Equal(head[:len(m.prefix)], m.prefix) {
+			return m.kind
+		}
+	}
+	return KindUnknown
+}
+
+// ClassifyPath is ClassifyDoc for a file that exists on disk: the extension
+// decides, and only when it decides nothing does the content get a say.
+//
+// The order matters and is not the obvious one. Sniffing FIRST would be more
+// "correct" in the abstract and worse in practice — a .docx and a .odt are both
+// zips, a .md and a .csv are both text, and the extension separates them where
+// the bytes do not. The bytes are the fallback, not the authority.
+func ClassifyPath(path, contentType string) DocKind {
+	if k := ClassifyDoc(path, contentType); k != KindUnknown {
+		return k
+	}
+	return SniffKind(path)
 }
 
 // toolPath returns a tool's resolved path (empty if not on PATH).

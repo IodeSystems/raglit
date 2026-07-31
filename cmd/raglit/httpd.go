@@ -438,6 +438,10 @@ type ingestIn struct {
 		Targets []string `json:"targets"`
 		Index   string   `json:"index,omitempty"`
 		Title   string   `json:"title,omitempty"`
+		// Fresh re-reads each target even if nothing changed, skipping both the
+		// unchanged-bytes fast path and the cross-index pool. Additive and
+		// optional: an older client omits it and gets the cached behaviour.
+		Fresh bool `json:"fresh,omitempty"`
 	}
 }
 type ingestOut struct {
@@ -456,7 +460,7 @@ func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut
 		}
 		ids := make([]int64, 0, len(in.Body.Targets))
 		for _, t := range in.Body.Targets {
-			id, err := st.Enqueue(t, in.Body.Title)
+			id, err := st.EnqueueFresh(t, in.Body.Title, in.Body.Fresh)
 			if err != nil {
 				return nil, huma.Error500InternalServerError("enqueue", err)
 			}

@@ -115,6 +115,7 @@ func runIngest(args []string) error {
 	title := fs.String("title", "", "document title (single-URL convenience)")
 	now := fs.Bool("now", false, "also process the queue now (don't wait for a serve worker)")
 	embed := fs.Bool("embed", false, "with --now: embed ingested fragments")
+	fresh := fs.Bool("fresh", false, "re-read even if unchanged: skip the unchanged-bytes check AND the cross-index pool")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("ingest: nothing given (a folder, file, file://<path>, or http(s)://...)")
@@ -136,7 +137,7 @@ func runIngest(args []string) error {
 		if err != nil {
 			return err
 		}
-		return daemonIngest(dURL, targets, idx, *title)
+		return daemonIngest(dURL, targets, idx, *title, *fresh)
 	}
 
 	store, err := openStore()
@@ -146,7 +147,7 @@ func runIngest(args []string) error {
 	defer store.Close()
 
 	for _, u := range targets {
-		id, err := store.Enqueue(u, *title)
+		id, err := store.EnqueueFresh(u, *title, *fresh)
 		if err != nil {
 			return err
 		}
