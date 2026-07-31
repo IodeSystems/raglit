@@ -52,19 +52,39 @@ differences are load-bearing because kgraph acts on them.
 | `copy` | **same document**, no substantive difference | machine for byte-identity; human otherwise |
 | `version` | **same document**, differs, one may govern | human |
 | `unrelated` | the overlap means nothing — shared forms, a quotation | human |
-| `carried-by` | arrived INSIDE a container | machine — the archive says so |
-| `after` | follows in a sequence; supersedes nothing | machine for email headers; human elsewhere |
+| `seen-in` | this document was OBSERVED inside that one | machine where the container says so; human otherwise |
+| `after` | this document PRESUPPOSES that one | machine for email headers; human elsewhere |
 
 **`copy` and `version` are both about the SAME document.** That is what stops
 everything else collapsing into them. A forward is not a version of the message
 it quotes — it is a different message. An attachment is not a version of the
 archive that carried it. Part 2 is not a version of part 1.
 
+**`copy` is the same document RENDERED differently** — a different orientation,
+zoom, resolution or scan quality. Nothing about the instrument changed; only the
+picture taken of it did. This has a consequence the implementation has not
+caught up with: two renderings of one deed can measure LOW on text similarity
+because their OCR disagrees, and they are still copies. The 2008 lot
+certification's reproduction of the operative record of survey aligns at 0.589 —
+not because the instruments differ but because that scan reads "LAURENCE
+MOONION" for Clarence Brannock. Text coverage is evidence for `copy` and is not
+the definition of it.
+
+**`version` is the same document CHANGED** — and should carry a date and a
+reason. A version with neither is a pair somebody will have to re-derive later
+from the documents themselves, which is the work the ruling existed to save.
+
 **`version` asserts supersession and has teeth.** kgraph reports "every fact
 resting on it rests on a version that no longer governs." That is right for a
 re-recorded deed and wrong for an email: what someone wrote on a date is what
 they wrote, and a reply quoting it three days later supersedes nothing. This is
 why `after` exists as its own relation rather than as a branching `version`.
+
+**`after` means PRESUPPOSES, not merely "later".** The successor could not exist
+without the predecessor: a reply needs the message it answers, part 2 needs part
+1, an amendment needs the agreement it amends. Two documents that merely happen
+to be dated in order are not `after` each other — that is chronology, which the
+dates already carry.
 
 **`after` is a DAG, not a line.** Two documents `after` the same predecessor is
 a branch; branches of branches are a tree. Nothing special is needed for that —
@@ -84,7 +104,7 @@ reading a file should produce.
 | shape | example | what reading it yields | how parts are addressed |
 |---|---|---|---|
 | **composition** | a scan of a declaration + its exhibits | pages that ARE the instruments | `slice` — a page range |
-| **container** | `.eml`, `.mbox`, an archive | a transcript that REFERS to separate documents | manifest page + `carried-by` |
+| **container** | `.eml`, `.mbox`, an archive | a transcript that REFERS to separate documents | manifest page + `seen-in` |
 | **chain** | an email thread | messages, each quoting its ancestors | `after` |
 
 **Composition** — carving by page range yields the instrument itself, and
@@ -100,6 +120,33 @@ carried, so "what is in here" is answerable without reading all of it.
 
 **Chain** — each message contains its ancestors by quotation. The containment is
 real and is not duplication to be cleaned up; it is the shape of the artifact.
+
+### `seen-in` — a reference that points IN
+
+An ordinary reference points OUT: this document cites that one. `seen-in` points
+the other way — this document was OBSERVED INSIDE that one.
+
+It is deliberately about observation rather than mechanism. A deed can be seen
+in a title commitment because it was photocopied into it; an attachment can be
+seen in an email because MIME carried it; an exhibit can be seen in a
+declaration because it was bound behind it. Those are three different physical
+facts and one useful claim, and a corpus assembled from a broker's file, an
+iCloud export, a transaction file and a county record needs the claim far more
+than it needs the mechanism.
+
+**It does not mint an identity.** That is what separates it from `slice`. A
+slice DECLARES that a page range is a document, creating something citable in
+its own right. `seen-in` relates two documents that already exist. When the
+thing inside is already held standalone, `seen-in` is all that is wanted and it
+is cheaper: no child document, no materialisation, no second copy of the text.
+
+Reach for `slice` instead when the thing inside is NOT held separately and needs
+to become citable — pages 9-14 of a scan that exist nowhere else.
+
+The two compose. Slice a bundle, then rule the child a `copy` of a standalone
+instrument; or skip the slice and record `seen-in` with the page range as its
+evidence. The first gives the enclosed instrument its own identity; the second
+just records where it was spotted.
 
 ## 4. Storage — what survives what
 
@@ -149,8 +196,9 @@ labour: the root says what is on the sheet, a crop says what it says, and
 - Two files, one instrument, no difference → **`copy`**
 - Two files, one instrument, differs, one may govern → **`version`**
 - One file, several instruments printed together → **`slice`**
-- One file carrying separate documents → **container**: manifest + **`carried-by`**
-- One document following another → **`after`**
+- One file carrying separate documents → **container**: manifest + **`seen-in`**
+- A document you already hold, spotted inside another → **`seen-in`**
+- One document that presupposes another → **`after`**
 - Text overlap you have not ruled on → a **measurement**, nothing more
 
 When two of these seem to fit, the question is which CLAIM you are making, not
