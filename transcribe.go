@@ -41,6 +41,9 @@ type TranscribedPage struct {
 	Page    int
 	Text    string
 	Figures []TranscribedFigure
+	// Corrected is a person's replacement for this page, when one exists. Set by
+	// RenderTranscriptionCorrected; never read off disk.
+	Corrected PageCorrection
 }
 
 // TranscribedFigure is a described diagram or image on a page. A scanned survey
@@ -54,10 +57,37 @@ type TranscribedFigure struct {
 //
 // Deterministic: same pages in, same bytes out, so a diff between two
 // transcriptions is a real change in what was read rather than formatting noise.
+// RenderTranscriptionCorrected renders with a person's page corrections applied.
+//
+// The corrections are NOT stored in the file this produces. That file is
+// regenerated on every read, and corrections kept in it were destroyed twice by
+// ordinary re-reads before they were moved into the judgement store. Rendering
+// applies them; the store keeps them.
+func RenderTranscriptionCorrected(docPath string, pages []TranscribedPage, corrections map[int]PageCorrection) string {
+	if len(corrections) == 0 {
+		return RenderTranscription(docPath, pages)
+	}
+	out := make([]TranscribedPage, 0, len(pages))
+	for _, p := range pages {
+		if c, ok := corrections[p.Page]; ok {
+			p.Text = c.Text
+			p.Corrected = c
+		}
+		out = append(out, p)
+	}
+	return RenderTranscription(docPath, out)
+}
+
 func RenderTranscription(docPath string, pages []TranscribedPage) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Transcription — %s\n\n", filepath.Base(docPath))
-	b.WriteString("Page-delineated transcription written by raglit during ingest.\n" +
+	b.WriteString("GENERATED FILE — raglit rewrites this on every read. Edits made here are\n" +
+		"lost, silently, the next time the document is ingested or re-read.\n\n" +
+		"It is an EXPORT, for tools that do not link raglit and do not need to. The\n" +
+		"text lives in raglit's index; this is a copy of it on disk.\n\n" +
+		"To correct a page so the correction SURVIVES and is re-issued into every\n" +
+		"later render:\n\n" +
+		"    raglit transcribe --correct --page N <document> < corrected-text.txt\n\n" +
 		"One `## Page N` section per page, in order, including empty pages — a consumer\n" +
 		"resolving a match to a page depends on the numbering being complete.\n\n" +
 		"This is a TRANSCRIPTION, not an analysis. Cite the source document.\n")
@@ -86,6 +116,24 @@ func RenderTranscription(docPath string, pages []TranscribedPage) string {
 	b.WriteString("\n---\n")
 
 	for _, p := range sorted {
+		// A corrected page says so, and says how the correction was established.
+		// A reader who cannot tell a machine read from a checked one has to treat
+		// both as unverified, which wastes the checking.
+		if c := p.Corrected; c.Text != "" {
+			fmt.Fprintf(&b, "\n> ✔ **Page %d was corrected by hand", p.Page)
+			if c.By != "" {
+				fmt.Fprintf(&b, " (%s", c.By)
+				if c.At != "" {
+					fmt.Fprintf(&b, ", %s", c.At)
+				}
+				b.WriteString(")")
+			}
+			b.WriteString(".**")
+			if c.Note != "" {
+				fmt.Fprintf(&b, " %s", c.Note)
+			}
+			b.WriteString("\n")
+		}
 		// The per-page warning goes ABOVE the heading, never under it.
 		//
 		// Everything after "## Page N\n\n" is the page's text verbatim, and that
@@ -122,6 +170,13 @@ func RenderTranscription(docPath string, pages []TranscribedPage) string {
 // and failing an otherwise-good ingest because a convenience file could not be
 // written would be the wrong trade. The caller logs and continues.
 func WriteTranscription(docPath string, pages []TranscribedPage) (string, error) {
+	return WriteTranscriptionCorrected(docPath, pages, nil)
+}
+
+// WriteTranscriptionCorrected writes the export with a person's corrections
+// applied. See RenderTranscriptionCorrected for why they are applied here rather
+// than stored here.
+func WriteTranscriptionCorrected(docPath string, pages []TranscribedPage, corrections map[int]PageCorrection) (string, error) {
 	// Never transcribe a transcription. The ignore list keeps these out of
 	// discovery, but an explicit `raglit index <file>` bypasses discovery, and one
 	// slip would start writing x.md.raglit-transcription.md.raglit-transcription.md.
@@ -130,7 +185,7 @@ func WriteTranscription(docPath string, pages []TranscribedPage) (string, error)
 			filepath.Base(docPath))
 	}
 	out := TranscriptionPath(docPath)
-	if err := os.WriteFile(out, []byte(RenderTranscription(docPath, pages)), 0o644); err != nil {
+	if err := os.WriteFile(out, []byte(RenderTranscriptionCorrected(docPath, pages, corrections)), 0o644); err != nil {
 		return "", err
 	}
 	return out, nil

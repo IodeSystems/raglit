@@ -64,6 +64,23 @@ var CountRelationsByKindCols = struct {
 	N:    metaquery.NewIntCol("n"),
 }
 
+var MetaDeletePageCorrection = metaquery.Query{
+	Name:    "DeletePageCorrection",
+	Cmd:     ":exec",
+	Source:  "judgements_query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `DELETE FROM page_corrections WHERE doc = ? AND page = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapDeletePageCorrection returns a metaquery.Builder over MetaDeletePageCorrection, pre-bound with typed arguments.
+func WrapDeletePageCorrection(arg DeletePageCorrectionParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaDeletePageCorrection, arg.Doc, arg.Page)
+}
+
 var MetaDeleteSlice = metaquery.Query{
 	Name:    "DeleteSlice",
 	Cmd:     ":exec",
@@ -183,6 +200,49 @@ var GetSliceCols = struct {
 	DecidedAt: metaquery.NewTextCol("decided_at"),
 }
 
+var MetaListAllPageCorrections = metaquery.Query{
+	Name:    "ListAllPageCorrections",
+	Cmd:     ":many",
+	Source:  "judgements_query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT doc, page, text, note, corrected_by, corrected_at
+FROM page_corrections ORDER BY doc, page`,
+	Columns: []metaquery.Column{
+		{Name: "doc", OriginalName: "doc", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "page_corrections"},
+		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+		{Name: "note", OriginalName: "note", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+		{Name: "corrected_by", OriginalName: "corrected_by", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+		{Name: "corrected_at", OriginalName: "corrected_at", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+	},
+}
+
+// WARNING: ListAllPageCorrections ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListAllPageCorrections returns a metaquery.Builder over MetaListAllPageCorrections, pre-bound with typed arguments.
+func WrapListAllPageCorrections() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListAllPageCorrections)
+}
+
+// ListAllPageCorrectionsCols gives typed, name-safe access to ListAllPageCorrections's output columns.
+var ListAllPageCorrectionsCols = struct {
+	Doc         metaquery.TextCol
+	Page        metaquery.IntCol
+	Text        metaquery.TextCol
+	Note        metaquery.TextCol
+	CorrectedBy metaquery.TextCol
+	CorrectedAt metaquery.TextCol
+}{
+	Doc:         metaquery.NewTextCol("doc"),
+	Page:        metaquery.NewIntCol("page"),
+	Text:        metaquery.NewTextCol("text"),
+	Note:        metaquery.NewTextCol("note"),
+	CorrectedBy: metaquery.NewTextCol("corrected_by"),
+	CorrectedAt: metaquery.NewTextCol("corrected_at"),
+}
+
 var MetaListJudgementHistory = metaquery.Query{
 	Name:    "ListJudgementHistory",
 	Cmd:     ":many",
@@ -231,6 +291,52 @@ var ListJudgementHistoryCols = struct {
 	DecidedBy: metaquery.NewTextCol("decided_by"),
 	DecidedAt: metaquery.NewTextCol("decided_at"),
 	LoggedAt:  metaquery.NewIntCol("logged_at"),
+}
+
+var MetaListPageCorrections = metaquery.Query{
+	Name:    "ListPageCorrections",
+	Cmd:     ":many",
+	Source:  "judgements_query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT doc, page, text, note, corrected_by, corrected_at
+FROM page_corrections WHERE doc = ? ORDER BY page`,
+	Columns: []metaquery.Column{
+		{Name: "doc", OriginalName: "doc", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "page_corrections"},
+		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+		{Name: "note", OriginalName: "note", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+		{Name: "corrected_by", OriginalName: "corrected_by", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+		{Name: "corrected_at", OriginalName: "corrected_at", GoType: "string", DBType: "TEXT", NotNull: true, Table: "page_corrections"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WARNING: ListPageCorrections ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListPageCorrections returns a metaquery.Builder over MetaListPageCorrections, pre-bound with typed arguments.
+func WrapListPageCorrections(doc string) *metaquery.Builder {
+	return metaquery.Wrap(&MetaListPageCorrections, doc)
+}
+
+// ListPageCorrectionsCols gives typed, name-safe access to ListPageCorrections's output columns.
+var ListPageCorrectionsCols = struct {
+	Doc         metaquery.TextCol
+	Page        metaquery.IntCol
+	Text        metaquery.TextCol
+	Note        metaquery.TextCol
+	CorrectedBy metaquery.TextCol
+	CorrectedAt metaquery.TextCol
+}{
+	Doc:         metaquery.NewTextCol("doc"),
+	Page:        metaquery.NewIntCol("page"),
+	Text:        metaquery.NewTextCol("text"),
+	Note:        metaquery.NewTextCol("note"),
+	CorrectedBy: metaquery.NewTextCol("corrected_by"),
+	CorrectedAt: metaquery.NewTextCol("corrected_at"),
 }
 
 var MetaListRelations = metaquery.Query{
@@ -473,6 +579,32 @@ var ListSlicesOfCols = struct {
 	Note:      metaquery.NewTextCol("note"),
 	DecidedBy: metaquery.NewTextCol("decided_by"),
 	DecidedAt: metaquery.NewTextCol("decided_at"),
+}
+
+var MetaUpsertPageCorrection = metaquery.Query{
+	Name:    "UpsertPageCorrection",
+	Cmd:     ":exec",
+	Source:  "judgements_query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `INSERT INTO page_corrections(doc, page, text, note, corrected_by, corrected_at)
+VALUES(?, ?, ?, ?, ?, ?)
+ON CONFLICT(doc, page) DO UPDATE SET
+  text=excluded.text, note=excluded.note,
+  corrected_by=excluded.corrected_by, corrected_at=excluded.corrected_at`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 3, Name: "text", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 4, Name: "note", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 5, Name: "corrected_by", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 6, Name: "corrected_at", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+	Table: &metaquery.Table{Name: "page_corrections"},
+}
+
+// WrapUpsertPageCorrection returns a metaquery.Builder over MetaUpsertPageCorrection, pre-bound with typed arguments.
+func WrapUpsertPageCorrection(arg UpsertPageCorrectionParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaUpsertPageCorrection, arg.Doc, arg.Page, arg.Text, arg.Note, arg.CorrectedBy, arg.CorrectedAt)
 }
 
 var MetaUpsertRelation = metaquery.Query{

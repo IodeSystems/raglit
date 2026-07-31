@@ -69,6 +69,20 @@ func (q *Queries) CountRelationsByKind(ctx context.Context) ([]CountRelationsByK
 	return items, nil
 }
 
+const deletePageCorrection = `-- name: DeletePageCorrection :exec
+DELETE FROM page_corrections WHERE doc = ? AND page = ?
+`
+
+type DeletePageCorrectionParams struct {
+	Doc  string `db:"doc" derived:"page_corrections.doc" json:"doc"`
+	Page int64  `db:"page" derived:"page_corrections.page" json:"page"`
+}
+
+func (q *Queries) DeletePageCorrection(ctx context.Context, arg DeletePageCorrectionParams) error {
+	_, err := q.db.ExecContext(ctx, deletePageCorrection, arg.Doc, arg.Page)
+	return err
+}
+
 const deleteSlice = `-- name: DeleteSlice :exec
 DELETE FROM doc_slices WHERE id = ?
 `
@@ -127,6 +141,41 @@ func (q *Queries) GetSlice(ctx context.Context, id string) (DocSlice, error) {
 	return i, err
 }
 
+const listAllPageCorrections = `-- name: ListAllPageCorrections :many
+SELECT doc, page, text, note, corrected_by, corrected_at
+FROM page_corrections ORDER BY doc, page
+`
+
+func (q *Queries) ListAllPageCorrections(ctx context.Context) ([]PageCorrection, error) {
+	rows, err := q.db.QueryContext(ctx, listAllPageCorrections)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PageCorrection
+	for rows.Next() {
+		var i PageCorrection
+		if err := rows.Scan(
+			&i.Doc,
+			&i.Page,
+			&i.Text,
+			&i.Note,
+			&i.CorrectedBy,
+			&i.CorrectedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listJudgementHistory = `-- name: ListJudgementHistory :many
 SELECT id, kind, subject, payload, decided_by, decided_at, logged_at
 FROM judgement_log WHERE kind = ? AND subject = ? ORDER BY id
@@ -154,6 +203,41 @@ func (q *Queries) ListJudgementHistory(ctx context.Context, arg ListJudgementHis
 			&i.DecidedBy,
 			&i.DecidedAt,
 			&i.LoggedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPageCorrections = `-- name: ListPageCorrections :many
+SELECT doc, page, text, note, corrected_by, corrected_at
+FROM page_corrections WHERE doc = ? ORDER BY page
+`
+
+func (q *Queries) ListPageCorrections(ctx context.Context, doc string) ([]PageCorrection, error) {
+	rows, err := q.db.QueryContext(ctx, listPageCorrections, doc)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PageCorrection
+	for rows.Next() {
+		var i PageCorrection
+		if err := rows.Scan(
+			&i.Doc,
+			&i.Page,
+			&i.Text,
+			&i.Note,
+			&i.CorrectedBy,
+			&i.CorrectedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -350,6 +434,36 @@ func (q *Queries) ListSlicesOf(ctx context.Context, parent string) ([]DocSlice, 
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertPageCorrection = `-- name: UpsertPageCorrection :exec
+INSERT INTO page_corrections(doc, page, text, note, corrected_by, corrected_at)
+VALUES(?, ?, ?, ?, ?, ?)
+ON CONFLICT(doc, page) DO UPDATE SET
+  text=excluded.text, note=excluded.note,
+  corrected_by=excluded.corrected_by, corrected_at=excluded.corrected_at
+`
+
+type UpsertPageCorrectionParams struct {
+	Doc         string `db:"doc" derived:"page_corrections.doc" json:"doc"`
+	Page        int64  `db:"page" derived:"page_corrections.page" json:"page"`
+	Text        string `db:"text" derived:"page_corrections.text" json:"text"`
+	Note        string `db:"note" derived:"page_corrections.note" json:"note"`
+	CorrectedBy string `db:"corrected_by" derived:"page_corrections.corrected_by" json:"corrected_by"`
+	CorrectedAt string `db:"corrected_at" derived:"page_corrections.corrected_at" json:"corrected_at"`
+}
+
+// ===== page corrections =====
+func (q *Queries) UpsertPageCorrection(ctx context.Context, arg UpsertPageCorrectionParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPageCorrection,
+		arg.Doc,
+		arg.Page,
+		arg.Text,
+		arg.Note,
+		arg.CorrectedBy,
+		arg.CorrectedAt,
+	)
+	return err
 }
 
 const upsertRelation = `-- name: UpsertRelation :exec

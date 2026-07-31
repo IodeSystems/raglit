@@ -4,9 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/iodesystems/agentkit/llm"
 	"github.com/iodesystems/raglit"
@@ -231,9 +233,19 @@ func runTranscribe(args []string) error {
 	homeFlag := fs.String("home", "", "config home dir (for defaults)")
 	write := fs.Bool("write", false, "write <doc>.raglit-transcription.md beside each document instead of stdout")
 	force := fs.Bool("force", false, "with --write, redo one that already exists")
+	correct := fs.Bool("correct", false, "record corrected text for one page, read from stdin")
+	page := fs.Int("page", 0, "with --correct: which page the corrected text is for")
+	note := fs.String("note", "", "with --correct: how the correction was established (crop, dpi, magnification)")
+	by := fs.String("by", "", "with --correct: who checked it (default $RAGLIT_BY, else the OS user)")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("transcribe: no files given")
+	}
+	if *correct {
+		if fs.NArg() != 1 {
+			return fmt.Errorf("transcribe --correct: name one document")
+		}
+		return runCorrectPage(fs.Arg(0), *page, *note, *by)
 	}
 	home := raglit.DiscoverHome()
 	if *homeFlag != "" {
@@ -247,6 +259,15 @@ func runTranscribe(args []string) error {
 	if lf.requireVision() == nil {
 		ocr = raglit.NewOCR(lf.visionClient())
 		attachCheapOCR(ocr, home)
+	}
+
+	// Corrections are re-issued into every render. A page a person checked stays
+	// checked across re-reads; that is the whole point of storing them outside
+	// the file this writes.
+	var js *raglit.JudgementStore
+	if j, err := openJudgements(); err == nil {
+		js = j
+		defer js.Close()
 	}
 
 	for _, path := range fs.Args() {
@@ -266,13 +287,79 @@ func runTranscribe(args []string) error {
 			tp = append(tp, raglit.TranscribedPage{Page: p.Page, Text: p.Text})
 		}
 		if !*write {
-			fmt.Print(raglit.RenderTranscription(path, tp))
+			fmt.Print(raglit.RenderTranscriptionCorrected(path, tp, correctionsFor(js, path)))
 			continue
 		}
-		if _, err := raglit.WriteTranscription(path, tp); err != nil {
+		if _, err := raglit.WriteTranscriptionCorrected(path, tp, correctionsFor(js, path)); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "   -> %s  (%d page(s))\n", filepath.Base(out), len(tp))
 	}
 	return nil
+}
+
+// runCorrectPage records what a person read off a page, so every later render
+// re-issues it.
+//
+// The correction does NOT go into the .raglit-transcription.md file. That file
+// is regenerated on every read — it is an export for tools that do not link
+// raglit — and corrections kept in it were destroyed twice by ordinary re-reads
+// of one survey. They go into the judgement store, which is projected from the
+// audit trail and survives a reindex, and rendering applies them.
+func runCorrectPage(doc string, page int, note, by string) error {
+	if page < 1 {
+		return fmt.Errorf("transcribe --correct: --page must be 1 or greater")
+	}
+	text, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("transcribe --correct: reading corrected text from stdin: %w", err)
+	}
+	if strings.TrimSpace(string(text)) == "" {
+		return fmt.Errorf("transcribe --correct: no corrected text on stdin")
+	}
+	abs, err := filepath.Abs(doc)
+	if err != nil {
+		return err
+	}
+	js, err := openJudgements()
+	if err != nil {
+		return err
+	}
+	defer js.Close()
+
+	if prev, _ := js.PageCorrections(abs); len(prev) > 0 {
+		if _, ok := prev[page]; ok {
+			// Said out loud: replacing somebody's checked reading silently is how
+			// the work this exists to preserve gets lost a third way.
+			fmt.Fprintf(os.Stderr, "note: page %d was already corrected — recording the new text over it\n", page)
+		}
+	}
+	if err := js.PutPageCorrection(raglit.PageCorrection{
+		Doc: abs, Page: page, Text: string(text), Note: note,
+		By: who(by), At: time.Now().UTC().Format("2006-01-02"),
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("page %d of %s corrected (%d chars)\n", page, filepath.Base(doc), len(text))
+	fmt.Println("  recorded in the audit trail; every later transcription re-issues it")
+	return nil
+}
+
+// correctionsFor loads a document's page corrections, or nothing when no
+// judgement store is reachable. A transcription without them is still a
+// transcription; refusing to render one because a store could not be opened
+// would make raglit unusable outside a project.
+func correctionsFor(js *raglit.JudgementStore, path string) map[int]raglit.PageCorrection {
+	if js == nil {
+		return nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil
+	}
+	c, err := js.PageCorrections(abs)
+	if err != nil {
+		return nil
+	}
+	return c
 }

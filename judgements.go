@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/iodesystems/raglit/internal/jdb"
@@ -134,7 +135,7 @@ func (s *JudgementStore) replay(events []AuditEvent, clear bool) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 	if clear {
-		for _, t := range []string{"doc_relations", "doc_slices", "judgement_log"} {
+		for _, t := range []string{"doc_relations", "doc_slices", "page_corrections", "judgement_log"} {
 			if _, err := tx.Exec("DELETE FROM " + t); err != nil {
 				return err
 			}
@@ -182,6 +183,19 @@ func applyEvent(ctx context.Context, q *jdb.Queries, ev AuditEvent) error {
 			return err
 		}
 		return logEvent(ctx, q, "slice", sl.ID, sl, ev)
+
+	case OpPageCorrect:
+		if ev.Correction == nil {
+			return fmt.Errorf("page.correct with no correction")
+		}
+		c := *ev.Correction
+		if err := q.UpsertPageCorrection(ctx, jdb.UpsertPageCorrectionParams{
+			Doc: c.Doc, Page: int64(c.Page), Text: c.Text, Note: c.Note,
+			CorrectedBy: c.By, CorrectedAt: c.At,
+		}); err != nil {
+			return err
+		}
+		return logEvent(ctx, q, "correction", fmt.Sprintf("%s#p%d", c.Doc, c.Page), c, ev)
 
 	case OpSliceDelete:
 		if ev.SliceID == "" {
@@ -357,6 +371,33 @@ func slicesOf(rows []jdb.DocSlice) []Slice {
 		out = append(out, sliceOf(r))
 	}
 	return out
+}
+
+// PutPageCorrection records what a person read off a page.
+func (s *JudgementStore) PutPageCorrection(c PageCorrection) error {
+	if c.Doc == "" || c.Page < 1 {
+		return fmt.Errorf("a correction needs a document and a page number")
+	}
+	if strings.TrimSpace(c.Text) == "" {
+		return fmt.Errorf("a correction needs the corrected text")
+	}
+	return s.record(AuditEvent{Op: OpPageCorrect, By: c.By, Correction: &c})
+}
+
+// PageCorrections returns the corrections for one document, by page.
+func (s *JudgementStore) PageCorrections(doc string) (map[int]PageCorrection, error) {
+	rows, err := s.q.ListPageCorrections(context.Background(), doc)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int]PageCorrection{}
+	for _, r := range rows {
+		out[int(r.Page)] = PageCorrection{
+			Doc: r.Doc, Page: int(r.Page), Text: r.Text, Note: r.Note,
+			By: r.CorrectedBy, At: r.CorrectedAt,
+		}
+	}
+	return out, nil
 }
 
 // ── history ────────────────────────────────────────────────────────────

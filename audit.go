@@ -48,6 +48,7 @@ const (
 	OpRelationPut = "relation.put"
 	OpSlicePut    = "slice.put"
 	OpSliceDelete = "slice.delete"
+	OpPageCorrect = "page.correct"
 )
 
 // AuditEvent is one recorded mutation.
@@ -59,9 +60,25 @@ type AuditEvent struct {
 	At string `json:"at"`
 	By string `json:"by,omitempty"`
 
-	Relation *Mark  `json:"relation,omitempty"`
-	Slice    *Slice `json:"slice,omitempty"`
-	SliceID  string `json:"slice_id,omitempty"`
+	Relation   *Mark           `json:"relation,omitempty"`
+	Slice      *Slice          `json:"slice,omitempty"`
+	SliceID    string          `json:"slice_id,omitempty"`
+	Correction *PageCorrection `json:"correction,omitempty"`
+}
+
+// PageCorrection is what a person read off a page that the machine got wrong.
+//
+// Text replaces the machine read for that page when the transcription is
+// rendered. Note records HOW it was established — the magnification, the source
+// image — because a corrected identifier that cannot be re-checked is only a
+// different unverified value.
+type PageCorrection struct {
+	Doc  string `json:"doc"`
+	Page int    `json:"page"`
+	Text string `json:"text"`
+	Note string `json:"note,omitempty"`
+	By   string `json:"by,omitempty"`
+	At   string `json:"at,omitempty"`
 }
 
 // AppendAudit writes one event. The only writer of the trail.

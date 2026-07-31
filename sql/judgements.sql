@@ -58,6 +58,28 @@ CREATE TABLE IF NOT EXISTS doc_slices (
 );
 CREATE INDEX IF NOT EXISTS doc_slices_parent ON doc_slices(parent, from_page);
 
+-- Page corrections: what a person read off the page that the machine got wrong.
+--
+-- A plan sheet's identifiers are the case that forces this. A machine read of
+-- the 2022 Halvor record of survey gets two of five recording numbers right and
+-- invents a twelve-digit auditor file number; the correct values were read off
+-- 200% crops of the native 960 ppi image by a person, and nothing in the bytes
+-- can recompute that work.
+--
+-- It lived in the .raglit-transcription.md file beside the document, which
+-- raglit rewrites on every read, and was destroyed twice by ordinary re-reads.
+-- So it lives here, and the transcription is RENDERED with corrections applied
+-- rather than being a place to keep them.
+CREATE TABLE IF NOT EXISTS page_corrections (
+  doc        TEXT NOT NULL,               -- document path the correction is for
+  page       INTEGER NOT NULL,            -- the document's own page number
+  text       TEXT NOT NULL,               -- what the page actually says
+  note       TEXT NOT NULL DEFAULT '',    -- how it was established (crop, dpi, magnification)
+  corrected_by TEXT NOT NULL DEFAULT '',
+  corrected_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (doc, page)
+);
+
 -- History: every ruling ever made, including the ones since replaced.
 --
 -- The live tables answer "what do we believe"; this answers "what did we believe

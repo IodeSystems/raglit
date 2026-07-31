@@ -41,3 +41,12 @@ type JudgementLog struct {
 	DecidedAt string `db:"decided_at" derived:"judgement_log.decided_at" json:"decided_at"`
 	LoggedAt  int64  `db:"logged_at" derived:"judgement_log.logged_at" json:"logged_at"`
 }
+
+type PageCorrection struct {
+	Doc         string `db:"doc" derived:"page_corrections.doc" json:"doc"`
+	Page        int64  `db:"page" derived:"page_corrections.page" json:"page"`
+	Text        string `db:"text" derived:"page_corrections.text" json:"text"`
+	Note        string `db:"note" derived:"page_corrections.note" json:"note"`
+	CorrectedBy string `db:"corrected_by" derived:"page_corrections.corrected_by" json:"corrected_by"`
+	CorrectedAt string `db:"corrected_at" derived:"page_corrections.corrected_at" json:"corrected_at"`
+}

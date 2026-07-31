@@ -60,3 +60,22 @@ VALUES(?, ?, ?, ?, ?, ?);
 -- name: ListJudgementHistory :many
 SELECT id, kind, subject, payload, decided_by, decided_at, logged_at
 FROM judgement_log WHERE kind = ? AND subject = ? ORDER BY id;
+
+-- ===== page corrections =====
+-- name: UpsertPageCorrection :exec
+INSERT INTO page_corrections(doc, page, text, note, corrected_by, corrected_at)
+VALUES(?, ?, ?, ?, ?, ?)
+ON CONFLICT(doc, page) DO UPDATE SET
+  text=excluded.text, note=excluded.note,
+  corrected_by=excluded.corrected_by, corrected_at=excluded.corrected_at;
+
+-- name: ListPageCorrections :many
+SELECT doc, page, text, note, corrected_by, corrected_at
+FROM page_corrections WHERE doc = ? ORDER BY page;
+
+-- name: ListAllPageCorrections :many
+SELECT doc, page, text, note, corrected_by, corrected_at
+FROM page_corrections ORDER BY doc, page;
+
+-- name: DeletePageCorrection :exec
+DELETE FROM page_corrections WHERE doc = ? AND page = ?;
