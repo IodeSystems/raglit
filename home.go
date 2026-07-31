@@ -2,8 +2,10 @@ package raglit
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
+	gen "github.com/iodesystems/raglit/internal/db"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,4 +173,44 @@ func (h Home) PageDir(docPath string) string {
 func tag(path string) string {
 	sum := sha256.Sum256([]byte(path))
 	return hex.EncodeToString(sum[:4]) + "-" + filepath.Base(path)
+}
+
+// ScopedIndexHome is the daemon's Home for one named index under a scoped root:
+// <root>/indexes/<name>. Exported so a CLI can READ the index the daemon owns
+// rather than the project-local one.
+//
+// The two are not the same database and routinely disagree. A daemon-routed
+// project ingests through the daemon, so <root>/indexes/<ns>__<name> is the
+// corpus; the project's own .raglit/index.sqlite is whatever was last written
+// locally, which may be years of documents behind. A command that opens the
+// wrong one answers confidently about a corpus nobody is using.
+func ScopedIndexHome(root, name string) Home {
+	return Home(filepath.Join(root, "indexes", name))
+}
+
+// OpenIndexRO opens an index for READING only.
+//
+// The daemon is the single writer for its indexes — that is what keeps one
+// worker pool from fighting a CLI over the same file. A reporting command still
+// needs to see that data, and SQLite in WAL mode allows any number of concurrent
+// readers alongside the writer, so reading is safe where writing is not.
+//
+// It does not create anything. An index that is not there is an error rather
+// than a new empty database, because a command that silently invents one reports
+// "nothing found" about a corpus it never opened.
+func OpenIndexRO(home Home, name string) (*Store, error) {
+	path := home.indexPath(name)
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("raglit: no index at %s (is the daemon holding it elsewhere?)", path)
+	}
+	db, err := sql.Open("sqlite", path+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	s := &Store{db: db, q: gen.New(db), home: home, withHome: true}
+	return s, nil
 }

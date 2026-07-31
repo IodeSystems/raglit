@@ -500,23 +500,47 @@ func runReread(args []string) error {
 		return nil
 	}
 
-	// Purge first, with a store opened only for that, then close it before index
-	// opens its own — two writers on one sqlite file is a lock fight for no gain.
 	purge := flag.NewFlagSet("reread-purge", flag.ContinueOnError)
 	purge.SetOutput(io.Discard)
-	openStore, _ := addStoreFlags(purge)
+	openStore, homeOf := addStoreFlags(purge)
 	_ = purge.Parse(passthrough)
-	store, err := openStore()
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
+
 	// Rulings, for the copy announcement below. A project without any is the
 	// normal state and must not stop a reread, so a failure here is not fatal.
 	js, _ := openJudgements()
 	if js != nil {
 		defer js.Close()
 	}
+
+	// A reread WRITES: it purges cached pages and re-reads. On a daemon-routed
+	// project both halves belong to the daemon — doing them locally would purge a
+	// different index from the one in service and leave the bad read in place.
+	if ns, err := resolveProject("", homeOf); err == nil && ns != "" && !explicitStoreFlag(purge) {
+		read, rerr := openCorpus(purge, openStore, homeOf)
+		if rerr != nil {
+			return rerr
+		}
+		defer read.Close()
+		for _, t := range targets {
+			n, id, err := daemonReread(t)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  %v\n", err)
+				continue
+			}
+			fmt.Printf("  purged %d cached page(s), queued job %d: %s\n", n, id, t)
+			announceOtherCopies(read, js, t)
+		}
+		return nil
+	}
+
+	// Embedded/local: purge with a store opened only for that, then close it
+	// before index opens its own — two writers on one sqlite file is a lock
+	// fight for no gain.
+	store, err := openStore()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
 	for _, t := range targets {
 		n, err := store.PurgeDocPageCache(ctx, t)
 		if err != nil {

@@ -373,3 +373,62 @@ func urlValues(kv ...string) url.Values {
 	}
 	return v
 }
+
+// daemonReread asks the daemon to purge a document's page cache and re-read it.
+func daemonReread(path string) (purged int, jobID int64, err error) {
+	base, err := ensureDaemon("", raglit.DiscoverHome)
+	if err != nil {
+		return 0, 0, err
+	}
+	idx, err := daemonIndexName()
+	if err != nil {
+		return 0, 0, err
+	}
+	b, err := daemonPostJSON(base, "/api/reread?"+urlValues("path", path, "index", idx).Encode(), map[string]any{})
+	if err != nil {
+		return 0, 0, err
+	}
+	var out struct {
+		Purged int   `json:"purged"`
+		JobID  int64 `json:"job_id"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return 0, 0, err
+	}
+	return out.Purged, out.JobID, nil
+}
+
+// daemonSketch asks the daemon to build page sketches in its own index.
+func daemonSketch(rebuild bool, width, mod int) (n int, recipe string, skipped []string, err error) {
+	base, err := ensureDaemon("", raglit.DiscoverHome)
+	if err != nil {
+		return 0, "", nil, err
+	}
+	idx, err := daemonIndexName()
+	if err != nil {
+		return 0, "", nil, err
+	}
+	q := urlValues("index", idx)
+	if rebuild {
+		q.Set("rebuild", "true")
+	}
+	if width > 0 {
+		q.Set("width", fmt.Sprintf("%d", width))
+	}
+	if mod > 0 {
+		q.Set("mod", fmt.Sprintf("%d", mod))
+	}
+	b, err := daemonPostJSON(base, "/api/similar/build?"+q.Encode(), map[string]any{})
+	if err != nil {
+		return 0, "", nil, err
+	}
+	var out struct {
+		Sketched int      `json:"sketched"`
+		Recipe   string   `json:"recipe"`
+		Skipped  []string `json:"skipped"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return 0, "", nil, err
+	}
+	return out.Sketched, out.Recipe, out.Skipped, nil
+}

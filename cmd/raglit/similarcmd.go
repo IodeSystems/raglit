@@ -27,7 +27,7 @@ import (
 // near-duplicates into one score cannot say either.
 func runSimilar(args []string) error {
 	fs := flag.NewFlagSet("similar", flag.ExitOnError)
-	openStore, _ := addStoreFlags(fs)
+	openStore, homeOf := addStoreFlags(fs)
 	build := fs.Bool("build", false, "build missing page sketches, then exit")
 	rebuild := fs.Bool("rebuild", false, "rebuild every page sketch (after a recipe change)")
 	status := fs.Bool("status", false, "report sketch coverage, then exit")
@@ -43,7 +43,25 @@ func runSimilar(args []string) error {
 	noMask := fs.Bool("no-mask", false, "do not mask corpus-generic text (diagnostic: shows what masking suppressed)")
 	fs.Parse(args)
 
-	store, err := openStore()
+	// --build/--rebuild WRITE sketches. On a daemon-routed project that write
+	// belongs to the daemon, and must land in the same index the report reads —
+	// sketching locally then reporting over the daemon's index finds nothing
+	// sketched, having just said it sketched everything.
+	if (*build || *rebuild) && !explicitStoreFlag(fs) {
+		if ns, perr := resolveProject("", homeOf); perr == nil && ns != "" {
+			n, recipe, skipped, derr := daemonSketch(*rebuild, *width, *mod)
+			if derr != nil {
+				return derr
+			}
+			fmt.Printf("sketched %d document(s) under %s\n", n, recipe)
+			for _, s := range skipped {
+				fmt.Fprintf(os.Stderr, "  skipped: %s\n", s)
+			}
+			return nil
+		}
+	}
+
+	store, err := openCorpus(fs, openStore, homeOf)
 	if err != nil {
 		return err
 	}

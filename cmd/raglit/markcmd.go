@@ -103,7 +103,7 @@ func runMark(args []string) error {
 
 func runMarks(args []string) error {
 	fs := flag.NewFlagSet("marks", flag.ExitOnError)
-	openStore, _ := addStoreFlags(fs)
+	openStore, homeOf := addStoreFlags(fs)
 	todo := fs.Bool("todo", false, "overlapping pairs nobody has ruled on yet, with a proposal for each")
 	identical := fs.Bool("identical", false, "documents held more than once, BYTE for byte — needs no sketches")
 	rebuild := fs.Bool("rebuild", false, "drop the projected database and replay the audit trail into it")
@@ -130,7 +130,7 @@ func runMarks(args []string) error {
 	}
 
 	if *identical {
-		store, err := openStore()
+		store, err := openCorpus(fs, openStore, homeOf)
 		if err != nil {
 			return err
 		}
@@ -162,7 +162,7 @@ func runMarks(args []string) error {
 		return nil
 	}
 
-	store, err := openStore()
+	store, err := openCorpus(fs, openStore, homeOf)
 	if err != nil {
 		return err
 	}

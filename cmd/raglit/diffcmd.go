@@ -17,7 +17,7 @@ import (
 // second scan and with a re-recorded instrument whose page 3 changed.
 func runDiff(args []string) error {
 	fs := flag.NewFlagSet("diff", flag.ExitOnError)
-	openStore, _ := addStoreFlags(fs)
+	openStore, homeOf := addStoreFlags(fs)
 	asJSON := fs.Bool("json", false, "emit the diff as JSON")
 	width := fs.Int("width", 0, "shingle width in folded chars (0 = default)")
 	fs.Parse(args)
@@ -26,7 +26,7 @@ func runDiff(args []string) error {
 	}
 	aPath, bPath := fs.Arg(0), fs.Arg(1)
 
-	store, err := openStore()
+	store, err := openCorpus(fs, openStore, homeOf)
 	if err != nil {
 		return err
 	}
