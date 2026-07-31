@@ -236,3 +236,188 @@ func capPages(pages []DocPageText, maxChars int) []DocPageText {
 	}
 	return pages
 }
+
+// TruePages reassembles a document at TRUE page grain, honouring page_spans.
+//
+// DocText's Pages array is not this, and the difference is the reason this
+// exists. The assembler absorbs a page's continuation (or a sub-floor sibling)
+// from the NEXT page into an open fragment and keeps only the START page in
+// `fragments.page`, so DocText attributes every byte of a multi-page fragment to
+// the page the fragment opened on. Measured on this index: 67 of 460 fragments
+// carry page boundaries, and honouring them recovers 441 true pages where grouping
+// by `fragments.page` finds only 277. Halvor's declaration is the clearest case —
+// 14 fragments opening on pages 1, 4, 14, 17, 18, 23, 24, 28 and 33, so DocText
+// reports it as a 9-page document and every page number after the first stitch is
+// wrong. That is exactly wrong for anything that wants to SAY where a finding is.
+//
+// page_spans was added to fix that ("a search hit inside one could not be
+// resolved to the page it is actually on", per the schema) and, until this, was
+// written by ingest, carried through the pool, and read by nothing but its own
+// tests. Similarity is its first consumer: "pages 12-14 of X are pages 1-3 of Y"
+// is the whole deliverable, and a page number that is silently the fragment's
+// start page makes that report a lie.
+//
+// Pages come back in page order, contiguous from the lowest page present, with
+// empty pages included — a consumer resolving an alignment to a page depends on
+// the numbering being complete, the same contract the transcription markdown
+// makes.
+// Raw SQL, not sqlc, and not by preference. The generated
+// ListFragmentsForDoc does not select page_spans, and regenerating is currently
+// destructive: `sqlc generate` with the installed toolchain (sqlc v1.30.0 against
+// the metaquery plugin built on plugin-sdk-go v1.23.0) rewrites the SQL text of
+// EVERY query in internal/db — each one comes back rotated two characters, e.g.
+//
+//	const cancelJob = `-- name: CancelJob :execrows
+//	);
+//
+//	DELETE FROM ingest_jobs WHERE id=? AND state='pendin`
+//
+// That is 60+ silently broken queries for the sake of one added column, so this
+// follows the precedent the schema file already sets for FTS5 and the vector scan:
+// what sqlc cannot express here stays raw. Fix the plugin, then fold this back in.
+func (s *Store) TruePages(exactPath string) ([]PageText, error) {
+	ctx := context.Background()
+	doc, err := s.q.GetDocumentByPath(ctx, exactPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("raglit: no document with path %q", exactPath)
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT page, ord, text, start_off, end_off, page_spans
+		 FROM fragments WHERE doc_id = ? ORDER BY page, ord`, doc.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var frags []fragRow
+	for rows.Next() {
+		var f fragRow
+		if err := rows.Scan(&f.Page, &f.Ord, &f.Text, &f.StartOff, &f.EndOff, &f.PageSpans); err != nil {
+			return nil, err
+		}
+		frags = append(frags, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return truePages(frags), nil
+}
+
+// fragRow is one fragment as TruePages reads it. Mirrors what sqlc would have
+// generated for ListFragmentsForDoc had page_spans been in the select list.
+type fragRow struct {
+	Page      int64
+	Ord       int64
+	Text      string
+	StartOff  int64
+	EndOff    int64
+	PageSpans string
+}
+
+// truePages is TruePages' pure core, so the span arithmetic is testable without
+// a database.
+//
+// Two things happen at once and both are needed. Overlapping windows are
+// de-overlapped by [start,end) high-water mark (as reassembleOffsets does), and
+// the surviving bytes of each fragment are split across pages by that fragment's
+// page_spans. Doing only the first attributes a stitched page to the wrong page;
+// doing only the second repeats every overlap region.
+//
+// A fragment whose spans are absent (llm-seg, or a document indexed before the
+// column existed) contributes wholly to its start page, which is what the old
+// behaviour already assumed — so this degrades to DocText's answer rather than
+// failing. Note that a page_spans-carrying fragment may ALSO have no offsets:
+// llm-seg fragments span pages too, and 67 of the 67 span-carrying fragments on
+// this index are offset-less, so the two conditions are independent and were
+// briefly conflated here (which dropped every stitched llm-seg page).
+func truePages(rows []fragRow) []PageText {
+	offsetMode := false
+	for _, r := range rows {
+		if r.EndOff > r.StartOff {
+			offsetMode = true
+			break
+		}
+	}
+	if offsetMode {
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].StartOff < rows[j].StartOff })
+	}
+	byPage := map[int]*strings.Builder{}
+	lo, hi := 0, 0
+	have := false
+	put := func(page int, text string) {
+		if text == "" {
+			// Still register the page, so a blank page keeps its slot.
+			if _, ok := byPage[page]; !ok {
+				byPage[page] = &strings.Builder{}
+			}
+		} else {
+			bb, ok := byPage[page]
+			if !ok {
+				bb = &strings.Builder{}
+				byPage[page] = bb
+			}
+			if bb.Len() > 0 {
+				bb.WriteString(pageSep)
+			}
+			bb.WriteString(text)
+		}
+		if !have || page < lo {
+			lo = page
+		}
+		if !have || page > hi {
+			hi = page
+		}
+		have = true
+	}
+
+	covered := int64(0)
+	for _, r := range rows {
+		text := r.Text
+		skip := 0
+		if offsetMode && r.EndOff > r.StartOff {
+			if r.EndOff <= covered {
+				continue // fully covered by an earlier fragment
+			}
+			if covered > r.StartOff {
+				skip = int(covered - r.StartOff)
+			}
+			if skip < 0 || skip > len(text) {
+				continue
+			}
+			covered = r.EndOff
+		}
+		spans := DecodePageSpans(r.PageSpans)
+		if len(spans) < 2 {
+			put(int(r.Page), text[skip:])
+			continue
+		}
+		// Cut the surviving suffix at each page boundary at or after `skip`. The
+		// page of the first surviving byte comes from PageAt, not from spans[0]:
+		// an overlap can consume the whole of the fragment's first page.
+		start := skip
+		page := PageAt(int(r.Page), spans, skip)
+		for _, sp := range spans {
+			if sp.Off <= start || sp.Off > len(text) {
+				continue
+			}
+			put(page, text[start:sp.Off])
+			start, page = sp.Off, sp.Page
+		}
+		put(page, text[start:])
+	}
+
+	if !have {
+		return nil
+	}
+	out := make([]PageText, 0, hi-lo+1)
+	for p := lo; p <= hi; p++ {
+		var t string
+		if bb, ok := byPage[p]; ok {
+			t = bb.String()
+		}
+		out = append(out, PageText{Page: p, Text: t, Engine: "text"})
+	}
+	return out
+}

@@ -159,6 +159,57 @@ CREATE TABLE IF NOT EXISTS media_vectors (
   vec      BLOB NOT NULL,
   space    TEXT NOT NULL DEFAULT 'text'
 );
+-- Shingle sketches — near-duplicate and containment detection at PAGE grain.
+--
+-- Stored rather than recomputed for the same reason fragments are: the question
+-- "is this upload something we already hold?" is asked on every upload, and
+-- answering it by re-folding and re-shingling every indexed document reads the
+-- whole corpus each time.
+--
+-- No migration step is needed and none was added: store.go applies this file with
+-- CREATE TABLE IF NOT EXISTS on every Open, so an existing index grows these
+-- tables on next use with no rows in them. migrate() exists only for new COLUMNS
+-- on existing tables, which ALTER cannot do idempotently. An index that predates
+-- this is not wrong, only unsketched — `similar` reports which documents have no
+-- sketch rather than treating an absent sketch as "nothing similar", because
+-- those two answers lead a person to opposite conclusions.
+--
+-- PAGE grain, not fragment grain, and not document grain. Document grain cannot
+-- express "pages 12-14 of X are pages 1-3 of Y", which is the actionable finding.
+-- Fragment grain cannot either: a fragment is a ~9000-character window snapped to
+-- the source's own offsets, so the same passage at a different offset in another
+-- document falls in a different window. A page is the unit a person cites.
+CREATE TABLE IF NOT EXISTS shingle_pages (
+  doc_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page    INTEGER NOT NULL,
+  chars   INTEGER NOT NULL DEFAULT 0,  -- folded length; tells a blank page from a short one
+  -- total is the count of DISTINCT shingles on the page: the denominator of
+  -- containment. shingle_index holds only a 1-in-N sample, which makes |A∩B|
+  -- estimable and would make |A| unrecoverable, so the size is stored separately.
+  total   INTEGER NOT NULL DEFAULT 0,
+  sampled INTEGER NOT NULL DEFAULT 0,  -- how many of them are in shingle_index
+  -- recipe pins the fold/shingle parameters this row was built under, mirroring
+  -- documents.frag_recipe and for the same reason: a width change should mark
+  -- exactly the documents that need re-sketching, not invalidate the index.
+  recipe  TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (doc_id, page)
+);
+
+-- The inverted index: which pages carry a given sampled shingle.
+--
+-- hash leads the primary key and there is no rowid, so probing by hash is a
+-- covering range scan with no secondary index to keep. hash is stored as SQLite's
+-- signed INTEGER — a uint64 is written by reinterpreting its bits, and read back
+-- the same way. Storing the decimal string instead was tried first and made the
+-- table four times larger for no benefit.
+CREATE TABLE IF NOT EXISTS shingle_index (
+  hash   INTEGER NOT NULL,
+  doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page   INTEGER NOT NULL,
+  PRIMARY KEY (hash, doc_id, page)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS shingle_index_doc ON shingle_index(doc_id);
+
 -- Branch storage: a tombstone marks a PARENT document path as deleted-in-branch,
 -- so the parent's version does not show through the branch-over-parent overlay.
 -- Present in every index (harmless for non-branch indexes).
