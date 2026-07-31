@@ -133,9 +133,18 @@ func runSlices(args []string) error {
 	fs := flag.NewFlagSet("slices", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "emit as JSON")
 	rebuild := fs.Bool("materialize", false, "rebuild every child document from its parent")
+	propose := fs.Bool("propose", false, "propose slices from a bundle's own \"Page N of M\" counters")
+	write := fs.Bool("write", false, "with --propose: record the proposals that are sliceable")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
+	}
+
+	if *propose {
+		if len(pos) != 1 {
+			return fmt.Errorf("slices --propose: name one document")
+		}
+		return runProposeSlices(fs, pos[0], *write, *asJSON)
 	}
 
 	js, err := openJudgements()
@@ -431,4 +440,84 @@ func daemonSketch(rebuild bool, width, mod int) (n int, recipe string, skipped [
 		return 0, "", nil, err
 	}
 	return out.Sketched, out.Recipe, out.Skipped, nil
+}
+
+// runProposeSlices reads a bundle's own page counters and proposes the
+// instruments inside it. Proposes; does not record. A boundary is a claim about
+// what a document IS, which is a ruling — and the counters lie often enough that
+// a queue somebody skims is the right output.
+func runProposeSlices(fs *flag.FlagSet, target string, write bool, asJSON bool) error {
+	store, err := openCorpus(fs, func() (*raglit.Store, error) {
+		return nil, fmt.Errorf("no local store")
+	}, raglit.DiscoverHome)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	pages, err := store.TruePages(target)
+	if err != nil {
+		return fmt.Errorf("slices --propose: %w", err)
+	}
+	props := raglit.ProposeSlices(pages)
+	if asJSON {
+		return emitJSON(props)
+	}
+	if len(props) == 0 {
+		fmt.Printf("no page counters found in %s — nothing to propose\n", filepath.Base(target))
+		fmt.Println("  (a bundle without \"Page N of M\" markers has to be sliced by hand)")
+		return nil
+	}
+
+	js, err := openJudgements()
+	if err != nil {
+		return err
+	}
+	defer js.Close()
+
+	fmt.Printf("%s — %d page(s)\n\n", filepath.Base(target), len(pages))
+	slices, seen := 0, 0
+	for _, p := range props {
+		if p.Sliceable() {
+			slices++
+			fmt.Printf("  p%-8s %-14s %s\n", fmt.Sprintf("%d-%d", p.From, p.To), p.Title, p.Why)
+		} else {
+			seen++
+			fmt.Printf("  p%-8s %-14s %s\n", fmt.Sprintf("%d", p.From), p.Title, p.Why)
+			fmt.Printf("  %-10s %-14s → NOT a slice: two instruments on one sheet cannot both be a\n", "", "")
+			fmt.Printf("  %-10s %-14s   page range. Record each as `seen-in` this bundle instead.\n", "", "")
+		}
+	}
+	fmt.Printf("\n%d sliceable, %d needing seen-in\n", slices, seen)
+
+	if !write {
+		if slices > 0 {
+			fmt.Println("record the sliceable ones: raglit slices --propose --write <DOC>")
+		}
+		return nil
+	}
+	n := 0
+	for _, p := range props {
+		if !p.Sliceable() {
+			continue
+		}
+		sl := raglit.Slice{
+			ID:     sliceID("", p.Title+" "+filepath.Base(target), target, p.From, p.To),
+			Parent: target, From: p.From, To: p.To,
+			Title: p.Title,
+			Note:  p.Why,
+			By:    "raglit",
+			At:    time.Now().UTC().Format("2006-01-02"),
+		}
+		if err := js.PutSlice(sl); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: %v\n", sl.ID, err)
+			continue
+		}
+		n++
+	}
+	fmt.Printf("recorded %d slice(s), attributed to raglit\n", n)
+	if _, _, err := daemonMaterialize(""); err != nil {
+		fmt.Fprintf(os.Stderr, "  declared but not built: %v\n", err)
+	}
+	return nil
 }
