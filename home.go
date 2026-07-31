@@ -85,6 +85,23 @@ func findProjectHome() (Home, bool) {
 	}
 }
 
+// ProjectDir is the directory that OWNS this project — the one holding .raglit/,
+// found by walking up from the cwd like git.
+//
+// Distinct from the index Home on purpose. The Home is derived storage: it is
+// gitignored in every project that has one, it is rebuilt by a reindex, and on a
+// daemon it does not even sit near the documents. Anything DURABLE about the
+// corpus — a human's ruling that two documents are versions of one instrument,
+// which nothing can recompute — belongs here instead, beside the documents it is
+// about, where git records it and a folder sync carries it to the other machines.
+func ProjectDir() (string, bool) {
+	h, ok := findProjectHome()
+	if !ok {
+		return "", false
+	}
+	return filepath.Dir(string(h)), true
+}
+
 // IndexPath is the home's primary (default) SQLite index file.
 func (h Home) IndexPath() string { return filepath.Join(string(h), "index.sqlite") }
 

@@ -208,26 +208,25 @@ func probeOne(store *raglit.Store, target string, opts raglit.SimilarOpts) (ragl
 // hold more than once, and do the copies agree?". Pairs are reported once, in a
 // canonical direction (container second), because a symmetric listing of 115
 // documents reads as 230 findings that are 115 facts.
-func auditAll(store *raglit.Store, opts raglit.SimilarOpts, asJSON bool) error {
-	st, err := store.SketchStatusFor(opts.Width, opts.Mod)
-	if err != nil {
-		return err
-	}
-	if st.Sketched == 0 {
-		return fmt.Errorf("similar --all: nothing is sketched yet — run 'raglit similar --build' first")
-	}
-	if len(st.Unsketched) > 0 {
-		fmt.Fprintf(os.Stderr,
-			"warning: %d of %d documents are UNSKETCHED and were not compared — run --build\n",
-			len(st.Unsketched), st.Documents)
-	}
+// pair is one overlapping pair of indexed documents, counted once. Every
+// comparison is symmetric, so A→B and B→A are the same finding; reporting both
+// would double every count a person reads.
+type pair struct {
+	A, B string
+	M    raglit.DocMatch
+}
+
+// collectPairs compares every sketched document against the corpus and returns
+// the deduplicated pairs, plus the documents compared.
+//
+// Shared by `similar --all` and `marks --todo` because they ask one question
+// with different endings — what overlaps, versus what overlaps and has not been
+// ruled on. Two enumerations would drift, and a pair missing from one of them is
+// invisible rather than wrong.
+func collectPairs(store *raglit.Store, opts raglit.SimilarOpts) ([]string, []pair, error) {
 	docs, err := store.SketchedPaths(opts.Width, opts.Mod)
 	if err != nil {
-		return err
-	}
-	type pair struct {
-		A, B string
-		M    raglit.DocMatch
+		return nil, nil, err
 	}
 	var pairs []pair
 	seen := map[string]bool{}
@@ -246,6 +245,26 @@ func auditAll(store *raglit.Store, opts raglit.SimilarOpts, asJSON bool) error {
 			seen[key] = true
 			pairs = append(pairs, pair{A: p, B: m.Path, M: m})
 		}
+	}
+	return docs, pairs, nil
+}
+
+func auditAll(store *raglit.Store, opts raglit.SimilarOpts, asJSON bool) error {
+	st, err := store.SketchStatusFor(opts.Width, opts.Mod)
+	if err != nil {
+		return err
+	}
+	if st.Sketched == 0 {
+		return fmt.Errorf("similar --all: nothing is sketched yet — run 'raglit similar --build' first")
+	}
+	if len(st.Unsketched) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"warning: %d of %d documents are UNSKETCHED and were not compared — run --build\n",
+			len(st.Unsketched), st.Documents)
+	}
+	docs, pairs, err := collectPairs(store, opts)
+	if err != nil {
+		return err
 	}
 	sort.SliceStable(pairs, func(i, j int) bool {
 		ki := maxf(pairs[i].M.BlockCoverProbe, pairs[i].M.BlockCoverMatch)

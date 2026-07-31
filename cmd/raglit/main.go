@@ -61,6 +61,10 @@ func main() {
 		err = runSearch(os.Args[2:])
 	case "similar":
 		err = runSimilar(os.Args[2:])
+	case "mark":
+		err = runMark(os.Args[2:])
+	case "marks":
+		err = runMarks(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "daemon":
@@ -128,6 +132,20 @@ usage:
                 ("probe p12-14 = match p1-3"), and which NUMBERS differ between two
                 copies of one instrument. Local computation — no model, works offline.
                 --build sketches documents that have none; --all audits the corpus.
+
+  raglit marks [--todo] [--json] [DOCPATH]
+                what an overlapping pair IS, as opposed to how much text it shares.
+                --todo lists pairs nobody has ruled on, each with a proposal: a
+                COPY is the same instrument again (a scan of a PDF already held);
+                a VERSION is the same instrument filed or corrected differently,
+                and both matter. No score separates them — a re-recorded deed and
+                a scan of one both align at 0.97 — so raglit proposes from WHAT
+                disagrees and a person rules.
+
+  raglit mark <A> <B> <copy|version|unrelated> [--supersedes PATH] [--note ...]
+                record that ruling. Written to relations.jsonl beside the
+                documents, not into .raglit/ — a ruling cannot be recomputed, so
+                it must outlive a reindex and reach the other machines.
   raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
   raglit daemon [--root DIR|--home DIR] [--addr :7420] [--embed]   multi-protocol daemon:
                 REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
