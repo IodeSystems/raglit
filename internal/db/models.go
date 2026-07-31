@@ -103,6 +103,19 @@ type OcrPageCache struct {
 	CreatedAt int64  `db:"created_at" derived:"ocr_page_cache.created_at" json:"created_at"`
 }
 
+type PageReading struct {
+	ID     int64  `db:"id" derived:"page_readings.id" json:"id"`
+	Doc    string `db:"doc" derived:"page_readings.doc" json:"doc"`
+	Page   int64  `db:"page" derived:"page_readings.page" json:"page"`
+	Seq    int64  `db:"seq" derived:"page_readings.seq" json:"seq"`
+	Text   string `db:"text" derived:"page_readings.text" json:"text"`
+	Source string `db:"source" derived:"page_readings.source" json:"source"`
+	Note   string `db:"note" derived:"page_readings.note" json:"note"`
+	ReadBy string `db:"read_by" derived:"page_readings.read_by" json:"read_by"`
+	ReadAt string `db:"read_at" derived:"page_readings.read_at" json:"read_at"`
+	Active int64  `db:"active" derived:"page_readings.active" json:"active"`
+}
+
 type ShingleIndex struct {
 	Hash  int64 `db:"hash" derived:"shingle_index.hash" json:"hash"`
 	DocID int64 `db:"doc_id" derived:"shingle_index.doc_id" json:"doc_id"`

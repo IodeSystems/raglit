@@ -57,9 +57,6 @@ func TestACorrectionSurvivesAndIsReissued(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer back.Close()
-	if _, err := back.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
 	got, err := back.PageCorrections(doc)
 	if err != nil {
 		t.Fatal(err)

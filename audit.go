@@ -79,6 +79,16 @@ type PageCorrection struct {
 	Note string `json:"note,omitempty"`
 	By   string `json:"by,omitempty"`
 	At   string `json:"at,omitempty"`
+	// Supersedes is the reading this one replaced — the machine's text, or an
+	// earlier correction.
+	//
+	// A correction is an ATTESTATION that a better reading exists, not an erasure
+	// of the old one. What the machine said is evidence: it is what the index held
+	// when a document was cited, it is what a stale quotation will match, and
+	// "the OCR read 2008081020" is itself a fact about how reliable this sheet is.
+	// Keeping it means the trail carries the whole lineage of a page and says
+	// which reading is ACTIVE, rather than only the winner.
+	Supersedes string `json:"supersedes,omitempty"`
 }
 
 // AppendAudit writes one event. The only writer of the trail.

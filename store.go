@@ -231,6 +231,7 @@ func migrate(db *sql.DB) error {
 		// the SQL text of every existing query, so a new column pays for itself
 		// in raw SQL rather than in sixty broken ones.
 		{"ingest_jobs", "fresh", "INTEGER NOT NULL DEFAULT 0"},
+		{"page_readings", "note", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

@@ -84,7 +84,7 @@ func TestACorrectionReplacesTheAnswerAndKeepsTheHistory(t *testing.T) {
 	if len(hist) != 2 {
 		t.Fatalf("want both rulings in the history, got %d", len(hist))
 	}
-	if !strings.Contains(hist[0].Payload, "first look") {
+	if hist[0].Relation == nil || !strings.Contains(hist[0].Relation.Note, "first look") {
 		t.Error("the superseded ruling was erased instead of kept")
 	}
 }

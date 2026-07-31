@@ -1,248 +1,159 @@
 package raglit
 
 import (
-	"context"
-	"database/sql"
-	_ "embed"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
-
-	"github.com/iodesystems/raglit/internal/jdb"
 )
 
-//go:embed sql/judgements.sql
-var judgementsSchema string
-
-// The judgement store: what a person decided, kept where it survives.
+// The judgement store: what a PERSON decided about this corpus.
 //
-// Separate from the index, and the separation is load-bearing rather than
-// tidiness. The index lives at ~/.raglit/indexes/<name>/, which is outside the
-// one folder Syncthing replicates and is gitignored in every project that has a
-// local .raglit/; a reindex rebuilds it from the corpus. Everything in here is
-// the opposite: nothing in the bytes says two deeds are versions of one
-// instrument, or that pages 3-6 of a scan are the record of survey, so none of
-// it can be recomputed and all of it has to outlive a rebuild.
+// Nothing here can be recomputed. raglit can measure that two documents share
+// 97% of their text; it cannot decide whether that means one instrument scanned
+// twice or one instrument amended. A person decides, and the decision has to be
+// written down or it is done again next week.
 //
-// It IS a database rather than a text file, with real tables, generated queries
-// and constraints — a pair is unique, a page range cannot run backwards, and a
-// relation kind is checked in one place instead of at every call site. The one
-// thing a text file gave that a database does not is a readable history, so
-// judgement_log pays that back explicitly: every write appends the row as
-// written, and nothing deletes from it.
-
-// JudgementStore holds a project's rulings.
+// raglit-audit.jsonl IS the store. Not a log of it, not a backup of it — the
+// thing itself, read at open and answered from memory.
 //
-// The database is a PROJECTION. Every mutation is appended to the audit trail
-// first and applied second, so the trail is the record and this is what you get
-// by replaying it — see audit.go for why that ordering is the design.
+// It was briefly a SQLite database projected from the trail, with a schema, a
+// generated query layer, a rebuild path and a table that duplicated the trail
+// verbatim. On the corpus that motivated all of it: twelve events, eleven rows,
+// a 68 KB database projecting a 12 KB file. Parsing the file is faster than
+// opening the database, the constraints were already enforced in Go before any
+// write, and the indexes covered eleven rows. It bought nothing and cost a
+// concept everybody had to learn.
+//
+// If the trail ever grows past what is comfortable to parse, cache it. Until a
+// measurement says so, answering at runtime is both simpler and correct by
+// construction — there is no projection to drift, catch up, or rebuild.
 type JudgementStore struct {
-	db    *sql.DB
-	q     *jdb.Queries
 	audit string
+
+	marks       map[string]Mark           // by normalized pair key
+	slices      map[string]Slice          // by id
+	corrections map[string]PageCorrection // by doc\x00page
+	history     map[string][]AuditEvent   // by subject, in order
+
+	// onChange fires when a page's ACTIVE reading changes. Registered by whoever
+	// owns what a correction invalidates — the export on disk, the rows in the
+	// index — because neither notices on its own.
+	//
+	// Not fired while replaying at open: those are decisions being READ, not
+	// made, and a listener re-rendering every corrected page on every open would
+	// be a loop with no reason to run.
+	onChange  []func(TranscriptionChange)
+	replaying bool
 }
 
-// JudgementsPath is where a project's rulings live: beside the documents, never
-// under .raglit/.
-func JudgementsPath(projectDir string) string {
-	return filepath.Join(projectDir, "judgements.db")
-}
-
-// OpenJudgements opens (creating if needed) a project's judgement database and
-// binds it to the audit trail that is its source.
+// OpenJudgements reads a project's trail. A missing trail is a corpus nobody has
+// ruled on, which is the normal starting state.
 //
-// A database behind its trail is brought up to date here rather than left to
-// drift: the log-first write order means a crash between append and apply is
-// normal and expected, so catching up on open is the ordinary path, not repair.
-func OpenJudgements(path, auditPath string) (*JudgementStore, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// dbPath is accepted and ignored: callers still pass it, and the argument stays
+// so the signature does not churn while the concept is being removed.
+func OpenJudgements(dbPath, auditPath string) (*JudgementStore, error) {
+	s := &JudgementStore{
+		audit:       auditPath,
+		marks:       map[string]Mark{},
+		slices:      map[string]Slice{},
+		corrections: map[string]PageCorrection{},
+		history:     map[string][]AuditEvent{},
+	}
+	events, err := ReadAudit(auditPath)
+	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("raglit: open judgements: %w", err)
-	}
-	// WAL for the same reason the index uses it: a reader must not block the
-	// writer when a long report is running while a ruling is recorded.
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if _, err := db.Exec(judgementsSchema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("raglit: judgements schema: %w", err)
-	}
-	js := &JudgementStore{db: db, q: jdb.New(db), audit: auditPath}
-	if auditPath != "" {
-		if err := js.catchUp(); err != nil {
-			db.Close()
-			return nil, err
-		}
-	}
-	return js, nil
-}
-
-// catchUp replays any events the database has not applied.
-//
-// Compares counts rather than diffing state: an event count is what the trail
-// knows about itself, and if the database has applied fewer than the trail
-// holds, replaying all of them is both correct and idempotent — every apply is
-// an upsert or a delete by key.
-func (s *JudgementStore) catchUp() error {
-	events, err := ReadAudit(s.audit)
-	if err != nil {
-		return err
-	}
-	if len(events) == 0 {
-		return nil
-	}
-	var applied int64
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM judgement_log`).Scan(&applied); err != nil {
-		return err
-	}
-	if applied >= int64(len(events)) {
-		return nil
-	}
-	return s.replay(events, false)
-}
-
-// Rebuild drops every projected row and replays the trail from nothing.
-//
-// The test that the trail really is the source: if this does not reproduce the
-// database, then something was written to the database that the log never
-// recorded, and the audit trail is decoration.
-func (s *JudgementStore) Rebuild() (int, error) {
-	events, err := ReadAudit(s.audit)
-	if err != nil {
-		return 0, err
-	}
-	if err := s.replay(events, true); err != nil {
-		return 0, err
-	}
-	return len(events), nil
-}
-
-// replay applies events in order, optionally clearing the projection first.
-func (s *JudgementStore) replay(events []AuditEvent, clear bool) error {
-	ctx := context.Background()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	if clear {
-		for _, t := range []string{"doc_relations", "doc_slices", "page_corrections", "judgement_log"} {
-			if _, err := tx.Exec("DELETE FROM " + t); err != nil {
-				return err
-			}
-		}
-	}
-	q := s.q.WithTx(tx)
+	s.replaying = true
 	for i, ev := range events {
-		if err := applyEvent(ctx, q, ev); err != nil {
-			return fmt.Errorf("audit event %d (%s): %w", i+1, ev.Op, err)
+		if err := s.apply(ev); err != nil {
+			s.replaying = false
+			return nil, fmt.Errorf("audit event %d (%s): %w", i+1, ev.Op, err)
 		}
 	}
-	return tx.Commit()
+	s.replaying = false
+	return s, nil
 }
 
-// applyEvent projects one event into the tables. The ONLY place an event
-// becomes a row, so the live path and a rebuild cannot diverge.
-func applyEvent(ctx context.Context, q *jdb.Queries, ev AuditEvent) error {
+// OnTranscriptionChange registers a listener for a page's active reading
+// changing. Listeners run in registration order, synchronously, after the event
+// is durable in the trail.
+func (s *JudgementStore) OnTranscriptionChange(fn func(TranscriptionChange)) {
+	if fn != nil {
+		s.onChange = append(s.onChange, fn)
+	}
+}
+
+// Close exists so callers need not care that there is nothing to close.
+func (s *JudgementStore) Close() error { return nil }
+
+func correctionKey(doc string, page int) string { return fmt.Sprintf("%s\x00%d", doc, page) }
+
+// apply folds one event into the answers. The ONLY place an event becomes state,
+// so a fresh read and a live write cannot diverge.
+func (s *JudgementStore) apply(ev AuditEvent) error {
 	switch ev.Op {
 	case OpRelationPut:
 		if ev.Relation == nil {
 			return fmt.Errorf("relation.put with no relation")
 		}
 		m := ev.Relation.Normalize()
-		if err := q.UpsertRelation(ctx, jdb.UpsertRelationParams{
-			A: m.A, B: m.B, Kind: string(m.Kind),
-			Supersedes: nullString(m.Supersedes),
-			Note:       m.Note, DecidedBy: m.By, DecidedAt: m.At,
-			Relation: string(m.Relation), Coverage: m.Coverage,
-		}); err != nil {
-			return err
-		}
-		return logEvent(ctx, q, "relation", m.A+"\x00"+m.B, m, ev)
-
+		s.marks[pairKey(m.A, m.B)] = m
+		s.remember("relation", pairKey(m.A, m.B), ev)
 	case OpSlicePut:
 		if ev.Slice == nil {
 			return fmt.Errorf("slice.put with no slice")
 		}
-		sl := *ev.Slice
-		if err := q.UpsertSlice(ctx, jdb.UpsertSliceParams{
-			ID: sl.ID, Parent: sl.Parent,
-			FromPage: int64(sl.From), ToPage: int64(sl.To),
-			Title: sl.Title, Note: sl.Note,
-			DecidedBy: sl.By, DecidedAt: sl.At,
-		}); err != nil {
-			return err
+		s.slices[ev.Slice.ID] = *ev.Slice
+		s.remember("slice", ev.Slice.ID, ev)
+	case OpSliceDelete:
+		if ev.SliceID == "" {
+			return fmt.Errorf("slice.delete with no id")
 		}
-		return logEvent(ctx, q, "slice", sl.ID, sl, ev)
-
+		delete(s.slices, ev.SliceID)
+		s.remember("slice", ev.SliceID, ev)
 	case OpPageCorrect:
 		if ev.Correction == nil {
 			return fmt.Errorf("page.correct with no correction")
 		}
 		c := *ev.Correction
-		if err := q.UpsertPageCorrection(ctx, jdb.UpsertPageCorrectionParams{
-			Doc: c.Doc, Page: int64(c.Page), Text: c.Text, Note: c.Note,
-			CorrectedBy: c.By, CorrectedAt: c.At,
-		}); err != nil {
-			return err
+		prev := s.corrections[correctionKey(c.Doc, c.Page)]
+		s.corrections[correctionKey(c.Doc, c.Page)] = c
+		s.remember("correction", correctionKey(c.Doc, c.Page), ev)
+		if !s.replaying {
+			superseded := c.Supersedes
+			if superseded == "" {
+				superseded = prev.Text
+			}
+			for _, fn := range s.onChange {
+				fn(TranscriptionChange{Doc: c.Doc, Page: c.Page, Active: c, Superseded: superseded})
+			}
 		}
-		return logEvent(ctx, q, "correction", fmt.Sprintf("%s#p%d", c.Doc, c.Page), c, ev)
-
-	case OpSliceDelete:
-		if ev.SliceID == "" {
-			return fmt.Errorf("slice.delete with no id")
-		}
-		if err := q.DeleteSlice(ctx, ev.SliceID); err != nil {
-			return err
-		}
-		return logEvent(ctx, q, "slice", ev.SliceID, map[string]string{"deleted": ev.SliceID}, ev)
+	default:
+		// An op from a newer raglit. Refused rather than skipped: quietly ignoring
+		// it answers questions from a corpus that is missing decisions somebody
+		// recorded.
+		return fmt.Errorf("unknown op %q — written by a newer raglit?", ev.Op)
 	}
-	// An unknown op is an error, not a skip: a newer raglit wrote something this
-	// one does not understand, and quietly ignoring it builds a database that
-	// disagrees with the record.
-	return fmt.Errorf("unknown op %q — written by a newer raglit?", ev.Op)
+	return nil
 }
 
-func logEvent(ctx context.Context, q *jdb.Queries, kind, subject string, payload any, ev AuditEvent) error {
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return q.AppendJudgementLog(ctx, jdb.AppendJudgementLogParams{
-		Kind: kind, Subject: subject, Payload: string(b),
-		DecidedBy: ev.By, DecidedAt: ev.At, LoggedAt: time.Now().UnixNano(),
-	})
+func (s *JudgementStore) remember(kind, subject string, ev AuditEvent) {
+	k := kind + "\x00" + subject
+	s.history[k] = append(s.history[k], ev)
 }
 
-// record appends an event to the trail, then applies it. Log first — see audit.go.
+// record appends to the trail, then folds it in. Append first: a crash between
+// the two loses nothing, because the next open replays the trail. Applying first
+// would leave a decision in memory that the record never received.
 func (s *JudgementStore) record(ev AuditEvent) error {
 	if s.audit != "" {
 		if err := AppendAudit(s.audit, ev); err != nil {
 			return err
 		}
 	}
-	ctx := context.Background()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	if err := applyEvent(ctx, s.q.WithTx(tx), ev); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.apply(ev)
 }
-
-func (s *JudgementStore) Close() error { return s.db.Close() }
 
 // ── relations ──────────────────────────────────────────────────────────
 
@@ -258,52 +169,35 @@ func (s *JudgementStore) PutRelation(m Mark) error {
 
 // Relation returns the ruling on a pair, in either order.
 func (s *JudgementStore) Relation(a, b string) (Mark, bool, error) {
-	if b < a {
-		a, b = b, a
-	}
-	row, err := s.q.GetRelation(context.Background(), jdb.GetRelationParams{A: a, B: b})
-	if errors.Is(err, sql.ErrNoRows) {
-		return Mark{}, false, nil
-	}
-	if err != nil {
-		return Mark{}, false, err
-	}
-	return markOf(row), true, nil
+	m, ok := s.marks[pairKey(a, b)]
+	return m, ok, nil
 }
 
-// Relations returns every ruling.
+// Relations returns every ruling, in a stable order.
 func (s *JudgementStore) Relations() ([]Mark, error) {
-	rows, err := s.q.ListRelations(context.Background())
-	if err != nil {
-		return nil, err
+	out := make([]Mark, 0, len(s.marks))
+	for _, m := range s.marks {
+		out = append(out, m)
 	}
-	out := make([]Mark, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, markOf(r))
-	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].A != out[j].A {
+			return out[i].A < out[j].A
+		}
+		return out[i].B < out[j].B
+	})
 	return out, nil
 }
 
 // RelationsFor returns every ruling involving one document.
 func (s *JudgementStore) RelationsFor(doc string) ([]Mark, error) {
-	rows, err := s.q.ListRelationsFor(context.Background(), jdb.ListRelationsForParams{A: doc, B: doc})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Mark, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, markOf(r))
+	all, _ := s.Relations()
+	out := all[:0:0]
+	for _, m := range all {
+		if _, ok := m.Other(doc); ok {
+			out = append(out, m)
+		}
 	}
 	return out, nil
-}
-
-func markOf(r jdb.DocRelation) Mark {
-	return Mark{
-		A: r.A, B: r.B, Kind: MarkKind(r.Kind),
-		Supersedes: r.Supersedes.String,
-		Note:       r.Note, By: r.DecidedBy, At: r.DecidedAt,
-		Relation: Relation(r.Relation), Coverage: r.Coverage,
-	}
 }
 
 // ── slices ─────────────────────────────────────────────────────────────
@@ -318,62 +212,64 @@ func (s *JudgementStore) PutSlice(sl Slice) error {
 
 // Slice returns one declaration by id.
 func (s *JudgementStore) Slice(id string) (Slice, bool, error) {
-	row, err := s.q.GetSlice(context.Background(), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Slice{}, false, nil
-	}
-	if err != nil {
-		return Slice{}, false, err
-	}
-	return sliceOf(row), true, nil
+	sl, ok := s.slices[id]
+	return sl, ok, nil
 }
 
 // Slices returns every declaration, parent then page order.
 func (s *JudgementStore) Slices() ([]Slice, error) {
-	rows, err := s.q.ListSlices(context.Background())
-	if err != nil {
-		return nil, err
+	out := make([]Slice, 0, len(s.slices))
+	for _, sl := range s.slices {
+		out = append(out, sl)
 	}
-	return slicesOf(rows), nil
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Parent != out[j].Parent {
+			return out[i].Parent < out[j].Parent
+		}
+		return out[i].From < out[j].From
+	})
+	return out, nil
 }
 
 // SlicesOf returns one bundle's declarations, in page order.
 func (s *JudgementStore) SlicesOf(parent string) ([]Slice, error) {
-	rows, err := s.q.ListSlicesOf(context.Background(), parent)
-	if err != nil {
-		return nil, err
+	all, _ := s.Slices()
+	out := all[:0:0]
+	for _, sl := range all {
+		if sl.Parent == parent {
+			out = append(out, sl)
+		}
 	}
-	return slicesOf(rows), nil
+	return out, nil
 }
 
 // SliceParents lists the bundles that have any slice.
 func (s *JudgementStore) SliceParents() ([]string, error) {
-	return s.q.ListSliceParents(context.Background())
+	seen := map[string]bool{}
+	var out []string
+	for _, sl := range s.slices {
+		if !seen[sl.Parent] {
+			seen[sl.Parent] = true
+			out = append(out, sl.Parent)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
-// DeleteSlice removes a declaration. The trail keeps it, so a rebuild replays
-// the creation and then the deletion and lands in the same place.
+// DeleteSlice removes a declaration. The trail keeps the creation AND the
+// deletion, so replaying lands in the same place and the history stays readable.
 func (s *JudgementStore) DeleteSlice(id string) error {
 	return s.record(AuditEvent{Op: OpSliceDelete, SliceID: id})
 }
 
-func sliceOf(r jdb.DocSlice) Slice {
-	return Slice{
-		ID: r.ID, Parent: r.Parent,
-		From: int(r.FromPage), To: int(r.ToPage),
-		Title: r.Title, Note: r.Note, By: r.DecidedBy, At: r.DecidedAt,
-	}
-}
-
-func slicesOf(rows []jdb.DocSlice) []Slice {
-	out := make([]Slice, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, sliceOf(r))
-	}
-	return out
-}
+// ── page corrections ───────────────────────────────────────────────────
 
 // PutPageCorrection records what a person read off a page.
+//
+// It carries what it SUPERSEDES. A correction attests that a better reading
+// exists; it does not erase the old one, which stays in the trail as the reading
+// the index held when the document was cited.
 func (s *JudgementStore) PutPageCorrection(c PageCorrection) error {
 	if c.Doc == "" || c.Page < 1 {
 		return fmt.Errorf("a correction needs a document and a page number")
@@ -381,37 +277,45 @@ func (s *JudgementStore) PutPageCorrection(c PageCorrection) error {
 	if strings.TrimSpace(c.Text) == "" {
 		return fmt.Errorf("a correction needs the corrected text")
 	}
+	if c.Supersedes == "" {
+		if prev, ok := s.corrections[correctionKey(c.Doc, c.Page)]; ok {
+			c.Supersedes = prev.Text
+		}
+	}
 	return s.record(AuditEvent{Op: OpPageCorrect, By: c.By, Correction: &c})
 }
 
-// PageCorrections returns the corrections for one document, by page.
+// PageCorrections returns the ACTIVE correction for each page of a document.
 func (s *JudgementStore) PageCorrections(doc string) (map[int]PageCorrection, error) {
-	rows, err := s.q.ListPageCorrections(context.Background(), doc)
-	if err != nil {
-		return nil, err
-	}
 	out := map[int]PageCorrection{}
-	for _, r := range rows {
-		out[int(r.Page)] = PageCorrection{
-			Doc: r.Doc, Page: int(r.Page), Text: r.Text, Note: r.Note,
-			By: r.CorrectedBy, At: r.CorrectedAt,
+	for _, c := range s.corrections {
+		if c.Doc == doc {
+			out[c.Page] = c
 		}
 	}
 	return out, nil
 }
 
-// ── history ────────────────────────────────────────────────────────────
-
-// History returns every ruling ever recorded on one subject, oldest first — the
-// property an append-only text file gave for free and a table has to keep on
-// purpose. "Why did this change?" must stay answerable.
-func (s *JudgementStore) History(kind, subject string) ([]jdb.JudgementLog, error) {
-	return s.q.ListJudgementHistory(context.Background(),
-		jdb.ListJudgementHistoryParams{Kind: kind, Subject: subject})
+// PageReadings returns every reading ever recorded for one page, oldest first.
+// The last is the active one; the rest are superseded and kept.
+func (s *JudgementStore) PageReadings(doc string, page int) []PageCorrection {
+	var out []PageCorrection
+	for _, ev := range s.history["correction\x00"+correctionKey(doc, page)] {
+		if ev.Correction != nil {
+			out = append(out, *ev.Correction)
+		}
+	}
+	return out
 }
 
-// CoverageOf reports which of a bundle's pages belong to no slice, and where
-// slices overlap. See the type for why overlap is reported and not refused.
+// ── history ────────────────────────────────────────────────────────────
+
+// History returns every event recorded on one subject, oldest first.
+func (s *JudgementStore) History(kind, subject string) ([]AuditEvent, error) {
+	return s.history[kind+"\x00"+subject], nil
+}
+
+// CoverageOf reports which of a bundle's pages belong to no slice.
 func (s *JudgementStore) CoverageOf(parent string, pages int) (Coverage, error) {
 	sl, err := s.SlicesOf(parent)
 	if err != nil {
@@ -420,6 +324,8 @@ func (s *JudgementStore) CoverageOf(parent string, pages int) (Coverage, error) 
 	return sliceCoverage(parent, pages, sl), nil
 }
 
-func nullString(s string) sql.NullString {
-	return sql.NullString{String: s, Valid: s != ""}
-}
+// JudgementsPath is retained so callers compile unchanged. The trail is the
+// store; there is no database.
+func JudgementsPath(projectDir string) string { return AuditPath(projectDir) }
+
+var _ = time.Now

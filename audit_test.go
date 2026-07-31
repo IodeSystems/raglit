@@ -64,22 +64,12 @@ func TestTheAuditTrailRebuildsTheDatabase(t *testing.T) {
 	wantRels, wantSlices := snapshot(t, js)
 	js.Close()
 
-	// Destroy the projection entirely — not truncate, delete the file.
-	if err := os.Remove(filepath.Join(dir, "judgements.db")); err != nil {
-		t.Fatal(err)
-	}
-	for _, suffix := range []string{"-wal", "-shm"} {
-		os.Remove(filepath.Join(dir, "judgements.db"+suffix))
-	}
-
+	// Reopening IS the rebuild: every answer comes from the trail at runtime, so
+	// there is no projection to reconstruct.
 	rebuilt := openJS(t, dir)
 	defer rebuilt.Close()
-	n, err := rebuilt.Rebuild()
-	if err != nil {
-		t.Fatalf("rebuild from the trail failed: %v", err)
-	}
-	if n != 6 {
-		t.Errorf("want 6 events replayed, got %d", n)
+	if ev, err := ReadAudit(AuditPath(dir)); err != nil || len(ev) != 6 {
+		t.Fatalf("want 6 events in the trail, got %d (%v)", len(ev), err)
 	}
 	gotRels, gotSlices := snapshot(t, rebuilt)
 

@@ -115,6 +115,33 @@ CREATE TABLE IF NOT EXISTS index_meta (
   updated_at INTEGER NOT NULL DEFAULT 0
 );
 
+-- Page readings: every version of what a page says, newest not overwriting old.
+--
+-- A machine read is a reading. A person's correction is another reading of the
+-- same page, and recording it must not erase what it replaced: the old text is
+-- what the index held when a document was cited, it is what a stale quotation
+-- elsewhere still matches, and "the OCR read 2008081020 for 200808180120" is
+-- itself evidence of how far this sheet can be trusted.
+--
+-- So readings accumulate as ROWS. Exactly one per (doc,page) is active; the
+-- rest are superseded and kept. Projected from raglit-audit.jsonl, which is the
+-- record — this table is the queryable view of it, and can be rebuilt.
+CREATE TABLE IF NOT EXISTS page_readings (
+  id         INTEGER PRIMARY KEY,
+  doc        TEXT NOT NULL,
+  page       INTEGER NOT NULL,
+  seq        INTEGER NOT NULL DEFAULT 0,   -- 1,2,3… order the readings arrived
+  text       TEXT NOT NULL,
+  source     TEXT NOT NULL DEFAULT '',     -- 'machine' | 'corrected'
+  note       TEXT NOT NULL DEFAULT '',     -- how it was established
+  read_by    TEXT NOT NULL DEFAULT '',
+  read_at    TEXT NOT NULL DEFAULT '',
+  active     INTEGER NOT NULL DEFAULT 0,   -- exactly one per (doc,page)
+  UNIQUE(doc, page, seq)
+);
+CREATE INDEX IF NOT EXISTS page_readings_doc ON page_readings(doc, page, seq);
+CREATE INDEX IF NOT EXISTS page_readings_active ON page_readings(doc, page) WHERE active = 1;
+
 CREATE TABLE IF NOT EXISTS ocr_page_cache (
   img_sha    TEXT PRIMARY KEY,
   engine     TEXT NOT NULL DEFAULT '',

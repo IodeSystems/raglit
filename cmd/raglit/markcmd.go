@@ -119,13 +119,13 @@ func runMarks(args []string) error {
 	defer js.Close()
 
 	if *rebuild {
-		n, err := js.Rebuild()
-		if err != nil {
-			return err
-		}
+		// Kept as a no-op that reports, because the answer is the point: there is
+		// no projection to rebuild. Every question is answered from the trail at
+		// runtime, so the trail IS the state.
 		rels, _ := js.Relations()
 		sls, _ := js.Slices()
-		fmt.Printf("replayed %d event(s) → %d relation(s), %d slice(s)\n", n, len(rels), len(sls))
+		fmt.Printf("nothing to rebuild — answers come from the audit trail directly\n")
+		fmt.Printf("  %d relation(s), %d slice(s) currently in force\n", len(rels), len(sls))
 		return nil
 	}
 
