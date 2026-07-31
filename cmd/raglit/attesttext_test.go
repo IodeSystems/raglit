@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/iodesystems/attest"
+	"github.com/iodesystems/raglit/attest"
 )
 
 // The offsets are the contract. A span that does not slice back to the text it

@@ -14,8 +14,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
-	"github.com/iodesystems/attest"
 	"github.com/iodesystems/raglit"
+	"github.com/iodesystems/raglit/attest"
 )
 
 // runAttest hands a region read to a person to rule on.

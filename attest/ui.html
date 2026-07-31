@@ -1,0 +1,844 @@
+<!doctype html>
+<!--
+  The review workbench.
+
+  Self-contained on purpose: no CDN, no fonts, no build step. It is served out
+  of a Go binary that may be running on a machine with no route to the internet,
+  which is where evidence tends to live.
+
+  Two rules the page is built around, both inherited from oidio's workbench
+  because both were learned the expensive way:
+
+    1. Nothing is saved by a Save button. Labelling is long and dull, and losing
+       an hour of it to a closed tab is the failure that stops it being done at
+       all. Verdicts post the moment they are made; corrections post on a short
+       idle, on blur, and on unload.
+
+    2. What the reviewer is looking at is always named. The crop, the model's
+       view, the level-corrected copy and the raw source are four different
+       artifacts, and a page that shows one and implies another has produced a
+       verdict about something nobody checked.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>attest</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --fg: #1a1a19; --dim: #6b6b66; --line: #e0e0dc;
+    --card: #ffffff; --sel: #eef3fb; --selline: #6d9eeb;
+    --ok: #2f7d4f; --okbg: #e8f4ec;
+    --fix: #1f6feb; --fixbg: #e7f0fe;
+    --soft: #6b8f76; --softbg: #eef4f0;
+    --warn: #9a6b00; --warnbg: #fdf3dc;
+    --bad: #b3261e; --badbg: #fbeae9;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --fg: #e6e6e3; --dim: #96968f; --line: #2c2e33;
+      --card: #1d1f23; --sel: #1f2a3a; --selline: #4d7fc4;
+      --ok: #79c493; --okbg: #1b2a20;
+      --fix: #79a9f5; --fixbg: #182234;
+      --soft: #8fae99; --softbg: #1c2622;
+      --warn: #e0b458; --warnbg: #2b2415;
+      --bad: #f08e86; --badbg: #2e1a19;
+    }
+  }
+  * { box-sizing: border-box; }
+  /* An explicit display: on .who/.prov beats the UA rule for [hidden]. */
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5;
+    background: var(--bg); border-bottom: 1px solid var(--line);
+    padding: 12px 20px 10px;
+  }
+  .top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  h1 a { color: var(--dim); text-decoration: none; font-weight: 400; }
+  .producer { color: var(--dim); font-size: 13px; font-family: var(--mono); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 0; }
+  .chip {
+    font-size: 12px; padding: 2px 8px; border-radius: 10px;
+    background: var(--card); border: 1px solid var(--line); color: var(--dim);
+  }
+  .chip b { color: var(--fg); font-weight: 600; }
+  .chip.ok { background: var(--okbg); border-color: transparent; color: var(--ok); }
+  .chip.ok b { color: var(--ok); }
+  .chip.fix { background: var(--fixbg); border-color: transparent; color: var(--fix); }
+  .chip.fix b { color: var(--fix); }
+  .chip.soft { background: var(--softbg); border-color: transparent; color: var(--soft); }
+  .chip.soft b { color: var(--soft); }
+  .chip.warn { background: var(--warnbg); border-color: transparent; color: var(--warn); }
+  .chip.warn b { color: var(--warn); }
+  .chip.bad { background: var(--badbg); border-color: transparent; color: var(--bad); }
+  .chip.bad b { color: var(--bad); }
+
+  /* The provenance sentence is load-bearing, not decoration: it is what keeps
+     citing a partly-reviewed transcript honest. It gets the same weight as the
+     counts, never a tooltip. */
+  .prov {
+    margin: 10px 0 0; padding: 8px 12px; border-radius: 6px;
+    background: var(--warnbg); color: var(--warn);
+    font-size: 13px; line-height: 1.45; border-left: 3px solid currentColor;
+  }
+  .prov.done { background: var(--okbg); color: var(--ok); }
+
+  .who { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; font-size: 13px; }
+  .who label { color: var(--dim); }
+  .who input {
+    font: inherit; font-size: 13px; padding: 3px 8px; min-width: 220px;
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 5px;
+  }
+  .who input.need { border-color: var(--bad); background: var(--badbg); }
+  .who .auth { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+
+  main { padding: 16px 20px 45vh; max-width: 1000px; }
+
+  .player { position: sticky; top: 0; z-index: 4; padding: 8px 0; background: var(--bg); }
+  audio { width: 100%; }
+  .pbar {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    margin-top: 5px; font-size: 12px; color: var(--dim);
+  }
+  .pbar select { font: inherit; font-size: 12px; background: var(--card); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
+  .pbar .now { font-family: var(--mono); }
+
+  .stmt { margin-top: 10px; }
+  .stmt textarea {
+    width: 100%; min-height: 76px; font: inherit; font-size: 13.5px; padding: 7px 9px;
+    background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 5px;
+  }
+  .stmt .hint2 { font-size: 12px; color: var(--dim); margin: 4px 0 6px; }
+
+  .unit {
+    border: 1px solid var(--line); border-left: 3px solid transparent;
+    border-radius: 6px; background: var(--card);
+    margin: 0 0 6px; padding: 8px 12px; cursor: pointer;
+  }
+  .unit.sel { background: var(--sel); border-left-color: var(--selline); }
+  .unit .meta {
+    display: flex; gap: 10px; align-items: baseline;
+    font-family: var(--mono); font-size: 12px; color: var(--dim);
+  }
+  .unit .label { color: var(--fg); font-weight: 600; }
+  .unit .text { margin-top: 3px; white-space: pre-wrap; }
+  .unit.untouched .text { color: var(--dim); }
+  .verdict { font-size: 11px; padding: 1px 6px; border-radius: 8px; font-family: var(--mono); }
+  .v-confirmed { background: var(--okbg); color: var(--ok); }
+  .v-corrected { background: var(--fixbg); color: var(--fix); }
+  .v-affirmed { background: var(--softbg); color: var(--soft); }
+  .v-unclear { background: var(--warnbg); color: var(--warn); }
+  .v-unsupported { background: var(--badbg); color: var(--bad); }
+  .flag { font-size: 11px; color: var(--warn); font-family: var(--mono); }
+  .auth-tag {
+    font-size: 11px; font-family: var(--mono); color: var(--dim);
+    border: 1px solid var(--line); border-radius: 8px; padding: 0 6px;
+  }
+
+  .panel { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 10px; }
+  .panel textarea, .panel input.lbl {
+    width: 100%; font: inherit; padding: 6px 8px; border-radius: 5px;
+    background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+  }
+  .panel textarea { min-height: 68px; resize: vertical; }
+  .panel input.lbl { max-width: 260px; font-family: var(--mono); font-size: 13px; }
+  .field { margin-bottom: 8px; }
+  .field > span.name { display: block; font-size: 11px; color: var(--dim); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .04em; }
+  .field > .was { font-size: 12.5px; color: var(--dim); margin-bottom: 4px; }
+  .field > .was q { color: var(--fg); }
+  .saving { font-size: 11px; color: var(--dim); font-family: var(--mono); }
+
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  button {
+    font: inherit; font-size: 13px; padding: 4px 10px; cursor: pointer;
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 5px;
+  }
+  button:hover { border-color: var(--dim); }
+  button kbd {
+    font-family: var(--mono); font-size: 10px; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; margin-left: 5px;
+  }
+
+  .ev { margin-top: 10px; }
+  .ev img { max-width: 100%; border: 1px solid var(--line); border-radius: 4px; display: block; }
+  .evbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    font-size: 12px; font-family: var(--mono); color: var(--dim); margin-bottom: 5px;
+  }
+  .badge { padding: 1px 6px; border-radius: 8px; }
+  .badge.yes { background: var(--okbg); color: var(--ok); }
+  .badge.no { background: var(--warnbg); color: var(--warn); }
+  .ev select { font: inherit; font-size: 12px; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; }
+
+  .keys { margin-top: 14px; color: var(--dim); font-size: 12px; font-family: var(--mono); line-height: 1.9; }
+  .keys b { color: var(--fg); font-weight: 600; }
+  .hint { margin-top: 8px; font-size: 12px; color: var(--warn); min-height: 1.2em; }
+  .assets a { display: block; padding: 8px 12px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: inherit; text-decoration: none; }
+  .assets a:hover { border-color: var(--dim); }
+  .empty { color: var(--dim); padding: 30px 0; }
+</style>
+
+<header>
+  <div class="top">
+    <h1 id="title">attest</h1>
+    <span class="producer" id="producer"></span>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div class="prov" id="prov" hidden></div>
+  <div class="who" id="whoRow" hidden>
+    <label for="by">Reviewing as</label>
+    <input id="by" placeholder="your name" autocomplete="name">
+    <span class="auth" id="authNote"></span>
+  </div>
+</header>
+
+<main>
+  <div class="player" id="playerWrap" hidden>
+    <audio id="au" controls preload="metadata"></audio>
+    <div class="pbar">
+      <label>speed
+        <select id="speed">
+          <option>0.75</option><option selected>1</option><option>1.25</option>
+          <option>1.5</option><option>1.75</option><option>2</option>
+        </select>×
+      </label>
+      <label title="Jump the gaps between turns. Non-speech by construction — the machine put a boundary there."><input type="checkbox" id="skipGaps" checked> skip gaps</label>
+      <span class="now" id="nowPlaying"></span>
+    </div>
+  </div>
+  <div id="body"></div>
+  <div class="hint" id="hint"></div>
+  <div class="keys" id="keys" hidden></div>
+</main>
+
+<script>
+const API = "__ATTEST_API__";
+const ASSETSRC = "__ATTEST_ASSET__";
+
+const asset = new URLSearchParams(location.search).get("asset");
+let state = null;
+let sel = 0;
+let selId = null;
+let saveTimer = null;
+let dirty = null;      // {unit, text, label} awaiting a post
+let evCache = {};      // unit id -> rendered evidence, per rendering
+
+const $ = (id) => document.getElementById(id);
+const enc = encodeURIComponent;
+
+// ── who is reviewing ────────────────────────────────────────────────────────
+// The account this page is authorized under is the server's business and the
+// page never sees it. The PERSON is this field, and it is required on every
+// write: whoever holds the link may not be the account holder, and a record
+// that cannot tell which is which is not worth keeping.
+function who() { return ($("by").value || "").trim(); }
+$("by").value = localStorage.getItem("attest.by") || "";
+$("by").addEventListener("input", () => {
+  localStorage.setItem("attest.by", who());
+  $("by").classList.toggle("need", !who());
+});
+
+function needName() {
+  if (who()) return false;
+  $("by").classList.add("need");
+  $("by").focus();
+  hint("Name yourself first — a ruling nobody signed is a ruling nobody can be asked about.");
+  return true;
+}
+
+function hint(msg) { $("hint").textContent = msg || ""; }
+
+// ── talking to the server ───────────────────────────────────────────────────
+async function post(path, body) {
+  const r = await fetch(API + path, {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { detail = (await r.json()).detail || detail; } catch {}
+    hint(detail);
+    throw new Error(detail);
+  }
+  return r.json();
+}
+
+// keepFocus is set by the correction path. Saving mid-sentence must not rebuild
+// the textarea under the reviewer's hands: the debounce fires 1.5s after the
+// last keystroke, which for anyone still typing is *during* the next word.
+async function reload(keepFocus) {
+  const r = await fetch(`${API}/state?asset=${enc(asset)}`);
+  if (!r.ok) { $("body").innerHTML = `<p class="empty">Cannot read this asset.</p>`; return; }
+  state = await r.json();
+  // Selection follows the UNIT, not the index: a resegment splices new units
+  // in and everything after shifts. Following the index would silently move
+  // the reviewer to a different claim mid-review.
+  if (selId) {
+    const i = state.units.findIndex(u => u.unit.id === selId);
+    if (i >= 0) sel = i;
+  }
+  sel = Math.max(0, Math.min(sel, state.units.length - 1));
+  selId = state.units[sel]?.unit.id || null;
+  if (keepFocus && editingNow()) { renderHeader(); refreshMeta(); return; }
+  render();
+}
+
+function editingNow() {
+  const a = document.activeElement;
+  return a && (a.id === "edText" || a.id === "edLabel");
+}
+
+// ── rendering ───────────────────────────────────────────────────────────────
+const mmss = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+
+function locatorLabel(u) {
+  const l = u.locator;
+  if (l.time) return `${mmss(l.time.start)}–${mmss(l.time.end)}`;
+  if (l.area) {
+    const a = l.area, b = a.bbox;
+    const rot = a.rotation ? ` @${a.rotation}°` : "";
+    return `p${a.page} ${Math.round(b.w * 100)}×${Math.round(b.h * 100)}%${rot}`;
+  }
+  // Bytes, not characters — see Span in reading.go. Shown with the length
+  // because a reviewer scanning a list cares how much text a unit covers far
+  // more than where it starts.
+  if (l.span) return `b${l.span.from}–${l.span.to} (${l.span.to - l.span.from} B)`;
+  return "?";
+}
+
+function renderChips() {
+  const s = state.stats;
+  const c = [
+    ["ok", "confirmed", s.confirmed],
+    ["fix", "corrected", s.corrected],
+    ["soft", "affirmed", s.affirmed],
+    ["warn", "unclear", s.unclear],
+    ["bad", "unsupported", s.unsupported],
+    ["", "untouched", s.untouched],
+  ];
+  let html = c.filter(([, , n]) => n > 0 || true)
+    .map(([cls, name, n]) => `<span class="chip ${n ? cls : ""}"><b>${n}</b> ${name}</span>`).join("");
+  if (s.authored) html += `<span class="chip"><b>${s.authored}</b> re-cut by a person</span>`;
+  if (state.orphaned?.length) {
+    html += `<span class="chip bad"><b>${state.orphaned.length}</b> orphaned verdicts</span>`;
+  }
+  $("chips").innerHTML = html;
+
+  const p = $("prov");
+  p.hidden = false;
+  p.textContent = state.provenance;
+  p.classList.toggle("done", s.untouched === 0 && s.total > 0);
+}
+
+function renderHeader() {
+  $("title").innerHTML = `<a href="?">assets</a> / ${state.asset.name || state.asset.id}`;
+  $("producer").textContent = state.producer ? `read by ${state.producer}` : "";
+  $("whoRow").hidden = false;
+  $("keys").hidden = false;
+  renderChips();
+
+  const isAudio = state.asset.kind === "audio";
+  $("playerWrap").hidden = !isAudio;
+  if (isAudio && !$("au").src) $("au").src = `${ASSETSRC}?asset=${enc(asset)}`;
+
+  $("keys").innerHTML = [
+    "<b>j</b>/<b>k</b> move", "<b>space</b> play/pause", isAudio ? "<b>r</b> replay this turn" : null,
+    "<b>c</b> positively affirm",
+    "<b>e</b> correct text", "<b>d</b> correct label", "<b>?</b> unclear",
+    "<b>x</b> not in the source", "<b>u</b> withdraw",
+    isAudio ? "<b>s</b> split at playhead" : null,
+    isAudio ? "<b>a</b> join with next" : null,
+    "<b>A</b> went through it \u2014 affirm the rest",
+  ].filter(Boolean).join(" · ");
+
+}
+
+function render() {
+  renderHeader();
+  const body = $("body");
+  body.innerHTML = "";
+  // Depth from the parent chain, so a hierarchical read — raglit descends a
+  // sheet into a drawing interior into a corner of it — reads as the tree it
+  // is. Flattened, a leaf's overview parent looks like a peer that happens to
+  // repeat it.
+  const byId = {};
+  state.units.forEach(u => byId[u.unit.id] = u);
+  state.units.forEach((u, i) => {
+    let d = 0, par = u.unit.parent;
+    while (par && byId[par] && d < 12) { d++; par = byId[par].unit.parent; }
+    body.appendChild(unitEl(u, i, d));
+  });
+  const el = body.children[sel];
+  if (el) el.scrollIntoView({block: "nearest"});
+}
+
+// refreshMeta repaints one row's status line without touching the panel, so a
+// verdict recorded by an autosave still shows up while the reviewer types.
+function refreshMeta() {
+  const row = $("body").children[sel];
+  const m = row && row.querySelector(".meta");
+  if (m) m.innerHTML = metaHTML(state.units[sel]);
+}
+
+function metaHTML(u) {
+  return `<span>${locatorLabel(u.unit)}</span>` +
+    (u.label ? `<span class="label">${esc(u.label)}</span>` : "") +
+    (u.kind ? `<span class="verdict v-${u.kind}">${u.kind}${u.swept ? " (swept)" : ""}</span>` : "") +
+    (u.authored ? `<span class="flag">cut by a person</span>` : "") +
+    (u.unit.flags?.length ? `<span class="flag">${esc(u.unit.flags.join(" "))}</span>` : "") +
+    (u.by ? `<span>${esc(u.by)}</span>` : "") +
+    // The account a ruling was authorized under, shown whenever it is not the
+    // ordinary case of somebody sitting in front of this page. An imported
+    // verdict and a native one must never look alike: the imported one was made
+    // in another tool, against audio that tool could not identify.
+    (u.auth && u.auth !== "guest" ? `<span class="auth-tag">${esc(u.auth)}</span>` : "");
+}
+
+function unitEl(u, i, depth) {
+  const d = document.createElement("div");
+  d.className = "unit" + (i === sel ? " sel" : "") + (u.kind ? "" : " untouched");
+  if (depth) d.style.marginLeft = (depth * 20) + "px";
+  d.onclick = (e) => { if (!e.target.closest(".panel")) select(i); };
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.innerHTML = metaHTML(u);
+  d.appendChild(meta);
+
+  const t = document.createElement("div");
+  t.className = "text";
+  t.textContent = u.text || (u.unit.text ? "" : "(no text)");
+  d.appendChild(t);
+
+  if (i === sel) d.appendChild(panelEl(u));
+  return d;
+}
+
+function panelEl(u) {
+  const p = document.createElement("div");
+  p.className = "panel";
+
+  // Correcting is retyping, and only retyped text is ground truth for word
+  // error rate — scoring a recogniser against text nobody disputed measures it
+  // against itself and reports a flawless zero. So the machine's reading stays
+  // visible above the box the reviewer types into.
+  const tf = document.createElement("div");
+  tf.className = "field";
+  tf.innerHTML = `<span class="name">text</span><div class="was">the machine read ` +
+    (u.unit.text ? `<q>${esc(u.unit.text)}</q>` : "nothing") + `</div>`;
+  const ta = document.createElement("textarea");
+  ta.id = "edText";
+  ta.value = u.text || "";
+  ta.addEventListener("input", () => queueCorrection(u));
+  ta.addEventListener("blur", flushCorrection);
+  tf.appendChild(ta);
+  p.appendChild(tf);
+
+  const lf = document.createElement("div");
+  lf.className = "field";
+  lf.innerHTML = `<span class="name">label</span><div class="was">the machine said ` +
+    (u.unit.label ? `<q>${esc(u.unit.label)}</q>` : "nothing") + `</div>`;
+  const li = document.createElement("input");
+  li.className = "lbl";
+  li.id = "edLabel";
+  li.value = u.label || "";
+  li.addEventListener("input", () => queueCorrection(u));
+  li.addEventListener("blur", flushCorrection);
+  lf.appendChild(li);
+  p.appendChild(lf);
+
+  const sv = document.createElement("div");
+  sv.className = "saving";
+  sv.id = "savingNote";
+  p.appendChild(sv);
+
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const btn = (text, key, fn) => {
+    const b = document.createElement("button");
+    b.innerHTML = `${text}<kbd>${key}</kbd>`;
+    b.onclick = fn;
+    acts.appendChild(b);
+  };
+  // "Positively affirm", not "Confirm": this is the escalation for a claim
+  // something depends on, not the baseline. Going through the recording and
+  // accepting what needs no change is the sweep at the bottom.
+  btn("Positively affirm", "c", () => verdict("confirmed"));
+  btn("Unclear", "?", () => verdict("unclear"));
+  btn("Not in the source", "x", () => verdict("unsupported"));
+  btn("Withdraw", "u", () => verdict("retract"));
+  if (u.unit.locator.time) {
+    btn("Split at playhead", "s", splitHere);
+    btn("Join with next", "a", joinNext);
+  }
+  btn("Went through it — affirm the rest", "A", affirmRest);
+  if (state.stats.affirmed > 0) btn("Withdraw the affirmation", "", withdrawSweep);
+  p.appendChild(acts);
+
+  p.appendChild(evidenceEl(u));
+  return p;
+}
+
+// ── evidence ────────────────────────────────────────────────────────────────
+// Fetched rather than dropped in an <img src>, because the answer that matters
+// is in the headers: which of the three renderings this is, and whether it is
+// the artifact the claim was actually read from.
+function evidenceEl(u) {
+  const box = document.createElement("div");
+  box.className = "ev";
+  box.innerHTML = `<div class="evbar"><span>evidence</span>
+    <select id="evAs">
+      <option value="crop">crop — what it was read from</option>
+      <option value="seen">as the model saw it</option>
+      <option value="humane">rendered for a person</option>
+    </select><span id="evNote">loading…</span></div><div id="evOut"></div>`;
+  setTimeout(() => {
+    const s = $("evAs");
+    if (s) s.onchange = () => loadEvidence(u, s.value);
+    loadEvidence(u, "crop");
+  });
+  return box;
+}
+
+async function loadEvidence(u, as) {
+  const note = $("evNote"), out = $("evOut");
+  if (!note) return;
+  if (!u.unit.evidence) {
+    note.innerHTML = `<span class="badge no">no recorded artifact</span> ` +
+      (u.authored ? "this unit was cut by a person, so no machine read it"
+                  : "the producer recorded no digest; nothing can say what this text came from");
+    out.innerHTML = "";
+    return;
+  }
+  const key = u.unit.id + "|" + as;
+  if (evCache[key]) { paintEvidence(evCache[key]); return; }
+
+  const r = await fetch(`${API}/evidence?asset=${enc(asset)}&unit=${enc(u.unit.id)}&as=${as}`);
+  if (r.status === 501) { note.textContent = "this mount cannot render the artifact"; out.innerHTML = ""; return; }
+  if (!r.ok) {
+    let d = r.statusText;
+    try { d = (await r.json()).detail || d; } catch {}
+    note.textContent = d; out.innerHTML = "";
+    return;
+  }
+  const got = {
+    as: r.headers.get("X-Attest-Rendering") || as,
+    verified: r.headers.get("X-Attest-Verified") === "yes",
+    type: r.headers.get("Content-Type") || "",
+    url: URL.createObjectURL(await r.blob()),
+  };
+  evCache[key] = got;
+  paintEvidence(got);
+}
+
+function paintEvidence(g) {
+  const note = $("evNote"), out = $("evOut");
+  if (!note) return;
+  // Said plainly, every time. A rendering that is not the artifact is worth
+  // looking at and must never be mistaken for the thing a verdict rests on.
+  note.innerHTML = g.verified
+    ? `<span class="badge yes">this is the artifact it was read from</span>`
+    : `<span class="badge no">${g.as === "crop"
+        ? "does NOT match the recorded digest — not the image that produced this text"
+        : g.as === "humane"
+          ? "rendered for legibility — not the artifact"
+          : "what the model was given, not the artifact"}</span>`;
+  out.innerHTML = g.type.startsWith("image/")
+    ? `<img src="${g.url}" alt="">`
+    : `<audio controls src="${g.url}"></audio>`;
+}
+
+// ── verdicts ────────────────────────────────────────────────────────────────
+async function verdict(kind, extra) {
+  if (needName()) return;
+  await flushCorrection();
+  const u = state.units[sel];
+  await post("/verdict", Object.assign({asset, unit: u.unit.id, kind, by: who()}, extra || {}));
+  hint("");
+  await reload();
+  if (kind !== "retract") next();
+}
+
+// A correction posts on a short idle, on blur and on unload — never per
+// keystroke. The log is append-only, so a line per keystroke would bury one
+// ruling under two hundred, and the record is meant to be readable by a person.
+function queueCorrection(u) {
+  const text = $("edText").value, label = $("edLabel").value;
+  if (text === (u.text || "") && label === (u.label || "")) { dirty = null; return; }
+  dirty = {unit: u.unit.id, text, label};
+  if ($("savingNote")) $("savingNote").textContent = "unsaved…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushCorrection, 1500);
+}
+
+async function flushCorrection() {
+  clearTimeout(saveTimer);
+  if (!dirty) return;
+  if (!who()) { needName(); return; }
+  const d = dirty; dirty = null;
+  await post("/verdict", {asset, unit: d.unit, kind: "corrected", text: d.text, label: d.label, by: who()});
+  if ($("savingNote")) $("savingNote").textContent = "saved";
+  await reload(true);
+}
+addEventListener("beforeunload", () => {
+  if (!dirty || !who()) return;
+  navigator.sendBeacon(API + "/verdict", new Blob([JSON.stringify(
+    {asset, unit: dirty.unit, kind: "corrected", text: dirty.text, label: dirty.label, by: who()}
+  )], {type: "application/json"}));
+});
+
+// The suggested wording. Editable, remembered, and NOT written unless the
+// reviewer leaves it there — it is a starting point for their own sentence, not
+// a checkbox with prose attached.
+const defaultStatement =
+  "I went through this document and am reasonably certain there are only minor " +
+  "errors or mis-transcriptions that should not be materially relevant, to the " +
+  "best of my ability.";
+
+// affirmRest is the ordinary end of a pass: the reviewer went through the asset,
+// edited what needed it, and accepts the remainder under terms they state.
+//
+// The statement is asked for rather than assumed. What is being recorded is a
+// qualified claim with a standard inside it, and the tool paraphrasing that as
+// "the rest is right" would change what was attested to — the provenance quotes
+// this verbatim.
+async function affirmRest() {
+  if (needName()) return;
+  await flushCorrection();
+
+  const left = state.stats.untouched;
+  const box = document.createElement("div");
+  box.className = "stmt";
+  box.innerHTML =
+    `<div class="hint2">You are accepting <b>${left}</b> turn(s) you did not rule on individually.
+     These will read as <b>affirmed</b> — went through, nothing needed changing — never as
+     positively affirmed. Your wording is quoted verbatim wherever this transcript is cited.</div>`;
+  const ta = document.createElement("textarea");
+  ta.value = localStorage.getItem("attest.statement") || defaultStatement;
+  box.appendChild(ta);
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  box.appendChild(acts);
+
+  const panel = $("body").children[sel]?.querySelector(".panel");
+  if (!panel) return;
+  panel.appendChild(box);
+  ta.focus();
+
+  const go = document.createElement("button");
+  go.textContent = "Affirm the rest under these terms";
+  go.onclick = async () => {
+    const stmt = ta.value.trim();
+    if (!stmt) { hint("Say what you are affirming — an unqualified sweep is not worth recording."); return; }
+    localStorage.setItem("attest.statement", stmt);
+    box.remove();
+    await post("/sweep", {asset, by: who(), statement: stmt});
+    hint("");
+    await reload();
+  };
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => box.remove();
+  acts.append(go, cancel);
+}
+
+async function withdrawSweep() {
+  if (needName()) return;
+  await post("/sweep", {asset, by: who(), undo: true});
+  hint("Affirmation withdrawn — turns you ruled on individually are untouched.");
+  await reload();
+}
+
+// ── re-cutting ──────────────────────────────────────────────────────────────
+async function splitHere() {
+  if (needName()) return;
+  const u = state.units[sel], t = u.unit.locator.time;
+  if (!t) return;
+  const at = $("au").currentTime;
+  if (!(at > t.start + 0.05 && at < t.end - 0.05)) {
+    // Seconds, not mm:ss. The playhead sitting exactly on a boundary is the
+    // common case, and truncating to whole seconds renders it as the nonsense
+    // "at 0:04, outside 0:04–0:09".
+    hint(`Play into this turn first — the playhead is at ${at.toFixed(1)}s, ` +
+         `outside ${t.start.toFixed(1)}–${t.end.toFixed(1)}s.`);
+    return;
+  }
+  await flushCorrection();
+  // The text splits where the caret is, if the reviewer put one there. There is
+  // no way to infer where the words divide from the time alone, and guessing
+  // would silently attribute one speaker's words to the next.
+  const ta = $("edText");
+  const full = ta.value;
+  const caret = (document.activeElement === ta) ? ta.selectionStart : full.length;
+  const head = full.slice(0, caret).trim(), tail = full.slice(caret).trim();
+  await post("/resegment", {
+    asset, by: who(), supersedes: [u.unit.id],
+    units: [
+      {locator: {time: {start: t.start, end: at}}, label: u.label, text: head},
+      {locator: {time: {start: at, end: t.end}}, label: u.label, text: tail},
+    ],
+  });
+  hint(tail ? "" : "Split — the second half has no text yet, and neither half is ruled on.");
+  selId = null;
+  await reload();
+}
+
+async function joinNext() {
+  if (needName()) return;
+  const a = state.units[sel], b = state.units[sel + 1];
+  if (!b || !a.unit.locator.time || !b.unit.locator.time) { hint("Nothing to join with."); return; }
+  await flushCorrection();
+  await post("/resegment", {
+    asset, by: who(), supersedes: [a.unit.id, b.unit.id],
+    units: [{
+      locator: {time: {start: a.unit.locator.time.start, end: b.unit.locator.time.end}},
+      label: a.label, text: [a.text, b.text].filter(Boolean).join(" "),
+    }],
+  });
+  selId = null;
+  await reload();
+}
+
+// ── navigation ──────────────────────────────────────────────────────────────
+// select moves the cursor without starting playback. Continuous play is what
+// moves through the recording; j/k is for going back to something.
+function select(i) {
+  if (i < 0 || i >= state.units.length) return;
+  flushCorrection();
+  sel = i; selId = state.units[i].unit.id;
+  render();
+}
+const next = () => select(Math.min(sel + 1, state.units.length - 1));
+const prev = () => select(Math.max(sel - 1, 0));
+
+// Playback is CONTINUOUS, and the selection follows the audio.
+//
+// A reviewer goes through a recording end to end, stopping only where something
+// needs changing. Playing one turn and halting would mean a keystroke per turn
+// across a 44-minute hearing, and the thing being reviewed is the flow of
+// speech — a boundary is exactly where the machine may have got it wrong, so
+// stopping at every one hides the error being looked for.
+const speedKey = "attest.speed", skipKey = "attest.skipGaps";
+$("speed").value = localStorage.getItem(speedKey) || "1";
+$("skipGaps").checked = localStorage.getItem(skipKey) !== "0";
+$("speed").onchange = () => {
+  localStorage.setItem(speedKey, $("speed").value);
+  $("au").playbackRate = parseFloat($("speed").value);
+};
+$("skipGaps").onchange = () => localStorage.setItem(skipKey, $("skipGaps").checked ? "1" : "0");
+
+// minGap is how much dead air is worth jumping. Below this the seek itself is
+// more disruptive than the silence, and a breath between turns is information —
+// it is often the only cue that the speaker changed.
+const minGap = 0.35;
+
+function playFrom(t) {
+  const au = $("au");
+  if (!au.src) return;
+  au.playbackRate = parseFloat($("speed").value);
+  if (t !== undefined) au.currentTime = t;
+  au.play().catch(() => {});
+}
+
+function replayUnit() {
+  const t = state.units[sel]?.unit.locator.time;
+  if (t) playFrom(t.start);
+}
+
+// unitAt finds which turn the playhead is inside, or the next one if it has
+// fallen into a gap.
+function unitAt(now) {
+  let next = -1;
+  for (let i = 0; i < state.units.length; i++) {
+    const t = state.units[i].unit.locator.time;
+    if (!t) continue;
+    if (now >= t.start && now < t.end) return {inside: i};
+    if (t.start > now && (next < 0 || t.start < state.units[next].unit.locator.time.start)) next = i;
+  }
+  return {inside: -1, next};
+}
+
+$("au").addEventListener("timeupdate", () => {
+  const au = $("au");
+  if (!state || au.paused) return;
+  const now = au.currentTime;
+  const where = unitAt(now);
+
+  if (where.inside < 0) {
+    // In dead air. Jump to the next turn if the gap is worth jumping, so a long
+    // recess does not have to be sat through.
+    if ($("skipGaps").checked && where.next >= 0) {
+      const start = state.units[where.next].unit.locator.time.start;
+      if (start - now > minGap) { au.currentTime = start; return; }
+    }
+    if (where.next < 0) au.pause(); // past the last turn
+    return;
+  }
+  // The selection follows the audio, so an edit always targets what is being
+  // heard. Suppressed while typing: re-rendering the list would pull the
+  // textarea out from under the reviewer.
+  if (where.inside !== sel && !editingNow()) {
+    sel = where.inside;
+    selId = state.units[sel].unit.id;
+    render();
+  }
+  const t = state.units[sel].unit.locator.time;
+  $("nowPlaying").textContent = `${mmss(now)} — turn ${sel + 1} of ${state.units.length} (${mmss(t.start)}–${mmss(t.end)})`;
+});
+
+addEventListener("keydown", (e) => {
+  if (!state) return;
+  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName);
+  if (e.key === "Escape") { document.activeElement.blur(); flushCorrection(); return; }
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  const map = {
+    j: next, ArrowDown: next, k: prev, ArrowUp: prev,
+    c: () => verdict("confirmed"),
+    "?": () => verdict("unclear"),
+    x: () => verdict("unsupported"),
+    u: () => verdict("retract"),
+    s: splitHere, a: joinNext, A: affirmRest,
+    e: () => $("edText")?.focus(),
+    d: () => $("edLabel")?.focus(),
+    r: replayUnit,
+    " ": () => { const au = $("au"); if (!au.src) return; au.paused ? playFrom() : au.pause(); },
+  };
+  const fn = map[e.key];
+  if (fn) { e.preventDefault(); fn(); }
+});
+
+// ── the asset list, when no asset was named ─────────────────────────────────
+async function listAssets() {
+  $("whoRow").hidden = true;
+  const r = await fetch(API + "/assets");
+  const {assets} = await r.json();
+  if (!assets?.length) {
+    $("body").innerHTML = `<p class="empty">Nothing here has been read yet.
+      An asset becomes reviewable once a producer writes <code>&lt;asset&gt;.reading.json</code> beside it.</p>`;
+    return;
+  }
+  $("body").innerHTML = `<div class="assets">` + assets.map(a => {
+    const s = a.stats, left = s.untouched;
+    return `<a href="?asset=${enc(a.asset)}"><b>${esc(a.asset)}</b>
+      <div class="meta" style="font-family:var(--mono);font-size:12px;color:var(--dim)">
+        ${esc(a.kind || "")} · ${s.total} units ·
+        ${left ? `${left} untouched` : "review complete"}
+      </div></a>`;
+  }).join("") + `</div>`;
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+}
+
+if (asset) { reload(); } else { listAssets(); }
+</script>

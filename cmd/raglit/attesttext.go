@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/iodesystems/attest"
 	"github.com/iodesystems/raglit"
+	"github.com/iodesystems/raglit/attest"
 )
 
 // Reviewing a document that has no geometry.

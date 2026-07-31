@@ -6,12 +6,12 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.39.0
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/iodesystems/agentkit v0.3.0
-	github.com/iodesystems/attest v0.0.0-00010101000000-000000000000
 	github.com/iodesystems/gwag v0.0.0-00010101000000-000000000000
 	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/pdfcpu/pdfcpu v0.13.0
 	golang.org/x/image v0.41.0
+	golang.org/x/text v0.37.0
 	modernc.org/sqlite v1.55.0
 )
 
@@ -48,7 +48,6 @@ require (
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260504160031-60b97b32f348 // indirect
 	google.golang.org/grpc v1.81.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
@@ -63,5 +62,3 @@ require (
 replace github.com/iodesystems/sqlc-go-codegen-metaquery => ../sqlc-go-codegen-metaquery
 
 replace github.com/iodesystems/gwag => ../gwag
-
-replace github.com/iodesystems/attest => ../attest

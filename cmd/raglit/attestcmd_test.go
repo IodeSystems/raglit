@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/iodesystems/attest"
 	"github.com/iodesystems/raglit"
+	"github.com/iodesystems/raglit/attest"
 )
 
 // sheet draws something with enough structure that two different crops of it
