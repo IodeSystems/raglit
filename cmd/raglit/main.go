@@ -61,6 +61,8 @@ func main() {
 		err = runSearch(os.Args[2:])
 	case "similar":
 		err = runSimilar(os.Args[2:])
+	case "diff":
+		err = runDiff(os.Args[2:])
 	case "mark":
 		err = runMark(os.Args[2:])
 	case "marks":
@@ -135,6 +137,13 @@ usage:
                 ("probe p12-14 = match p1-3"), and which NUMBERS differ between two
                 copies of one instrument. Local computation — no model, works offline.
                 --build sketches documents that have none; --all audits the corpus.
+
+  raglit diff [--json] A B
+                compare two transcripts PAGE BY PAGE: byte identity, a per-page
+                match rate, which pages are missing, and the numbers that differ.
+                A whole-document 0.93 is equally consistent with a clean re-scan
+                and with a refiling whose page 3 changed; the per-page shape is
+                what tells those apart, and an average destroys it.
 
   raglit marks [--todo] [--json] [DOCPATH]
                 what an overlapping pair IS, as opposed to how much text it shares.
