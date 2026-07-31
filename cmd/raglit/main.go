@@ -59,6 +59,8 @@ func main() {
 		err = runWork(os.Args[2:])
 	case "search":
 		err = runSearch(os.Args[2:])
+	case "similar":
+		err = runSimilar(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "daemon":
@@ -119,6 +121,13 @@ usage:
   raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit
   raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
   raglit search [--home DIR] [--mode M] [-n N] "query"
+  raglit similar [--build|--rebuild|--status|--all] [--json] FILE|DOCPATH...
+                near-duplicate + containment detection over shingles, at PAGE grain.
+                Reports both directions (a deed INSIDE a title commitment has
+                containment 1.0 one way and a Jaccard of 0.05), the page alignment
+                ("probe p12-14 = match p1-3"), and which NUMBERS differ between two
+                copies of one instrument. Local computation — no model, works offline.
+                --build sketches documents that have none; --all audits the corpus.
   raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
   raglit daemon [--root DIR|--home DIR] [--addr :7420] [--embed]   multi-protocol daemon:
                 REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
