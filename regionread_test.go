@@ -37,7 +37,9 @@ func scriptedAsk(readings ...RegionReading) (func(context.Context, PageImage, in
 }
 
 func surveyReader(ask func(context.Context, PageImage, int) (RegionReading, error)) *RegionReader {
-	return &RegionReader{Ask: ask, PageWIn: 27.0, PageHIn: 36.7, DPI: 200}
+	// MaxDepth is explicit here: descent is opt-in now, and these tests are ABOUT
+	// descent, so they have to ask for it like any caller would.
+	return &RegionReader{Ask: ask, PageWIn: 27.0, PageHIn: 36.7, DPI: 200, MaxDepth: 3}
 }
 
 // The measured failure: an E-size sheet read whole gets ~4 tokens per square
@@ -64,7 +66,7 @@ func TestRootOfAnOversizeSheetIsFlaggedLowResolutionBeforeAnyCall(t *testing.T) 
 // A letter page is the baseline and must NOT be flagged.
 func TestLetterPageIsNotFlaggedLowResolution(t *testing.T) {
 	ask, _ := scriptedAsk(RegionReading{Description: "a deed"})
-	rr := &RegionReader{Ask: ask, PageWIn: 8.5, PageHIn: 11, DPI: 200}
+	rr := &RegionReader{Ask: ask, PageWIn: 8.5, PageHIn: 11, DPI: 200, MaxDepth: 3}
 	root, err := rr.Read(context.Background(), blankPage(1700, 2200), 1)
 	if err != nil {
 		t.Fatal(err)
@@ -496,5 +498,64 @@ func TestATransformCarriesItsRenderRecordOntoTheRegion(t *testing.T) {
 	}
 	if err := VerifyRegionRender(root, img); err != nil {
 		t.Errorf("the adopted transform does not reproduce: %v", err)
+	}
+}
+
+// The root is asked to ACCOUNT for the sheet; a crop is asked to transcribe.
+// Same walk, different question, and the difference is what stops a plan sheet
+// coming back described as the one inset somebody's eye landed on.
+func TestTheRootIsAskedADifferentQuestionThanACrop(t *testing.T) {
+	var asked []string
+	rr := &RegionReader{
+		PageWIn: 27, PageHIn: 36.7, DPI: 200, MaxDepth: 1,
+		Ask: func(_ context.Context, _ PageImage, depth int) (RegionReading, error) {
+			if depth == 0 {
+				asked = append(asked, "root")
+				return RegionReading{
+					Description: "the whole sheet",
+					Regions:     []RegionProposal{{X: 0.1, Y: 0.1, W: 0.2, H: 0.2, Kind: "title-block"}},
+				}, nil
+			}
+			asked = append(asked, "crop")
+			return RegionReading{Description: "small print"}, nil
+		},
+	}
+	if _, err := rr.Read(context.Background(), blankPage(800, 1000), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) < 2 || asked[0] != "root" || asked[1] != "crop" {
+		t.Fatalf("want the root asked first and then a crop, got %v", asked)
+	}
+}
+
+// Descent is opt-in. A page that is read and understood should not pay for
+// crops nobody asked for — the root reading is written to stand on its own.
+func TestDescentIsOptIn(t *testing.T) {
+	calls := 0
+	rr := &RegionReader{
+		PageWIn: 27, PageHIn: 36.7, DPI: 200, // MaxDepth left at 0
+		Ask: func(_ context.Context, _ PageImage, _ int) (RegionReading, error) {
+			calls++
+			return RegionReading{
+				Description: "the whole sheet",
+				Regions: []RegionProposal{
+					{X: 0.1, Y: 0.1, W: 0.2, H: 0.2, Kind: "title-block"},
+					{X: 0.5, Y: 0.5, W: 0.2, H: 0.2, Kind: "legend"},
+				},
+			}, nil
+		},
+	}
+	root, err := rr.Read(context.Background(), blankPage(800, 1000), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("want exactly one read with no depth asked for, got %d", calls)
+	}
+	if len(root.Children) != 0 {
+		t.Errorf("want no descent, got %d child region(s)", len(root.Children))
+	}
+	if root.Text == "" {
+		t.Error("the root must still carry its account of the sheet")
 	}
 }

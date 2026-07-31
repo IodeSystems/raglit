@@ -28,7 +28,7 @@ func runRegions(args []string) error {
 	_, homeOf := addStoreFlags(fs)
 	page := fs.Int("page", 1, "page number")
 	dpi := fs.Int("dpi", 200, "render resolution")
-	depth := fs.Int("depth", 3, "maximum descent depth")
+	depth := fs.Int("depth", 0, "descend this many levels into the sheet (0 = read the whole sheet and stop)")
 	calls := fs.Int("max-calls", 40, "model calls allowed for the whole page")
 	asJSON := fs.Bool("json", false, "emit the region tree as JSON")
 	write := fs.Bool("write", false, "record the read in <doc>.raglit-regions.json beside the document")

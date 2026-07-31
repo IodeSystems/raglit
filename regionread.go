@@ -27,7 +27,12 @@ type RegionReader struct {
 	PageWIn, PageHIn float64
 	DPI              int
 
-	MaxDepth      int // 0 → 3
+	// MaxDepth bounds descent. 0 means READ THE SHEET AND STOP, which is the
+	// default: the root reading is written to account for the whole sheet, so
+	// descending is for when a specific area needs the characters, not something
+	// every page should pay for. A survey descends into a title block because
+	// somebody asked about the certificate number, not because it was scanned.
+	MaxDepth      int
 	MaxChildren   int // per node, 0 → 8
 	MaxTransforms int // per region, 0 → 2
 	MaxCalls      int // whole document, 0 → 40
@@ -68,9 +73,6 @@ type RegionProposal struct {
 func (p RegionProposal) rect() Rect { return Rect{X: p.X, Y: p.Y, W: p.W, H: p.H} }
 
 func (rr *RegionReader) defaults() {
-	if rr.MaxDepth == 0 {
-		rr.MaxDepth = 3
-	}
 	if rr.MaxChildren == 0 {
 		rr.MaxChildren = 8
 	}
@@ -302,6 +304,43 @@ func clearsAny(before, after []string) bool {
 	return false
 }
 
+// rootPrompt is what the WHOLE SHEET is asked, and it asks a different question
+// from the one asked of a crop.
+//
+// A crop is asked to transcribe: it exists because something was too small to
+// read, and the answer wanted is the characters. The root is not that. On a plan
+// sheet the entire page IS the drawing, and a root reading that only transcribes
+// returns the marginal notes and says nothing about the thing the sheet is FOR —
+// which parcels, which boundary, what the drawing asserts. That is how a record
+// of survey came back described as "a vicinity map showing a grid of sections":
+// true of one inset in a corner, silent about the survey.
+//
+// So the root is asked to ACCOUNT for the sheet: everything on it, named, in one
+// place. Comprehensive at this level is what makes descending optional — a
+// reader who never descends still knows what the sheet holds, and a reader who
+// does knows where to go.
+//
+// It still transcribes, because a description that drops the legal text would
+// trade one kind of incompleteness for another.
+const rootPrompt = `Look at this whole sheet and answer with ONE JSON object, nothing else:
+
+{"description": "...", "kind": "...", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"kind":"...","reason":"..."}]}
+
+description: an ACCOUNT OF THE ENTIRE SHEET. Name every distinct thing on it —
+  each drawing, map, table, legend, title block, certificate, signature block,
+  stamp and note — and say where it sits and what it shows. For a drawing say
+  what is depicted: what is bounded, what is labelled, what the lines and
+  annotations assert. Then transcribe the text you can read, verbatim. Where
+  text is too small to read, say so and say what kind of text it is. Never
+  guess at characters you cannot see. Completeness matters more than brevity:
+  a reader who sees only this description should know everything the sheet
+  contains.
+kind: one of overview, text-block, table, drawing, legend, title-block.
+regions: areas a closer look WOULD help with — dense annotation, small print, a
+  table, a title block. Coordinates are fractions of THIS image (0..1).
+  rotation is 0, 90, 180 or 270: what this area must be turned by to read
+  upright. Naming an area here does not read it; it records where detail is.`
+
 // regionPrompt asks for the two things a node needs. Kept deliberately short:
 // the instruction competes with the image for the model's attention, and the
 // image is the point.
@@ -347,9 +386,15 @@ func ParseRegionReading(s string) RegionReading {
 // so the region walk inherits the page cache, the repetition guard and the
 // retry policy already in place.
 func (o *OCR) AskWithOCR() func(context.Context, PageImage, int) (RegionReading, error) {
-	return func(ctx context.Context, img PageImage, _ int) (RegionReading, error) {
+	return func(ctx context.Context, img PageImage, depth int) (RegionReading, error) {
 		prev := o.Prompt
-		o.Prompt = regionPrompt
+		// The root is asked to account for the whole sheet; a crop is asked to
+		// transcribe. Same walk, different question, decided by where we are in it.
+		if depth == 0 {
+			o.Prompt = rootPrompt
+		} else {
+			o.Prompt = regionPrompt
+		}
 		defer func() { o.Prompt = prev }()
 		text, _, shrinks, err := o.PageAsSeen(ctx, img)
 		if err != nil {
