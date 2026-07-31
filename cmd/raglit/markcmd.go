@@ -77,6 +77,8 @@ func runMarks(args []string) error {
 	fs := flag.NewFlagSet("marks", flag.ExitOnError)
 	openStore, _ := addStoreFlags(fs)
 	todo := fs.Bool("todo", false, "overlapping pairs nobody has ruled on yet, with a proposal for each")
+	identical := fs.Bool("identical", false, "documents held more than once, BYTE for byte — needs no sketches")
+	write := fs.Bool("write", false, "with --identical: record them as copies (attributed to raglit, not to you)")
 	asJSON := fs.Bool("json", false, "emit as JSON")
 	minCov := fs.Float64("min-coverage", 0, "only pairs reaching this block coverage")
 	fs.Parse(args)
@@ -84,6 +86,15 @@ func runMarks(args []string) error {
 	rel, err := openRelations()
 	if err != nil {
 		return err
+	}
+
+	if *identical {
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		return runIdentical(store, rel, *write, *asJSON)
 	}
 
 	if !*todo {
@@ -224,4 +235,102 @@ func firstWord(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// runIdentical handles the one relation that needs no human.
+//
+// Everywhere else in this tool the rule is propose-then-rule, because a
+// similarity number cannot decide what a pair MEANS: a scan of a deed and a
+// re-recorded deed both align at 0.97, and only a person can say which. Byte
+// identity is not that. Two files with one sha256 are the same document — there
+// is no inference in it, nothing for a reader to weigh, and no reading of the
+// evidence under which they disagree. Asking someone to confirm it is asking
+// them to rubber-stamp arithmetic, and a queue full of rubber stamps is how the
+// pairs that DO need judgement get skimmed past.
+//
+// So these are recorded automatically, and attributed to raglit rather than to
+// the person running the command. That distinction is the point in a corpus that
+// may be read by an opponent: `by: raglit` says a machine observed identical
+// bytes, and `by: Carl Taylor` says a person formed a view. Collapsing the two
+// would put a human's name on findings they never looked at.
+//
+// A person can still overrule it — relations.jsonl is append-only and the later
+// line wins — which is what makes the automatic write safe rather than final.
+func runIdentical(store *raglit.Store, rel *raglit.Relations, write, asJSON bool) error {
+	groups, err := store.IdenticalGroups()
+	if err != nil {
+		return err
+	}
+
+	type openGroup struct {
+		Paths []string `json:"paths"`
+		New   int      `json:"unruled_pairs"`
+	}
+	var out []openGroup
+	total, already := 0, 0
+	for _, g := range groups {
+		n := 0
+		for i := 0; i < len(g); i++ {
+			for j := i + 1; j < len(g); j++ {
+				total++
+				if _, ruled := rel.Get(g[i], g[j]); ruled {
+					already++
+					continue
+				}
+				n++
+			}
+		}
+		if n > 0 {
+			out = append(out, openGroup{Paths: g, New: n})
+		}
+	}
+
+	if !write {
+		if asJSON {
+			return emitJSON(out)
+		}
+		if len(out) == 0 {
+			fmt.Printf("no unruled byte-identical documents (%d pair(s) already recorded)\n", already)
+			return nil
+		}
+		for _, g := range out {
+			fmt.Printf("identical bytes — %d file(s):\n", len(g.Paths))
+			for _, p := range g.Paths {
+				fmt.Printf("    %s\n", p)
+			}
+			fmt.Println()
+		}
+		fmt.Printf("%d group(s), %d unruled pair(s). Record them: raglit marks --identical --write\n",
+			len(out), total-already)
+		return nil
+	}
+
+	wrote := 0
+	for _, g := range out {
+		for i := 0; i < len(g.Paths); i++ {
+			for j := i + 1; j < len(g.Paths); j++ {
+				a, b := g.Paths[i], g.Paths[j]
+				if _, ruled := rel.Get(a, b); ruled {
+					continue
+				}
+				if err := rel.Add(raglit.Mark{
+					A: a, B: b, Kind: raglit.MarkCopy,
+					Note:     "identical source bytes (sha256)",
+					By:       "raglit",
+					At:       time.Now().UTC().Format("2006-01-02"),
+					Relation: "identical",
+				}); err != nil {
+					return fmt.Errorf("record %s: %w", a, err)
+				}
+				wrote++
+			}
+		}
+	}
+	if wrote == 0 {
+		fmt.Printf("nothing to record (%d pair(s) already ruled)\n", already)
+		return nil
+	}
+	fmt.Printf("recorded %d pair(s) as copies in %s\n", wrote, rel.Path)
+	fmt.Println("  attributed to raglit — a person's ruling on any of them still overrides it")
+	return nil
 }

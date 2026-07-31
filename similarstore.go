@@ -857,3 +857,54 @@ func ParseTranscription(md string) []PageText {
 	flush()
 	return out
 }
+
+// IdenticalGroups returns every set of indexed documents whose SOURCE BYTES are
+// the same, as groups of paths, each group sorted and the groups sorted by their
+// first path.
+//
+// This is the one relation in the corpus that needs no shingles, no thresholds
+// and no judgement. Two files with one sha256 are the same document — not
+// similar to it, not probably it — so the answer does not depend on any of the
+// tuning the rest of this file is careful about, and it is available on an index
+// that has never been sketched.
+//
+// Grouped rather than paired because a document held three times is ONE finding.
+// Emitting three pairs invites a reader to rule on them separately and reach two
+// different answers about one set of bytes.
+func (s *Store) IdenticalGroups() ([][]string, error) {
+	rows, err := s.db.QueryContext(context.Background(),
+		`SELECT content_hash, path FROM documents
+		  WHERE content_hash <> ''
+		    AND content_hash IN (
+		      SELECT content_hash FROM documents
+		       WHERE content_hash <> '' GROUP BY content_hash HAVING count(*) > 1)
+		  ORDER BY content_hash, path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byHash := map[string][]string{}
+	var order []string
+	for rows.Next() {
+		var h, p string
+		if err := rows.Scan(&h, &p); err != nil {
+			return nil, err
+		}
+		if _, seen := byHash[h]; !seen {
+			order = append(order, h)
+		}
+		byHash[h] = append(byHash[h], p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([][]string, 0, len(order))
+	for _, h := range order {
+		if g := byHash[h]; len(g) > 1 {
+			out = append(out, g)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	return out, nil
+}

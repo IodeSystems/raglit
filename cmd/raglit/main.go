@@ -145,6 +145,12 @@ usage:
                 a scan of one both align at 0.97 — so raglit proposes from WHAT
                 disagrees and a person rules.
 
+  raglit marks --identical [--write] [--json]
+                documents held more than once BYTE for byte. Needs no sketches —
+                the index already knows the hashes. This is the one relation with
+                no judgement in it, so --write records them as copies attributed
+                to raglit rather than to you; a person's ruling still overrides.
+
   raglit mark <A> <B> <copy|version|unrelated> [--supersedes PATH] [--note ...]
                 record that ruling. Written to relations.jsonl beside the
                 documents, not into .raglit/ — a ruling cannot be recomputed, so
