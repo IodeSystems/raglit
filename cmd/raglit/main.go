@@ -93,6 +93,8 @@ func main() {
 		err = runOcr(os.Args[2:])
 	case "transcribe":
 		err = runTranscribe(os.Args[2:])
+	case "readings":
+		err = runReadings(os.Args[2:])
 	case "doctor":
 		err = runDoctor(os.Args[2:])
 	case "-h", "--help", "help":
@@ -148,6 +150,12 @@ usage:
                 A whole-document 0.93 is equally consistent with a clean re-scan
                 and with a refiling whose page 3 changed; the per-page shape is
                 what tells those apart, and an average destroys it.
+
+  raglit readings <DOC> [PAGE] [--text] [--json]
+                every recorded version of what a page says, oldest first, with
+                the reading in force marked. A correction attests that a better
+                reading exists; it does not erase the old one, because a
+                quotation taken before it matched the text in force then.
 
   raglit marks [--todo] [--json] [DOCPATH]
                 what an overlapping pair IS, as opposed to how much text it shares.
