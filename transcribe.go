@@ -86,10 +86,19 @@ func RenderTranscription(docPath string, pages []TranscribedPage) string {
 	b.WriteString("\n---\n")
 
 	for _, p := range sorted {
-		fmt.Fprintf(&b, "\n## Page %d\n\n", p.Page)
+		// The per-page warning goes ABOVE the heading, never under it.
+		//
+		// Everything after "## Page N\n\n" is the page's text verbatim, and that
+		// is load-bearing: it is what lets a consumer turn an offset found in
+		// this markdown into an offset into Text, which is how a quotation is
+		// attributed back to the region — and to the crop — it was read from.
+		// A banner inserted under the heading shifts every one of those offsets
+		// by its own length, silently, and only on the pages already flagged as
+		// suspect. The reader still meets the warning before the page.
 		if why := Suspicion(p.Text); why != "" && len(p.Figures) == 0 {
-			fmt.Fprintf(&b, "> ⚠ **Check this page against the original.** %s\n\n", why)
+			fmt.Fprintf(&b, "\n> ⚠ **Check this page against the original.** %s\n", why)
 		}
+		fmt.Fprintf(&b, "\n## Page %d\n\n", p.Page)
 		if t := strings.TrimSpace(p.Text); t != "" {
 			b.WriteString(t)
 			b.WriteString("\n")
