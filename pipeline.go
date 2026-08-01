@@ -251,6 +251,13 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	// token-level check at all, and its first dense fragment failed the whole
 	// ingest at the embed stage with "input (10240 tokens) is too large".
 	embedBudget := NewTokenBudget(ctx, fc.EmbedTokenCounter, fc.EmbedLimitTokens)
+	// What the EMBEDDER adds to a fragment before the endpoint sees it. Counting
+	// the fragment alone was off by exactly the difference: a fragment sized to
+	// 8192 came back "input (8194 tokens) is too large to process".
+	if s.embedder != nil {
+		embedBudget.Overhead = s.embedder.DocPrefix
+	}
+	embedBudget.Reserve = embedSpecialReserve
 	var frags []stagedFrag
 	ordByPage := map[int]int{}
 	sink := func(f stagedFrag) {

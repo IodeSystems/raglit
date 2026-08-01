@@ -457,13 +457,13 @@ func SplitOversized(ctx context.Context, b *TokenBudget, frags []Segment) []Segm
 // Terminates because Fit never returns zero: it takes at least fragMinTake, and
 // a piece that small is inside any budget worth having.
 func splitToFit(ctx context.Context, b *TokenBudget, text string) []Segment {
-	if b.Unlimited() || b.Tokens(ctx, text) <= b.limit {
+	if b.Unlimited() || b.Fits(ctx, text) {
 		return []Segment{{Text: text}}
 	}
 	var out []Segment
 	rest := text
 	for rest != "" {
-		take := b.Fit(ctx, "", rest, fragMinTake)
+		take := b.FitOne(ctx, rest, fragMinTake)
 		if take < len(rest) {
 			// Back off to a paragraph or sentence end inside what fits. Never
 			// forward: that would put the piece back over the budget.
@@ -552,8 +552,8 @@ func oversizedFragments(ctx context.Context, b *TokenBudget, frags []Segment) ma
 		// two characters per token, checked with an estimate built on the same
 		// ratio — so on a survey legal description at 1.16 it agreed with itself
 		// and was wrong by half.
-		if n := b.Tokens(ctx, f.Text); n > b.limit {
-			out[i] = float64(n) / float64(b.limit)
+		if !b.Fits(ctx, f.Text) {
+			out[i] = float64(b.Tokens(ctx, f.Text)) / float64(b.room(ctx))
 		}
 	}
 	if len(out) == 0 {

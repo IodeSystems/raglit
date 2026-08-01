@@ -53,6 +53,20 @@ type TokenBudget struct {
 	counter TokenCounter
 	limit   int // tokens; 0 = unknown, no cap
 
+	// Overhead is text the CONSUMER prepends that a count of the fragment cannot
+	// see. The embedder sends DocPrefix + fragment ("search_document: " for
+	// nomic), so a fragment sized to the limit exactly is over it by the prefix.
+	Overhead string
+	// Reserve covers what the tokenizer adds around the input and does not report
+	// — the BOS/EOS pair, counted because add_special is off when measuring a
+	// piece of a larger prompt.
+	//
+	// Both were learned the same way: a fragment sized to 8192 was refused at
+	// "input (8194 tokens) is too large to process". Two tokens. A budget that
+	// misses by two is not a budget, and it fails the document exactly as
+	// completely as one that misses by two thousand.
+	Reserve int
+
 	mu       sync.Mutex
 	chars    int // characters measured so far
 	tokens   int // tokens they became
@@ -117,6 +131,28 @@ func (b *TokenBudget) Tokens(ctx context.Context, text string) int {
 	return int(float64(len(text))/r) + 1
 }
 
+// room is what remains of the limit for a fragment's own text, after everything
+// the consumer adds to it.
+func (b *TokenBudget) room(ctx context.Context) int {
+	return b.limit - b.Reserve - b.Tokens(ctx, b.Overhead)
+}
+
+// Fits reports whether text is inside the budget once the consumer's overhead is
+// counted. The check every splitter shares, so they agree about what fits.
+func (b *TokenBudget) Fits(ctx context.Context, text string) bool {
+	if b.Unlimited() {
+		return true
+	}
+	return b.Tokens(ctx, text) <= b.room(ctx)
+}
+
+// FitOne is Fit against the budget's own Overhead — the form the fragment
+// splitters use, where the overhead is a property of the consumer rather than of
+// the call.
+func (b *TokenBudget) FitOne(ctx context.Context, rest string, minTake int) int {
+	return b.Fit(ctx, b.Overhead, rest, minTake)
+}
+
 // Fit returns how many characters of `rest` can be sent alongside `overhead`
 // characters of prompt without exceeding the limit — len(rest) when it all fits.
 //
@@ -133,7 +169,7 @@ func (b *TokenBudget) Fit(ctx context.Context, overhead, rest string, minTake in
 		return len(rest)
 	}
 	over := b.Tokens(ctx, overhead)
-	room := b.limit - over
+	room := b.limit - b.Reserve - over
 	if room <= 0 {
 		// The prompt alone is at the limit. Send the floor and let the endpoint
 		// answer: a refusal naming its own limit beats a loop.
@@ -231,14 +267,14 @@ func splitForEmbed(ctx context.Context, b *TokenBudget, f stagedFrag) []stagedFr
 	if b.Unlimited() || f.text == "" {
 		return []stagedFrag{f}
 	}
-	if b.Tokens(ctx, f.text) <= b.limit {
+	if b.Fits(ctx, f.text) {
 		return []stagedFrag{f}
 	}
 	var out []stagedFrag
 	off := 0
 	rest := f.text
 	for rest != "" {
-		take := b.Fit(ctx, "", rest, embedMinTake)
+		take := b.FitOne(ctx, rest, embedMinTake)
 		if take < len(rest) {
 			// The same boundaries SplitOversized prefers, so a fragment cut by both
 			// is cut in the same places. Not trimmed, unlike there: these pieces
@@ -263,6 +299,15 @@ func splitForEmbed(ctx context.Context, b *TokenBudget, f stagedFrag) []stagedFr
 	}
 	return out
 }
+
+// embedSpecialReserve covers the BOS/EOS pair the tokenizer wraps an input in
+// and does not report, because CountTokens asks with add_special off.
+//
+// Eight rather than two: the exact number is a property of the model's template,
+// two is only the common case, and the cost of being six tokens conservative on
+// an 8192-token budget is nothing measurable. The cost of being two short is a
+// refused document.
+const embedSpecialReserve = 8
 
 // embedMinTake is the smallest piece worth emitting, and the guarantee that the
 // split terminates.

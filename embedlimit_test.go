@@ -152,3 +152,34 @@ func TestSinkSplitPrefersBoundaries(t *testing.T) {
 		t.Errorf("the sink split lost or altered text: %d chars in, %d out", len(text), len(joined))
 	}
 }
+
+// The refusal that proved a token count of the fragment is not a count of the
+// request: "input (8194 tokens) is too large to process" against a limit of
+// 8192. Two tokens over, and the document lost.
+//
+// The embedder sends DocPrefix + fragment, and CountTokens asks with add_special
+// off, so neither the prefix nor the BOS/EOS pair was in the number the budget
+// compared. A budget that misses by two fails a document exactly as completely
+// as one that misses by two thousand.
+func TestEmbedBudgetCountsWhatTheEmbedderActuallySends(t *testing.T) {
+	const limit = 8192
+	tok := &fakeTokenizer{charsPerToken: 1.0} // one token per char: easy arithmetic
+	b := NewTokenBudget(context.Background(), tok, limit)
+	b.Overhead = "search_document: "
+	b.Reserve = embedSpecialReserve
+
+	// A fragment that fits the RAW limit but not once the prefix and the special
+	// tokens are counted.
+	f := stagedFrag{page: 1, text: strings.Repeat("x", limit-2)}
+	if b.Fits(context.Background(), f.text) {
+		t.Fatal("a fragment that leaves no room for the prefix was reported as fitting")
+	}
+	for i, p := range splitForEmbed(context.Background(), b, f) {
+		sent := b.Overhead + p.text
+		n, _ := tok.CountTokens(context.Background(), sent)
+		if n+b.Reserve > limit {
+			t.Fatalf("piece %d sends %d tokens plus %d reserved, over the %d limit",
+				i, n, b.Reserve, limit)
+		}
+	}
+}
