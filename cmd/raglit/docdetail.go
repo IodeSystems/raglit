@@ -104,6 +104,23 @@ type DocDetailPage struct {
 	ReadBy   string `json:"read_by,omitempty"`
 	ReadAt   string `json:"read_at,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
+
+	// Figures described on this page.
+	//
+	// The transcript says "[FIGURE: a survey map showing property lines…]" and
+	// the reader's next question is "so where is it". These were extracted,
+	// described by the VLM and stored in `media` at ingest, and nothing surfaced
+	// them — so a page could tell you a diagram existed and give you no way to
+	// look at it or to see what the machine thought it was.
+	Figures []DocFigure `json:"figures,omitempty"`
+}
+
+// DocFigure is one described figure. No crop: bbox is not recorded, so the
+// figure IS its page as far as the image goes, and saying that plainly beats
+// inventing a rectangle.
+type DocFigure struct {
+	Kind        string `json:"kind,omitempty"`
+	Description string `json:"description"`
 }
 
 // SeenIn is one other document holding this one's content.
@@ -239,6 +256,11 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 					q.Set("path", abs)
 					q.Set("page", strconv.Itoa(p.Page))
 					dp.ImageURL = "/api/page-image?" + q.Encode()
+				}
+				for _, f := range c.Figures {
+					if f.Page == p.Page {
+						dp.Figures = append(dp.Figures, DocFigure{Kind: f.Kind, Description: f.Description})
+					}
 				}
 				d.Pages = append(d.Pages, dp)
 			}

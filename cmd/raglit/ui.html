@@ -452,7 +452,12 @@ async function loadReview(){
   const acts=el("div","docacts");
   if(d.original){
     const a=el("a",null,"download original");
-    a.href=d.original; a.setAttribute("download","");
+    a.href=d.original;
+    // The filename MUST be given. An empty download attribute makes the browser
+    // derive it from the URL path, which here ends "/source" — so the file
+    // arrived named "source", with no extension, and looked like a broken link
+    // rather than a working one with a bad name.
+    a.setAttribute("download", d.path.split("/").pop());
     acts.appendChild(a);
   }
   // Two different re-reads, named apart because they are not the same act and
@@ -551,6 +556,22 @@ function renderPages(pane,d){
     if(p.engine) h.appendChild(el("span","badge eng",p.engine));
     right.appendChild(h);
     right.appendChild(el("div","ptext",p.text||"(no text on this page)"));
+    // What the machine SAW here, beside what it read. A transcript that says
+    // "[FIGURE: a survey map …]" and shows nothing is a dead end.
+    if(p.figures && p.figures.length){
+      const fw=el("div"); fw.style.marginTop="10px";
+      fw.appendChild(el("div","muted", p.figures.length+" figure"+(p.figures.length>1?"s":"")+" described on this page"));
+      for(const f of p.figures){
+        const fd=el("div","prov"); fd.style.marginTop="6px";
+        if(f.kind) fd.appendChild(el("div","muted", f.kind));
+        fd.appendChild(el("div",null,f.description||"(no description)"));
+        fw.appendChild(fd);
+      }
+      // No bbox is recorded, so there is no crop to show and the page image
+      // above IS the figure. Said rather than implied.
+      fw.appendChild(el("div","muted","No region is recorded for a figure — the page image above is what was described."));
+      right.appendChild(fw);
+    }
     if(p.read_by||p.read_at){
       const by=el("div","muted"); by.style.fontSize="11px";
       by.textContent=[p.read_by,p.read_at].filter(Boolean).join(" · ");
