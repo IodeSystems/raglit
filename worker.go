@@ -51,6 +51,10 @@ type Worker struct {
 	// per-index dedup only (content_hash).
 	Pool       *Pool
 	RecipeHash string
+	// Retries collects what the LLM client had to survive for the job in flight,
+	// recorded as a stage row when it is not empty. nil → retries stay invisible,
+	// which is what they were.
+	Retries *RetryTally
 }
 
 func (w *Worker) fetch(ctx context.Context, url string) (Fetched, error) {
@@ -72,7 +76,20 @@ func (w *Worker) ProcessOne(ctx context.Context) (processed bool, err error) {
 		return false, nil
 	}
 	sl := w.Store.NewStageLog(job.ID)
+	// Start this job's retry history empty: whatever the previous job survived is
+	// its own, and a tally that carries over blames the wrong document.
+	w.Retries.Take()
 	n, mode, ierr := w.ingest(ctx, job, sl)
+	// Recorded LAST, so it covers the whole job, and on the failure path too —
+	// a job that died after forty minutes of backpressure is exactly the one
+	// whose retry history has to survive it.
+	if s := w.Retries.Take(); !s.Empty() {
+		state := "done"
+		if s.GaveUp > 0 || ierr != nil {
+			state = "warn"
+		}
+		sl.Record("llm-retries", "", state, s.Detail())
+	}
 	if ierr != nil {
 		return true, w.Store.failJob(job.ID, ierr.Error())
 	}

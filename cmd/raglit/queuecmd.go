@@ -83,6 +83,12 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	}
 	if *lf.visionModel != "" {
 		client := lf.visionClient()
+		// Every retry, recovery and give-up this client makes, attributed to the
+		// job in flight. The client has always reported them; nothing was
+		// listening, so a corpus took 244 upstream 5xx and 95 429s with no record
+		// of any of it outside a sampled log.
+		w.Retries = &raglit.RetryTally{}
+		client.OnRetry = w.Retries.Observe
 		// What the CHAT endpoint accepts as one request, discovered on the same
 		// terms as the embed limit above and for the same reason: it is a fact
 		// about the endpoint. Until this was probed, the fragments coming BACK
