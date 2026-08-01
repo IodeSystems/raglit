@@ -241,7 +241,31 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 		// Pages and text, from whichever reading the document has.
 		if c, err := st.DocText(abs, 0, 0, 0); err == nil {
 			d.Title, d.Text = c.Title, c.Text
-			for _, p := range c.Pages {
+
+			// Pages come from TruePages, not from DocText's grouping.
+			//
+			// DocText groups fragments by their START page, so a fragment the
+			// segmenter stitched ACROSS a page boundary lands wholly under the
+			// page it began on and the next page gets no entry at all. On a
+			// 2-page record of survey that showed as one page in the UI, with
+			// page 2's EXISTING CORNERS table — every found monument and its
+			// offset from calculated position — folded invisibly into page 1.
+			//
+			// The text was never lost and search always found it. What was wrong
+			// was WHERE it appeared to be, which for a survey is most of the
+			// point: a monument call belongs to the sheet it is drawn on.
+			//
+			// TruePages exists for exactly this and says so in its own comment —
+			// it de-overlaps by offsets AND splits each fragment by its recorded
+			// page_spans. Nothing here needed writing; it needed calling.
+			pages := c.Pages
+			if tp, terr := st.TruePages(abs); terr == nil && len(tp) > 0 {
+				pages = make([]raglit.DocPageText, 0, len(tp))
+				for _, t := range tp {
+					pages = append(pages, raglit.DocPageText{Page: t.Page, Text: t.Text})
+				}
+			}
+			for _, p := range pages {
 				dp := DocDetailPage{Page: p.Page, Text: p.Text}
 				// Only offer an image when one was actually stored. A page comes
 				// from the FRAGMENT table and a page image from ocr_pages, and
