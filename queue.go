@@ -367,3 +367,33 @@ func (s *Store) recentAvgSeconds() float64 {
 	}
 	return total / float64(n)
 }
+
+// ForgetJob deletes a terminal job row and its stages.
+//
+// Not a cancel and not a retry: this is "that attempt is not coming back and I
+// do not want to be told about it again". The health report already drops rows
+// whose file is gone, because that is decidable; this is for the ones only a
+// person can call — a remote URL that is genuinely dead, a failure nobody is
+// going to chase.
+//
+// Refused on a live job. A pending job has a cancel and a running one is
+// mid-flight; deleting either loses work that is still in front of somebody.
+//
+// It removes evidence, and that is the point of restricting it to a person's
+// explicit act. What the row records is an ATTEMPT, not a fact about the corpus
+// — nothing cites it, and a log nobody can prune is one nobody reads.
+func (s *Store) ForgetJob(id int64) error {
+	res, err := s.db.Exec(
+		`DELETE FROM ingest_jobs WHERE id = ? AND state IN ('error','done')`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("raglit: job %d not forgettable (only errored or done jobs; a pending job is canceled, a running one is in flight)", id)
+	}
+	// job_stages has ON DELETE CASCADE, but foreign_keys is a per-connection
+	// pragma and this index has outlived a build where it was not set on all of
+	// them — which is how 140 orphan stage rows got here. Explicit costs nothing.
+	_, _ = s.db.Exec(`DELETE FROM job_stages WHERE job_id = ?`, id)
+	return nil
+}

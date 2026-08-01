@@ -59,9 +59,16 @@
   .prob { padding:.45rem .6rem; border-top:1px solid var(--line); }
   .prob .subj { font-family:ui-monospace,monospace; font-size:.85rem; word-break:break-all; }
   .prob .det { opacity:.75; font-size:.8rem; white-space:pre-wrap; word-break:break-word; margin-top:.15rem; }
-  .prob .fix { font-family:ui-monospace,monospace; font-size:.78rem; opacity:.85; margin-top:.2rem;
-               cursor:pointer; border:1px dashed var(--line); border-radius:4px; padding:.15rem .35rem; display:inline-block; }
-  .prob .fix:hover { border-style:solid; }
+  tr.focus > td { background:color-mix(in srgb, var(--run) 18%, transparent); }
+  .prob .acts { display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; margin-top:.35rem; }
+  .prob .act { font:inherit; font-size:.8rem; padding:.2rem .6rem; border-radius:4px;
+               border:1px solid var(--line); background:transparent; color:inherit; cursor:pointer; }
+  .prob .act:hover:not(:disabled) { border-color:currentColor; }
+  .prob .act:disabled { opacity:.5; cursor:progress; }
+  .prob .fix { font-family:ui-monospace,monospace; font-size:.75rem; opacity:.6;
+               cursor:pointer; border:1px dashed var(--line); border-radius:4px; padding:.15rem .35rem;
+               max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .prob .fix:hover { opacity:.9; border-style:solid; }
   .badge.text { color:#fff; background:var(--text-eng); }
   .badge.llm { color:#fff; background:var(--vision); }
   .badge.offline { color:var(--ink); background:var(--chip); border:1px solid var(--line); }
@@ -258,6 +265,9 @@ function parseHash(){
   const parts = raw.split("/").filter(Boolean).map(decodeURIComponent);
   if(!parts.length) return {tab:"dashboard", doc:null, sub:"pages"};
   const tab = TABS.includes(parts[0]) ? parts[0] : "dashboard";
+  // #/jobs/<id> focuses one job, so a health row can point AT the failure
+  // rather than at a tab the reader then has to search.
+  if(tab==="jobs") return {tab, doc:null, sub:"pages", job: parts[1]?Number(parts[1]):0};
   if(tab!=="documents" || parts.length<3) return {tab, doc:null, sub:"pages"};
   // documents / <index> / <path> [/ <sub>]. The path is one segment; anything
   // after it that names a sub-tab is one, and anything else is a hand-typed or
@@ -294,6 +304,12 @@ async function applyRoute(){
   route = r;
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.tab===r.tab));
   document.querySelectorAll("[data-pane]").forEach(p=>{ p.hidden = p.dataset.pane!==r.tab; });
+  if(r.tab==="jobs"){
+    // A health row links AT a job. Expand its stages and scroll to it, or the
+    // link lands on a table of two hundred rows and the reader searches by eye.
+    if(r.job){ openStages.add(r.job); await loadJobs(); focusJob(r.job); }
+    return;
+  }
   if(r.tab!=="documents") return;
   if(r.index && r.index!==curIndex){
     curIndex = r.index;
@@ -368,6 +384,16 @@ async function loadStatus(){
 }
 
 const openStages = new Set();
+
+// focusJob scrolls the linked job into view and marks it, so arriving from the
+// health tab lands ON the failure rather than near it.
+function focusJob(id){
+  const row = document.querySelector('tr[data-job="'+id+'"]');
+  if(!row) return;
+  row.scrollIntoView({block:"center"});
+  row.classList.add("focus");
+  setTimeout(()=>row.classList.remove("focus"), 2500);
+}
 async function loadJobs(){
   const d = await getJSON("/api/jobs?"+qi()+"&limit=200");
   const tb=$("#jobs"); tb.innerHTML="";
@@ -375,6 +401,7 @@ async function loadJobs(){
   if(!jobs.length){ const tr=el("tr"); const td=el("td","empty","No jobs yet."); td.colSpan=9; tr.appendChild(td); tb.appendChild(tr); return; }
   for(const j of jobs){
     const tr=el("tr");
+    tr.dataset.job=j.id;
     const stages=j.stages||[];
     // expand toggle
     const ex=el("td");
@@ -765,29 +792,94 @@ async function loadHealth(){
     const g=el("div","probgroup panel");
     g.appendChild(el("h3",null,title+" ("+mine.length+")"));
     g.appendChild(el("p","why",why));
+    // One set of grounds, shown once. Twenty-six rows repeating the same
+    // sentence is how the section a reader should skim becomes a wall.
+    const shared = mine.length>1 && mine.every(x=>x.detail===mine[0].detail) ? mine[0].detail : "";
+    if(shared) g.appendChild(el("p","why","reason: "+shared));
     for(const p of mine){
       const row=el("div","prob");
       const subj=el("div","subj");
-      // A document that exists is a link into its own review; a failed job's
-      // target may not be a document at all, so only link when it can be one.
-      if(kind!=="job-failed" && kind!=="withdrawn"){
-        const a=el("a",null,p.subject); a.href=hashFor("documents",p.subject,"pages"); subj.appendChild(a);
-      } else { subj.textContent=p.subject; }
+      // Every row goes somewhere. A document links into its own review; a failed
+      // job links at the JOB, which is where its stages and its error are. A row
+      // that names a problem and cannot be opened is the complaint this view
+      // exists to answer.
+      const a=el("a",null,p.subject);
+      a.href = (p.kind==="job-failed"||p.kind==="llm-retries") && p.job_id
+             ? "#/jobs/"+p.job_id
+             : hashFor("documents",p.subject,"pages");
+      subj.appendChild(a);
       if(p.job_id){ const b=el("span","badge","#"+p.job_id); b.style.marginLeft=".4rem"; subj.appendChild(b); }
       if(p.stage){ const b=el("span","badge error",p.stage); b.style.marginLeft=".4rem"; subj.appendChild(b); }
       row.appendChild(subj);
       // Verbatim. Summarising the endpoint's own words is how "increase the
       // physical batch size" became "status 500" and cost a week.
-      if(p.detail) row.appendChild(el("div","det",p.detail));
-      if(p.fix){
-        const f=el("div","fix",p.fix);
-        f.title="click to copy";
-        f.onclick=()=>{ navigator.clipboard?.writeText(p.fix); toast("copied"); };
-        row.appendChild(f);
+      if(p.detail && !shared) row.appendChild(el("div","det",p.detail));
+      const acts=actionsFor(p);
+      if(acts.length){
+        const bar=el("div","acts");
+        for(const [label,fn] of acts){
+          const b=el("button","act",label);
+          b.onclick=async()=>{ b.disabled=true; try{ await fn(); }catch(e){ toast(esc(e.message)); b.disabled=false; } };
+          bar.appendChild(b);
+        }
+        if(p.fix){
+          const f=el("span","fix",p.fix);
+          f.title="the same thing on the command line — click to copy";
+          f.onclick=()=>{ navigator.clipboard?.writeText(p.fix); toast("copied"); };
+          bar.appendChild(f);
+        }
+        row.appendChild(bar);
       }
       g.appendChild(row);
     }
     root.appendChild(g);
+  }
+}
+
+// Health actions. Each is the command the row already suggested, run — the
+// report named a fix and then made the reader retype it somewhere else.
+async function actJob(path, id, kind){
+  const label = kind==="retry" ? "queued" : "forgotten";
+  await post("/api/jobs/"+kind+"?"+qi(), {id:id});
+  toast("job #"+id+" "+label); await refreshAll();
+}
+async function actReread(path){
+  await post("/api/reread?"+qi()+"&path="+encodeURIComponent(path));
+  toast("re-reading"); await refreshAll();
+}
+async function actIngestFresh(path){
+  await post("/ingest?"+qi(), {targets:[path], fresh:true});
+  toast("queued"); await refreshAll();
+}
+async function actWithdraw(path){
+  // The grounds are the withdrawal. Asking for them here rather than defaulting
+  // is the point: a stock reason nobody wrote reads like a decision.
+  const reason = prompt("Grounds for withdrawing this document.\n\nIt stays on disk; it leaves the searchable corpus and stays out across re-ingest.", "");
+  if(reason===null) return;
+  if(!reason.trim()){ toast("a withdrawal needs grounds"); return; }
+  await post("/api/withdraw?"+qi()+"&path="+encodeURIComponent(path)+
+             "&reason="+encodeURIComponent(reason)+"&by="+encodeURIComponent(whoami()));
+  toast("withdrawn"); await refreshAll();
+}
+async function actRestore(path){
+  await post("/api/restore?"+qi()+"&path="+encodeURIComponent(path)+"&by="+encodeURIComponent(whoami()));
+  toast("restored — re-ingest to index it again"); await refreshAll();
+}
+function whoami(){ try{ return localStorage.getItem("raglit.by")||""; }catch(e){ return ""; } }
+
+// What can be DONE about each kind. Ordered with the repair first and the
+// give-up last, so the button under the cursor is the one that fixes it.
+function actionsFor(p){
+  switch(p.kind){
+    case "no-fragments":     return [["Re-ingest", ()=>actIngestFresh(p.subject)],
+                                     ["Withdraw…", ()=>actWithdraw(p.subject)]];
+    case "no-pages":         return [["Re-read",   ()=>actReread(p.subject)],
+                                     ["Withdraw…", ()=>actWithdraw(p.subject)]];
+    case "segment-degraded": return [["Re-read",   ()=>actReread(p.subject)]];
+    case "job-failed":       return [["Retry",     ()=>actJob(p.subject,p.job_id,"retry")],
+                                     ["Forget",    ()=>actJob(p.subject,p.job_id,"forget")]];
+    case "withdrawn":        return [["Restore",   ()=>actRestore(p.subject)]];
+    default:                 return [];
   }
 }
 

@@ -100,3 +100,73 @@ func TestReferencesToFindsCitations(t *testing.T) {
 		}
 	}
 }
+
+// Restore returns a document to the corpus. The withdrawal stays in the trail —
+// a decision reversed is still a decision that was made — and the ingest path
+// stops refusing it.
+func TestRestoreLetsADocumentBeIndexedAgain(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if err := s.Withdraw(Withdrawal{Path: "/drafts/x.md", Reason: "own advocacy"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.WithdrawnReason("/drafts/x.md"); !ok {
+		t.Fatal("premise broken: not withdrawn")
+	}
+	if err := s.Restore("/drafts/x.md"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.WithdrawnReason("/drafts/x.md"); ok {
+		t.Fatal("still withdrawn after a restore — the ingest path would keep refusing it")
+	}
+	// And the worker no longer skips it.
+	fetched := false
+	w := &Worker{Store: s, Fetcher: func(context.Context, string) (Fetched, error) {
+		fetched = true
+		return Fetched{Data: []byte("# hi"), Title: "x"}, nil
+	}}
+	if _, err := s.Enqueue("/drafts/x.md", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ProcessOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !fetched {
+		t.Fatal("a restored document was still refused at ingest")
+	}
+}
+
+// Forgetting a job is for the rows only a person can call dead. It must refuse
+// a live one: a pending job has a cancel, a running one is mid-flight, and
+// deleting either loses work still in front of somebody.
+func TestForgetJobRefusesLiveWork(t *testing.T) {
+	s := testStore(t)
+	id, err := s.Enqueue("/x.pdf", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ForgetJob(id); err == nil {
+		t.Fatal("a pending job was deleted — cancel is the operation for that")
+	}
+	if err := s.failJob(id, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	sl := s.NewStageLog(id)
+	sl.Fail("fetch", "", errString("boom"))
+	if err := s.ForgetJob(id); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ := s.Jobs("all", 100)
+	for _, j := range jobs {
+		if j.ID == id {
+			t.Fatal("the job row survived")
+		}
+	}
+	var stages int
+	if err := s.db.QueryRow(`SELECT count(*) FROM job_stages WHERE job_id = ?`, id).Scan(&stages); err != nil {
+		t.Fatal(err)
+	}
+	if stages != 0 {
+		t.Fatalf("%d stage row(s) orphaned by the delete", stages)
+	}
+}

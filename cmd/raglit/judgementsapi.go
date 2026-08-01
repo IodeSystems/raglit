@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -395,7 +396,7 @@ func correctPageOp(reg *raglit.Registry) func(context.Context, *correctIn) (*cor
 // would write the WRONG index besides.
 
 type withdrawIn struct {
-	Project string `query:"project" required:"true" doc:"project directory holding the audit trail"`
+	Project string `query:"project" doc:"project directory holding the audit trail (default: derived from the path)"`
 	Index   string `query:"index" doc:"index name (default: the default index)"`
 	Path    string `query:"path" required:"true" doc:"document to rule out of the corpus"`
 	Reason  string `query:"reason" required:"true" doc:"grounds — a withdrawal without them is a delete"`
@@ -417,7 +418,11 @@ func withdrawOp(reg *raglit.Registry) func(context.Context, *withdrawIn) (*withd
 		if strings.TrimSpace(in.Reason) == "" {
 			return nil, huma.Error400BadRequest("a withdrawal needs grounds — without them this is a delete")
 		}
-		js, err := openProjectJudgements(in.Project)
+		proj, err := resolveProjectDir(in.Project, in.Path)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		js, err := openProjectJudgements(proj)
 		if err != nil {
 			return nil, huma.Error400BadRequest("open judgements", err)
 		}
@@ -513,5 +518,72 @@ func problemsOp(reg *raglit.Registry) func(context.Context, *problemsIn) (*probl
 			out.Body.Problems = append(out.Body.Problems, p)
 		}
 		return out, nil
+	}
+}
+
+// Restoring a withdrawn document, daemon-side.
+//
+// The withdrawal stays in the trail — a decision reversed is still a decision
+// that was made — and a doc.restore is appended after it. Restoring does NOT
+// re-index: the file has to be ingested again, which is the caller's next step
+// and is now unblocked.
+
+type restoreIn struct {
+	Project string `query:"project" doc:"project directory holding the audit trail (default: derived from the path)"`
+	Index   string `query:"index" doc:"index name (default: the default index)"`
+	Path    string `query:"path" required:"true" doc:"document to return to the corpus"`
+	By      string `query:"by" doc:"who decided"`
+}
+
+func restoreOp(reg *raglit.Registry) func(context.Context, *restoreIn) (*okOut, error) {
+	return func(_ context.Context, in *restoreIn) (*okOut, error) {
+		proj, err := resolveProjectDir(in.Project, in.Path)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		js, err := openProjectJudgements(proj)
+		if err != nil {
+			return nil, huma.Error400BadRequest("open judgements", err)
+		}
+		defer js.Close()
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		if err := js.Restore(in.Path, in.By); err != nil {
+			return nil, huma.Error400BadRequest("record restore", err)
+		}
+		if err := st.Restore(in.Path); err != nil {
+			return nil, huma.Error500InternalServerError("apply restore", err)
+		}
+		out := &okOut{}
+		out.Body.OK = true
+		return out, nil
+	}
+}
+
+// resolveProjectDir finds the project a document belongs to.
+//
+// The caller names it when it knows — kgraph does, because its root IS that
+// directory. The UI does not: it has an index name and a document path, and an
+// index name is a namespace rather than a location. So the path answers instead:
+// a project is the nearest ancestor holding a .raglit/, which is the same rule
+// raglit.ProjectDir applies to a working directory.
+func resolveProjectDir(explicit, docPath string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if !filepath.IsAbs(docPath) {
+		return "", fmt.Errorf("no project given and %q is not an absolute path to derive one from", docPath)
+	}
+	for dir := filepath.Dir(docPath); ; {
+		if fi, err := os.Stat(filepath.Join(dir, ".raglit")); err == nil && fi.IsDir() {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no .raglit/ above %q — name the project explicitly", docPath)
+		}
+		dir = parent
 	}
 }
