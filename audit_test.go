@@ -2,14 +2,13 @@ package raglit
 
 import (
 	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 )
 
 func openJS(t *testing.T, dir string) *JudgementStore {
 	t.Helper()
-	js, err := OpenJudgements(filepath.Join(dir, "judgements.db"), AuditPath(dir))
+	js, err := OpenJudgements(AuditPath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +137,7 @@ func TestAnUnknownOpIsRefused(t *testing.T) {
 	if err := AppendAudit(AuditPath(dir), AuditEvent{Op: "slice.annotate"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenJudgements(filepath.Join(dir, "judgements.db"), AuditPath(dir)); err == nil {
+	if _, err := OpenJudgements(AuditPath(dir)); err == nil {
 		t.Error("an unknown op was applied as a no-op instead of refused")
 	}
 }

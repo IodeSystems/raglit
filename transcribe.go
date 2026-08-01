@@ -222,7 +222,7 @@ func correctionsForDoc(docPath string) map[int]PageCorrection {
 	if dir == "" {
 		return nil
 	}
-	js, err := OpenJudgements(JudgementsPath(dir), AuditPath(dir))
+	js, err := OpenJudgements(AuditPath(dir))
 	if err != nil {
 		return nil
 	}

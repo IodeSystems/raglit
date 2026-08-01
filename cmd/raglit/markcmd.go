@@ -37,7 +37,7 @@ func openJudgements() (*raglit.JudgementStore, error) {
 	if !ok {
 		return nil, fmt.Errorf("no .raglit/ found from here — run this inside a project (raglit init)")
 	}
-	js, err := raglit.OpenJudgements(raglit.JudgementsPath(dir), raglit.AuditPath(dir))
+	js, err := raglit.OpenJudgements(raglit.AuditPath(dir))
 	if err != nil {
 		return nil, err
 	}

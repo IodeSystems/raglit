@@ -50,9 +50,10 @@ type JudgementStore struct {
 // OpenJudgements reads a project's trail. A missing trail is a corpus nobody has
 // ruled on, which is the normal starting state.
 //
-// dbPath is accepted and ignored: callers still pass it, and the argument stays
-// so the signature does not churn while the concept is being removed.
-func OpenJudgements(dbPath, auditPath string) (*JudgementStore, error) {
+// The projection is gone. This answers from the trail, in memory, and there is
+// no second database to drift, catch up or rebuild — verdicts that DO want a
+// queryable projection now land in the index itself, see attestations.go.
+func OpenJudgements(auditPath string) (*JudgementStore, error) {
 	s := &JudgementStore{
 		audit:       auditPath,
 		marks:       map[string]Mark{},
@@ -326,6 +327,10 @@ func (s *JudgementStore) CoverageOf(parent string, pages int) (Coverage, error) 
 
 // JudgementsPath is retained so callers compile unchanged. The trail is the
 // store; there is no database.
+// JudgementsPath is retained as an alias for AuditPath.
+//
+// Deprecated: there is no judgements database. The name outlived the file it
+// named, and callers asking "where are the rulings" want the trail.
 func JudgementsPath(projectDir string) string { return AuditPath(projectDir) }
 
 var _ = time.Now

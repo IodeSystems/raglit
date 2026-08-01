@@ -58,7 +58,7 @@ func openProjectJudgements(project string) (*raglit.JudgementStore, error) {
 	if project == "" {
 		return nil, fmt.Errorf("project directory is required")
 	}
-	return raglit.OpenJudgements(raglit.JudgementsPath(project), raglit.AuditPath(project))
+	return raglit.OpenJudgements(raglit.AuditPath(project))
 }
 
 func listRelationsOp(_ context.Context, in *relationsIn) (*relationsOut, error) {

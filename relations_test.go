@@ -8,7 +8,7 @@ import (
 
 func tmpJudgements(t *testing.T) *JudgementStore {
 	t.Helper()
-	js, err := OpenJudgements(filepath.Join(t.TempDir(), "judgements.db"), filepath.Join(t.TempDir(), "raglit-audit.jsonl"))
+	js, err := OpenJudgements(filepath.Join(t.TempDir(), "raglit-audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,9 +51,8 @@ func TestAPairIsOneFactWhicheverWayItIsGiven(t *testing.T) {
 // to keep it on purpose, which is what judgement_log is for.
 func TestACorrectionReplacesTheAnswerAndKeepsTheHistory(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "judgements.db")
 	audit := filepath.Join(dir, "raglit-audit.jsonl")
-	js, err := OpenJudgements(path, audit)
+	js, err := OpenJudgements(audit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +64,7 @@ func TestACorrectionReplacesTheAnswerAndKeepsTheHistory(t *testing.T) {
 	}
 	js.Close()
 
-	back, err := OpenJudgements(path, audit)
+	back, err := OpenJudgements(audit)
 	if err != nil {
 		t.Fatal(err)
 	}

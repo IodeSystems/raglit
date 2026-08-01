@@ -12,7 +12,7 @@ import (
 // is a different filing that happens to share most of its text.
 func TestRulingsDistinguishACopyFromAVersion(t *testing.T) {
 	dir := t.TempDir()
-	js, err := raglit.OpenJudgements(filepath.Join(dir, "judgements.db"), filepath.Join(dir, "raglit-audit.jsonl"))
+	js, err := raglit.OpenJudgements(filepath.Join(dir, "raglit-audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestTheSuggestedCommandIsRunnable(t *testing.T) {
 // would bury the case where copies really do exist.
 func TestSilentWhenThereAreNoOtherCopies(t *testing.T) {
 	dir := t.TempDir()
-	js, err := raglit.OpenJudgements(filepath.Join(dir, "judgements.db"), filepath.Join(dir, "raglit-audit.jsonl"))
+	js, err := raglit.OpenJudgements(filepath.Join(dir, "raglit-audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

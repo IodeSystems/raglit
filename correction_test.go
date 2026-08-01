@@ -13,7 +13,7 @@ import (
 // re-reading and be RE-ISSUED into every later render.
 func TestACorrectionSurvivesAndIsReissued(t *testing.T) {
 	dir := t.TempDir()
-	js, err := OpenJudgements(filepath.Join(dir, "judgements.db"), AuditPath(dir))
+	js, err := OpenJudgements(AuditPath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestACorrectionSurvivesAndIsReissued(t *testing.T) {
 	js.Close()
 
 	// And it survives losing the database entirely, because it is in the trail.
-	back, err := OpenJudgements(filepath.Join(dir, "judgements.db"), AuditPath(dir))
+	back, err := OpenJudgements(AuditPath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestAnIngestWritebackReissuesCorrections(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	js, err := OpenJudgements(JudgementsPath(root), AuditPath(root))
+	js, err := OpenJudgements(AuditPath(root))
 	if err != nil {
 		t.Fatal(err)
 	}

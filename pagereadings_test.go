@@ -16,7 +16,7 @@ func TestReadingsAccumulateAndTheOldOneIsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	js, err := OpenJudgements("", AuditPath(dir))
+	js, err := OpenJudgements(AuditPath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
