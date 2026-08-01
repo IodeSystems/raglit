@@ -44,7 +44,21 @@ func runHttpd(subcmd string, args []string) error {
 	stop := fs.Bool("stop", false, "signal the running daemon (recorded in <root>/daemon.json) to shut down, then exit")
 	restart := fs.Bool("restart", false, "stop the running daemon, then relaunch it detached with these flags (picks up a rebuilt binary), and exit")
 	watchInterval := fs.Duration("watch-interval", 5*time.Second, "how often to re-scan watched projects for changes")
+	check := fs.Bool("check", false, "parse these flags and exit; nothing is started, nothing is opened")
 	fs.Parse(args)
+
+	// --check: prove a set of daemon flags is valid without starting anything.
+	//
+	// This exists for `raglit service install`, which writes those flags into a
+	// systemd unit. A unit whose ExecStart has a bad flag does not fail once —
+	// it fails, gets restarted, and fails again, so a typo becomes a crash loop
+	// instead of an error message. (That is not hypothetical: it took a sibling
+	// service down for three minutes and 138 restarts.) Validating through the
+	// REAL flag set, rather than a copy of it, is the only version that cannot
+	// drift away from what the daemon actually accepts.
+	if *check {
+		return nil
+	}
 
 	// --stop / --restart: act on the daemon recorded under this root and return
 	// (no server in THIS process — restart relaunches a detached one).

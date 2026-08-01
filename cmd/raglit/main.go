@@ -75,6 +75,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "daemon":
 		err = runDaemon(os.Args[2:])
+	case "service":
+		err = runService(os.Args[2:])
 	case "review":
 		err = runReview(os.Args[2:])
 	case "demo":
