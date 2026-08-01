@@ -572,28 +572,71 @@ function renderSeenIn(pane,d){
     pane.appendChild(el("div","empty","Nothing overlapping. Sketches may not be built for this index yet — POST /api/similar/build."));
     return;
   }
-  // Jaccard and BOTH containments, never one blended number: a deed inside a
-  // title commitment is ~1.0 contained one way and ~0.05 Jaccard, and a single
-  // score cannot say "wholly inside".
-  const t=el("table","seen");
-  t.innerHTML="<thead><tr><th>Document</th><th class=num>Jaccard</th><th class=num>of this</th>"+
-    "<th class=num>of that</th><th>Computed</th><th>Ruled</th></tr></thead>";
-  const tb=el("tbody");
   for(const h of hits){
-    const tr=el("tr");
-    const name=el("td"); name.textContent=h.path.split("/").pop();
-    const full=el("div","muted"); full.style.fontSize="11px"; full.textContent=h.path; name.appendChild(full);
-    tr.appendChild(name);
-    for(const v of [h.jaccard,h.contain_probe,h.contain_match]){
-      const td=el("td","num"); td.textContent=(v||0).toFixed(2); tr.appendChild(td);
+    const card=el("div","hit");
+    // The name is a LINK into that document. Finding an overlap and then having
+    // to go hunt for the other side in an alphabetical list is most of the work
+    // for none of the value.
+    const a=el("a",null,h.title||h.path.split("/").pop());
+    if(h.link) a.href=h.link;
+    card.appendChild(a);
+
+    const scores=el("div","meta");
+    // Three numbers, never one. A deed inside a title commitment is ~1.0
+    // contained one way and ~0.05 Jaccard; a blend of those says neither.
+    scores.textContent =
+      "jaccard "+(h.jaccard||0).toFixed(2)+
+      "  ·  "+Math.round((h.contain_probe||0)*100)+"% of this is in it"+
+      "  ·  "+Math.round((h.contain_match||0)*100)+"% of it is in this"+
+      (h.matched_chars?"  ·  "+h.matched_chars.toLocaleString()+" chars proved identical":"")+
+      (h.generic_chars?"  ·  "+h.generic_chars.toLocaleString()+" excluded as boilerplate":"");
+    card.appendChild(scores);
+
+    const verdict=el("div","meta");
+    verdict.textContent = "computed: "+(h.relation||"—")+"   ·   ruled: "+(h.ruling||"nobody has");
+    card.appendChild(verdict);
+
+    // WHERE the overlap sits, on both sides. This is the difference between
+    // "these look related" and "pages 21-24 of that declaration are this deed".
+    if(h.blocks && h.blocks.length){
+      const t=el("table","seen"); t.style.marginTop="8px";
+      t.innerHTML="<thead><tr><th>Here</th><th>There</th><th class=num>Agreement</th>"+
+        "<th class=num>Chars</th><th class=num>Runs</th></tr></thead>";
+      const tb=el("tbody");
+      for(const b of h.blocks){
+        const tr=el("tr");
+        tr.appendChild(el("td",null,b.here_pages));
+        tr.appendChild(el("td",null,b.there_pages));
+        const ag=el("td","num",(b.agreement||0).toFixed(2));
+        // Below 1.0 the two copies of this passage are NOT the same text.
+        if((b.agreement||0) < 0.999) ag.style.color="#e0a458";
+        tr.appendChild(ag);
+        tr.appendChild(el("td","num",(b.chars||0).toLocaleString()));
+        const runs=el("td","num",String(b.runs||0));
+        // A high run count on a short block means the copies differ constantly,
+        // which is itself the finding rather than a detail of the alignment.
+        if((b.runs||0) > 3) runs.style.color="#e0a458";
+        tr.appendChild(runs);
+        tb.appendChild(tr);
+      }
+      t.appendChild(tb); card.appendChild(t);
     }
-    tr.appendChild(el("td",null,h.relation||""));
-    const ruled=el("td"); ruled.textContent=h.ruling||"—";
-    if(!h.ruling) ruled.className="muted";
-    tr.appendChild(ruled);
-    tb.appendChild(tr);
+
+    // Numbers present on one side only, inside the aligned span. For a legal
+    // corpus this is the headline: two copies of a deed that agree at 0.97 and
+    // disagree about 25.00 versus 30.00 are not a housekeeping problem.
+    const nh=h.numeric_only_here||[], nt=h.numeric_only_there||[];
+    if(nh.length||nt.length){
+      const warn=el("div","prov"); warn.style.marginTop="8px";
+      warn.appendChild(el("div",null,"Numbers inside the matched region that appear on one side only:"));
+      if(nh.length) warn.appendChild(el("div","muted","only here: "+nh.join(", ")));
+      if(nt.length) warn.appendChild(el("div","muted","only there: "+nt.join(", ")));
+      card.appendChild(warn);
+    }
+
+    const full=el("div","meta"); full.textContent=h.path; card.appendChild(full);
+    pane.appendChild(card);
   }
-  t.appendChild(tb); pane.appendChild(t);
 }
 
 function renderHistory(pane,d){

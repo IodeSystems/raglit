@@ -409,8 +409,16 @@ func cap20(v []string) []string {
 	return append(append([]string{}, v[:20]...), fmt.Sprintf("(+%d more)", len(v)-20))
 }
 
+// pageRange renders a page span the way a person cites one.
+//
+// Zero means the side is not paginated — a markdown note, a transcription
+// sidecar, an email — and it says so. It used to print "p0", which looks like a
+// page number and sends somebody to find a page that does not exist.
 func pageRange(from, to int) string {
-	if from == to {
+	if from <= 0 && to <= 0 {
+		return "unpaginated"
+	}
+	if from == to || to <= 0 {
 		return fmt.Sprintf("p%d", from)
 	}
 	return fmt.Sprintf("p%d-%d", from, to)

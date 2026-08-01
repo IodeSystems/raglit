@@ -119,10 +119,51 @@ type SeenIn struct {
 	ContainMatch float64 `json:"contain_match"`
 	// Relation is what the COMPUTATION proposes; Ruling is what a person decided.
 	Relation string `json:"relation,omitempty"`
+
+	// Where the overlap actually sits, on both sides. A score says two documents
+	// share text; only this says WHICH text and WHERE, which is the difference
+	// between "these look related" and "pages 21-24 of that declaration are this
+	// deed".
+	Blocks []SeenBlock `json:"blocks,omitempty"`
+
+	// MatchedChars is how much was proved identical. Coverage alone cannot be
+	// acted on for a short document — 0.83 of a 400-character email is a
+	// signature block and 0.83 of a deed is a deed.
+	MatchedChars int `json:"matched_chars,omitempty"`
+
+	// GenericChars is how much of this document was excluded as corpus-generic.
+	// Reported rather than applied silently: masking is the one step that can
+	// hide a real duplicate, so a low score on a mostly-generic document has to
+	// be explainable.
+	GenericChars int `json:"generic_chars,omitempty"`
+
+	// NumericOnlyIn* are numbers inside the aligned span that appear on ONE side
+	// only. Two copies of a deed agreeing at 0.97 and disagreeing about "25.00"
+	// versus "30.00" is not a housekeeping detail, and averaging it into a score
+	// is how it gets missed.
+	NumericOnlyHere  []string `json:"numeric_only_here,omitempty"`
+	NumericOnlyThere []string `json:"numeric_only_there,omitempty"`
+
 	// Ruling is what a PERSON decided about the pair — copy, version, unrelated —
 	// or empty for a pair nobody has ruled on. Kept beside the scores rather than
 	// replacing them, because a score is a candidate and a ruling is an answer.
 	Ruling string `json:"ruling,omitempty"`
+
+	// Link is where to go and look at the other document.
+	Link string `json:"link,omitempty"`
+}
+
+// SeenBlock is one aligned region: where it sits on each side, and how well the
+// two copies actually agree across it.
+type SeenBlock struct {
+	HerePages  string  `json:"here_pages"`
+	TherePages string  `json:"there_pages"`
+	Agreement  float64 `json:"agreement"`
+	Chars      int     `json:"chars"`
+	// Runs is how many separate identical spans this was chained from. 1 means
+	// identical throughout; a high count on a short block means the two copies
+	// differ constantly, which is itself the finding.
+	Runs int `json:"runs"`
 }
 
 // AttestSummary is how far the review of this document has got.
@@ -218,11 +259,23 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 				}
 			}
 			for _, h := range rep.Matches {
-				d.SeenIn = append(d.SeenIn, SeenIn{
+				si := SeenIn{
 					Path: h.Path, Title: h.Title, Jaccard: h.Jaccard,
 					ContainProbe: h.ContainProbe, ContainMatch: h.ContainMatch,
 					Relation: string(h.Relation), Ruling: marks[h.Path],
-				})
+					MatchedChars: h.MatchedChars, GenericChars: h.GenericChars,
+					NumericOnlyHere: h.NumericOnlyInProbe, NumericOnlyThere: h.NumericOnlyInMatch,
+					Link: "#/documents/" + url.PathEscape(in.Index) + "/" +
+						url.PathEscape(h.Path) + "/transcript",
+				}
+				for _, b := range h.Blocks {
+					si.Blocks = append(si.Blocks, SeenBlock{
+						HerePages:  pageRange(b.ProbeFromPage, b.ProbeToPage),
+						TherePages: pageRange(b.MatchFromPage, b.MatchToPage),
+						Agreement:  b.Agreement(), Chars: b.MatchedChars, Runs: b.Runs,
+					})
+				}
+				d.SeenIn = append(d.SeenIn, si)
 			}
 		}
 
