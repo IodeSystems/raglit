@@ -188,6 +188,48 @@
   margin: 0; padding: .6rem .7rem; border-radius: 6px; background: #0f1115; line-height: 1.45; }
 .eviText .ctx { opacity: .55; }
 .eviText mark { background: #2b3a55; color: inherit; padding: 0 .1rem; border-radius: 2px; }
+
+/* ── mobile ──────────────────────────────────────────────────────────────
+   A review workbench is a two-handed desktop tool that has to work on a phone
+   in a car park. Everything below is that: bigger targets, less chrome, and the
+   two things a survey sheet needs — an orientation and a magnifier. */
+@media (max-width: 820px) {
+  main { padding: 10px 10px 40vh; }
+  .panel { padding: 12px 12px; }
+  .who { flex-wrap: wrap; gap: 6px; }
+  .acts { gap: 8px; }
+  /* Touch targets. 44px is the smallest a thumb hits reliably, and a mis-tap
+     here records a VERDICT — the one class of mistake this tool exists to
+     prevent. */
+  .acts button { min-height: 44px; padding: 10px 14px; font-size: 15px; flex: 1 1 46%; }
+  .acts button.primary { flex: 1 1 100%; }
+  .evbar { flex-wrap: wrap; gap: 6px; }
+  .ev select, .ev button { min-height: 36px; }
+  textarea#edText { min-height: 8rem; font-size: 16px; } /* 16px: iOS zooms below it */
+  input.lbl { max-width: 100%; font-size: 16px; }
+  .keys { display: none; }
+}
+
+/* ── where you are ────────────────────────────────────────────────────── */
+.posbar {
+  position: sticky; top: 0; z-index: 6; display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; margin: 0 -10px 10px; background: var(--bg);
+  border-bottom: 1px solid var(--line); font-size: 13px;
+}
+.posbar .count { font-family: var(--mono); white-space: nowrap; }
+.posbar .track { flex: 1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.posbar .fill { height: 100%; background: #5b9dd9; }
+.posbar .loc { color: var(--dim); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+
+/* ── image viewer: rotate, zoom, pan ──────────────────────────────────── */
+.viewer { position: relative; overflow: hidden; border: 1px solid var(--line);
+  border-radius: 4px; background: #fff; touch-action: none; height: 58vh; max-height: 620px; }
+.viewer img { position: absolute; left: 50%; top: 50%; transform-origin: center center;
+  max-width: none; user-select: none; -webkit-user-drag: none; }
+.vbar { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.vbar button { min-height: 34px; min-width: 40px; background: var(--card); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 4px; cursor: pointer; font-size: 14px; }
+.vbar .hint { color: var(--dim); font-size: 11px; }
 </style>
 
 <header>
@@ -196,6 +238,7 @@
     <span class="producer" id="producer"></span>
   </div>
   <div class="chips" id="chips"></div>
+  <div class="posbar" id="posbar" hidden></div>
   <div class="prov" id="prov" hidden></div>
   <div class="who" id="whoRow" hidden>
     <label for="by">Reviewing as</label>
@@ -319,6 +362,31 @@ function locatorLabel(u) {
   return "?";
 }
 
+// Where you are, pinned to the top.
+//
+// A hundred units of a survey look alike, the cards are long, and on a phone
+// two of them fill the screen — so the answer to "have I done this one" was
+// scrolling back to check. That is how a reviewer double-rules a unit or skips
+// one, and both corrupt the account of how much was reviewed.
+function renderPos() {
+  const bar = $("posbar");
+  if (!bar || !state.units || !state.units.length) { if (bar) bar.hidden = true; return; }
+  bar.hidden = false;
+  const n = state.units.length, at = Math.min(sel + 1, n);
+  const done = n - (state.stats ? state.stats.untouched : n);
+  const u = state.units[sel];
+  bar.innerHTML =
+    `<span class="count">${at}/${n}</span>` +
+    `<span class="track"><span class="fill" style="width:${Math.round(done * 100 / n)}%"></span></span>` +
+    `<span class="loc">${done} ruled</span>`;
+  if (u) {
+    const loc = document.createElement("span");
+    loc.className = "loc";
+    loc.textContent = locatorLabel(u.unit);
+    bar.appendChild(loc);
+  }
+}
+
 function renderChips() {
   const s = state.stats;
   const c = [
@@ -336,6 +404,7 @@ function renderChips() {
     html += `<span class="chip bad"><b>${state.orphaned.length}</b> orphaned verdicts</span>`;
   }
   $("chips").innerHTML = html;
+  renderPos();
 
   const p = $("prov");
   p.hidden = false;
@@ -472,7 +541,24 @@ function panelEl(u) {
     b.innerHTML = `${text}<kbd>${key}</kbd>`;
     b.onclick = fn;
     acts.appendChild(b);
+    return b; // returned so a caller can mark the primary action
   };
+  // The incremental pass, and the primary action on a phone.
+  //
+  // Everything else here rules and STAYS: on a desktop you move with j/k, which
+  // does not exist on a touch screen, so a reviewer working through a hundred
+  // units had to rule and then hunt for the next card. This affirms THIS unit
+  // under the stated standard and moves to the next in one tap — which is what
+  // "went through it" actually is, done one unit at a time instead of as a
+  // blanket claim over units nobody looked at.
+  //
+  // Deliberately not a blanket sweep: Blanket covers every unit unruled EARLIER
+  // IN THE LOG, which from the middle of a document means affirming the part you
+  // have not reached. That is the one thing a review must never quietly do.
+  const first = btn("✓ Affirm & next", "", async () => {
+    await verdict("affirmed");
+  });
+  first.classList.add("primary");
   // "Positively affirm", not "Confirm": this is the escalation for a claim
   // something depends on, not the baseline. Going through the recording and
   // accepting what needs no change is the sweep at the bottom.
@@ -544,6 +630,108 @@ async function loadEvidence(u, as) {
   paintEvidence(got);
 }
 
+
+// ── image viewer ────────────────────────────────────────────────────────────
+// A survey sheet is drawn at 90 degrees to the page and is six-point type. On a
+// desktop you squint; on a phone you simply cannot read it, and a reviewer who
+// cannot read the artifact cannot honestly rule on it — which makes an
+// unreadable viewer a correctness problem, not a comfort one.
+//
+// Rotation is remembered PER ASSET. A plan sheet is rotated the same way on
+// every one of its regions, and making somebody re-orient each crop is how they
+// stop looking at crops.
+const viewRot = {};
+function rotKey(a) { return "attest.rot:" + a; }
+function getRot(a) {
+  if (viewRot[a] === undefined) {
+    const v = parseInt(localStorage.getItem(rotKey(a)) || "0", 10);
+    viewRot[a] = isNaN(v) ? 0 : ((v % 360) + 360) % 360;
+  }
+  return viewRot[a];
+}
+function setRot(a, deg) {
+  viewRot[a] = ((deg % 360) + 360) % 360;
+  try { localStorage.setItem(rotKey(a), String(viewRot[a])); } catch {}
+}
+
+function mountViewer(out, url) {
+  const asset = state.asset ? state.asset.id : "";
+  const box = document.createElement("div");
+  box.className = "viewer";
+  const img = document.createElement("img");
+  img.src = url; img.alt = "";
+  box.appendChild(img);
+  out.innerHTML = "";
+  out.appendChild(box);
+
+  let scale = 1, tx = 0, ty = 0, fit = 1;
+  const apply = () => {
+    img.style.transform =
+      `translate(-50%,-50%) translate(${tx}px,${ty}px) rotate(${getRot(asset)}deg) scale(${scale})`;
+  };
+  const fitNow = () => {
+    const rot = getRot(asset), swap = rot === 90 || rot === 270;
+    const iw = swap ? img.naturalHeight : img.naturalWidth;
+    const ih = swap ? img.naturalWidth : img.naturalHeight;
+    if (!iw || !ih) return;
+    fit = Math.min(box.clientWidth / iw, box.clientHeight / ih);
+    scale = fit; tx = 0; ty = 0; apply();
+  };
+  img.addEventListener("load", fitNow);
+  if (img.complete) fitNow();
+
+  // Pointer events rather than touch events: one code path covers a finger, a
+  // trackpad and a mouse, and two fingers give pinch without a gesture library.
+  const pts = new Map();
+  let base = 0, baseScale = 1;
+  box.addEventListener("pointerdown", e => {
+    box.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    if (pts.size === 2) { base = spread(); baseScale = scale; }
+  });
+  box.addEventListener("pointermove", e => {
+    const p0 = pts.get(e.pointerId);
+    if (!p0) return;
+    const dx = e.clientX - p0.x, dy = e.clientY - p0.y;
+    pts.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    if (pts.size === 1) { tx += dx; ty += dy; apply(); }
+    else if (pts.size === 2 && base > 0) {
+      scale = Math.max(fit * 0.5, Math.min(fit * 12, baseScale * (spread() / base)));
+      apply();
+    }
+  });
+  const up = e => { pts.delete(e.pointerId); if (pts.size < 2) base = 0; };
+  box.addEventListener("pointerup", up);
+  box.addEventListener("pointercancel", up);
+  box.addEventListener("wheel", e => {
+    e.preventDefault();
+    scale = Math.max(fit * 0.5, Math.min(fit * 12, scale * (e.deltaY < 0 ? 1.12 : 0.89)));
+    apply();
+  }, {passive: false});
+  function spread() {
+    const [a, b] = [...pts.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  const bar = document.createElement("div");
+  bar.className = "vbar";
+  const mk = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label; b.title = title;
+    b.onclick = fn; bar.appendChild(b); return b;
+  };
+  mk("⟲", "rotate left", () => { setRot(asset, getRot(asset) - 90); fitNow(); });
+  mk("⟳", "rotate right", () => { setRot(asset, getRot(asset) + 90); fitNow(); });
+  mk("−", "zoom out", () => { scale = Math.max(fit * 0.5, scale / 1.4); apply(); });
+  mk("+", "zoom in", () => { scale = Math.min(fit * 12, scale * 1.4); apply(); });
+  mk("fit", "fit to view", fitNow);
+  const hint = document.createElement("span");
+  hint.className = "hint";
+  hint.textContent = "drag to pan · pinch or scroll to zoom · rotation is remembered";
+  bar.appendChild(hint);
+  out.appendChild(bar);
+}
+
 function paintEvidence(g) {
   const note = $("evNote"), out = $("evOut");
   if (!note) return;
@@ -560,7 +748,7 @@ function paintEvidence(g) {
   // meant a TEXT crop fell through to an <audio> element: an empty player on a
   // markdown file, telling a reviewer there is something to hear.
   if (g.type.startsWith("image/")) {
-    out.innerHTML = `<img src="${g.url}" alt="">`;
+    mountViewer(out, g.url);
   } else if (g.type.startsWith("audio/")) {
     out.innerHTML = `<audio controls src="${g.url}"></audio>`;
   } else {
@@ -736,6 +924,13 @@ function select(i) {
   if (i < 0 || i >= state.units.length) return;
   flushCorrection();
   sel = i; selId = state.units[i].unit.id;
+  // Bring it to the top rather than leaving it wherever the previous card
+  // ended. On a phone the next unit is otherwise below the fold and the reviewer
+  // is looking at the tail of the one they just ruled.
+  requestAnimationFrame(() => {
+    const el = document.querySelector(".unit.sel") || document.querySelector(".panel");
+    if (el && el.scrollIntoView) el.scrollIntoView({block: "start", behavior: "smooth"});
+  });
   render();
 }
 const next = () => select(Math.min(sel + 1, state.units.length - 1));
