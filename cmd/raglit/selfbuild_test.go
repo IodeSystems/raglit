@@ -86,3 +86,58 @@ func TestSelfUpdateGuards(t *testing.T) {
 		t.Error("RAGLIT_NO_AUTOBUILD=1 did not opt out")
 	}
 }
+
+// The daemon's guard has to be laxer than the CLI's, or it tracks its source
+// once and never again: an auto-started daemon inherits RAGLIT_CHILD from the
+// CLI that spawned it, and a daemon that re-execs would set AUTOBUILD_DONE.
+func TestDaemonSelfUpdateOutlivesTheOneShotGuards(t *testing.T) {
+	old := srcDir
+	t.Cleanup(func() { srcDir = old })
+	srcDir = "/somewhere"
+
+	for _, env := range []string{"RAGLIT_CHILD", "RAGLIT_AUTOBUILD_DONE"} {
+		t.Setenv(env, "1")
+		if selfUpdateEnabled() {
+			t.Errorf("%s must still stop the one-shot CLI path", env)
+		}
+		if !daemonSelfUpdateEnabled() {
+			t.Errorf("%s disabled the daemon's watch — it would track source once, or never", env)
+		}
+		t.Setenv(env, "")
+	}
+	t.Setenv("RAGLIT_NO_AUTOBUILD", "1")
+	if daemonSelfUpdateEnabled() {
+		t.Error("RAGLIT_NO_AUTOBUILD=1 did not opt the daemon out")
+	}
+	t.Setenv("RAGLIT_NO_AUTOBUILD", "")
+	srcDir = ""
+	if daemonSelfUpdateEnabled() {
+		t.Error("a release build (no source stamp) would watch for source it does not have")
+	}
+}
+
+// Staleness has to be measured against the RUNNING image, not the file's mtime.
+// `make install` rewrites the file, leaving it newer than the source and
+// identical to nothing the daemon is executing — measured by mtime alone it
+// reads "up to date" while serving an image two commits behind, which is what
+// it did.
+func TestHashFileSeesAReplacedBinary(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "raglit")
+	if err := os.WriteFile(p, []byte("build one"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := hashFile(p)
+	if first == "" {
+		t.Fatal("hashFile could not read a file it just wrote")
+	}
+	// Rewritten with a NEWER mtime, as an install would leave it.
+	if err := os.WriteFile(p, []byte("build two"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if hashFile(p) == first {
+		t.Fatal("a replaced binary hashed the same — the daemon would never adopt it")
+	}
+	if hashFile(filepath.Join(t.TempDir(), "absent")) != "" {
+		t.Error("a missing file returned a hash")
+	}
+}

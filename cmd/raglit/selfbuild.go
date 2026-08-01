@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -154,41 +157,82 @@ func buildInput(name string) bool {
 // idle. In practice that is seconds after a batch finishes, and never in the
 // middle of one.
 func daemonSelfUpdate(idle func() bool) {
-	if !selfUpdateEnabled() {
+	if !daemonSelfUpdateEnabled() {
 		return
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return
 	}
+	// The hash of the image THIS PROCESS is executing, taken before anything can
+	// replace the file. Comparing source against the file's mtime is not enough:
+	// `make install` and any CLI self-update rewrite the file, leaving it newer
+	// than the source and identical to nothing this process is running. Measured
+	// against mtime alone the daemon reads "up to date" while serving an image
+	// two commits behind — which is exactly what it did.
+	running := hashFile(exe)
 	pending := false
 	for range time.Tick(daemonWatchInterval) {
 		if !pending {
-			st, err := os.Stat(exe)
-			if err != nil || !sourceNewerThan(srcDir, st.ModTime()) {
-				continue
+			if st, err := os.Stat(exe); err == nil && sourceNewerThan(srcDir, st.ModTime()) {
+				fmt.Fprintln(os.Stderr, "raglit daemon: source changed — rebuilding…")
+				if err := rebuildRaglit(srcDir, exe); err != nil {
+					fmt.Fprintf(os.Stderr, "raglit daemon: rebuild failed (%v) — staying on the current build\n", err)
+					// Not retried on a timer: a tree that does not compile is the
+					// normal state mid-edit, and a warning every few seconds is one
+					// nobody reads. The next source change tries again.
+					continue
+				}
 			}
-			fmt.Fprintln(os.Stderr, "raglit daemon: source changed — rebuilding…")
-			if err := rebuildRaglit(srcDir, exe); err != nil {
-				fmt.Fprintf(os.Stderr, "raglit daemon: rebuild failed (%v) — staying on the current build\n", err)
-				// Not retried on a timer: a tree that does not compile is the normal
-				// state mid-edit, and a warning every two seconds is one nobody
-				// reads. The next source change tries again.
-				continue
+			// Adopt whatever is on disk, whoever built it — this daemon's own
+			// rebuild, a `make install`, or a CLI that self-updated. The question
+			// is only ever "is the file different from what I am running", and it
+			// has one answer for all three.
+			if h := hashFile(exe); h != "" && running != "" && h != running {
+				pending = true
+				fmt.Fprintln(os.Stderr, "raglit daemon: a newer binary is on disk — restarting when the queue is idle")
 			}
-			pending = true
-			fmt.Fprintln(os.Stderr, "raglit daemon: rebuilt — restarting when the queue is idle")
 		}
-		if !idle() {
+		if !pending || !idle() {
 			continue
 		}
 		fmt.Fprintln(os.Stderr, "raglit daemon: queue idle — restarting into the new build")
-		env := append(os.Environ(), "RAGLIT_AUTOBUILD_DONE=1")
-		if err := syscall.Exec(exe, os.Args, env); err != nil {
+		// Deliberately NOT setting RAGLIT_AUTOBUILD_DONE. That guard bounds the
+		// CLI to one re-exec per invocation; on a process that lives for days it
+		// would mean the daemon tracks its source exactly once and then never
+		// again. Nothing loops here without it: after the exec the running image
+		// and the file agree, and the file is newer than the source.
+		if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
 			fmt.Fprintf(os.Stderr, "raglit daemon: re-exec failed (%v) — staying up\n", err)
 			pending = false
 		}
 	}
+}
+
+// daemonSelfUpdateEnabled is deliberately laxer than the CLI's guard.
+//
+// RAGLIT_CHILD and RAGLIT_AUTOBUILD_DONE exist to stop a one-shot command
+// rebuilding twice or rebuilding what its parent just built. Neither applies to
+// a process that lives for days: an auto-started daemon inherits RAGLIT_CHILD
+// from the CLI that spawned it, and a daemon that re-execs sets AUTOBUILD_DONE —
+// so honouring them would mean the daemon tracks its source once, or never.
+func daemonSelfUpdateEnabled() bool {
+	return srcDir != "" && os.Getenv("RAGLIT_NO_AUTOBUILD") != "1"
+}
+
+// hashFile is the sha256 of a file, or "" when it cannot be read. Uncached, on
+// purpose: the whole question is whether the bytes on disk changed.
+func hashFile(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // daemonWatchInterval is how often the daemon looks for source changes. dun uses
