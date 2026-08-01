@@ -92,3 +92,23 @@ func TestRetryTallyNilIsSafe(t *testing.T) {
 		t.Fatal("nil tally returned a non-empty summary")
 	}
 }
+
+// Observed on a real job: the row read "last: 200 <!DOCTYPE html>", which
+// describes nothing that happened. The status came from a RECOVERY and the body
+// from an earlier 5xx, because each field was taken from whichever event set it
+// last. They are only meaningful together, and only from the event that failed.
+func TestRetryTallyDoesNotMixStatusAndBodyAcrossEvents(t *testing.T) {
+	var tally RetryTally
+	tally.Observe(llm.RetryEvent{Kind: llm.Retry5xx, Status: 503, Body: "<!DOCTYPE html>"})
+	tally.Observe(llm.RetryEvent{Kind: llm.RetryRecovered, Status: 200})
+	s := tally.Take()
+	if s.LastStatus != 503 {
+		t.Errorf("LastStatus = %d; a recovery overwrote the failure it recovered from", s.LastStatus)
+	}
+	if !strings.Contains(s.Detail(), "503") {
+		t.Errorf("detail does not name the failure status: %q", s.Detail())
+	}
+	if strings.Contains(s.Detail(), "200") {
+		t.Errorf("detail reports a success as the last failure: %q", s.Detail())
+	}
+}

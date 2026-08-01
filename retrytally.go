@@ -118,6 +118,13 @@ func (t *RetryTally) Observe(e llm.RetryEvent) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Status and body are recorded TOGETHER and only from a failure.
+	//
+	// Taken field by field across every event, a recovery's 200 overwrote the
+	// status while the body stayed from an earlier 5xx, and a real stage row read
+	// "last: 200 <!DOCTYPE html>" — which describes nothing that happened. The
+	// pair is only meaningful as a pair, and only from the event that failed.
+	failed := true
 	switch e.Kind {
 	case llm.Retry429:
 		t.s.N429++
@@ -125,20 +132,18 @@ func (t *RetryTally) Observe(e llm.RetryEvent) {
 		t.s.N5xx++
 	case llm.RetryTransport:
 		t.s.NTransport++
-	case llm.RetryRecovered:
-		t.s.Recovered++
 	case llm.RetryGiveUp:
 		t.s.GaveUp++
+	case llm.RetryRecovered:
+		t.s.Recovered++
+		failed = false
 	}
 	t.s.Waited += e.Delay
 	if e.Elapsed > t.s.Worst {
 		t.s.Worst = e.Elapsed
 	}
-	if e.Status > 0 {
-		t.s.LastStatus = e.Status
-	}
-	if e.Body != "" {
-		t.s.LastBody = e.Body
+	if failed && e.Status > 0 {
+		t.s.LastStatus, t.s.LastBody = e.Status, e.Body
 	}
 	if e.BP != nil && e.BP.Waiting > t.s.MaxAhead {
 		t.s.MaxAhead = e.BP.Waiting
