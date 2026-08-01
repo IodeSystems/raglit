@@ -100,6 +100,18 @@ type FragConfig struct {
 	// model's own tokenizer, this corpus runs 4.66 characters per token on prose
 	// and 1.16 on a survey legal description.
 	TokenCounter TokenCounter
+	// EmbedLimitTokens and EmbedTokenCounter are the same pair for the EMBEDDER,
+	// and they are a separate model with a separate tokenizer — nomic-embed-text
+	// answers in BERT ids where the chat model answers in its own.
+	//
+	// This is the limit that actually refused documents. EmbedLimit above is a
+	// character number converted from the embedder's 8192-token context at an
+	// assumed two characters per token, i.e. 16128 — and a scanned court brief
+	// reaches 10240 tokens inside that, so the fragment was allowed, sent, and
+	// refused with a 500 that failed the whole document at the embed stage.
+	// Characters cannot express this limit; only tokens can.
+	EmbedLimitTokens  int
+	EmbedTokenCounter TokenCounter
 }
 
 // fragMode names: text-overlap (deterministic windows) vs llm-seg (a VLM already
@@ -228,12 +240,30 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		embedDone = make(chan embedResult, 1)
 		go runStagedEmbed(ctx, s.embedder, embedCh, embedDone)
 	}
+	// The embedder's ceiling, enforced HERE because this is the only point every
+	// fragment passes through on every path.
+	//
+	// It used to be enforced twice and in the wrong unit: SplitOversized bounded
+	// the llm-seg path in characters, and the deterministic windower bounded
+	// itself by a window that was the same character number. Neither is what the
+	// embedder counts. A document that fell back from llm-seg to the windower —
+	// which is exactly what a hard document does — took the path with no
+	// token-level check at all, and its first dense fragment failed the whole
+	// ingest at the embed stage with "input (10240 tokens) is too large".
+	embedBudget := NewTokenBudget(ctx, fc.EmbedTokenCounter, fc.EmbedLimitTokens)
 	var frags []stagedFrag
+	ordByPage := map[int]int{}
 	sink := func(f stagedFrag) {
-		idx := len(frags)
-		frags = append(frags, f)
-		if embedCh != nil {
-			embedCh <- embedItem{idx: idx, text: f.text}
+		for _, piece := range splitForEmbed(ctx, embedBudget, f) {
+			// Renumbered because a split makes the producer's ord wrong: ord locates
+			// a fragment within its page, and two pieces cannot share one.
+			piece.ord = ordByPage[piece.page]
+			ordByPage[piece.page]++
+			idx := len(frags)
+			frags = append(frags, piece)
+			if embedCh != nil {
+				embedCh <- embedItem{idx: idx, text: piece.text}
+			}
 		}
 	}
 	drainEmbed := func() {

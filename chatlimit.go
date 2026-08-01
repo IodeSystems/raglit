@@ -96,6 +96,49 @@ func (s *Store) ChatInputLimitTokens(ctx context.Context, p ContextProber, model
 	return n
 }
 
+// embedLimitTokensKey names the stored answer for one embed model.
+func embedLimitTokensKey(model string) string { return "embed_limit_tokens:" + model }
+
+// EmbedLimitTokens returns what the embed model accepts as one input, in tokens.
+//
+// The limit that actually refused documents. EmbedLimitChars answers the same
+// question in characters, converted from this number at two characters per
+// token — 16128 for an 8192-token embedder. A scanned court brief reaches 10240
+// tokens inside 16128 characters, so the fragment passed every check raglit had
+// and was refused by the endpoint:
+//
+//	input (10240 tokens) is too large to process.
+//	increase the physical batch size (current batch size: 8192)
+//
+// which failed the whole document at the embed stage, after its OCR and its
+// segmentation had already been paid for.
+//
+// Note this is a DIFFERENT model from the chat one, with a different tokenizer
+// and a much smaller window — 8192 against 180224 on this endpoint. Asking the
+// chat model's limit and applying it here would be off by twenty-two times.
+func (s *Store) EmbedLimitTokens(ctx context.Context, p ContextProber, model string, configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	if p == nil || model == "" {
+		return 0
+	}
+	key := embedLimitTokensKey(model)
+	if v, ok := s.Meta(key); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	n, ok := p.ContextWindow(ctx)
+	if !ok || n <= 0 {
+		return 0
+	}
+	// No share taken here: an embedder returns a vector, not text, so the whole
+	// window is available to the input.
+	_ = s.SetMeta(key, strconv.Itoa(n), time.Now().Unix())
+	return n
+}
+
 // chatInputShare is how much of the context window the INPUT may use.
 //
 // The segmenter's answer is its input re-emitted as JSON, so the reply is the

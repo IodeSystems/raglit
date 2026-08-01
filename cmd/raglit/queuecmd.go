@@ -70,16 +70,33 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	// about the endpoint, and leaving it at zero means "no cap", which is how
 	// fragments came to be sized by taste with nothing checking them.
 	embedLimit := cfg.EmbedLimitChars
+	embedLimitTokens, embedCounter := 0, raglit.TokenCounter(nil)
 	if *lf.embedModel != "" {
+		ec := lf.embedClientForProbe()
 		embedLimit = store.EmbedLimitChars(context.Background(),
-			raglit.NewEmbedder(lf.embedClientForProbe(), *lf.embedModel), cfg.EmbedLimitChars)
+			raglit.NewEmbedder(ec, *lf.embedModel), cfg.EmbedLimitChars)
+		// The character number above is a conversion; this is the limit itself.
+		// A fragment inside the character ceiling can still be past the token one
+		// — 16128 characters of a scanned brief is 10240 tokens against an 8192
+		// window — and that refusal fails the document at the embed stage.
+		embedLimitTokens = store.EmbedLimitTokens(context.Background(), ec,
+			*lf.embedModel, cfg.EmbedLimitTokens)
+		if ec.HasTokenizer(context.Background()) {
+			embedCounter = ec
+		}
+		if embedLimitTokens > 0 {
+			log.Printf("raglit: embed limit model=%s %d tokens (exact counting: %v)",
+				*lf.embedModel, embedLimitTokens, embedCounter != nil)
+		}
 	}
 	w.Frag = raglit.FragConfig{
-		Window:       cfg.FragWindow,
-		Stride:       cfg.FragStride,
-		Floor:        cfg.FragFloor,
-		EmbedLimit:   embedLimit,
-		FigurePrompt: raglit.FigurePromptVersion(),
+		Window:            cfg.FragWindow,
+		Stride:            cfg.FragStride,
+		Floor:             cfg.FragFloor,
+		EmbedLimit:        embedLimit,
+		EmbedLimitTokens:  embedLimitTokens,
+		EmbedTokenCounter: embedCounter,
+		FigurePrompt:      raglit.FigurePromptVersion(),
 	}
 	if *lf.visionModel != "" {
 		client := lf.visionClient()

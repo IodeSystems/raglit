@@ -215,6 +215,75 @@ func suffixRuneBoundary(s string, keep int) int {
 	return keep
 }
 
+// splitForEmbed cuts a staged fragment until every piece is inside the embed
+// model's token limit, returning it unchanged when it already is.
+//
+// Splitting rather than truncating, for the reason SplitOversized gives: a
+// truncated fragment is indexed, searchable, and quietly missing its tail, which
+// is the same class of failure as a transcription that reads complete. A split
+// fragment keeps every character; only the boundary is arbitrary.
+//
+// pageSpans are carried across the cut. They are what resolves a hit inside a
+// stitched fragment to the page it actually sits on, and dropping them on the
+// pieces would answer a search with the wrong page number rather than no answer
+// at all.
+func splitForEmbed(ctx context.Context, b *TokenBudget, f stagedFrag) []stagedFrag {
+	if b.Unlimited() || f.text == "" {
+		return []stagedFrag{f}
+	}
+	if b.Tokens(ctx, f.text) <= b.limit {
+		return []stagedFrag{f}
+	}
+	var out []stagedFrag
+	off := 0
+	rest := f.text
+	for rest != "" {
+		take := b.Fit(ctx, "", rest, embedMinTake)
+		piece := f
+		piece.text = rest[:take]
+		piece.pageSpans = spansForSlice(f.pageSpans, off, off+take)
+		// Source offsets belong to the text-overlap path and describe a span of
+		// the original document; shift them with the cut so they keep meaning.
+		if f.endOff > f.startOff {
+			piece.startOff = f.startOff + off
+			piece.endOff = piece.startOff + take
+		}
+		out = append(out, piece)
+		off += take
+		rest = rest[take:]
+	}
+	return out
+}
+
+// embedMinTake is the smallest piece worth emitting, and the guarantee that the
+// split terminates.
+const embedMinTake = 500
+
+// spansForSlice rebases the page boundaries that fall inside [from,to) and keeps
+// the page in effect at the start, so a piece always knows which page it opens
+// on.
+func spansForSlice(spans []PageSpan, from, to int) []PageSpan {
+	if len(spans) == 0 {
+		return nil
+	}
+	open := spans[0].Page
+	var out []PageSpan
+	for _, s := range spans {
+		switch {
+		case s.Off <= from:
+			open = s.Page
+		case s.Off < to:
+			out = append(out, PageSpan{Off: s.Off - from, Page: s.Page})
+		}
+	}
+	// A piece entirely inside one page needs no spans; the fragment's own page
+	// already says where it is.
+	if len(out) == 0 {
+		return nil
+	}
+	return append([]PageSpan{{Off: 0, Page: open}}, out...)
+}
+
 // runeBoundary moves n back to a rune start, so a cut never splits a character
 // into bytes the model reads as U+FFFD.
 func runeBoundary(s string, n int) int {

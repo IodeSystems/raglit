@@ -19,7 +19,10 @@ func TestReclaimOrphanedJobsAbortsOnlyDeadOwners(t *testing.T) {
 	// A pid that cannot be alive, one this process owns, and pid 0 — the
 	// pre-column state, whose owner is unknown but provably not us.
 	const deadPID = 0x7FFFFFFE
-	for _, tc := range []struct{ url string; pid int }{
+	for _, tc := range []struct {
+		url string
+		pid int
+	}{
 		{"file:///dead.pdf", deadPID},
 		{"file:///mine.pdf", os.Getpid()},
 		{"file:///legacy.pdf", 0},

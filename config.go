@@ -20,6 +20,11 @@ type Config struct {
 	// fragmenter's ceiling is bounded by the model, not by taste. 0 = not probed
 	// (the fragmenter falls back to FragWindow uncapped).
 	EmbedLimitChars int `json:"embed_limit_chars,omitempty"`
+	// EmbedLimitTokens is the same limit in the unit the embedder counts in, and
+	// it is the one that decides. EmbedLimitChars is a conversion of it at two
+	// characters per token; a scanned court brief is 1.57, so a fragment can sit
+	// inside the character ceiling and still be refused. 0 = not established.
+	EmbedLimitTokens int `json:"embed_limit_tokens,omitempty"`
 	// SegmentInputLimitTokens caps ONE segmentation REQUEST — prompt, carried-over
 	// fragment and page text — to what the chat endpoint accepts, asked once and
 	// stored (the server's own n_ctx where it states one, else llm.DiscoverContext).
