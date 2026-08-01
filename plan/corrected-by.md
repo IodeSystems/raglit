@@ -7,6 +7,8 @@ Status: proposed 2026-08-01. Not built.
 > "do we have a concept of 'corrected-by'? … so, a version can be refuted, OR the
 > document can be corrected. either way … I guess corrected can be version or
 > whole document."
+>
+> "perhaps refuted is too specific, corrected-by or refined-by?"
 
 ## What exists today
 
@@ -43,11 +45,13 @@ Two different relations in one sheet:
 
 1. **It corrects a different instrument.** The 2008 Summit survey is not a version
    of the 2022 Halvor survey — different surveyor, different year, different
-   document — and 2022 says 2008 put the boundary in the wrong place. `MarkCopy`
-   is wrong, `MarkVersion` is wrong, `MarkUnrelated` is wrong. The pair currently
-   computes as `overlap` and rules as nothing.
-2. **It refutes ONE NOTE of another document.** Not the whole of AF 202203010021 —
-   one surveyor's note about a shed. Nothing in the vocabulary attaches to a part.
+   document — and 2022 says 2008 put the boundary in the wrong place. That is a
+   claim of ERROR, so `corrected-by`. `MarkCopy` is wrong, `MarkVersion` is wrong,
+   `MarkUnrelated` is wrong; the pair currently computes as `overlap` and rules as
+   nothing.
+2. **It corrects ONE NOTE of another document.** Not the whole of AF 202203010021 —
+   one surveyor's note about a shed. Nothing in the vocabulary attaches to a part,
+   and note that the rest of that survey is untouched by it.
 
 Both matter to the matter: which survey states the boundary correctly is the
 dispute, and a corpus that cannot record "this one corrects that one" leaves the
@@ -58,13 +62,30 @@ answer in a person's head.
 A relation with **direction** and a **grain**, separate from the same-instrument
 question `MarkCopy`/`MarkVersion` answers.
 
-- `corrects` / `corrected-by` — instrument A says instrument B is wrong about
-  something and states the replacement. Directional; the pair is not symmetric
-  and normalizing it away would lose the whole content.
-- `refutes` — A says B is wrong WITHOUT replacing it. A declaration contradicting
-  an exhibit; a note saying a prior note is mistaken. Distinct from `corrects`
-  because "wrong" and "wrong, and here is the right answer" are different
-  evidentiary states.
+- **`corrected-by`** — the later instrument says the earlier is WRONG and states
+  the replacement. An assertion of error.
+- **`refined-by`** — the later supersedes WITHOUT asserting error. More field
+  work, better instruments, a re-survey that agrees and is more precise, a
+  re-record that adds a parcel number. The earlier was not wrong; the later is
+  better.
+
+Both directional: the pair is not symmetric and normalizing it away would lose
+the whole content.
+
+**Why not `refutes`.** That was the first draft's second kind and it is too
+strong. Refutation asserts falsity, and most supersession in a records corpus is
+not that — a 2022 re-survey with better instruments is not calling the 2008
+surveyor a liar, and a re-record that revises a parcel number corrects nothing at
+all. Marking every supersession as refutation misreports the record in the
+opposite direction from ignoring it, and in a matter where one surveyor's
+competence is genuinely at issue, the tool must not put that word in anyone's
+mouth. `corrected-by` still carries the accusation where an accusation is what
+the document makes; `refined-by` carries succession where it does not.
+
+The split is worth the extra kind precisely because the two look identical in the
+data — both are "a later document about the same ground" — and differ only in
+what the later one CLAIMS about the earlier. That claim is in the words, and it
+is what a reader needs.
 
 **Grain** is the second axis, and it is what the user's "version or whole
 document" names:
@@ -72,7 +93,7 @@ document" names:
 | Grain | Example |
 |---|---|
 | whole document | the 2022 survey corrects the 2008 survey |
-| a part | the 2022 survey refutes one note of the 2022-03 survey |
+| a part | the 2022 survey corrects one note of the 2022-03 survey |
 | a reading | a corrected page reading supersedes a machine one — `page_readings`, already built |
 | a claim | an `attest` verdict on one unit — already built |
 
@@ -98,23 +119,24 @@ should be reused: the computation proposes (`Relation`), a person rules
 ## Traps
 
 - **Do not normalize the pair.** `Mark` sorts A and B so a pair is one fact. That
-  is correct for copy/version and destroys `corrects`, where which side is which
-  IS the content. Store direction explicitly.
+  is correct for copy/version and destroys both new kinds, where which side is
+  which IS the content. Store direction explicitly.
 - **A corrected document is still evidence.** The superseding of an instrument
   must never hide it, delete it from search, or mark it stale. What the 2008
   survey said is exactly what the dispute is about.
 - **Chains.** 2008 ← 2022-03 ← 2022-05 is three surveys, each correcting the last.
   Whatever is stored has to answer "what is current" without flattening the chain,
   for the same reason `page_readings` keeps every version.
-- **Partial corrections do not supersede.** A note about a shed being wrong does
+- **Partial corrections do not supersede the whole.** A note about a shed being wrong does
   not make the rest of that survey wrong, and a UI that greys out the whole
-  document because one paragraph was refuted has misreported the record.
+  document because one paragraph was corrected has misreported the record.
 
 ## Where it plugs in
 
 - `relations.go` — the new kinds, with direction and an optional locator.
-- The read — propose `corrects`/`refutes` candidates from the document's own
-  words, alongside the summary and name.
+- The read — propose `corrected-by` / `refined-by` candidates from the document's
+  own words, alongside the summary and name. The distinction is readable: "IS A
+  CORRECTION TO" is one, "supersedes"/"re-recorded to revise" is the other.
 - `/api/doc-detail` — beside Seen-in, which today shows overlap and no meaning.
 - Review UI — a document should say "corrects: …" and "corrected by: …" at the
   top, because that is the first thing a reader needs to know and currently the
