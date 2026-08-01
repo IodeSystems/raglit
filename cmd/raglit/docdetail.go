@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -46,6 +47,28 @@ type DocDetail struct {
 	SeenIn []SeenIn `json:"seen_in,omitempty"`
 
 	Attest *AttestSummary `json:"attest,omitempty"`
+
+	// History is every recorded reading of every page, plus every ruling, in the
+	// order they happened. What this document has been SAID to say over time,
+	// which is a different question from what it says now and the one you need
+	// when a quotation somewhere no longer matches.
+	History []HistoryEvent `json:"history,omitempty"`
+}
+
+// HistoryEvent is one thing that happened to this document.
+type HistoryEvent struct {
+	Kind   string `json:"kind"` // reading | verdict
+	Page   int    `json:"page,omitempty"`
+	Seq    int    `json:"seq,omitempty"`
+	Source string `json:"source,omitempty"` // machine | corrected, or the verdict kind
+	Note   string `json:"note,omitempty"`
+	By     string `json:"by,omitempty"`
+	At     string `json:"at,omitempty"`
+	Active bool   `json:"active,omitempty"`
+	Unit   string `json:"unit,omitempty"`
+	// Text is the reading, or a correction's replacement wording. Trimmed for
+	// the list; the full text of the active reading is on the Pages tab.
+	Text string `json:"text,omitempty"`
 }
 
 // DocDetailPage is one page: its transcript, and the image it was read from.
@@ -194,6 +217,34 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 			}
 			d.Attest = sum
 		}
+		// What has been said about this document, over time.
+		if hist, herr := st.DocReadingHistory(abs); herr == nil {
+			for _, h := range hist {
+				d.History = append(d.History, HistoryEvent{
+					Kind: "reading", Page: h.Page, Seq: h.Seq, Source: h.Source,
+					Note: h.Note, By: h.By, At: h.At, Active: h.Active, Text: clip(h.Text, 400),
+				})
+			}
+		}
+		if rows, rerr := st.Attestations(rel); rerr == nil {
+			for _, r := range rows {
+				d.History = append(d.History, HistoryEvent{
+					Kind: "verdict", Seq: r.Seq, Source: r.Kind, Note: r.Note,
+					By: r.RuledBy, At: r.RuledAt, Unit: r.Unit, Text: clip(r.Text, 400),
+				})
+			}
+		}
+		// Undated events keep their arrival order rather than sorting to the
+		// front: a reading recorded before this column existed has no timestamp,
+		// and inventing a position for it would misreport the sequence.
+		sort.SliceStable(d.History, func(i, j int) bool {
+			a, b := d.History[i].At, d.History[j].At
+			if a == "" || b == "" {
+				return false
+			}
+			return a < b
+		})
+
 		return &docDetailOut{Body: d}, nil
 	}
 }

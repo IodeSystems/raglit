@@ -133,6 +133,11 @@
 .backlink { display:none; background:none; border:0; color:#5b9dd9; cursor:pointer; padding:0 0 6px; font-size:13px; }
 @media (max-width:820px){ .backlink { display:inline-block; } }
 .dpane img { max-width:100%; height:auto; }
+.docacts { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; }
+.docacts a, .docacts button { font-size:13px; }
+.docacts button { background:var(--bg); color:var(--fg); border:1px solid var(--line);
+  border-radius:6px; padding:3px 9px; cursor:pointer; }
+.docacts button:disabled { opacity:.55; cursor:default; }
 </style>
 </head>
 <body>
@@ -211,17 +216,29 @@ function parseHash(){
   if(!parts.length) return {tab:"dashboard", doc:null, sub:"pages"};
   const tab = TABS.includes(parts[0]) ? parts[0] : "dashboard";
   if(tab!=="documents" || parts.length<3) return {tab, doc:null, sub:"pages"};
-  // parts: documents / <index> / <path…> [/ <sub>]
-  const subs = ["pages","transcript","seen","attest"];
+  // documents / <index> / <path> [/ <sub>]. The path is one segment; anything
+  // after it that names a sub-tab is one, and anything else is a hand-typed or
+  // older link whose path got split — rejoin it rather than 404 on a URL that
+  // looks right to a person.
+  const subs = ["pages","transcript","seen","attest","history"];
   let rest = parts.slice(2), sub = "pages";
   if(rest.length>1 && subs.includes(rest[rest.length-1])) sub = rest.pop();
-  return {tab, index:parts[1], doc:rest.join("/"), sub};
+  let doc = rest.join("/");
+  // A pasted link that lost its leading slash still points at a real document.
+  if(doc && !doc.startsWith("/") && rest.length>1) doc = "/"+doc;
+  return {tab, index:parts[1], doc, sub};
 }
 
+// The path is ONE encoded segment, not a run of them.
+//
+// Splitting it on "/" and re-joining looked tidier and silently ate the leading
+// slash of an absolute path — "/home/nthalk/…" came back as "home/nthalk/…" —
+// so every deep link to a document in this index resolved to a path that does
+// not exist. Documents are stored by absolute path, so that was all of them.
 function hashFor(tab, doc, sub){
   if(tab!=="documents" || !doc) return "#/"+tab;
   return "#/documents/"+encodeURIComponent(curIndex)+"/"+
-    doc.split("/").map(encodeURIComponent).join("/")+"/"+(sub||"pages");
+    encodeURIComponent(doc)+"/"+(sub||"pages");
 }
 
 function go(tab, doc, sub){
@@ -373,18 +390,39 @@ async function loadReview(){
   head.appendChild(el("strong",null,d.title||d.path.split("/").pop()));
   const sub=el("div","muted"); sub.textContent=d.path+"  ·  "+(d.kind||"");
   head.appendChild(sub);
+  const acts=el("div","docacts");
   if(d.original){
     const a=el("a",null,"download original");
-    a.href=d.original; a.setAttribute("download",""); a.style.fontSize="13px";
-    head.appendChild(a);
+    a.href=d.original; a.setAttribute("download","");
+    acts.appendChild(a);
   }
+  // Two different re-reads, named apart because they are not the same act and
+  // the difference is what you get back. Re-ingest re-fragments and re-indexes
+  // from the file as it stands; re-read purges the cached page OCR first, which
+  // is the one that matters when the cache is what is wrong — a re-index alone
+  // returns the same answer from the same cache.
+  const reingest=el("button",null,"re-ingest");
+  reingest.onclick=async()=>{ reingest.disabled=true; reingest.textContent="queued…";
+    try{ await post("/ingest?"+qi(),{targets:[curDoc],now:true}); toast("re-ingest queued"); }
+    catch(e){ toast(esc(e.message)); }
+    finally{ setTimeout(()=>{reingest.disabled=false; reingest.textContent="re-ingest";},1500); } };
+  acts.appendChild(reingest);
+
+  const reread=el("button",null,"re-read (purge OCR cache)");
+  reread.onclick=async()=>{ reread.disabled=true; reread.textContent="queued…";
+    try{ await post("/api/reread?"+qi(),{path:curDoc}); toast("re-read queued"); }
+    catch(e){ toast(esc(e.message)); }
+    finally{ setTimeout(()=>{reread.disabled=false; reread.textContent="re-read (purge OCR cache)";},1500); } };
+  acts.appendChild(reread);
+  head.appendChild(acts);
   box.appendChild(head);
 
   const tabs=el("nav","subtabs");
   const defs=[["pages","Pages"+(d.pages&&d.pages.length?" ("+d.pages.length+")":"")],
               ["transcript","Transcript"],
               ["seen","Seen in"+(d.seen_in&&d.seen_in.length?" ("+d.seen_in.length+")":"")],
-              ["attest","Attestation"]];
+              ["attest","Attestation"],
+              ["history","History"+(d.history&&d.history.length?" ("+d.history.length+")":"")]];
   for(const [k,label] of defs){
     const b=el("button",null,label); if(k===detailTab) b.classList.add("on");
     b.onclick=()=>go("documents", curDoc, k);
@@ -396,6 +434,7 @@ async function loadReview(){
   if(detailTab==="pages") renderPages(pane,d);
   else if(detailTab==="transcript") renderTranscript(pane,d);
   else if(detailTab==="seen") renderSeenIn(pane,d);
+  else if(detailTab==="history") renderHistory(pane,d);
   else renderAttest(pane,d);
 }
 
@@ -482,6 +521,37 @@ function renderSeenIn(pane,d){
     const ruled=el("td"); ruled.textContent=h.ruling||"—";
     if(!h.ruling) ruled.className="muted";
     tr.appendChild(ruled);
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb); pane.appendChild(t);
+}
+
+function renderHistory(pane,d){
+  const h=d.history||[];
+  if(!h.length){ pane.appendChild(el("div","empty","Nothing recorded yet — no corrections and no rulings.")); return; }
+  const t=el("table","seen");
+  t.innerHTML="<thead><tr><th>When</th><th>What</th><th>Who</th><th>Detail</th></tr></thead>";
+  const tb=el("tbody");
+  for(const e of h){
+    const tr=el("tr");
+    tr.appendChild(el("td","muted",e.at||"—"));
+    // A superseded reading is kept and shown as superseded rather than hidden:
+    // the old text is what the index held when this document was cited, and a
+    // stale quotation elsewhere still matches it.
+    const what=el("td");
+    if(e.kind==="reading"){
+      what.textContent = "page "+e.page+" · "+(e.source||"reading")+(e.active?"":" (superseded)");
+    } else {
+      what.textContent = "verdict · "+(e.source||"");
+    }
+    tr.appendChild(what);
+    tr.appendChild(el("td",null,e.by||"—"));
+    const det=el("td");
+    if(e.note) det.appendChild(el("div",null,e.note));
+    if(e.text){ const pre=el("div","muted"); pre.style.fontSize="12px"; pre.style.whiteSpace="pre-wrap";
+      pre.textContent=e.text; det.appendChild(pre); }
+    if(e.unit){ const u=el("div","muted"); u.style.fontSize="11px"; u.textContent=e.unit; det.appendChild(u); }
+    tr.appendChild(det);
     tb.appendChild(tr);
   }
   t.appendChild(tb); pane.appendChild(t);

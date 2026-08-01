@@ -143,3 +143,32 @@ func RecordReadingsInto(js Judgements, s *Store) {
 		})
 	})
 }
+
+// DocReadingHistory returns every recorded reading of every page of one
+// document, in page then arrival order.
+//
+// Every version, not the active one. The whole reason readings accumulate as
+// rows is that a correction must not erase what it replaced: the superseded text
+// is what the index held when the document was cited, it is what a stale
+// quotation elsewhere still matches, and "the OCR read 2008081020 for
+// 200808180120" is itself evidence of how far a sheet can be trusted. A history
+// that shows only the current answer throws away the thing the table exists for.
+func (s *Store) DocReadingHistory(doc string) ([]PageReading, error) {
+	rows, err := s.db.Query(`SELECT doc, page, seq, text, source, note, read_by, read_at, active
+		FROM page_readings WHERE doc = ? ORDER BY page, seq`, doc)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []PageReading
+	for rows.Next() {
+		var r PageReading
+		var active int
+		if err := rows.Scan(&r.Doc, &r.Page, &r.Seq, &r.Text, &r.Source, &r.Note, &r.By, &r.At, &active); err != nil {
+			return nil, err
+		}
+		r.Active = active != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
