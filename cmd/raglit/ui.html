@@ -138,6 +138,17 @@
 .docacts button { background:var(--bg); color:var(--fg); border:1px solid var(--line);
   border-radius:6px; padding:3px 9px; cursor:pointer; }
 .docacts button:disabled { opacity:.55; cursor:default; }
+.searchbar { display:flex; gap:8px; padding:12px 14px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.searchbar input { flex:1 1 320px; min-width:0; background:var(--bg); color:var(--fg);
+  border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:14px; }
+.searchbar select, .searchbar button { background:var(--bg); color:var(--fg);
+  border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; }
+.hit { padding:12px 14px; border-bottom:1px solid var(--line); }
+.hit:last-child { border-bottom:none; }
+.hit a { font-weight:600; }
+.hit .snip { margin-top:4px; font-size:13px; line-height:1.5; }
+.hit .meta { font-size:11px; color:var(--muted); margin-top:3px; }
+.hit mark { background:#2b3a55; color:inherit; }
 </style>
 </head>
 <body>
@@ -153,6 +164,7 @@
     <button data-tab="dashboard" class="on">Dashboard</button>
     <button data-tab="jobs">Ingest jobs</button>
     <button data-tab="documents">Documents</button>
+    <button data-tab="search">Search</button>
   </nav>
 
   <section data-pane="dashboard">
@@ -164,6 +176,21 @@
       <thead><tr><th></th><th>#</th><th>State</th><th>Mode</th><th>Target</th><th>Frags</th><th>ETA</th><th>Detail</th><th></th></tr></thead>
       <tbody id="jobs"></tbody>
     </table></div>
+  </section>
+
+  <section data-pane="search" hidden>
+    <div class="panel">
+      <form id="searchForm" class="searchbar">
+        <input id="q" type="search" placeholder="search this index — words from the document, not a question" autocomplete="off">
+        <select id="smode">
+          <option value="bm25">bm25 — exact words</option>
+          <option value="hybrid">hybrid — words + meaning</option>
+          <option value="vec">vector — meaning only</option>
+        </select>
+        <button type="submit">Search</button>
+      </form>
+      <div id="results"><div class="empty">Nothing searched yet.</div></div>
+    </div>
   </section>
 
   <section data-pane="documents" hidden>
@@ -207,7 +234,7 @@ function eta(s){ if(!s) return ""; if(s<90)return "~"+Math.round(s)+"s"; return 
 //   #/jobs
 //   #/documents
 //   #/documents/<index>/<path>[/pages|transcript|seen|attest]
-const TABS = ["dashboard","jobs","documents"];
+const TABS = ["dashboard","jobs","documents","search"];
 let route = {tab:"dashboard", doc:null, sub:"pages"};
 
 function parseHash(){
@@ -266,6 +293,38 @@ async function applyRoute(){
   } else {
     curDoc=null; markSelected();
     $("#detail").innerHTML='<div class="empty">Select a document.</div>';
+  }
+}
+
+async function runSearch(){
+  const q=$("#q").value.trim();
+  const box=$("#results");
+  if(!q){ box.innerHTML='<div class="empty">Nothing searched yet.</div>'; return; }
+  box.innerHTML='<div class="empty">searching…</div>';
+  let d;
+  try{ d = await getJSON("/search?"+qi()+"&mode="+encodeURIComponent($("#smode").value)+
+    "&n=25&q="+encodeURIComponent(q)); }
+  catch(e){ box.innerHTML=""; box.appendChild(el("div","empty","Search failed: "+esc(e.message))); return; }
+  const hits=d.hits||[];
+  box.innerHTML="";
+  if(!hits.length){ box.appendChild(el("div","empty","No hits. bm25 matches WORDS — try the words the document would use.")); return; }
+  for(const h of hits){
+    const card=el("div","hit");
+    // A hit links into the document view rather than opening a dead end. The
+    // point of finding a passage is to go and look at what it came from.
+    const a=el("a",null,h.title||h.doc_id.split("/").pop());
+    a.href=hashFor("documents", h.doc_id, "transcript");
+    card.appendChild(a);
+    const snip=el("div","snip");
+    // The snippet is server text; mark the query words rather than trusting any
+    // markup in it.
+    snip.textContent=h.snippet||"";
+    card.appendChild(snip);
+    const meta=el("div","meta");
+    meta.textContent=[h.page?"page "+h.page:null, "score "+(h.score||0).toFixed(2), h.doc_id]
+      .filter(Boolean).join("  ·  ");
+    card.appendChild(meta);
+    box.appendChild(card);
   }
 }
 
@@ -608,6 +667,7 @@ $("#auto").onchange = ()=>{}; // polling always scheduled; checkbox gates the wo
 timer=setInterval(tick,3000);
 
 document.querySelectorAll("#tabs button").forEach(b=>{ b.onclick=()=>go(b.dataset.tab); });
+$("#searchForm").onsubmit = e => { e.preventDefault(); runSearch(); };
 window.addEventListener("hashchange", applyRoute);
 (async function init(){ await loadIndexes(); await refreshAll(); await applyRoute(); })();
 </script>
