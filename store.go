@@ -117,15 +117,37 @@ func (s *Store) SetWritebackTranscription(v bool) { s.writebackTranscription = v
 func (s *Store) SetExtractEmailAttachments(v bool) { s.extractEmailAttachments = v }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// foreign_keys is set in the DSN, NOT by db.Exec after opening.
+	//
+	// A PRAGMA is per-CONNECTION and database/sql keeps a POOL. Executing it once
+	// after Open sets it on whichever connection happened to serve that call;
+	// every connection the pool opens later — under concurrency, which ingest is
+	// — starts with foreign_keys OFF. So ON DELETE CASCADE fired or did not
+	// depending on which connection a statement landed on, and nothing about that
+	// is deterministic or visible.
+	//
+	// What it cost: re-ingesting a document in an --embed index failed with
+	// "UNIQUE constraint failed: fragment_vectors.fragment_id". commitDoc deletes
+	// the document's fragments and relies on the cascade to take their vectors
+	// with them; on a connection without the pragma the vectors survived, sqlite
+	// reused the freed fragment rowid, and the new vector collided with the
+	// orphan. Which made `--fresh` — the escape hatch for a bad read — the one
+	// operation that could not be retried.
+	dsn := path
+	if !strings.Contains(dsn, "?") {
+		dsn += "?_pragma=foreign_keys(1)"
+	} else {
+		dsn += "&_pragma=foreign_keys(1)"
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	for _, pragma := range []string{"PRAGMA foreign_keys=ON", "PRAGMA journal_mode=WAL"} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("raglit: %s: %w", pragma, err)
-		}
+	// journal_mode is a DATABASE property, not a connection one — it persists in
+	// the file — so setting it once here is correct and it stays correct.
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("raglit: PRAGMA journal_mode=WAL: %w", err)
 	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()

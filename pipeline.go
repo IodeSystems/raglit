@@ -6,10 +6,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	gen "github.com/iodesystems/raglit/internal/db"
 )
@@ -232,12 +234,38 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	fragMode := fragModeOverlap
 	if sawVision && sg != nil {
 		fragMode = fragModeLLM
-		if err := segmentLLM(ctx, sg, pages, window, sink); err != nil {
+		err := segmentLLM(ctx, sg, pages, window, sink)
+		var short *ErrSegmentShort
+		switch {
+		case errors.As(err, &short):
+			// The model did not account for what it was given, so this document
+			// falls back to the deterministic windower — WHOLE, not per page.
+			//
+			// Silently indexing most of a document is the worst outcome
+			// available: there is no error, the page count looks right, and the
+			// missing text is discovered only when somebody searches for
+			// something that is provably in the file. Measured on a 2-page record
+			// of survey: page 2 held the EXISTING CORNERS table — every found
+			// monument and its offset from calculated position — 2,072 characters
+			// that reached OCR, reached the transcription sidecar, and produced
+			// no fragment at all. It was invisible to search for as long as it
+			// was indexed.
+			//
+			// Whole-document rather than a mixed run because frag_mode and
+			// frag_recipe describe the document, and half of each is not a
+			// recipe anybody can reason about later.
+			frags = frags[:0]
+			fragMode = fragModeOverlap
+			fragmentOverlap(pages, window, stride, floor, sink)
+			sl.Done("segment", fragModeOverlap,
+				fmt.Sprintf("%d fragment(s) — llm-seg dropped text, fell back (%s)", len(frags), short.Detail()))
+		case err != nil:
 			drainEmbed()
 			sl.Fail("segment", "llm", err)
 			return 0, "", err
+		default:
+			sl.Done("segment", "llm", fmt.Sprintf("%d fragment(s)", len(frags)))
 		}
-		sl.Done("segment", "llm", fmt.Sprintf("%d fragment(s)", len(frags)))
 	} else {
 		fragmentOverlap(pages, window, stride, floor, sink)
 		sl.Done("segment", fragModeOverlap, fmt.Sprintf("%d fragment(s)", len(frags)))
@@ -274,13 +302,28 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 // pageSpans records where every later page begins inside the text — without
 // them a hit in a stitched fragment resolves to the wrong page.
 func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedLimit int, sink func(stagedFrag)) error {
+	return segmentLLMWith(ctx, sg.SegmentText, pages, embedLimit, sink)
+}
+
+// segmentLLMWith is segmentLLM over any segmenting function.
+//
+// The seam exists for the coverage rule below, which is the part that has to be
+// tested and the part a live model cannot test: to prove the alarm fires when a
+// page is dropped, something has to drop a page on purpose.
+func segmentLLMWith(ctx context.Context, segment func(context.Context, string, string) (SegResult, error), pages []resolvedPage, embedLimit int, sink func(stagedFrag)) error {
+	// Emitted content per page, against what that page was given. The segmenter
+	// is a MODEL, and a model that returns a short answer returns it without an
+	// error — so the only way to know it dropped the back half of a page is to
+	// count.
+	emitted := map[int]int{}
 	a := NewAssembler(func(page, ord int, text string, spans []PageSpan) error {
+		emitted[page] += contentChars(text)
 		sink(stagedFrag{page: page, ord: ord, text: text, pageSpans: spans})
 		return nil
 	})
 	for _, p := range pages {
 		open := a.OpenText()
-		r, err := sg.SegmentText(ctx, p.text, open)
+		r, err := segment(ctx, p.text, open)
 		if err != nil {
 			return err
 		}
@@ -292,7 +335,88 @@ func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedL
 			return err
 		}
 	}
-	return a.Close()
+	if err := a.Close(); err != nil {
+		return err
+	}
+
+	// Coverage, checked after Close so the final open fragment is counted.
+	//
+	// Compared on CONTENT characters — letters and digits — because the model
+	// legitimately reflows whitespace, drops page furniture and joins hyphenated
+	// line breaks, and none of that is loss. What is loss is a page whose words
+	// are not there.
+	//
+	// A page is attributed to whichever fragment STARTS on it, so a fragment
+	// stitched across a boundary counts entirely toward its start page. That
+	// makes per-page accounting approximate, which is why the threshold is
+	// deliberately loose: it is a data-loss alarm, not a quality score.
+	for _, p := range pages {
+		in := contentChars(p.text)
+		if in < segmentMinChars {
+			continue // too short to say anything about
+		}
+		if covered := emitted[p.page] + carriedInto(emitted, pages, p.page); covered*100 < in*segmentCoveragePct {
+			return &ErrSegmentShort{Page: p.page, In: in, Out: covered}
+		}
+	}
+	return nil
+}
+
+// carriedInto credits a page whose content was stitched into a fragment that
+// started on the previous page. Without it, a page that continues an open
+// fragment reads as empty and trips the alarm on a document nothing is wrong
+// with.
+func carriedInto(emitted map[int]int, pages []resolvedPage, page int) int {
+	if emitted[page] > 0 {
+		return 0
+	}
+	for i, p := range pages {
+		if p.page == page && i > 0 {
+			// The previous page emitted more than its own content: the surplus
+			// is this page's, stitched in.
+			prev := pages[i-1]
+			if extra := emitted[prev.page] - contentChars(prev.text); extra > 0 {
+				return extra
+			}
+		}
+	}
+	return 0
+}
+
+// segmentCoveragePct is how much of a page's content must survive segmentation.
+// Loose on purpose: the model reflows, and this exists to catch a page that
+// vanished, not one that was tidied.
+const segmentCoveragePct = 60
+
+// segmentMinChars is the floor below which coverage says nothing — a page with
+// twenty characters on it is noise either way.
+const segmentMinChars = 200
+
+// ErrSegmentShort reports that the model-segmenter did not account for a page.
+type ErrSegmentShort struct {
+	Page    int
+	In, Out int
+}
+
+func (e *ErrSegmentShort) Error() string {
+	return fmt.Sprintf("llm-seg returned %d of %d content characters for page %d", e.Out, e.In, e.Page)
+}
+
+// Detail is the short form for a stage log.
+func (e *ErrSegmentShort) Detail() string {
+	return fmt.Sprintf("page %d: %d of %d chars", e.Page, e.Out, e.In)
+}
+
+// contentChars counts letters and digits — the same measure textLayerContent
+// uses, and for the same reason: whitespace is not content.
+func contentChars(s string) int {
+	n := 0
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			n++
+		}
+	}
+	return n
 }
 
 // fragmentOverlap runs the deterministic windower over the document's concatenated
