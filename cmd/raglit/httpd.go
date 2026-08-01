@@ -243,6 +243,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs to a budget (max_bytes / max_entries / max_age_hours), oldest-accessed first."), poolGCOp(pool, defGC))
 	}
 
+	gat.Register(api, g, op("docDetail", http.MethodGet, "/api/doc-detail", "Everything known about one document: pages, transcript, where else it is seen, and how far its review has got."), docDetailOp(reg))
 	gat.Register(api, g, op("attestWriteReadings", http.MethodPost, "/api/attest/readings", "Write readings across an index so its documents can be reviewed."), attestWriteReadingsOp(reg))
 
 	// The review workbench, per index. Registered BEFORE RegisterHuma so its

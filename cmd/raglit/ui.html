@@ -97,6 +97,23 @@
   .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--ink);
     color:var(--bg); padding:9px 16px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
   .toast.show { opacity:1; }
+.tabs { display:flex; gap:2px; margin:18px 0 12px; border-bottom:1px solid var(--line); }
+.tabs button { background:none; border:0; border-bottom:2px solid transparent; color:var(--muted);
+  padding:8px 14px; cursor:pointer; font-size:14px; }
+.tabs button.on { color:var(--fg); border-bottom-color:#5b9dd9; }
+.subtabs { display:flex; gap:2px; padding:0 14px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.subtabs button { background:none; border:0; border-bottom:2px solid transparent; color:var(--muted);
+  padding:7px 11px; cursor:pointer; font-size:13px; }
+.subtabs button.on { color:var(--fg); border-bottom-color:#5b9dd9; }
+.dpane { padding:12px 14px; }
+.dpane pre { white-space:pre-wrap; word-break:break-word; margin:0; line-height:1.5; }
+.seen td { padding:6px 8px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:top; }
+.seen th { padding:6px 8px; text-align:left; font-size:12px; color:var(--muted); }
+.num { text-align:right; font-variant-numeric:tabular-nums; }
+.prov { border-left:3px solid #b8860b; padding:8px 12px; margin:0 0 12px; font-size:13px; line-height:1.5; }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:13px; }
+.kv dt { color:var(--muted); }
+.kv dd { margin:0; }
 </style>
 </head>
 <body>
@@ -110,17 +127,24 @@
 <main>
   <div class="cards" id="cards"></div>
 
-  <h2>Ingest jobs</h2>
-  <div class="panel"><table>
-    <thead><tr><th></th><th>#</th><th>State</th><th>Mode</th><th>Target</th><th>Frags</th><th>ETA</th><th>Detail</th><th></th></tr></thead>
-    <tbody id="jobs"></tbody>
-  </table></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="jobs" class="on">Ingest jobs</button>
+    <button data-tab="documents">Documents</button>
+  </nav>
 
-  <h2>Documents &amp; OCR review</h2>
-  <div style="display:grid; grid-template-columns:minmax(240px,340px) 1fr; gap:16px; align-items:start">
-    <div class="panel" id="docs"><div class="empty">loading…</div></div>
-    <div class="panel" id="review"><div class="empty">Select a document to review its pages.</div></div>
-  </div>
+  <section data-pane="jobs">
+    <div class="panel"><table>
+      <thead><tr><th></th><th>#</th><th>State</th><th>Mode</th><th>Target</th><th>Frags</th><th>ETA</th><th>Detail</th><th></th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table></div>
+  </section>
+
+  <section data-pane="documents" hidden>
+    <div style="display:grid; grid-template-columns:minmax(240px,340px) 1fr; gap:16px; align-items:start">
+      <div class="panel" id="docs"><div class="empty">loading…</div></div>
+      <div class="panel" id="detail"><div class="empty">Select a document.</div></div>
+    </div>
+  </section>
 </main>
 
 <dialog id="lightbox"><img id="lightimg" alt=""></dialog>
@@ -140,6 +164,16 @@ const esc = s => (s==null?"":String(s));
 function ago(ns){ if(!ns) return ""; const s=(Date.now()-ns/1e6)/1000; if(s<60)return Math.round(s)+"s ago";
   if(s<3600)return Math.round(s/60)+"m ago"; if(s<86400)return Math.round(s/3600)+"h ago"; return Math.round(s/86400)+"d ago"; }
 function eta(s){ if(!s) return ""; if(s<90)return "~"+Math.round(s)+"s"; return "~"+Math.round(s/60)+"m"; }
+
+function initTabs(){
+  document.querySelectorAll("#tabs button").forEach(b=>{
+    b.onclick=()=>{
+      document.querySelectorAll("#tabs button").forEach(x=>x.classList.toggle("on",x===b));
+      const want=b.dataset.tab;
+      document.querySelectorAll("[data-pane]").forEach(p=>{ p.hidden = p.dataset.pane!==want; });
+    };
+  });
+}
 
 async function loadIndexes(){
   const d = await getJSON("/indexes");
@@ -227,47 +261,153 @@ async function loadDocs(){
   }
 }
 
+// ── document detail ─────────────────────────────────────────────────────────
+// One document, in tabs, off ONE call. The join lives server-side (docdetail.go)
+// because the interesting part is the relation between these sections — a
+// transcript means something different when two of its pages were corrected by
+// hand, and a near-duplicate means something different when somebody already
+// ruled the pair a copy.
+let detailTab = "pages", detailData = null;
+
 async function loadReview(){
-  const box=$("#review"); box.innerHTML='<div class="empty">loading…</div>';
-  const d = await getJSON("/api/doc?"+qi()+"&path="+encodeURIComponent(curDoc));
+  const box=$("#detail"); box.innerHTML='<div class="empty">loading…</div>';
+  let d;
+  try { d = await getJSON("/api/doc-detail?"+qi()+"&path="+encodeURIComponent(curDoc)); }
+  catch(e){ box.innerHTML=""; box.appendChild(el("div","empty","Cannot read this document: "+esc(e.message))); return; }
+  detailData = d;
   box.innerHTML="";
-  const head=el("div"); head.style.padding="12px 14px"; head.style.borderBottom="1px solid var(--line)";
+
+  const head=el("div"); head.style.padding="12px 14px";
   head.appendChild(el("strong",null,d.title||d.path.split("/").pop()));
-  head.appendChild(el("div","muted",d.path));
+  const sub=el("div","muted"); sub.textContent=d.path+"  ·  "+(d.kind||"");
+  head.appendChild(sub);
+  if(d.original){
+    const a=el("a",null,"download original");
+    a.href=d.original; a.setAttribute("download",""); a.style.fontSize="13px";
+    head.appendChild(a);
+  }
   box.appendChild(head);
-  if(!d.pages.length){ box.appendChild(el("div","empty","No OCR-tracked pages (born-digital text or plain text — indexed without per-page OCR).")); return; }
-  for(const p of d.pages){
+
+  const tabs=el("nav","subtabs");
+  const defs=[["pages","Pages"+(d.pages&&d.pages.length?" ("+d.pages.length+")":"")],
+              ["transcript","Transcript"],
+              ["seen","Seen in"+(d.seen_in&&d.seen_in.length?" ("+d.seen_in.length+")":"")],
+              ["attest","Attestation"]];
+  for(const [k,label] of defs){
+    const b=el("button",null,label); if(k===detailTab) b.classList.add("on");
+    b.onclick=()=>{ detailTab=k; loadReview(); };
+    tabs.appendChild(b);
+  }
+  box.appendChild(tabs);
+
+  const pane=el("div","dpane"); box.appendChild(pane);
+  if(detailTab==="pages") renderPages(pane,d);
+  else if(detailTab==="transcript") renderTranscript(pane,d);
+  else if(detailTab==="seen") renderSeenIn(pane,d);
+  else renderAttest(pane,d);
+}
+
+function renderPages(pane,d){
+  const pages=d.pages||[];
+  if(!pages.length){
+    pane.appendChild(el("div","empty","No per-page reading. Born-digital text and plain files are indexed whole; a scanned sheet gets pages once it has been OCR'd or regioned."));
+    return;
+  }
+  for(const p of pages){
     const card=el("div","pagecard");
     const left=el("div");
-    if(p.has_image){
-      const img=el("img"); img.loading="lazy"; img.alt="page "+p.page;
-      img.src="/api/page-image?"+qi()+"&path="+encodeURIComponent(d.path)+"&page="+p.page;
+    if(p.image_url){
+      const img=el("img"); img.loading="lazy"; img.alt="page "+p.page; img.src=p.image_url;
       img.onclick=()=>{ $("#lightimg").src=img.src; $("#lightbox").showModal(); };
       left.appendChild(img);
-    } else { const ph=el("div","muted"); ph.textContent="(no page image — "+p.engine+")"; left.appendChild(ph); }
-    // re-OCR control
-    if(p.has_image){
+      // Re-OCR stays here rather than moving to the workbench: this is the
+      // MACHINE having another go, which is a different act from a person
+      // ruling on what it said, and conflating them would let a re-read look
+      // like a review.
       const wrap=el("div","reocr");
       const btn=el("button",null,"Re-OCR (cascade)");
       const out=el("div","out");
       btn.onclick=async()=>{ btn.disabled=true; btn.textContent="running…";
-        try{ const r=await post("/api/reocr?"+qi(),{path:d.path,page:p.page});
-          out.innerHTML=""; const h=el("div","pagehead"); h.appendChild(el("span","badge eng "+(r.engine==="vision"?"vision":"text"),r.engine)); out.appendChild(h);
-          out.appendChild(el("div","ptext",r.text||"(empty)")); }
+        try{ const r=await post("/api/reocr?"+qi(),{path:curDoc,page:p.page});
+          out.innerHTML=""; out.appendChild(el("div","ptext",r.text||"(empty)")); }
         catch(e){ out.innerHTML=""; out.appendChild(el("div","err",esc(e.message))); }
         finally{ btn.disabled=false; btn.textContent="Re-OCR (cascade)"; } };
       wrap.appendChild(btn); wrap.appendChild(out); left.appendChild(wrap);
+    } else {
+      left.appendChild(el("div","muted","(no page image)"));
     }
     card.appendChild(left);
     const right=el("div");
-    const ph=el("div","pagehead");
-    ph.appendChild(el("span","n","Page "+p.page));
-    ph.appendChild(el("span","badge eng "+(p.vision?"vision":"text"), p.vision?"vision (VLM)":p.engine));
-    ph.appendChild(el("span","muted",p.fragments+" frag"+(p.fragments===1?"":"s")));
-    right.appendChild(ph);
-    right.appendChild(el("div","ptext",p.text||"(no indexed text)"));
+    const h=el("div","pagehead");
+    h.appendChild(el("strong",null,"page "+p.page));
+    if(p.source) h.appendChild(el("span","badge "+(p.source==="corrected"?"vision":"text"),p.source));
+    if(p.engine) h.appendChild(el("span","badge eng",p.engine));
+    right.appendChild(h);
+    right.appendChild(el("div","ptext",p.text||"(no text on this page)"));
+    if(p.read_by||p.read_at){
+      const by=el("div","muted"); by.style.fontSize="11px";
+      by.textContent=[p.read_by,p.read_at].filter(Boolean).join(" · ");
+      right.appendChild(by);
+    }
     card.appendChild(right);
-    box.appendChild(card);
+    pane.appendChild(card);
+  }
+}
+
+function renderTranscript(pane,d){
+  if(!d.text){ pane.appendChild(el("div","empty","No indexed text.")); return; }
+  const pre=el("pre"); pre.textContent=d.text; pane.appendChild(pre);
+}
+
+function renderSeenIn(pane,d){
+  const hits=d.seen_in||[];
+  if(!hits.length){
+    pane.appendChild(el("div","empty","Nothing overlapping. Sketches may not be built for this index yet — POST /api/similar/build."));
+    return;
+  }
+  // Jaccard and BOTH containments, never one blended number: a deed inside a
+  // title commitment is ~1.0 contained one way and ~0.05 Jaccard, and a single
+  // score cannot say "wholly inside".
+  const t=el("table","seen");
+  t.innerHTML="<thead><tr><th>Document</th><th class=num>Jaccard</th><th class=num>of this</th>"+
+    "<th class=num>of that</th><th>Computed</th><th>Ruled</th></tr></thead>";
+  const tb=el("tbody");
+  for(const h of hits){
+    const tr=el("tr");
+    const name=el("td"); name.textContent=h.path.split("/").pop();
+    const full=el("div","muted"); full.style.fontSize="11px"; full.textContent=h.path; name.appendChild(full);
+    tr.appendChild(name);
+    for(const v of [h.jaccard,h.contain_probe,h.contain_match]){
+      const td=el("td","num"); td.textContent=(v||0).toFixed(2); tr.appendChild(td);
+    }
+    tr.appendChild(el("td",null,h.relation||""));
+    const ruled=el("td"); ruled.textContent=h.ruling||"—";
+    if(!h.ruling) ruled.className="muted";
+    tr.appendChild(ruled);
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb); pane.appendChild(t);
+}
+
+function renderAttest(pane,d){
+  const a=d.attest;
+  if(!a){
+    pane.appendChild(el("div","empty","No reading recorded. Write one for the whole index with POST /api/attest/readings?index=…"));
+    return;
+  }
+  // attest's own sentence, quoted. Paraphrasing a qualified claim changes what
+  // was attested to, so this is never summarised into a percentage.
+  if(a.provenance){ const p=el("div","prov"); p.textContent=a.provenance; pane.appendChild(p); }
+  const dl=el("dl","kv");
+  const rows=[["read by",a.producer],["units",a.total],["confirmed",a.confirmed],
+    ["corrected",a.corrected],["affirmed",a.affirmed],["unclear",a.unclear],
+    ["untouched",a.untouched],["rulings recorded",a.verdicts]];
+  for(const [k,v] of rows){ dl.appendChild(el("dt",null,k)); dl.appendChild(el("dd",null,String(v==null?"":v))); }
+  pane.appendChild(dl);
+  if(a.workbench){
+    const p=el("div"); p.style.marginTop="12px";
+    const link=el("a",null,"open the review workbench →"); link.href=a.workbench;
+    p.appendChild(link); pane.appendChild(p);
   }
 }
 
@@ -277,7 +417,7 @@ async function refreshAll(){
 }
 
 $("#index").onchange = e => { curIndex=e.target.value; curDoc=null;
-  $("#review").innerHTML='<div class="empty">Select a document to review its pages.</div>'; refreshAll(); };
+  $("#detail").innerHTML='<div class="empty">Select a document.</div>'; refreshAll(); };
 $("#refresh").onclick = refreshAll;
 $("#lightbox").onclick = () => $("#lightbox").close();
 
@@ -286,7 +426,7 @@ function tick(){ if($("#auto").checked){ loadStatus().catch(()=>{}); loadJobs().
 $("#auto").onchange = ()=>{}; // polling always scheduled; checkbox gates the work
 timer=setInterval(tick,3000);
 
-(async function init(){ await loadIndexes(); await refreshAll(); })();
+(async function init(){ initTabs(); await loadIndexes(); await refreshAll(); })();
 </script>
 </body>
 </html>
