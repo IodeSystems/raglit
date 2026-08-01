@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/url"
 	"path/filepath"
 	"strconv"
 
@@ -129,17 +130,29 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 
 		d := DocDetail{Path: rel, Kind: detailKind(abs)}
 		if root != "" {
-			d.Original = "/api/attest/" + in.Index + "/source?asset=" + rel
+			d.Original = "/api/attest/" + in.Index + "/source?asset=" + url.QueryEscape(rel)
 		}
 
 		// Pages and text, from whichever reading the document has.
 		if c, err := st.DocText(abs, 0, 0, 0); err == nil {
 			d.Title, d.Text = c.Title, c.Text
 			for _, p := range c.Pages {
-				d.Pages = append(d.Pages, DocDetailPage{
-					Page: p.Page, Text: p.Text,
-					ImageURL: "/api/page-image?index=" + in.Index + "&path=" + abs + "&page=" + strconv.Itoa(p.Page),
-				})
+				dp := DocDetailPage{Page: p.Page, Text: p.Text}
+				// Only offer an image when one was actually stored. A page comes
+				// from the FRAGMENT table and a page image from ocr_pages, and
+				// they do not always agree: a born-digital PDF has pages and no
+				// rasterisation, and a region read stores its own crops. Emitting
+				// the URL regardless gave every such page a broken <img> — a
+				// thin grey line where a reviewer expects the thing the words
+				// were read from, which is worse than saying there is no image.
+				if img, ierr := st.PageImagePath(abs, p.Page); ierr == nil && img != "" {
+					q := url.Values{}
+					q.Set("index", in.Index)
+					q.Set("path", abs)
+					q.Set("page", strconv.Itoa(p.Page))
+					dp.ImageURL = "/api/page-image?" + q.Encode()
+				}
+				d.Pages = append(d.Pages, dp)
 			}
 		}
 
@@ -174,7 +187,7 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 				Confirmed: state.Stats.Confirmed, Corrected: state.Stats.Corrected,
 				Affirmed: state.Stats.Affirmed, Unclear: state.Stats.Unclear,
 				Untouched: state.Stats.Untouched,
-				Workbench: "/attest/" + in.Index + "?asset=" + rel,
+				Workbench: "/attest/" + in.Index + "?asset=" + url.QueryEscape(rel),
 			}
 			if rows, rerr := st.Attestations(rel); rerr == nil {
 				sum.Verdicts = len(rows)

@@ -265,6 +265,12 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// No caching. The page is embedded in the binary, so a copy held by a
+		// browser is a page from a PREVIOUS BUILD — which presents as a fix that
+		// did not take, and sends somebody debugging server code that is already
+		// correct. attest's own UI has said this for as long as it has existed;
+		// the daemon's had not.
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
 		w.Write(reviewHTML)
 	})
 	router.Get("/api/page-image", func(w http.ResponseWriter, r *http.Request) {
