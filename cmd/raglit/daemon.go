@@ -255,6 +255,22 @@ func startDaemonDetached(addr string) error {
 // should run with: the auto-start path passes just --addr, while --restart
 // replays the current invocation's flags so a restarted daemon keeps its config.
 func spawnDaemonDetached(subcmd string, args []string) error {
+	// Hand the job to systemd when a unit is installed for the daemon.
+	//
+	// Otherwise any command that wants a daemon and finds none quietly starts an
+	// UNSUPERVISED one: the unit stays inactive, the replacement is parented to
+	// init, and it dies with the next reboot — undoing `raglit service` without
+	// anyone touching it. Observed three times in one afternoon, always one
+	// second after the unit stopped.
+	//
+	// Only for the auto-start subcommand. --restart replays this invocation's
+	// flags, which the unit's own ExecStart already fixes, and it is refused
+	// under a unit anyway (see runHttpd).
+	if subcmd == "daemon" {
+		if started, err := startDaemonUnit(); started {
+			return err
+		}
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -279,6 +295,28 @@ func spawnDaemonDetached(subcmd string, args []string) error {
 		return err
 	}
 	return cmd.Process.Release() // keep it running after we exit
+}
+
+// startDaemonUnit starts the installed systemd user unit, reporting whether one
+// exists at all. A unit that is present but refuses to start is an error worth
+// surfacing: silently detaching instead would hide a broken unit behind a
+// daemon that works until the next reboot.
+func startDaemonUnit() (bool, error) {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false, nil
+	}
+	unit := serviceUnitName + ".service"
+	out, err := exec.Command("systemctl", "--user", "show", unit, "-p", "LoadState", "--value").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "loaded" {
+		return false, nil // no unit installed: detach as before
+	}
+	fmt.Fprintf(os.Stderr, "raglit: starting %s (a unit supervises this daemon)\n", unit)
+	c := exec.Command("systemctl", "--user", "start", unit)
+	c.Stdout, c.Stderr = os.Stderr, os.Stderr
+	if err := c.Run(); err != nil {
+		return true, fmt.Errorf("start %s: %w", unit, err)
+	}
+	return true, nil
 }
 
 // addClientFlags registers --daemon, --embedded, and --project, returning a

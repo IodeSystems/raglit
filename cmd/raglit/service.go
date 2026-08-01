@@ -33,6 +33,7 @@ install flags:
   --name NAME     unit name without .service (default raglit)
   --exec PATH     raglit binary for the unit (default: this one, symlinks resolved)
   --env K=V       environment for the unit (repeatable)
+  --dev           supervise a self-updating build (rebuilds from source)
   --enable        start at login
   --start         start it now
 
@@ -139,6 +140,7 @@ func serviceInstall(args []string) error {
 	execPath := fs.String("exec", "", "raglit binary for the unit")
 	enable := fs.Bool("enable", false, "start at login")
 	start := fs.Bool("start", false, "start it now")
+	dev := fs.Bool("dev", false, "supervise a self-updating build: the daemon rebuilds from source and re-execs when idle")
 	var envs repeatable
 	fs.Var(&envs, "env", "environment as KEY=VALUE (repeatable)")
 	fs.Parse(args)
@@ -184,12 +186,33 @@ func serviceInstall(args []string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	// The MODE is recorded in the unit, not left to whichever build last wrote
+	// the binary.
+	//
+	// Self-update is enabled by a source stamp the Makefile adds (`make install`)
+	// and disabled by RAGLIT_NO_AUTOBUILD=1. Left implicit, "is my supervised
+	// daemon rebuilding itself?" is only answerable by inspecting the binary,
+	// and a plain `go install` silently flips a dev box to release. So the unit
+	// states it: release pins the opt-out, dev leaves it off and checks that the
+	// binary can actually self-update rather than promising something it cannot.
+	mode := "release (never self-updates)"
+	if *dev {
+		mode = "dev (rebuilds from source, re-execs when idle)"
+		if !execIsSourceStamped(*execPath) {
+			fmt.Fprintf(os.Stderr,
+				"warning: --dev but %s has no source stamp, so it will NOT self-update.\n"+
+					"  build it with `make install` (a plain `go install` is the release build).\n", *execPath)
+		}
+	} else {
+		envs = append(envs, "RAGLIT_NO_AUTOBUILD=1")
+	}
+
 	unit := *name + ".service"
 	path := filepath.Join(dir, unit)
 	if err := os.WriteFile(path, []byte(renderUnit(*execPath, daemonArgs, envs)), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("wrote %s\n  exec   %s\n  daemon %s\n", path, *execPath, strings.Join(daemonArgs, " "))
+	fmt.Printf("wrote %s\n  exec   %s\n  mode   %s\n  daemon %s\n", path, *execPath, mode, strings.Join(daemonArgs, " "))
 
 	if err := systemctl("daemon-reload").Run(); err != nil {
 		return fmt.Errorf("daemon-reload: %w", err)
@@ -207,6 +230,18 @@ func serviceInstall(args []string) error {
 		fmt.Println("started")
 	}
 	return nil
+}
+
+// execIsSourceStamped reports whether a binary was built with the Makefile's
+// -X main.srcDir stamp, i.e. whether it is capable of self-updating at all.
+// Read from the build info rather than guessed, so --dev cannot promise a hot
+// reload that will never happen.
+func execIsSourceStamped(path string) bool {
+	out, err := exec.Command("go", "version", "-m", path).Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "main.srcDir=")
 }
 
 func serviceUninstall(args []string) error {
