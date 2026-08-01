@@ -34,29 +34,37 @@ type daemonState struct {
 
 // systemdUnit returns the unit supervising this process, or "".
 //
-// INVOCATION_ID is set by systemd for every unit it starts, and is the cheap
-// "am I supervised at all" test; the unit NAME then comes from our cgroup,
-// which is where systemd records it. Reading the cgroup alone would be enough
-// on Linux but would also match a unit we merely inherited a cgroup from.
+// The test is the cgroup LEAF, and only the leaf. A unit's processes sit
+// directly in <unit>.service; anything started by hand from a terminal sits in
+// a .scope instead — e.g.
+//
+//	supervised: /user.slice/user-1000.slice/user@1000.service/app.slice/raglit.service
+//	by hand:    /user.slice/user-1000.slice/user@1000.service/tmux-spawn-<uuid>.scope
+//
+// Two things that look like they would work and do not:
+//
+//	INVOCATION_ID is set for units, but it is INHERITED by every descendant, so
+//	a shell in a systemd user session passes it to anything it launches. It
+//	reports "some unit is an ancestor", never "I am one".
+//
+//	Walking up for the nearest .service climbs past the scope to
+//	user@1000.service — the user manager. Every process in the session matches
+//	that, so a hand-started daemon reads as supervised, and --stop/--restart
+//	refuse to touch a daemon nothing is supervising.
 func systemdUnit() string {
-	if os.Getenv("INVOCATION_ID") == "" {
-		return ""
-	}
 	b, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
 		return ""
 	}
-	// The LAST .service in the path, not the first: a user unit sits under the
-	// user manager, so the path is
-	//   /user.slice/user-1000.slice/user@1000.service/app.slice/raglit.service
-	// and taking the first match names the manager rather than this daemon.
-	unit := ""
-	for _, f := range strings.Split(strings.TrimSpace(string(b)), "/") {
-		if strings.HasSuffix(f, ".service") {
-			unit = strings.TrimSpace(f)
-		}
+	line := strings.TrimSpace(string(b))
+	leaf := line[strings.LastIndex(line, "/")+1:]
+	if !strings.HasSuffix(leaf, ".service") {
+		return "" // a .scope: started by hand, not by a unit
 	}
-	return unit
+	if strings.HasPrefix(leaf, "user@") {
+		return "" // the user manager itself, not a unit of ours
+	}
+	return leaf
 }
 
 // daemonStatePath is <root>/daemon.json. Clients and the daemon agree on it
