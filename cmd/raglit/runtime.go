@@ -138,7 +138,14 @@ func restartDaemon(root, subcmd string, args []string, addr string) error {
 	if err := spawnDaemonDetached(subcmd, stripBoolFlag(args, "restart")); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
 	}
-	base := "http://" + strings.TrimPrefix(addr, "0.0.0.0")
+	// addr may be a LIST. Probe the first address it resolves to — a daemon that
+	// bound several is up or down as a whole, since a partial bind fails the
+	// start outright.
+	probe := addr
+	if binds, perr := parseListenList(addr, defaultDaemonPort); perr == nil && len(binds) > 0 {
+		probe = binds[0]
+	}
+	base := "http://" + strings.TrimPrefix(probe, "0.0.0.0")
 	if strings.HasPrefix(base, "http://:") { // ":7420" / "0.0.0.0:7420" → probe locally
 		base = "http://127.0.0.1" + strings.TrimPrefix(base, "http://")
 	}

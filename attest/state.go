@@ -15,9 +15,9 @@ import (
 // for days after a field was added, understating how much had been reviewed. A
 // second reader of this vocabulary WILL go stale, so there is one.
 
-// Status is one unit's effective state: what the machine claimed, and what a
+// UnitStatus is one unit's effective state: what the machine claimed, and what a
 // person did about it.
-type Status struct {
+type UnitStatus struct {
 	Unit Unit `json:"unit"`
 
 	// Kind is the ruling in force, or empty for untouched.
@@ -55,7 +55,7 @@ type Status struct {
 // Corrected reports whether a person actually retyped this unit's words. The
 // only units that are ground truth for word error rate — scoring a recogniser
 // against text nobody disputed measures it against itself.
-func (s Status) Corrected() bool { return s.Kind == Corrected && s.Text != s.Unit.Text }
+func (s UnitStatus) Corrected() bool { return s.Kind == Corrected && s.Text != s.Unit.Text }
 
 // Stats is the completeness account. The states are reported SEPARATELY and
 // never collapsed into one percentage: a single number hides which failure
@@ -101,10 +101,10 @@ func (s Stats) Ruled() int { return s.Confirmed + s.Corrected + s.Unclear + s.Un
 
 // State is a reading and its verdicts, resolved.
 type State struct {
-	Asset    Asset    `json:"asset"`
-	Producer string   `json:"producer,omitempty"`
-	Units    []Status `json:"units"`
-	Stats    Stats    `json:"stats"`
+	Asset    Asset        `json:"asset"`
+	Producer string       `json:"producer,omitempty"`
+	Units    []UnitStatus `json:"units"`
+	Stats    Stats        `json:"stats"`
 
 	// Orphaned names verdicts that rule on units this reading does not contain
 	// — the cost of a re-read that changed what the machine claims.
@@ -131,7 +131,7 @@ func Resolve(r *Reading, log []Entry) (*State, error) {
 	// so a turn cut in two stays where it was in the transcript rather than
 	// jumping to the end. Reading order is not decoration here — it is how the
 	// reviewer navigates.
-	order := make([]Status, 0, len(r.Units))
+	order := make([]UnitStatus, 0, len(r.Units))
 	at := make(map[string]int, len(r.Units))
 	// known remembers every id that has ever been in the effective set, so a
 	// verdict on a unit that was later retired is not misreported as an orphan.
@@ -148,7 +148,7 @@ func Resolve(r *Reading, log []Entry) (*State, error) {
 		}
 		at[u.ID] = len(order)
 		known[u.ID] = true
-		order = append(order, Status{Unit: u, Text: u.Text, Label: u.Label})
+		order = append(order, UnitStatus{Unit: u, Text: u.Text, Label: u.Label})
 	}
 
 	for _, e := range log {
@@ -164,7 +164,7 @@ func Resolve(r *Reading, log []Entry) (*State, error) {
 					splice = i
 				}
 			}
-			kept := make([]Status, 0, len(order))
+			kept := make([]UnitStatus, 0, len(order))
 			retire := map[string]bool{}
 			for _, id := range e.Supersedes {
 				retire[id] = true
@@ -174,7 +174,7 @@ func Resolve(r *Reading, log []Entry) (*State, error) {
 					kept = append(kept, s)
 				}
 			}
-			add := make([]Status, 0, len(e.Units))
+			add := make([]UnitStatus, 0, len(e.Units))
 			for _, u := range e.Units {
 				if _, dup := at[u.ID]; dup && known[u.ID] {
 					// The person re-proposed a claim that is already present.
@@ -182,7 +182,7 @@ func Resolve(r *Reading, log []Entry) (*State, error) {
 					continue
 				}
 				known[u.ID] = true
-				add = append(add, Status{
+				add = append(add, UnitStatus{
 					Unit: u, Text: u.Text, Label: u.Label,
 					Authored: true, By: e.By, Auth: e.Auth, At: e.At,
 				})
@@ -281,7 +281,7 @@ func Resolve(r *Reading, log []Entry) (*State, error) {
 	return st, nil
 }
 
-func reindex(order []Status) map[string]int {
+func reindex(order []UnitStatus) map[string]int {
 	at := make(map[string]int, len(order))
 	for i, s := range order {
 		at[s.Unit.ID] = i

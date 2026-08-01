@@ -187,11 +187,11 @@ type assetQuery struct {
 // part of the contract: a consumer that reads the units and not the sentence is
 // the consumer that publishes a half-reviewed transcript as a verified one.
 type StateView struct {
-	Asset    Asset    `json:"asset"`
-	Producer string   `json:"producer,omitempty"`
-	Units    []Status `json:"units"`
-	Stats    Stats    `json:"stats"`
-	Orphaned []Entry  `json:"orphaned,omitempty"`
+	Asset    Asset        `json:"asset"`
+	Producer string       `json:"producer,omitempty"`
+	Units    []UnitStatus `json:"units"`
+	Stats    Stats        `json:"stats"`
+	Orphaned []Entry      `json:"orphaned,omitempty"`
 
 	// Provenance is generated from the counts and must accompany anything
 	// derived from this asset.
@@ -245,9 +245,15 @@ func (s *Service) Register(api huma.API, prefix string) error {
 			"and defaulting to permit-all is not a decision it may make on a host's behalf")
 	}
 	prefix = strings.TrimSuffix(prefix, "/")
+	// Operation ids must be unique across the host's whole OpenAPI document, and
+	// a host may mount this surface more than once — raglit mounts one Service
+	// per index. So the ids are suffixed from the prefix rather than fixed:
+	// mounting twice with the same prefix is still a collision, which is correct,
+	// because that would be two mounts of the same thing.
+	sfx := idSuffix(prefix)
 
 	huma.Register(api, huma.Operation{
-		OperationID: "attestListAssets", Method: http.MethodGet, Path: prefix + "/assets",
+		OperationID: "attestListAssets" + sfx, Method: http.MethodGet, Path: prefix + "/assets",
 		Summary: "Assets with a machine reading, and how far each review has got.",
 	}, func(ctx context.Context, _ *struct{}) (*struct {
 		Body struct {
@@ -268,7 +274,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 	})
 
 	huma.Register(api, huma.Operation{
-		OperationID: "attestGetState", Method: http.MethodGet, Path: prefix + "/state",
+		OperationID: "attestGetState" + sfx, Method: http.MethodGet, Path: prefix + "/state",
 		Summary: "One asset's units, the verdicts in force, and the provenance sentence.",
 		Description: "Provenance is generated from the data and is what any consumer must print beside " +
 			"anything derived from this asset. A partly-reviewed transcript presented as a verified one " +
@@ -286,7 +292,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 	})
 
 	huma.Register(api, huma.Operation{
-		OperationID: "attestVerdict", Method: http.MethodPost, Path: prefix + "/verdict",
+		OperationID: "attestVerdict" + sfx, Method: http.MethodPost, Path: prefix + "/verdict",
 		Summary: "Rule on one claim.",
 		Description: "`by` is the person doing the review and is required. It is deliberately not taken " +
 			"from the session: whoever holds the link may not be the account holder — an attorney hands " +
@@ -324,7 +330,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 	})
 
 	huma.Register(api, huma.Operation{
-		OperationID: "attestSweep", Method: http.MethodPost, Path: prefix + "/sweep",
+		OperationID: "attestSweep" + sfx, Method: http.MethodPost, Path: prefix + "/sweep",
 		Summary: "\"I went through this, and here are the terms I accept the rest under.\"",
 		Description: "Marks every so-far-unruled unit AFFIRMED, never confirmed. This is the ORDINARY " +
 			"end of a pass: a reviewer goes through the asset, edits what needs it, and accepts what " +
@@ -359,7 +365,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 	})
 
 	huma.Register(api, huma.Operation{
-		OperationID: "attestResegment", Method: http.MethodPost, Path: prefix + "/resegment",
+		OperationID: "attestResegment" + sfx, Method: http.MethodPost, Path: prefix + "/resegment",
 		Summary: "The machine cut in the wrong place; replace the units.",
 		Description: "The common repair in both media, and why this is an editor rather than a survey: a " +
 			"diarization boundary falling mid-sentence leaves one speaker's last word attached to the " +
@@ -394,7 +400,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 	})
 
 	huma.Register(api, huma.Operation{
-		OperationID: "attestEvidence", Method: http.MethodGet, Path: prefix + "/evidence",
+		OperationID: "attestEvidence" + sfx, Method: http.MethodGet, Path: prefix + "/evidence",
 		Summary: "The artifact a claim was read from.",
 		Description: "`crop` is the attestation image — the bytes the claim came from, and the only " +
 			"rendering a verdict properly rests on. `seen` is what the model actually got where a " +
@@ -482,4 +488,31 @@ func (s *Service) statsOut(full string) (*struct {
 	}{}
 	out.Body.Stats = st.Stats
 	return out, nil
+}
+
+// idSuffix turns a mount prefix into an operation-id suffix.
+//
+// Empty for the conventional single mount, so a host that mounts once keeps the
+// plain ids its clients already know.
+func idSuffix(prefix string) string {
+	trimmed := strings.Trim(strings.TrimPrefix(prefix, "/api"), "/")
+	if trimmed == "" || trimmed == "attest" {
+		return ""
+	}
+	var b strings.Builder
+	up := true
+	for _, r := range trimmed {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			if up {
+				b.WriteString(strings.ToUpper(string(r)))
+				up = false
+			} else {
+				b.WriteRune(r)
+			}
+		default:
+			up = true
+		}
+	}
+	return b.String()
 }

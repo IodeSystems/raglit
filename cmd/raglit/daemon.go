@@ -38,6 +38,9 @@ import (
 
 const defaultDaemonAddr = "127.0.0.1:7420"
 
+// defaultDaemonPort is what an --addr entry with no port takes.
+const defaultDaemonPort = "7420"
+
 // runDaemon runs the gat multi-protocol daemon (httpd.go). The legacy stdlib
 // net/http server + review routes were retired once httpd reached parity — the
 // gat server serves the same paths (REST + review UI + OpenAPI + GraphQL) plus

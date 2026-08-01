@@ -14,6 +14,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,7 +35,7 @@ func runHttpd(subcmd string, args []string) error {
 	homeFlag := fs.String("home", "", "single-home index dir (back-compat; overrides --root)")
 	rootFlag := fs.String("root", "", "scoped storage root (default $RAGLIT_ROOT or ~/.raglit); each index at <root>/indexes/<name>")
 	lf := addLLMFlags(fs)
-	addr := fs.String("addr", defaultDaemonAddr, "listen address")
+	addr := fs.String("addr", defaultDaemonAddr, "listen address(es), comma-separated; a bare `.N` matches this host's own interface ending .N (e.g. 127.0.0.1:7420,.76)")
 	defLimit := fs.Int("n", 8, "default search results")
 	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
 	poolMaxBytes := fs.Int64("pool-max-bytes", 4<<30, "keep the shared pool under this many bytes, evicting oldest-accessed (0 = unlimited)")
@@ -119,13 +120,22 @@ func runHttpd(subcmd string, args []string) error {
 	}
 	// Record runtime state so clients discover this daemon (even on a non-default
 	// port) and `--stop` can signal it. Removed on clean shutdown.
-	removeState, err := writeDaemonState(string(cfgHome), *addr)
+	// Record the first bind rather than the raw list: daemon.json is what a
+	// client DIALS, and a comma-separated list is not an address.
+	binds, err := parseListenList(*addr, defaultDaemonPort)
+	if err != nil {
+		return err
+	}
+	removeState, err := writeDaemonState(string(cfgHome), binds[0])
 	if err != nil {
 		return err
 	}
 	defer removeState()
 
-	srv := &http.Server{Addr: *addr, Handler: handler}
+	// One handler, several listeners. A list rather than a single bind so the
+	// daemon can be reachable from the machines that should reach it without
+	// being reachable from everything else — see parseListenList.
+	srv := &http.Server{Handler: handler}
 	// Graceful shutdown on SIGINT/SIGTERM (what `--stop` sends) so the deferred
 	// state removal + pool/registry closes run.
 	sig := make(chan os.Signal, 1)
@@ -137,9 +147,32 @@ func runHttpd(subcmd string, args []string) error {
 		srv.Shutdown(sctx)
 	}()
 
-	fmt.Fprintf(os.Stderr, "raglit httpd (gat) on http://%s (storage %s)\n", *addr, cfgHome)
-	fmt.Fprintf(os.Stderr, "  REST + review UI: http://%s/   OpenAPI: /openapi.json   GraphQL: /graphql\n", *addr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	fmt.Fprintf(os.Stderr, "raglit httpd (gat) storage %s\n", cfgHome)
+	for _, b := range binds {
+		fmt.Fprintf(os.Stderr, "  http://%s/   review UI · OpenAPI /openapi.json · GraphQL /graphql · review workbench /attest/<index>\n", b)
+	}
+
+	// Every listener is opened BEFORE any is served, so a partial bind fails the
+	// whole start rather than leaving the daemon up on some of the addresses it
+	// was told to hold. Coming up on the loopback while silently failing to bind
+	// the VPN address is the failure that looks like "it works here" for hours.
+	var lns []net.Listener
+	for _, b := range binds {
+		ln, lerr := net.Listen("tcp", b)
+		if lerr != nil {
+			for _, open := range lns {
+				_ = open.Close()
+			}
+			return fmt.Errorf("listen %s: %w", b, lerr)
+		}
+		lns = append(lns, ln)
+	}
+
+	errc := make(chan error, len(lns))
+	for _, ln := range lns {
+		go func(l net.Listener) { errc <- srv.Serve(l) }(ln)
+	}
+	if err := <-errc; err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -208,6 +241,15 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	if pool != nil {
 		gat.Register(api, g, op("poolStats", http.MethodGet, "/api/pool", "Shared document-pool size (entries + files)."), poolStatsOp(pool))
 		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs to a budget (max_bytes / max_entries / max_age_hours), oldest-accessed first."), poolGCOp(pool, defGC))
+	}
+
+	gat.Register(api, g, op("attestWriteReadings", http.MethodPost, "/api/attest/readings", "Write readings across an index so its documents can be reviewed."), attestWriteReadingsOp(reg))
+
+	// The review workbench, per index. Registered BEFORE RegisterHuma so its
+	// operations land in the same OpenAPI document as everything else — which is
+	// the property attest's Register was written for.
+	if err := mountAttest(router, api, reg); err != nil {
+		return nil, err
 	}
 
 	if err := gat.RegisterHuma(api, g, ""); err != nil {
