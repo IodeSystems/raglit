@@ -46,12 +46,17 @@ func systemdUnit() string {
 	if err != nil {
 		return ""
 	}
+	// The LAST .service in the path, not the first: a user unit sits under the
+	// user manager, so the path is
+	//   /user.slice/user-1000.slice/user@1000.service/app.slice/raglit.service
+	// and taking the first match names the manager rather than this daemon.
+	unit := ""
 	for _, f := range strings.Split(strings.TrimSpace(string(b)), "/") {
 		if strings.HasSuffix(f, ".service") {
-			return strings.TrimSpace(f)
+			unit = strings.TrimSpace(f)
 		}
 	}
-	return ""
+	return unit
 }
 
 // daemonStatePath is <root>/daemon.json. Clients and the daemon agree on it

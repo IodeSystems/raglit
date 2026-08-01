@@ -105,6 +105,8 @@ func main() {
 		err = runTranscribe(os.Args[2:])
 	case "readings":
 		err = runReadings(os.Args[2:])
+	case "health":
+		err = runHealth(os.Args[2:])
 	case "doctor":
 		err = runDoctor(os.Args[2:])
 	case "-h", "--help", "help":
@@ -239,6 +241,14 @@ usage:
   raglit transcribe [--write] FILE...        page-delineated markdown of a document
                 (--write puts <doc>.raglit-transcription.md beside it; index option
                  "writeback_transcription_md" does the same during ingest)
+  raglit health [--json] [--kind K] [--quiet]
+                what is WRONG with this corpus, worst first: documents that are
+                indexed and unsearchable, PDFs with no pages, failed jobs with
+                the stage they died in, pages the model would not segment, and
+                jobs the endpoint made fight for. Exits non-zero if anything is
+                wrong, so it works as a check and not only as a page to read.
+                (A withdrawal is a decision, not a fault, and never fails it.)
+
   raglit doctor [--home DIR]                 OCR readiness: cheap engine + vision endpoint
 
 flags:

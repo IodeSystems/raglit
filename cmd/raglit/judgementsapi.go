@@ -471,3 +471,47 @@ func withdrawalsOp(reg *raglit.Registry) func(context.Context, *withdrawalsIn) (
 		return out, nil
 	}
 }
+
+// The health report: what is wrong with an index, in one request.
+//
+// Every fact in it was already recorded and none of it was anywhere a person
+// looks. Nine documents were missing from a corpus for a week because their jobs
+// failed and no view listed failed jobs.
+
+type problemsIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	Kind  string `query:"kind" doc:"only this kind (no-fragments, no-pages, job-failed, segment-degraded, llm-retries, withdrawn)"`
+}
+
+type problemsOut struct {
+	Body struct {
+		Problems []raglit.Problem `json:"problems"`
+		// Counts by kind, so a caller can render a summary without walking the
+		// list — and so a UI badge does not need the whole report.
+		Counts map[string]int `json:"counts"`
+	}
+}
+
+func problemsOp(reg *raglit.Registry) func(context.Context, *problemsIn) (*problemsOut, error) {
+	return func(ctx context.Context, in *problemsIn) (*problemsOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		ps, err := st.Problems(ctx)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("collect problems", err)
+		}
+		out := &problemsOut{}
+		out.Body.Counts = map[string]int{}
+		out.Body.Problems = make([]raglit.Problem, 0, len(ps))
+		for _, p := range ps {
+			out.Body.Counts[string(p.Kind)]++
+			if in.Kind != "" && string(p.Kind) != in.Kind {
+				continue
+			}
+			out.Body.Problems = append(out.Body.Problems, p)
+		}
+		return out, nil
+	}
+}
