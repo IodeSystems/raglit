@@ -355,8 +355,14 @@ func readingFor(path string) (*attest.Reading, string, error) {
 
 // evidenceFor supplies the rendering for whichever producer read the asset.
 func evidenceFor(path, root string) attest.Evidence {
-	if isTextAsset(path) {
+	switch {
+	case isTextAsset(path):
 		return textEvidence{root: root}
+	case isAudioAsset(path):
+		// May be nil, and that is a legitimate mount: without ffmpeg the API
+		// still lists the reading and records verdicts, and the evidence
+		// endpoint says it cannot render rather than serving a substitute.
+		return audioEvidenceFor(root)
 	}
 	return &regionEvidence{root: root}
 }
