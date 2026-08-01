@@ -117,10 +117,10 @@ func runHttpd(subcmd string, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go runIndexWorkers(ctx, reg, lf, cfgHome, pool)
-	// Stay on the current source. Rebuilds immediately, restarts only when no
-	// index has work in flight — a re-exec mid-ingest aborts the running job, and
-	// an aborted job is not requeued.
-	go daemonSelfUpdate(func() bool { return queuesIdle(reg) })
+	// Stay on the current source. Rebuilds immediately, restarts as soon as no
+	// job is RUNNING — a re-exec mid-ingest aborts that job and it is not
+	// requeued, while pending rows survive and the new process picks them up.
+	go daemonSelfUpdate(func() bool { return noJobRunning(reg) })
 
 	// Directory watching: keep opt-in projects (config watch:true) re-ingested on
 	// change. Registrations persist under the daemon root and reload here.

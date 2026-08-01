@@ -196,7 +196,7 @@ func daemonSelfUpdate(idle func() bool) {
 		if !pending || !idle() {
 			continue
 		}
-		fmt.Fprintln(os.Stderr, "raglit daemon: queue idle — restarting into the new build")
+		fmt.Fprintln(os.Stderr, "raglit daemon: no job in flight — restarting into the new build")
 		// Deliberately NOT setting RAGLIT_AUTOBUILD_DONE. That guard bounds the
 		// CLI to one re-exec per invocation; on a process that lives for days it
 		// would mean the daemon tracks its source exactly once and then never
@@ -240,20 +240,35 @@ func hashFile(path string) string {
 // also running ingest, and nobody is waiting on the poll.
 const daemonWatchInterval = 5 * time.Second
 
-// queuesIdle reports whether no index has work in flight or waiting.
+// noJobRunning reports whether any index has a job IN FLIGHT.
+//
+// Running only — pending is deliberately not part of it. A restart costs
+// exactly one thing: the job the worker is executing, which reclaimOrphanedJobs
+// then marks errored and does not requeue. Pending rows survive untouched and
+// the new process picks them straight up, so waiting for an empty QUEUE buys
+// nothing and can wait forever.
+//
+// That is not hypothetical. This daemon watches a source tree and re-ingests it
+// on change; while that tree was being edited the queue never reached zero, a
+// restart sat pending indefinitely, and the daemon went on serving a build two
+// commits old with its own watch reporting everything current.
 //
 // Every index, not just one: the daemon serves them all from one process, and
-// restarting because THIS project is quiet would abort another project's ingest.
-// An index that cannot be opened counts as busy — a restart on the strength of a
+// restarting because THIS project is quiet would abort another project's job. An
+// index that cannot be opened counts as busy — restarting on the strength of a
 // state that could not be read is the wrong way to be wrong.
-func queuesIdle(reg *raglit.Registry) bool {
+//
+// A job claimed between this check and the exec is still lost. The window is
+// milliseconds, the loss is one job, and it now lands in the health report with
+// a retry button rather than in silence.
+func noJobRunning(reg *raglit.Registry) bool {
 	for _, name := range reg.Names() {
 		st, err := reg.Get(name)
 		if err != nil {
 			return false
 		}
 		s, err := st.IndexStatus()
-		if err != nil || s.Running > 0 || s.Pending > 0 {
+		if err != nil || s.Running > 0 {
 			return false
 		}
 	}
