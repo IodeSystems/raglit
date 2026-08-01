@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	gen "github.com/iodesystems/raglit/internal/db"
 )
@@ -88,11 +87,19 @@ type FragConfig struct {
 	EmbedLimit            int
 	FigurePrompt          int
 	// SegmentInputLimit caps ONE segmentation request — prompt, carried-over
-	// fragment and page text together — at what the chat endpoint accepts
-	// (ChatInputLimitChars). Distinct from EmbedLimit, which bounds the fragments
-	// that come BACK. Measuring only the second is how a page too big to send
-	// reached the endpoint and failed the document. 0 → unknown, no cap.
+	// fragment and page text together — at what the chat endpoint accepts, IN
+	// TOKENS, which is the unit the endpoint counts in. Distinct from EmbedLimit,
+	// which bounds the fragments that come BACK, in characters, because that
+	// limit belongs to the embedder. Measuring only the second is how a page too
+	// big to send reached the endpoint and failed the document. 0 → unknown, no
+	// cap.
 	SegmentInputLimit int
+	// TokenCounter counts tokens as the serving model does, when the endpoint can
+	// (llm.Client.CountTokens). nil → sizes are estimated from a ratio learned
+	// per document instead. The difference is not cosmetic: measured with the
+	// model's own tokenizer, this corpus runs 4.66 characters per token on prose
+	// and 1.16 on a survey legal description.
+	TokenCounter TokenCounter
 }
 
 // fragMode names: text-overlap (deterministic windows) vs llm-seg (a VLM already
@@ -242,7 +249,11 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	fragMode := fragModeOverlap
 	if sawVision && sg != nil {
 		fragMode = fragModeLLM
-		rep, err := segmentLLM(ctx, sg, pages, window, fc.SegmentInputLimit, sink)
+		// One budget per document: what it measures about this document's density
+		// is what makes the next unit's estimate right, and a survey sheet and a
+		// brief have no business informing each other's.
+		budget := NewTokenBudget(ctx, fc.TokenCounter, fc.SegmentInputLimit)
+		rep, err := segmentLLM(ctx, sg, pages, window, budget, sink)
 		var short *ErrSegmentShort
 		switch {
 		case errors.As(err, &short):
@@ -325,8 +336,8 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 // offsets (they are model-emitted text). `page` is the START page, and
 // pageSpans records where every later page begins inside the text — without
 // them a hit in a stitched fragment resolves to the wrong page.
-func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedLimit, inputLimit int, sink func(stagedFrag)) (segReport, error) {
-	return segmentLLMWith(ctx, sg.SegmentText, pages, embedLimit, inputLimit, sink)
+func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedLimit int, budget *TokenBudget, sink func(stagedFrag)) (segReport, error) {
+	return segmentLLMWith(ctx, sg.SegmentText, pages, embedLimit, budget, sink)
 }
 
 // segReport is what segmentation did, as opposed to what it returned.
@@ -373,7 +384,7 @@ func (r segReport) degradedDetail() string {
 // The seam exists for the coverage rule below, which is the part that has to be
 // tested and the part a live model cannot test: to prove the alarm fires when a
 // page is dropped, something has to drop a page on purpose.
-func segmentLLMWith(ctx context.Context, segment func(context.Context, string, string) (SegResult, error), pages []resolvedPage, embedLimit, inputLimit int, sink func(stagedFrag)) (segReport, error) {
+func segmentLLMWith(ctx context.Context, segment func(context.Context, string, string) (SegResult, error), pages []resolvedPage, embedLimit int, budget *TokenBudget, sink func(stagedFrag)) (segReport, error) {
 	// Emitted content per page, against what that page was given. The segmenter
 	// is a MODEL, and a model that returns a short answer returns it without an
 	// error — so the only way to know it dropped the back half of a page is to
@@ -392,8 +403,8 @@ func segmentLLMWith(ctx context.Context, segment func(context.Context, string, s
 		// across a page boundary, so sub-units cost nothing but calls.
 		perPage := 0
 		for rest := p.text; ; {
-			open := segmentOpenForRequest(a.OpenText(), inputLimit)
-			take := segmentTake(rest, open, inputLimit)
+			open := segmentOpenForRequest(ctx, a.OpenText(), budget)
+			take := budget.Fit(ctx, segPrompt(open)+segContentHeader, rest, segmentMinTake)
 			r, err := segment(ctx, rest[:take], open)
 			rep.requests++
 			perPage++
@@ -459,88 +470,35 @@ func segmentLLMWith(ctx context.Context, segment func(context.Context, string, s
 // The TAIL is kept, because continuation is decided by how the open fragment
 // ENDS. Trimming context to protect content is the only trade available; the
 // reverse — cutting the page to preserve its context — loses text.
-func segmentOpenForRequest(open string, inputLimit int) string {
-	if inputLimit <= 0 || open == "" {
+func segmentOpenForRequest(ctx context.Context, open string, budget *TokenBudget) string {
+	if budget.Unlimited() || open == "" {
 		return open
 	}
-	if SegmentInputChars("", open)+segmentMinTake <= inputLimit {
+	// Room for the instructions, this context, and a floor's worth of page.
+	if budget.Tokens(ctx, segPrompt(open)+segContentHeader)+segmentMinTakeTokens <= budget.limit {
 		return open
 	}
-	room := inputLimit - SegmentInputChars("", "") - segmentMinTake
+	fixed := budget.Tokens(ctx, segPrompt("")+segContentHeader)
+	room := budget.limit - fixed - segmentMinTakeTokens
 	if room <= 0 {
 		// The instructions alone leave no room. Drop the context entirely rather
 		// than send a request that cannot carry a page.
 		return ""
 	}
-	if room >= len(open) {
-		return open
-	}
-	tail := open[len(open)-room:]
-	// Cut on a rune boundary; a half-character reaches the model as U+FFFD.
-	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
-		tail = tail[1:]
-	}
-	return tail
+	// Fit measures the TAIL, so reverse the question: keep the largest suffix
+	// whose token count is inside `room`, found the same way a take is.
+	keep := budget.FitSuffix(ctx, open, room)
+	return open[len(open)-keep:]
 }
 
-// segmentTake is how much of `rest` to send as one segmentation request, given
-// what the open fragment already costs and what the endpoint will accept.
-//
-// The whole of `rest` whenever it fits, which is nearly always — a page of prose
-// is a few thousand characters and the limits in play are five figures. It cuts
-// only for the case that has no other answer: an endpoint whose ACCEPTED INPUT
-// is smaller than a page.
-//
-// That case is not hypothetical. llama.cpp refuses a prompt larger than its
-// physical batch, separately from and usually below n_ctx, and the corpus this
-// was written for met it as
-//
-//	input (14969 tokens) is too large to process.
-//	increase the physical batch size (current batch size: 8192)
-//
-// — deterministic, correctly not retried, and fatal to the document. Nine files
-// were absent from that index, among them the summary-judgment brief. Nothing
-// between the page and the request measured anything, so nothing could cut.
-//
-// inputLimit ≤ 0 means unknown (unprobeable endpoint) and takes everything: a
-// limit invented here would split good pages for no reason, and the failure it
-// would prevent is loud rather than silent.
-func segmentTake(rest, open string, inputLimit int) int {
-	if inputLimit <= 0 || SegmentInputChars(rest, open) <= inputLimit {
-		return len(rest)
-	}
-	// The overhead is what the request costs before a single character of the
-	// page: the instructions, and an open fragment that runs to
-	// defaultMaxFragmentChars. Both are already spent when we get here.
-	budget := inputLimit - SegmentInputChars("", open)
-	if budget < segmentMinTake {
-		// Overhead alone is at or over the limit. Cutting to fit is not available
-		// — the request would be all prompt and no content, and a zero-length take
-		// would never terminate. Send a floor's worth and let the endpoint answer:
-		// a refusal naming its own limit is worth more than a loop.
-		budget = segmentMinTake
-	}
-	if budget >= len(rest) {
-		return len(rest)
-	}
-	// Boundary-preferring, so a sub-unit ends at a paragraph rather than mid-word
-	// — the model is being asked to find fragment edges, and a ragged cut invents
-	// one it then has to reason around.
-	pieces := splitAtBoundary(rest, budget)
-	if len(pieces) == 0 || pieces[0] == "" {
-		return budget
-	}
-	// splitAtBoundary trims, so locate the piece in the original to get an offset
-	// that consumes the leading whitespace with it.
-	if i := strings.Index(rest, pieces[0]); i >= 0 {
-		return i + len(pieces[0])
-	}
-	return budget
-}
-
-// segmentMinTake is the smallest sub-unit worth sending, and the guarantee that
-// the take loop always advances.
+// segmentMinTake is the smallest sub-unit worth sending in characters, and the
+// guarantee that the take loop always advances.
 const segmentMinTake = 1000
+
+// segmentMinTakeTokens is that floor expressed in the unit the limit uses, at
+// the worst plausible density (one token per character). Reserving it means a
+// request always has room for SOME page, which is what stops the loop.
+const segmentMinTakeTokens = segmentMinTake
 
 // carriedInto credits a page whose content was stitched into a fragment that
 // started on the previous page. Without it, a page that continues an open

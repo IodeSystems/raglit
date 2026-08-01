@@ -20,13 +20,22 @@ type Config struct {
 	// fragmenter's ceiling is bounded by the model, not by taste. 0 = not probed
 	// (the fragmenter falls back to FragWindow uncapped).
 	EmbedLimitChars int `json:"embed_limit_chars,omitempty"`
-	// SegmentInputLimitChars caps ONE segmentation REQUEST — prompt, carried-over
-	// fragment and page text — to what the chat endpoint accepts, probed once and
-	// stored (llm.DiscoverContext). The mirror of EmbedLimitChars on the other
-	// side of the call: that one bounds what comes back, this one bounds what is
-	// sent. 0 = not probed (no cap). Set it to override the probe on an endpoint
-	// that accepts anything and then fails on it.
-	SegmentInputLimitChars int `json:"segment_input_limit_chars,omitempty"`
+	// SegmentInputLimitTokens caps ONE segmentation REQUEST — prompt, carried-over
+	// fragment and page text — to what the chat endpoint accepts, asked once and
+	// stored (the server's own n_ctx where it states one, else llm.DiscoverContext).
+	// The mirror of EmbedLimitChars on the other side of the call: that one bounds
+	// what comes back, this one bounds what is sent.
+	//
+	// TOKENS, because that is the unit every endpoint states its limit in.
+	// EmbedLimitChars stays in characters because it sizes a fragment, and the
+	// conversion between the two is not a constant: measured with the model's own
+	// tokenizer, this corpus runs 4.66 chars/token on prose and 1.16 on a survey
+	// legal description.
+	//
+	// 0 = not established (no cap). Set it to override on a proxy that accepts a
+	// prompt its backend will later refuse — which cannot be measured from
+	// outside.
+	SegmentInputLimitTokens int `json:"segment_input_limit_tokens,omitempty"`
 	// FragWindow / FragStride / FragFloor tune the deterministic overlapping-window
 	// text fragmenter (chars). 0 → defaults (9000 / 6000 / 3000). window > stride
 	// gives the overlap; floor folds a short tail. They feed frag_recipe, so a

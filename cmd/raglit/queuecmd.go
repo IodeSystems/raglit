@@ -95,11 +95,17 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		// were capped by the embedder while the request carrying a page IN was
 		// capped by nothing, and a page over the endpoint's physical batch failed
 		// its whole document.
-		w.Frag.SegmentInputLimit = store.ChatInputLimitChars(
-			context.Background(), client, *lf.visionModel, cfg.SegmentInputLimitChars)
+		w.Frag.SegmentInputLimit = store.ChatInputLimitTokens(
+			context.Background(), client, *lf.visionModel, cfg.SegmentInputLimitTokens)
+		// Counting is exact wherever the endpoint has a tokenizer. Without one,
+		// sizes are estimated from a ratio learned per document — which is still
+		// four times better than the constant it replaced, but is an estimate.
+		if client.HasTokenizer(context.Background()) {
+			w.Frag.TokenCounter = client
+		}
 		if w.Frag.SegmentInputLimit > 0 {
-			log.Printf("raglit: chat input limit model=%s %d chars",
-				*lf.visionModel, w.Frag.SegmentInputLimit)
+			log.Printf("raglit: chat input limit model=%s %d tokens (exact counting: %v)",
+				*lf.visionModel, w.Frag.SegmentInputLimit, w.Frag.TokenCounter != nil)
 		}
 		// Printed once per index worker so the effective retry policy is visible
 		// in the log. Without it, "5xx attempt 2/5" in a log is ambiguous between

@@ -116,19 +116,6 @@ func (sg *Segmenter) SegmentText(ctx context.Context, text, openText string) (Se
 	return sg.run(ctx, parts, text) // text fallback = the window itself
 }
 
-// SegmentInputChars is the size of the request SegmentText will send for `text`
-// continuing `openText` — instructions, carried-over fragment and unit together.
-//
-// Exported because the caller is the one that has to keep the request inside
-// what the endpoint accepts, and it can only do that against the REAL size. The
-// unit's own length is the obvious part and the smaller one on a short page: the
-// prompt is fixed overhead and the open fragment runs to defaultMaxFragmentChars,
-// so a caller measuring only the page text can be thousands of characters under
-// and still be refused.
-func SegmentInputChars(text, openText string) int {
-	return len(segPrompt(openText)) + len(segContentHeader) + len(text)
-}
-
 // run performs the validate/retry/fallback loop. fallback is the fragment text
 // used when the model never yields valid JSON ("" → use its last raw output).
 func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback string) (SegResult, error) {

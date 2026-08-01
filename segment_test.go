@@ -98,7 +98,7 @@ func TestSegmentReportCarriesDegradedPages(t *testing.T) {
 		}
 		return SegResult{Fragments: []Segment{{Text: text}}}, nil
 	}
-	rep, err := segmentLLMWith(context.Background(), seg, pages, 4000, 0, func(stagedFrag) {})
+	rep, err := segmentLLMWith(context.Background(), seg, pages, 4000, nil, func(stagedFrag) {})
 	if err != nil {
 		t.Fatal(err)
 	}
