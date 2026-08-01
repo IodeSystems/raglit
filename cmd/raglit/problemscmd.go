@@ -70,6 +70,12 @@ func runHealth(args []string) error {
 			continue
 		}
 		fmt.Printf("\n%s (%d)\n  %s\n", k.title, len(mine), k.why)
+		// One reason, printed once. A bulk withdrawal gives twenty-six rows the
+		// same grounds, and repeating them turns the only section a reader should
+		// be able to skim into a wall — which is how a report stops being read.
+		if shared := sharedDetail(mine); shared != "" {
+			fmt.Printf("  reason: %s\n", clip(oneLine(shared), 200))
+		}
 		for _, p := range mine {
 			fmt.Printf("  %s", p.Subject)
 			if p.JobID > 0 {
@@ -79,8 +85,8 @@ func runHealth(args []string) error {
 				fmt.Printf("  [%s]", p.Stage)
 			}
 			fmt.Println()
-			if d := strings.TrimSpace(p.Detail); d != "" {
-				fmt.Printf("      %s\n", clip(strings.ReplaceAll(d, "\n", " "), 160))
+			if d := strings.TrimSpace(p.Detail); d != "" && sharedDetail(mine) == "" {
+				fmt.Printf("      %s\n", clip(oneLine(d), 160))
 			}
 			if p.Fix != "" {
 				fmt.Printf("      fix: %s\n", p.Fix)
@@ -90,12 +96,37 @@ func runHealth(args []string) error {
 	return exitIfBroken(ps)
 }
 
-// exitIfBroken makes this usable in a check. A withdrawal is not a fault — it is
-// a decision somebody made — so it never fails the run.
+// sharedDetail returns the detail every row in a group has in common, or "" when
+// they differ. What makes a bulk withdrawal readable.
+func sharedDetail(ps []raglit.Problem) string {
+	if len(ps) < 2 {
+		return ""
+	}
+	first := strings.TrimSpace(ps[0].Detail)
+	if first == "" {
+		return ""
+	}
+	for _, p := range ps[1:] {
+		if strings.TrimSpace(p.Detail) != first {
+			return ""
+		}
+	}
+	return first
+}
+
+// exitIfBroken makes this usable in a check, and only FAULTS fail it.
+//
+// A withdrawal is a decision somebody made. A retried job completed — the retry
+// row is the earliest warning of a failure to come, which is worth reading and
+// is not itself a failure. Failing on either means the check is red from the
+// first backpressure spike and stays red, and a check that is always red is one
+// nobody looks at — the exact habit this whole report exists to break.
 func exitIfBroken(ps []raglit.Problem) error {
 	n := 0
 	for _, p := range ps {
-		if p.Kind != raglit.ProblemWithdrawn {
+		switch p.Kind {
+		case raglit.ProblemWithdrawn, raglit.ProblemRetries:
+		default:
 			n++
 		}
 	}

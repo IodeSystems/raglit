@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
 )
 
 // What is wrong with this corpus, in one answer.
@@ -85,6 +88,10 @@ type problemQuery struct {
 	kind ProblemKind
 	sql  string
 	fix  func(p Problem) string
+	// keep drops rows the query cannot exclude, because the test is not in the
+	// database. A failed job whose file no longer exists is the case: SQL knows
+	// the row, only the filesystem knows whether it still means anything.
+	keep func(p Problem) bool
 }
 
 // problemQueries are in report order. Each yields (subject, job_id, stage,
@@ -144,7 +151,8 @@ var problemQueries = []problemQuery{
 		                  AND EXISTS (SELECT 1 FROM fragments f WHERE f.doc_id = d.id))
 		         AND NOT EXISTS (SELECT 1 FROM withdrawals w WHERE w.path = j.url)
 		       ORDER BY j.id DESC`,
-		fix: func(p Problem) string { return fmt.Sprintf("raglit retry --match %s", p.Subject) },
+		fix:  func(p Problem) string { return fmt.Sprintf("raglit retry --match %s", p.Subject) },
+		keep: jobTargetIsStillReachable,
 	},
 	{
 		kind: ProblemDegraded,
@@ -181,10 +189,58 @@ func (s *Store) problemsFrom(ctx context.Context, q problemQuery) ([]Problem, er
 			return nil, err
 		}
 		p.JobID = jobID.Int64
+		if q.keep != nil && !q.keep(p) {
+			continue
+		}
 		if q.fix != nil {
 			p.Fix = q.fix(p)
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// jobTargetIsStillReachable reports whether a failed job's target could even be
+// retried — which is what decides whether its failure is a PROBLEM or a dead row.
+//
+// A rename outlives the row. `raglit retry` has always skipped jobs whose file is
+// gone; the health report has to agree, or it reports work nobody can do and an
+// empty report stops being achievable. On the corpus this was written against,
+// four of the last four "failures" were dead rows: two naming a file that had
+// been renamed, two naming a RELATIVE path from the bug that made relative paths
+// possible at all.
+//
+// A relative path is unreachable by construction. It resolves against the
+// working directory of whichever process opens it, which is not the one that
+// wrote the row — that is the whole reason relative paths are refused at the
+// door now. Nothing can retry it, so nothing should be asked to.
+//
+// A remote URL is kept: it cannot be stat'ed, and a fetch that failed against a
+// server is a real failure until somebody says otherwise. Guessing "gone" for
+// something unreachable-right-now would hide the case this report is for.
+//
+// The rows stay in ingest_jobs either way. That table is a log of what was
+// attempted; this report is about the state of the corpus, and the two answer
+// different questions.
+func jobTargetIsStillReachable(p Problem) bool {
+	raw := p.Subject
+	u, err := url.Parse(raw)
+	path := raw
+	if err == nil {
+		switch u.Scheme {
+		case "http", "https":
+			return true
+		case "file":
+			path = fileURLPath(u)
+		case "":
+			// A bare local path, which is what nearly every row is.
+		default:
+			return true // an unfamiliar scheme is not ours to call dead
+		}
+	}
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	_, statErr := os.Stat(path)
+	return statErr == nil
 }

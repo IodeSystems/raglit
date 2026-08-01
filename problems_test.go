@@ -2,6 +2,8 @@ package raglit
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -63,7 +65,10 @@ func TestProblemsIgnoresUnmaterializedSlices(t *testing.T) {
 // reader to the wrong half of the pipeline.
 func TestProblemsNamesTheFailingStage(t *testing.T) {
 	s := testStore(t)
-	id, err := s.Enqueue("/scan.pdf", "")
+	// A real file: a failed job whose target is gone is a dead row, not a
+	// problem, so a fake path would be filtered out before it could be checked.
+	scan := existingFile(t, "scan.pdf")
+	id, err := s.Enqueue(scan, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +132,17 @@ func TestProblemsSilentOnAHealthyIndex(t *testing.T) {
 	}
 }
 
+// existingFile is a real path on disk, so a job naming it is retryable work
+// rather than a dead row.
+func existingFile(t *testing.T, name string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte("%PDF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func mustProblems(t *testing.T, s *Store) []Problem {
 	t.Helper()
 	ps, err := s.Problems(context.Background())
@@ -146,7 +162,8 @@ func (e errString) Error() string { return string(e) }
 func TestProblemsDropsFailuresThatWereLaterFixed(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	id, err := s.Enqueue("/scan.pdf", "")
+	scan := existingFile(t, "scan.pdf")
+	id, err := s.Enqueue(scan, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +174,7 @@ func TestProblemsDropsFailuresThatWereLaterFixed(t *testing.T) {
 		t.Fatalf("a genuinely failed job was not reported (%d)", n)
 	}
 	// The document lands on a later run.
-	if err := s.Ingest(ctx, Document{Path: "/scan.pdf", Fragments: []Fragment{{Text: "text"}}}); err != nil {
+	if err := s.Ingest(ctx, Document{Path: scan, Fragments: []Fragment{{Text: "text"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if n := kinds(mustProblems(t, s))[ProblemJobFailed]; n != 0 {
@@ -185,5 +202,71 @@ func TestProblemsDropsFailuresForWithdrawnDocuments(t *testing.T) {
 	}
 	if k[ProblemWithdrawn] != 1 {
 		t.Errorf("the withdrawal itself went missing (%d)", k[ProblemWithdrawn])
+	}
+}
+
+// A rename outlives the row. `raglit retry` has always skipped jobs whose file
+// is gone; the report has to agree, or it lists work nobody can do and an empty
+// report stops being achievable.
+func TestProblemsDropsFailuresWhoseFileIsGone(t *testing.T) {
+	s := testStore(t)
+	dir := t.TempDir()
+	live := filepath.Join(dir, "here.pdf")
+	if err := os.WriteFile(live, []byte("%PDF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(dir, "renamed-away.pdf")
+
+	for _, u := range []string{live, gone} {
+		id, err := s.Enqueue(u, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.failJob(id, "boom"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var subjects []string
+	for _, p := range mustProblems(t, s) {
+		if p.Kind == ProblemJobFailed {
+			subjects = append(subjects, p.Subject)
+		}
+	}
+	if len(subjects) != 1 || subjects[0] != live {
+		t.Fatalf("want only the file that still exists, got %v", subjects)
+	}
+}
+
+// A relative path is unreachable by construction: it resolves against the
+// working directory of whichever process opens it, which is not the one that
+// wrote the row. Nothing can retry it, so nothing should be asked to.
+func TestProblemsDropsFailuresOnRelativePaths(t *testing.T) {
+	s := testStore(t)
+	id, err := s.Enqueue("documents/evidence/x.pdf", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.failJob(id, "no such file or directory"); err != nil {
+		t.Fatal(err)
+	}
+	if n := kinds(mustProblems(t, s))[ProblemJobFailed]; n != 0 {
+		t.Fatalf("a relative-path row is reported as retryable work (%d)", n)
+	}
+}
+
+// A remote URL cannot be stat'ed, and a fetch that failed against a server is a
+// real failure until somebody says otherwise. Guessing "gone" would hide exactly
+// the case this report is for.
+func TestProblemsKeepsRemoteFailures(t *testing.T) {
+	s := testStore(t)
+	id, err := s.Enqueue("https://example.invalid/a.pdf", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.failJob(id, "dial tcp: no such host"); err != nil {
+		t.Fatal(err)
+	}
+	if n := kinds(mustProblems(t, s))[ProblemJobFailed]; n != 1 {
+		t.Fatalf("a remote failure was dropped as a dead row (%d)", n)
 	}
 }
