@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -231,6 +233,17 @@ type rereadOut struct {
 
 func rereadOp(reg *raglit.Registry) func(context.Context, *rereadIn) (*rereadOut, error) {
 	return func(ctx context.Context, in *rereadIn) (*rereadOut, error) {
+		// A relative local path is not a document the daemon can find. It resolves
+		// against the daemon's working directory, which is whatever directory the
+		// daemon was started in and has nothing to do with the caller's — so it
+		// either names the wrong file or, far more often, no file at all, and the
+		// failure surfaces a stage later as `pdftotext: exit status 1`. Worse, the
+		// enqueue that follows would insert it as a NEW document, giving one file
+		// two rows in the index, the second permanently unreadable. Say so here.
+		if u, uerr := url.Parse(in.Path); uerr == nil && u.Scheme == "" && !filepath.IsAbs(in.Path) {
+			return nil, huma.Error400BadRequest(fmt.Sprintf(
+				"path %q is relative — the daemon cannot resolve it against your working directory; pass an absolute path", in.Path))
+		}
 		st, err := reg.Get(in.Index)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("open index", err)

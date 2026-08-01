@@ -503,6 +503,20 @@ func runReread(args []string) error {
 	if len(targets) == 0 {
 		return fmt.Errorf("reread: name a document, or pass --suspect DIR")
 	}
+	// Absolute, before anything is done with a target. A document is identified in
+	// the index by its path, and a relative one names a different file for every
+	// working directory — including the daemon's, which is not this process's. Sent
+	// as-is it inserts a SECOND row for a file already indexed, and that row can
+	// never be opened again: the daemon has no way to learn the cwd it was typed
+	// in. --suspect makes this the common case, since it hands back whatever shape
+	// the root it walked was written as.
+	for i, t := range targets {
+		abs, err := filepath.Abs(t)
+		if err != nil {
+			return fmt.Errorf("reread %s: %w", t, err)
+		}
+		targets[i] = abs
+	}
 	if dry {
 		fmt.Printf("would re-read %d document(s)\n", len(targets))
 		return nil

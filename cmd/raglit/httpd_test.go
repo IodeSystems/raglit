@@ -114,6 +114,35 @@ func TestGatDaemon_JobControlPOST(t *testing.T) {
 	}
 }
 
+// TestGatDaemon_RereadRejectsRelativePath guards the shape that put two rows in
+// the ardley index for one file. A relative path resolves against the DAEMON's
+// working directory, so it named nothing; the purge failed deep in the cascade
+// as `pdftotext: exit status 1`, and on the runs where the daemon happened to be
+// started in the project directory it succeeded and enqueued a second, cwd-bound
+// document. Reject it at the door, and enqueue nothing when doing so.
+func TestGatDaemon_RereadRejectsRelativePath(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, _ := reg.Get("default")
+	before, _ := st.Jobs("all", 100)
+
+	resp, err := http.Post(srv.URL+"/api/reread?index=default&path=documents/evidence/x.pdf",
+		"application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("relative path → HTTP %d: %s", resp.StatusCode, b)
+	}
+	if !strings.Contains(string(b), "relative") {
+		t.Fatalf("error does not say why: %s", b)
+	}
+	if after, _ := st.Jobs("all", 100); len(after) != len(before) {
+		t.Fatalf("rejected reread still enqueued: %d jobs before, %d after", len(before), len(after))
+	}
+}
+
 func httpGet(t *testing.T, url string) string {
 	t.Helper()
 	resp, err := http.Get(url)
