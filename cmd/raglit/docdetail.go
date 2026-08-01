@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -53,6 +54,29 @@ type DocDetail struct {
 	// which is a different question from what it says now and the one you need
 	// when a quotation somewhere no longer matches.
 	History []HistoryEvent `json:"history,omitempty"`
+
+	// InFlight is work already queued or running for THIS document.
+	//
+	// NOT for deduplication — Enqueue already refuses a url that is pending or
+	// running, which was measured and fixed long before this. It is so a reader
+	// knows the document is mid-read: the transcript on screen is about to be
+	// replaced, a quotation taken from it now may not survive, and a button that
+	// appears to do nothing has in fact already been pressed.
+	//
+	// One real gap it does cover: EnqueueFresh dedupes on `fresh >= ?`, so a
+	// FRESH re-ingest does stack on top of a plain pending job. That is
+	// deliberate — the caller is asking for work the queued job would not do —
+	// and it is exactly the case where a person should see what is already
+	// running before adding to it.
+	InFlight []DocJob `json:"in_flight,omitempty"`
+}
+
+// DocJob is one queued or running ingest job for this document.
+type DocJob struct {
+	ID    int64  `json:"id"`
+	State string `json:"state"` // pending | running
+	Mode  string `json:"mode,omitempty"`
+	Since int64  `json:"since,omitempty"`
 }
 
 // HistoryEvent is one thing that happened to this document.
@@ -217,6 +241,26 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 			}
 			d.Attest = sum
 		}
+		// Anything already queued or running for this document. Both states,
+		// because "running" and "waiting behind three others" are both reasons
+		// not to queue it again.
+		for _, st8 := range []string{"pending", "running"} {
+			jobs, jerr := st.Jobs(st8, 200)
+			if jerr != nil {
+				continue
+			}
+			for _, j := range jobs {
+				if !sameTarget(j.URL, abs, rel) {
+					continue
+				}
+				since := j.StartedAt
+				if since == 0 {
+					since = j.EnqueuedAt
+				}
+				d.InFlight = append(d.InFlight, DocJob{ID: j.ID, State: j.State, Mode: j.Mode, Since: since})
+			}
+		}
+
 		// What has been said about this document, over time.
 		if hist, herr := st.DocReadingHistory(abs); herr == nil {
 			for _, h := range hist {
@@ -261,4 +305,16 @@ func detailKind(path string) string {
 		return "pdf"
 	}
 	return "other"
+}
+
+// sameTarget reports whether a job's target is this document.
+//
+// Matched against both spellings rather than one. A job is queued with whatever
+// the caller typed — an absolute path from a sweep, a root-relative one from the
+// UI, a file:// URL from the watcher — and comparing only the form we happen to
+// hold here would report "nothing queued" for a document that is mid-ingest,
+// which is the exact wrong answer for a button that starts another one.
+func sameTarget(jobURL, abs, rel string) bool {
+	u := strings.TrimPrefix(jobURL, "file://")
+	return u == abs || u == rel || filepath.Clean(u) == filepath.Clean(abs)
 }

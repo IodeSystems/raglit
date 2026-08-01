@@ -496,7 +496,14 @@ func searchFiguresOp(reg *raglit.Registry, defLimit int) func(context.Context, *
 }
 
 type ingestIn struct {
-	Body struct {
+	// Index as a QUERY parameter, matching every sibling endpoint.
+	//
+	// It was body-only, and that inconsistency is a silent one: a caller who
+	// spells it the way /status, /search, /api/documents and /api/reread all
+	// take it gets no error, no warning, and their work queued into the DEFAULT
+	// index. Which is exactly what happened to this daemon's own UI.
+	Index string `query:"index"`
+	Body  struct {
 		Targets []string `json:"targets"`
 		Index   string   `json:"index,omitempty"`
 		Title   string   `json:"title,omitempty"`
@@ -516,7 +523,13 @@ type ingestOut struct {
 
 func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut, error) {
 	return func(_ context.Context, in *ingestIn) (*ingestOut, error) {
-		st, err := reg.Get(in.Body.Index)
+		// The body still wins when both are given, so existing callers are
+		// unaffected; the query parameter is the fallback nobody had.
+		idx := in.Body.Index
+		if idx == "" {
+			idx = in.Index
+		}
+		st, err := reg.Get(idx)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("open index", err)
 		}
@@ -531,7 +544,7 @@ func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut
 		out := &ingestOut{}
 		out.Body.Queued = len(ids)
 		out.Body.JobIDs = ids
-		out.Body.Index = defaultIndexName(in.Body.Index)
+		out.Body.Index = defaultIndexName(idx)
 		return out, nil
 	}
 }

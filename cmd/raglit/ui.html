@@ -401,19 +401,30 @@ async function loadReview(){
   // from the file as it stands; re-read purges the cached page OCR first, which
   // is the one that matters when the cache is what is wrong — a re-index alone
   // returns the same answer from the same cache.
-  const reingest=el("button",null,"re-ingest");
-  reingest.onclick=async()=>{ reingest.disabled=true; reingest.textContent="queued…";
-    try{ await post("/ingest?"+qi(),{targets:[curDoc],now:true}); toast("re-ingest queued"); }
-    catch(e){ toast(esc(e.message)); }
-    finally{ setTimeout(()=>{reingest.disabled=false; reingest.textContent="re-ingest";},1500); } };
-  acts.appendChild(reingest);
-
-  const reread=el("button",null,"re-read (purge OCR cache)");
-  reread.onclick=async()=>{ reread.disabled=true; reread.textContent="queued…";
-    try{ await post("/api/reread?"+qi(),{path:curDoc}); toast("re-read queued"); }
-    catch(e){ toast(esc(e.message)); }
-    finally{ setTimeout(()=>{reread.disabled=false; reread.textContent="re-read (purge OCR cache)";},1500); } };
-  acts.appendChild(reread);
+  // Work already queued for this document DISABLES both, and says why. The queue
+  // does not dedupe, so a button that stays live while a job runs is an
+  // invitation to start the same minutes-long VLM pass three times.
+  const busy = (d.in_flight||[]);
+  const mkAct=(label,fn)=>{
+    const b=el("button",null,label);
+    if(busy.length){ b.disabled=true; b.title="already "+busy[0].state+" for this document"; }
+    else b.onclick=async()=>{ b.disabled=true; b.textContent="queued…";
+      try{ await fn(); toast("queued"); await loadReview(); }
+      catch(e){ toast(esc(e.message)); b.disabled=false; b.textContent=label; } };
+    return b;
+  };
+  // fresh:true, not a plain re-ingest. Without it the unchanged-bytes fast path
+  // and the cross-index pool both short-circuit, so pressing "re-ingest" on a
+  // file nobody edited does nothing at all — which looks identical to a button
+  // that is broken.
+  acts.appendChild(mkAct("re-ingest", ()=>post("/ingest?"+qi(),{targets:[curDoc],fresh:true})));
+  acts.appendChild(mkAct("re-read (purge OCR cache)", ()=>post("/api/reread?"+qi(),{path:curDoc})));
+  if(busy.length){
+    const n=el("span","badge vision", busy.length===1
+      ? busy[0].state+" · job #"+busy[0].id
+      : busy.length+" jobs "+busy[0].state);
+    acts.appendChild(n);
+  }
   head.appendChild(acts);
   box.appendChild(head);
 
