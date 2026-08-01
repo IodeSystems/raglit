@@ -286,3 +286,21 @@ CREATE INDEX IF NOT EXISTS shingle_index_doc ON shingle_index(doc_id);
 CREATE TABLE IF NOT EXISTS tombstones (
   path TEXT PRIMARY KEY
 );
+
+-- Documents ruled OUT of the corpus, with the grounds.
+--
+-- A projection of doc.withdraw events in raglit-audit.jsonl, which is the source
+-- of record; this table exists because the two consumers cannot read the trail.
+-- The worker has to refuse a withdrawn path at INGEST — otherwise the next file
+-- change re-adds it and the decision lasts until the next sweep — and search has
+-- to answer with the reason rather than with nothing.
+--
+-- The reason is NOT NULL and checked non-empty by the writer. A withdrawal
+-- without grounds is a delete with extra steps: the document is gone, nothing
+-- says why, and the next reader re-ingests it.
+CREATE TABLE IF NOT EXISTS withdrawals (
+  path       TEXT PRIMARY KEY,
+  reason     TEXT NOT NULL,
+  by_who     TEXT NOT NULL DEFAULT '',
+  at         TEXT NOT NULL DEFAULT ''
+);

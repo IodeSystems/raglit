@@ -34,6 +34,7 @@ type JudgementStore struct {
 	marks       map[string]Mark           // by normalized pair key
 	slices      map[string]Slice          // by id
 	corrections map[string]PageCorrection // by doc\x00page
+	withdrawn   map[string]Withdrawal     // by path
 	history     map[string][]AuditEvent   // by subject, in order
 
 	// onChange fires when a page's ACTIVE reading changes. Registered by whoever
@@ -59,6 +60,7 @@ func OpenJudgements(auditPath string) (*JudgementStore, error) {
 		marks:       map[string]Mark{},
 		slices:      map[string]Slice{},
 		corrections: map[string]PageCorrection{},
+		withdrawn:   map[string]Withdrawal{},
 		history:     map[string][]AuditEvent{},
 	}
 	events, err := ReadAudit(auditPath)
@@ -130,6 +132,25 @@ func (s *JudgementStore) apply(ev AuditEvent) error {
 				fn(TranscriptionChange{Doc: c.Doc, Page: c.Page, Active: c, Superseded: superseded})
 			}
 		}
+	case OpDocWithdraw:
+		if ev.Withdrawal == nil || ev.Withdrawal.Path == "" {
+			return fmt.Errorf("doc.withdraw with no path")
+		}
+		if strings.TrimSpace(ev.Withdrawal.Reason) == "" {
+			// The reason IS the withdrawal. Without it this is a delete wearing a
+			// decision's clothes, and the next reader gets a document that is
+			// absent for no stated cause — which is the state this op exists to
+			// prevent.
+			return fmt.Errorf("doc.withdraw %s with no reason", ev.Withdrawal.Path)
+		}
+		s.withdrawn[ev.Withdrawal.Path] = *ev.Withdrawal
+		s.remember("withdrawal", ev.Withdrawal.Path, ev)
+	case OpDocRestore:
+		if ev.RestorePath == "" {
+			return fmt.Errorf("doc.restore with no path")
+		}
+		delete(s.withdrawn, ev.RestorePath)
+		s.remember("withdrawal", ev.RestorePath, ev)
 	default:
 		// An op from a newer raglit. Refused rather than skipped: quietly ignoring
 		// it answers questions from a corpus that is missing decisions somebody
@@ -334,3 +355,51 @@ func (s *JudgementStore) CoverageOf(parent string, pages int) (Coverage, error) 
 func JudgementsPath(projectDir string) string { return AuditPath(projectDir) }
 
 var _ = time.Now
+
+// Withdrawn reports the ruling that took a document out of the corpus, if any.
+func (s *JudgementStore) Withdrawn(path string) (Withdrawal, bool) {
+	if s == nil {
+		return Withdrawal{}, false
+	}
+	w, ok := s.withdrawn[path]
+	return w, ok
+}
+
+// Withdrawals lists every document ruled out, path order.
+func (s *JudgementStore) Withdrawals() []Withdrawal {
+	if s == nil {
+		return nil
+	}
+	out := make([]Withdrawal, 0, len(s.withdrawn))
+	for _, w := range s.withdrawn {
+		out = append(out, w)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// Withdraw records that a document is out of the corpus, and why.
+//
+// Appends first, then applies — the order audit.go explains: a process that dies
+// between leaves the trail ahead of the state, which a re-read fixes, where the
+// reverse would leave a decision in memory that nothing recorded.
+func (s *JudgementStore) Withdraw(w Withdrawal) error {
+	if strings.TrimSpace(w.Reason) == "" {
+		return fmt.Errorf("raglit: withdraw %s: a withdrawal needs a reason", w.Path)
+	}
+	ev := AuditEvent{Op: OpDocWithdraw, At: time.Now().UTC().Format(time.RFC3339), By: w.By, Withdrawal: &w}
+	if err := AppendAudit(s.audit, ev); err != nil {
+		return err
+	}
+	return s.apply(ev)
+}
+
+// Restore returns a withdrawn document to the corpus. The withdrawal stays in
+// the trail: a decision reversed is still a decision that was made.
+func (s *JudgementStore) Restore(path, by string) error {
+	ev := AuditEvent{Op: OpDocRestore, At: time.Now().UTC().Format(time.RFC3339), By: by, RestorePath: path}
+	if err := AppendAudit(s.audit, ev); err != nil {
+		return err
+	}
+	return s.apply(ev)
+}

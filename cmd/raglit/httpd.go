@@ -243,6 +243,8 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("correctPage", http.MethodPost, "/api/transcribe/correct", "Record a corrected reading for one page."), correctPageOp(reg))
 	gat.Register(api, g, op("sketch", http.MethodPost, "/api/similar/build", "Build page sketches for near-duplicate detection."), sketchOp(reg))
 	gat.Register(api, g, op("reread", http.MethodPost, "/api/reread", "Purge a document's cached page OCR and re-read it."), rereadOp(reg))
+	gat.Register(api, g, op("withdraw", http.MethodPost, "/api/withdraw", "Rule a document out of the corpus, with grounds. Survives re-ingest."), withdrawOp(reg))
+	gat.Register(api, g, op("listWithdrawals", http.MethodGet, "/api/withdrawals", "Documents ruled out of the corpus, and why."), withdrawalsOp(reg))
 	gat.Register(api, g, op("materializeSlices", http.MethodPost, "/api/slices/materialize", "Build child documents for declared slices."), materializeSlicesOp(reg))
 	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))

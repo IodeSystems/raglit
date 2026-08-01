@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -25,10 +26,13 @@ import (
 // the caller — kgraph, whose root IS that directory — already knows where that
 // is. Recording it daemon-side would be a second place for it to be wrong.
 //
-// Read-only on purpose. A ruling is a decision, and the path that records one
-// goes through the CLI where the audit trail and its ordering are enforced;
-// a second writer reachable over HTTP would be a second chance to get that
-// ordering wrong.
+// Mostly read-only. The rulings that WRITE — a page correction, a withdrawal —
+// are here rather than in the CLI for the reason storeroute.go gives: they touch
+// the index, the daemon is its single writer, and a CLI doing it locally on a
+// daemon-routed project writes a different index from the one search reads.
+// Ordering is preserved where it matters: trail first, index second, so a
+// process that dies between leaves a recorded decision to re-apply rather than
+// an applied one nobody recorded.
 
 type relationsIn struct {
 	// Project is the directory holding judgements.db — the project root, not the
@@ -378,6 +382,92 @@ func correctPageOp(reg *raglit.Registry) func(context.Context, *correctIn) (*cor
 		out := &correctOut{}
 		out.Body.Doc, out.Body.Page = in.Doc, in.Page
 		out.Body.Chars, out.Body.Readings = len(in.RawBody), len(readings)
+		return out, nil
+	}
+}
+
+// Withdrawing, daemon-side.
+//
+// Both halves are writes — an event appended to the project's trail, and rows
+// removed from the index — so both belong to the daemon for the reason
+// storeroute.go gives: a CLI writing the index behind the daemon's back is the
+// second writer the daemon exists to prevent, and on a daemon-routed project it
+// would write the WRONG index besides.
+
+type withdrawIn struct {
+	Project string `query:"project" required:"true" doc:"project directory holding the audit trail"`
+	Index   string `query:"index" doc:"index name (default: the default index)"`
+	Path    string `query:"path" required:"true" doc:"document to rule out of the corpus"`
+	Reason  string `query:"reason" required:"true" doc:"grounds — a withdrawal without them is a delete"`
+	By      string `query:"by" doc:"who decided"`
+}
+
+type withdrawOut struct {
+	Body struct {
+		Path string `json:"path"`
+		// References are fragments in OTHER documents that cite this one. Reported,
+		// never rewritten: a reference is a claim its author made, and editing it
+		// here would change that document's meaning without them knowing.
+		References []raglit.Reference `json:"references,omitempty"`
+	}
+}
+
+func withdrawOp(reg *raglit.Registry) func(context.Context, *withdrawIn) (*withdrawOut, error) {
+	return func(ctx context.Context, in *withdrawIn) (*withdrawOut, error) {
+		if strings.TrimSpace(in.Reason) == "" {
+			return nil, huma.Error400BadRequest("a withdrawal needs grounds — without them this is a delete")
+		}
+		js, err := openProjectJudgements(in.Project)
+		if err != nil {
+			return nil, huma.Error400BadRequest("open judgements", err)
+		}
+		defer js.Close()
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		w := raglit.Withdrawal{Path: in.Path, Reason: in.Reason, By: in.By,
+			At: time.Now().UTC().Format("2006-01-02")}
+		// References BEFORE the removal, or the document's own fragments are
+		// already gone and a self-citation cannot be told from a dangling one.
+		refs, _ := st.ReferencesTo(ctx, in.Path)
+		// Trail first, index second: a process that dies between leaves a ruling
+		// recorded and unapplied, which a re-run fixes. The reverse loses the
+		// grounds and keeps the deletion.
+		if err := js.Withdraw(w); err != nil {
+			return nil, huma.Error400BadRequest("record withdrawal", err)
+		}
+		if err := st.Withdraw(w); err != nil {
+			return nil, huma.Error500InternalServerError("apply withdrawal", err)
+		}
+		out := &withdrawOut{}
+		out.Body.Path, out.Body.References = in.Path, refs
+		return out, nil
+	}
+}
+
+type withdrawalsIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+}
+
+type withdrawalsOut struct {
+	Body struct {
+		Withdrawals []raglit.Withdrawal `json:"withdrawals"`
+	}
+}
+
+func withdrawalsOp(reg *raglit.Registry) func(context.Context, *withdrawalsIn) (*withdrawalsOut, error) {
+	return func(_ context.Context, in *withdrawalsIn) (*withdrawalsOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		ws, err := st.Withdrawals()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("list withdrawals", err)
+		}
+		out := &withdrawalsOut{}
+		out.Body.Withdrawals = ws
 		return out, nil
 	}
 }

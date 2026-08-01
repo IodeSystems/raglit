@@ -67,6 +67,10 @@ func main() {
 		err = runMark(os.Args[2:])
 	case "marks":
 		err = runMarks(os.Args[2:])
+	case "withdraw":
+		err = runWithdraw(os.Args[2:])
+	case "withdrawn":
+		err = runWithdrawn(os.Args[2:])
 	case "slice":
 		err = runSlice(os.Args[2:])
 	case "slices":
@@ -158,6 +162,16 @@ usage:
                 the reading in force marked. A correction attests that a better
                 reading exists; it does not erase the old one, because a
                 quotation taken before it matched the text in force then.
+
+  raglit withdraw --reason "..." [--by WHO] [--dry-run] <path|dir>...
+                rule a document OUT of the corpus, with grounds. Not a delete:
+                the file stays on disk, the reason is recorded in the audit
+                trail, and the INGEST path honours it — so the next sweep does
+                not quietly put it back. Names what still cites the document,
+                and rewrites nothing: a citation is a claim its author made.
+                A directory withdraws what is indexed beneath it.
+
+  raglit withdrawn [--json]     what has been ruled out of the corpus, and why
 
   raglit marks [--todo] [--json] [DOCPATH]
                 what an overlapping pair IS, as opposed to how much text it shares.

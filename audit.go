@@ -49,6 +49,8 @@ const (
 	OpSlicePut    = "slice.put"
 	OpSliceDelete = "slice.delete"
 	OpPageCorrect = "page.correct"
+	OpDocWithdraw = "doc.withdraw"
+	OpDocRestore  = "doc.restore"
 )
 
 // AuditEvent is one recorded mutation.
@@ -64,6 +66,31 @@ type AuditEvent struct {
 	Slice      *Slice          `json:"slice,omitempty"`
 	SliceID    string          `json:"slice_id,omitempty"`
 	Correction *PageCorrection `json:"correction,omitempty"`
+	Withdrawal *Withdrawal     `json:"withdrawal,omitempty"`
+	// RestorePath names the document a doc.restore returns to the corpus.
+	RestorePath string `json:"restore_path,omitempty"`
+}
+
+// Withdrawal is a document ruled OUT of the corpus, and why.
+//
+// Removing a document from an index is a delete; withdrawing it is a decision,
+// and the difference is the reason. A delete leaves nothing behind, so the next
+// sweep re-ingests the file and the next reader wonders why a document that
+// plainly exists is not in the index. A withdrawal says what was decided, so it
+// survives re-ingest and answers the question.
+//
+// The case it was written for: a corpus of legal evidence that had absorbed the
+// drafts folder — outreach letters, settlement proposals, argument written by
+// the party themselves. A search for "the Brannocks acted in good faith" hit a
+// draft letter and returned it looking like a source. A draft is argument, not
+// record; only a letter actually SENT and declared is evidence of anything.
+type Withdrawal struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+	By     string `json:"by,omitempty"`
+	// At is when the decision was made, which is not necessarily when it was
+	// appended — the same distinction AuditEvent.At draws.
+	At string `json:"at,omitempty"`
 }
 
 // PageCorrection is what a person read off a page that the machine got wrong.

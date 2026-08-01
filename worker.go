@@ -141,6 +141,18 @@ func (w *Worker) Run(ctx context.Context) {
 // per-document fragmenter chosen: "text-overlap" (deterministic) or "llm-seg" (a
 // page escalated to the VLM), or "pooled"/"unchanged" for the reuse/skip paths.
 func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, string, error) {
+	// A withdrawn document is not fetched, not read, and not indexed.
+	//
+	// Checked FIRST, before the fetch, because the cheapest correct answer is to
+	// do none of the work. And checked here at all because a withdrawal that only
+	// deleted rows would last until the next file change: the watcher re-queues
+	// on change, the worker re-indexes, and the ruling silently expires. The
+	// decision has to be enforced where documents enter, not only where they were
+	// removed.
+	if reason, ok := w.Store.WithdrawnReason(job.URL); ok {
+		sl.Skip("withdrawn", reason)
+		return 0, "withdrawn", nil
+	}
 	f, err := w.fetch(ctx, job.URL)
 	if err != nil {
 		sl.Fail("fetch", "", err)

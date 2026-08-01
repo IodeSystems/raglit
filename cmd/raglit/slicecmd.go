@@ -561,3 +561,33 @@ func daemonCorrectPage(doc string, page int, note, by string, text []byte) (read
 	_ = json.Unmarshal(b, &out)
 	return out.Readings, nil
 }
+
+// daemonWithdraw asks the daemon to rule a document out of the corpus. Both
+// halves — the trail event and the index rows — happen there, for the reason
+// storeroute.go gives: the daemon is the single writer.
+func daemonWithdraw(path, reason, by string) (refs []raglit.Reference, err error) {
+	dir, ok := raglit.ProjectDir()
+	if !ok {
+		return nil, fmt.Errorf("no .raglit/ found from here")
+	}
+	base, err := ensureDaemon("", raglit.DiscoverHome)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := daemonIndexName()
+	if err != nil {
+		return nil, err
+	}
+	q := urlValues("project", dir, "index", idx, "path", path, "reason", reason, "by", by)
+	b, err := daemonPostJSON(base, "/api/withdraw?"+q.Encode(), map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		References []raglit.Reference `json:"references"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out.References, nil
+}
