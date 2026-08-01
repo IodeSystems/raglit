@@ -184,6 +184,10 @@
   .assets a { display: block; padding: 8px 12px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: inherit; text-decoration: none; }
   .assets a:hover { border-color: var(--dim); }
   .empty { color: var(--dim); padding: 30px 0; }
+.eviText { white-space: pre-wrap; word-break: break-word; max-height: 22rem; overflow-y: auto;
+  margin: 0; padding: .6rem .7rem; border-radius: 6px; background: #0f1115; line-height: 1.45; }
+.eviText .ctx { opacity: .55; }
+.eviText mark { background: #2b3a55; color: inherit; padding: 0 .1rem; border-radius: 2px; }
 </style>
 
 <header>
@@ -552,9 +556,26 @@ function paintEvidence(g) {
         : g.as === "humane"
           ? "rendered for legibility — not the artifact"
           : "what the model was given, not the artifact"}</span>`;
-  out.innerHTML = g.type.startsWith("image/")
-    ? `<img src="${g.url}" alt="">`
-    : `<audio controls src="${g.url}"></audio>`;
+  // Three modalities, three renderings. This used to be image-or-audio, which
+  // meant a TEXT crop fell through to an <audio> element: an empty player on a
+  // markdown file, telling a reviewer there is something to hear.
+  if (g.type.startsWith("image/")) {
+    out.innerHTML = `<img src="${g.url}" alt="">`;
+  } else if (g.type.startsWith("audio/")) {
+    out.innerHTML = `<audio controls src="${g.url}"></audio>`;
+  } else {
+    // Fetched rather than linked so the passage can be marked. raglit's text
+    // evidence prefixes the lines under review with ">>> " and wraps them in
+    // context; the marking is the point, since the whole question is whether
+    // THIS passage supports the claim and not the paragraph beside it.
+    fetch(g.url).then(r => r.text()).then(t => {
+      out.innerHTML = `<pre class="eviText">` + t.split("\n").map(line =>
+        line.startsWith(">>> ")
+          ? `<mark>${esc(line.slice(4))}</mark>`
+          : `<span class="ctx">${esc(line)}</span>`
+      ).join("\n") + `</pre>`;
+    });
+  }
 }
 
 // ── verdicts ────────────────────────────────────────────────────────────────
