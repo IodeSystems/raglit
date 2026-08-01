@@ -38,6 +38,17 @@ type Segment struct {
 type SegResult struct {
 	ContinuesPrevious bool      `json:"continues_previous"`
 	Fragments         []Segment `json:"fragments"`
+
+	// Degraded names why this unit was NOT segmented by the model, when the fix
+	// loop ran out and run() fell back to the whole unit as one fragment. Empty
+	// on a real segmentation.
+	//
+	// It exists because that fallback returns a nil error and a plausible result:
+	// the document completes, the page count is right, and the only evidence that
+	// a page came back as an undivided block is a reason that used to be dropped
+	// on the floor. Not part of the model's answer — `json:"-"` so a model cannot
+	// claim it, and so unmarshalling a reply cannot clear it.
+	Degraded string `json:"-"`
 }
 
 // fragmentsToolDef is the schema SchemaValidator enforces on the model output.
@@ -94,12 +105,28 @@ func NewSegmenter(c Chatter) *Segmenter {
 	}
 }
 
+// segContentHeader separates the instructions from the unit being segmented.
+const segContentHeader = "\n\nCONTENT:\n"
+
 // SegmentText segments a window of text/code.
 func (sg *Segmenter) SegmentText(ctx context.Context, text, openText string) (SegResult, error) {
 	parts := []llm.ContentPart{
-		llm.TextPart(segPrompt(openText) + "\n\nCONTENT:\n" + text),
+		llm.TextPart(segPrompt(openText) + segContentHeader + text),
 	}
 	return sg.run(ctx, parts, text) // text fallback = the window itself
+}
+
+// SegmentInputChars is the size of the request SegmentText will send for `text`
+// continuing `openText` — instructions, carried-over fragment and unit together.
+//
+// Exported because the caller is the one that has to keep the request inside
+// what the endpoint accepts, and it can only do that against the REAL size. The
+// unit's own length is the obvious part and the smaller one on a short page: the
+// prompt is fixed overhead and the open fragment runs to defaultMaxFragmentChars,
+// so a caller measuring only the page text can be thousands of characters under
+// and still be refused.
+func SegmentInputChars(text, openText string) int {
+	return len(segPrompt(openText)) + len(segContentHeader) + len(text)
 }
 
 // run performs the validate/retry/fallback loop. fallback is the fragment text
@@ -169,12 +196,29 @@ func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback 
 				lastErr, `{"continues_previous":<bool>,"fragments":[{"text":"..."}]}`)},
 		)
 	}
-	// Fallback: the whole unit as a single fragment (old behavior). Never errors.
+	// Fallback: the whole unit as a single fragment (old behavior). Never errors —
+	// an unsegmented page is still a searchable page, and failing the document
+	// over one stubborn unit would lose the other twenty-nine.
+	//
+	// But it is not a success either, and it used to be reported as one. lastErr
+	// holds the only account of what went wrong — the model looped, or emitted
+	// unparseable JSON, or no fragments at all, or a fragment far past the embed
+	// ceiling — and it was discarded here, so a document could finish "done" with
+	// any number of pages returned as undivided blocks and nothing recorded how
+	// many or why. Carry the reason out; the caller records it.
 	fb := fallback
 	if fb == "" {
 		fb = strings.TrimSpace(last)
 	}
-	return SegResult{ContinuesPrevious: false, Fragments: []Segment{{Text: fb}}}, nil
+	reason := "the model did not return valid fragments"
+	if lastErr != nil {
+		reason = lastErr.Error()
+	}
+	return SegResult{
+		ContinuesPrevious: false,
+		Fragments:         []Segment{{Text: fb}},
+		Degraded:          fmt.Sprintf("%s (after %d attempt(s))", reason, sg.MaxRetries+1),
+	}, nil
 }
 
 // retryExcerptChars bounds what a re-prompt quotes back at the model.

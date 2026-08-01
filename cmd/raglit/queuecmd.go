@@ -83,6 +83,18 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	}
 	if *lf.visionModel != "" {
 		client := lf.visionClient()
+		// What the CHAT endpoint accepts as one request, discovered on the same
+		// terms as the embed limit above and for the same reason: it is a fact
+		// about the endpoint. Until this was probed, the fragments coming BACK
+		// were capped by the embedder while the request carrying a page IN was
+		// capped by nothing, and a page over the endpoint's physical batch failed
+		// its whole document.
+		w.Frag.SegmentInputLimit = store.ChatInputLimitChars(
+			context.Background(), client, *lf.visionModel, cfg.SegmentInputLimitChars)
+		if w.Frag.SegmentInputLimit > 0 {
+			log.Printf("raglit: chat input limit model=%s %d chars",
+				*lf.visionModel, w.Frag.SegmentInputLimit)
+		}
 		// Printed once per index worker so the effective retry policy is visible
 		// in the log. Without it, "5xx attempt 2/5" in a log is ambiguous between
 		// "the cap was not raised" and "this is not the client you think it is".

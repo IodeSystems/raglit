@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	gen "github.com/iodesystems/raglit/internal/db"
 )
@@ -85,6 +87,12 @@ type FragConfig struct {
 	Window, Stride, Floor int
 	EmbedLimit            int
 	FigurePrompt          int
+	// SegmentInputLimit caps ONE segmentation request — prompt, carried-over
+	// fragment and page text together — at what the chat endpoint accepts
+	// (ChatInputLimitChars). Distinct from EmbedLimit, which bounds the fragments
+	// that come BACK. Measuring only the second is how a page too big to send
+	// reached the endpoint and failed the document. 0 → unknown, no cap.
+	SegmentInputLimit int
 }
 
 // fragMode names: text-overlap (deterministic windows) vs llm-seg (a VLM already
@@ -234,7 +242,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	fragMode := fragModeOverlap
 	if sawVision && sg != nil {
 		fragMode = fragModeLLM
-		err := segmentLLM(ctx, sg, pages, window, sink)
+		rep, err := segmentLLM(ctx, sg, pages, window, fc.SegmentInputLimit, sink)
 		var short *ErrSegmentShort
 		switch {
 		case errors.As(err, &short):
@@ -261,10 +269,26 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 				fmt.Sprintf("%d fragment(s) — llm-seg dropped text, fell back (%s)", len(frags), short.Detail()))
 		case err != nil:
 			drainEmbed()
-			sl.Fail("segment", "llm", err)
+			sl.Fail("segment", "llm", fmt.Errorf("%w (%d request(s) over %d page(s))", err, rep.requests, rep.pageCount))
 			return 0, "", err
 		default:
-			sl.Done("segment", "llm", fmt.Sprintf("%d fragment(s)", len(frags)))
+			// What the stage DID, not only what it produced. A stage that made one
+			// request per page and one that made thirty are different stages, and
+			// they used to record the same line — which is how an hour spent in
+			// segmentation was reported as a single call's error.
+			detail := fmt.Sprintf("%d fragment(s), %d request(s) over %d page(s)",
+				len(frags), rep.requests, rep.pageCount)
+			if rep.subunits > 0 {
+				detail += fmt.Sprintf(", %d sub-unit(s) to fit the input limit", rep.subunits)
+			}
+			if d := rep.degradedDetail(); d != "" {
+				// Not an error — the pages are indexed and searchable — but not a
+				// clean segmentation either, and a "done" that cannot tell them
+				// apart is how this stayed invisible.
+				sl.Record("segment", "llm", "degraded", detail+" — "+d)
+			} else {
+				sl.Done("segment", "llm", detail)
+			}
 		}
 	} else {
 		fragmentOverlap(pages, window, stride, floor, sink)
@@ -301,8 +325,47 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 // offsets (they are model-emitted text). `page` is the START page, and
 // pageSpans records where every later page begins inside the text — without
 // them a hit in a stitched fragment resolves to the wrong page.
-func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedLimit int, sink func(stagedFrag)) error {
-	return segmentLLMWith(ctx, sg.SegmentText, pages, embedLimit, sink)
+func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedLimit, inputLimit int, sink func(stagedFrag)) (segReport, error) {
+	return segmentLLMWith(ctx, sg.SegmentText, pages, embedLimit, inputLimit, sink)
+}
+
+// segReport is what segmentation did, as opposed to what it returned.
+//
+// Requests, because a stage that made thirty calls and a stage that made one are
+// not the same stage and used to record identically. Degradations, because a
+// page the model would not segment comes back as a valid result and is otherwise
+// indistinguishable from a page it segmented into one fragment.
+type segReport struct {
+	requests  int
+	degraded  []segDegradation
+	subunits  int // requests beyond one per page: the input cap doing its work
+	pageCount int
+}
+
+type segDegradation struct {
+	page   int
+	reason string
+}
+
+// String renders the degradations for a stage row: the pages, and the reason
+// they share when they share one.
+func (r segReport) degradedDetail() string {
+	if len(r.degraded) == 0 {
+		return ""
+	}
+	pages := make([]string, 0, len(r.degraded))
+	sameReason := r.degraded[0].reason
+	for _, d := range r.degraded {
+		pages = append(pages, strconv.Itoa(d.page))
+		if d.reason != sameReason {
+			sameReason = ""
+		}
+	}
+	s := fmt.Sprintf("%d page(s) not segmented, returned whole: %s", len(r.degraded), strings.Join(pages, ","))
+	if sameReason != "" {
+		s += " — " + sameReason
+	}
+	return s
 }
 
 // segmentLLMWith is segmentLLM over any segmenting function.
@@ -310,33 +373,54 @@ func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedL
 // The seam exists for the coverage rule below, which is the part that has to be
 // tested and the part a live model cannot test: to prove the alarm fires when a
 // page is dropped, something has to drop a page on purpose.
-func segmentLLMWith(ctx context.Context, segment func(context.Context, string, string) (SegResult, error), pages []resolvedPage, embedLimit int, sink func(stagedFrag)) error {
+func segmentLLMWith(ctx context.Context, segment func(context.Context, string, string) (SegResult, error), pages []resolvedPage, embedLimit, inputLimit int, sink func(stagedFrag)) (segReport, error) {
 	// Emitted content per page, against what that page was given. The segmenter
 	// is a MODEL, and a model that returns a short answer returns it without an
 	// error — so the only way to know it dropped the back half of a page is to
 	// count.
 	emitted := map[int]int{}
+	rep := segReport{pageCount: len(pages)}
 	a := NewAssembler(func(page, ord int, text string, spans []PageSpan) error {
 		emitted[page] += contentChars(text)
 		sink(stagedFrag{page: page, ord: ord, text: text, pageSpans: spans})
 		return nil
 	})
 	for _, p := range pages {
-		open := a.OpenText()
-		r, err := segment(ctx, p.text, open)
-		if err != nil {
-			return err
+		// A page is not automatically a request the endpoint will accept. Cut it
+		// into as many sub-units as the input limit requires — the assembler
+		// stitches consecutive Feeds of the same page exactly as it stitches
+		// across a page boundary, so sub-units cost nothing but calls.
+		perPage := 0
+		for rest := p.text; ; {
+			open := segmentOpenForRequest(a.OpenText(), inputLimit)
+			take := segmentTake(rest, open, inputLimit)
+			r, err := segment(ctx, rest[:take], open)
+			rep.requests++
+			perPage++
+			if err != nil {
+				return rep, err
+			}
+			// A unit the model would not segment comes back as one whole-unit
+			// fragment and no error. Record it here, where the page is known.
+			if r.Degraded != "" {
+				rep.degraded = append(rep.degraded, segDegradation{page: p.page, reason: r.Degraded})
+			}
+			// The model is ASKED for 400-800 words and is not bound by the request.
+			// Bound it here, before anything downstream has to survive a fragment no
+			// embedder will accept.
+			r.Fragments = SplitOversized(r.Fragments, embedLimit)
+			if err := a.Feed(p.page, r); err != nil {
+				return rep, err
+			}
+			rest = rest[take:]
+			if rest == "" {
+				break
+			}
 		}
-		// The model is ASKED for 400-800 words and is not bound by the request.
-		// Bound it here, before anything downstream has to survive a fragment no
-		// embedder will accept.
-		r.Fragments = SplitOversized(r.Fragments, embedLimit)
-		if err := a.Feed(p.page, r); err != nil {
-			return err
-		}
+		rep.subunits += perPage - 1
 	}
 	if err := a.Close(); err != nil {
-		return err
+		return rep, err
 	}
 
 	// Coverage, checked after Close so the final open fragment is counted.
@@ -356,11 +440,107 @@ func segmentLLMWith(ctx context.Context, segment func(context.Context, string, s
 			continue // too short to say anything about
 		}
 		if covered := emitted[p.page] + carriedInto(emitted, pages, p.page); covered*100 < in*segmentCoveragePct {
-			return &ErrSegmentShort{Page: p.page, In: in, Out: covered}
+			return rep, &ErrSegmentShort{Page: p.page, In: in, Out: covered}
 		}
 	}
-	return nil
+	return rep, nil
 }
+
+// segmentOpenForRequest trims the carried-over fragment to what can be sent
+// alongside a useful amount of page.
+//
+// The open fragment is CONTEXT, not content: it is already held by the assembler
+// and will be emitted whatever happens here, and it is in the prompt only so the
+// model can say whether the next fragment continues it. On an endpoint whose
+// limit is near the fragment ceiling, an untrimmed open fragment plus the
+// instructions can consume the entire request and leave no room for the page —
+// so every request is refused and the document fails on a page that would fit.
+//
+// The TAIL is kept, because continuation is decided by how the open fragment
+// ENDS. Trimming context to protect content is the only trade available; the
+// reverse — cutting the page to preserve its context — loses text.
+func segmentOpenForRequest(open string, inputLimit int) string {
+	if inputLimit <= 0 || open == "" {
+		return open
+	}
+	if SegmentInputChars("", open)+segmentMinTake <= inputLimit {
+		return open
+	}
+	room := inputLimit - SegmentInputChars("", "") - segmentMinTake
+	if room <= 0 {
+		// The instructions alone leave no room. Drop the context entirely rather
+		// than send a request that cannot carry a page.
+		return ""
+	}
+	if room >= len(open) {
+		return open
+	}
+	tail := open[len(open)-room:]
+	// Cut on a rune boundary; a half-character reaches the model as U+FFFD.
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	return tail
+}
+
+// segmentTake is how much of `rest` to send as one segmentation request, given
+// what the open fragment already costs and what the endpoint will accept.
+//
+// The whole of `rest` whenever it fits, which is nearly always — a page of prose
+// is a few thousand characters and the limits in play are five figures. It cuts
+// only for the case that has no other answer: an endpoint whose ACCEPTED INPUT
+// is smaller than a page.
+//
+// That case is not hypothetical. llama.cpp refuses a prompt larger than its
+// physical batch, separately from and usually below n_ctx, and the corpus this
+// was written for met it as
+//
+//	input (14969 tokens) is too large to process.
+//	increase the physical batch size (current batch size: 8192)
+//
+// — deterministic, correctly not retried, and fatal to the document. Nine files
+// were absent from that index, among them the summary-judgment brief. Nothing
+// between the page and the request measured anything, so nothing could cut.
+//
+// inputLimit ≤ 0 means unknown (unprobeable endpoint) and takes everything: a
+// limit invented here would split good pages for no reason, and the failure it
+// would prevent is loud rather than silent.
+func segmentTake(rest, open string, inputLimit int) int {
+	if inputLimit <= 0 || SegmentInputChars(rest, open) <= inputLimit {
+		return len(rest)
+	}
+	// The overhead is what the request costs before a single character of the
+	// page: the instructions, and an open fragment that runs to
+	// defaultMaxFragmentChars. Both are already spent when we get here.
+	budget := inputLimit - SegmentInputChars("", open)
+	if budget < segmentMinTake {
+		// Overhead alone is at or over the limit. Cutting to fit is not available
+		// — the request would be all prompt and no content, and a zero-length take
+		// would never terminate. Send a floor's worth and let the endpoint answer:
+		// a refusal naming its own limit is worth more than a loop.
+		budget = segmentMinTake
+	}
+	if budget >= len(rest) {
+		return len(rest)
+	}
+	// Boundary-preferring, so a sub-unit ends at a paragraph rather than mid-word
+	// — the model is being asked to find fragment edges, and a ragged cut invents
+	// one it then has to reason around.
+	pieces := splitAtBoundary(rest, budget)
+	if len(pieces) == 0 || pieces[0] == "" {
+		return budget
+	}
+	// splitAtBoundary trims, so locate the piece in the original to get an offset
+	// that consumes the leading whitespace with it.
+	if i := strings.Index(rest, pieces[0]); i >= 0 {
+		return i + len(pieces[0])
+	}
+	return budget
+}
+
+// segmentMinTake is the smallest sub-unit worth sending, and the guarantee that
+// the take loop always advances.
+const segmentMinTake = 1000
 
 // carriedInto credits a page whose content was stitched into a fragment that
 // started on the previous page. Without it, a page that continues an open

@@ -28,7 +28,7 @@ func TestSegmentShortDetectsADroppedPage(t *testing.T) {
 	pages := []resolvedPage{{page: 1, text: page1}, {page: 2, text: page2}}
 
 	var got []stagedFrag
-	err := segmentLLMWith(context.Background(), drops("EXISTING CORNERS"), pages, 4000,
+	_, err := segmentLLMWith(context.Background(), drops("EXISTING CORNERS"), pages, 4000, 0,
 		func(f stagedFrag) { got = append(got, f) })
 
 	var short *ErrSegmentShort
@@ -48,11 +48,11 @@ func TestSegmentShortDetectsADroppedPage(t *testing.T) {
 func TestSegmentShortToleratesReflow(t *testing.T) {
 	page := strings.Repeat("Lot I of survey recorded under recording number 200808180120. ", 10)
 	pages := []resolvedPage{{page: 1, text: page}}
-	err := segmentLLMWith(context.Background(),
+	_, err := segmentLLMWith(context.Background(),
 		func(_ context.Context, text, _ string) (SegResult, error) {
 			// same words, whitespace collapsed and furniture stripped
 			return SegResult{Fragments: []Segment{{Text: strings.Join(strings.Fields(text), " ")}}}, nil
-		}, pages, 4000, func(stagedFrag) {})
+		}, pages, 4000, 0, func(stagedFrag) {})
 	if err != nil {
 		t.Fatalf("reflow tripped the coverage alarm: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestSegmentShortToleratesReflow(t *testing.T) {
 // A page too short to say anything about must not trip it.
 func TestSegmentShortIgnoresTinyPages(t *testing.T) {
 	pages := []resolvedPage{{page: 1, text: "p. 3"}}
-	err := segmentLLMWith(context.Background(), drops("p. 3"), pages, 4000, func(stagedFrag) {})
+	_, err := segmentLLMWith(context.Background(), drops("p. 3"), pages, 4000, 0, func(stagedFrag) {})
 	if err != nil {
 		t.Fatalf("a 4-character page tripped the alarm: %v", err)
 	}

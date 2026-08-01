@@ -66,6 +66,51 @@ func TestSegmenter_FallsBackToWholeUnit(t *testing.T) {
 	if len(r.Fragments) != 1 || r.Fragments[0].Text != "the whole window text" {
 		t.Fatalf("fallback should be the whole unit: %+v", r)
 	}
+	// The fallback is a nil error and a plausible result. Without a reason coming
+	// out with it, a document finishes "done" with pages returned as undivided
+	// blocks and nothing anywhere says how many or why.
+	if r.Degraded == "" {
+		t.Fatal("fell back to the whole unit and reported it as a clean segmentation")
+	}
+}
+
+// A unit the model DID segment must not be marked degraded — an alarm that fires
+// on healthy documents is one nobody reads.
+func TestSegmenter_CleanResultIsNotMarkedDegraded(t *testing.T) {
+	c := &scriptChatter{replies: []string{`{"continues_previous":false,"fragments":[{"text":"a"},{"text":"b"}]}`}}
+	r, err := NewSegmenter(c).SegmentText(context.Background(), "text", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Degraded != "" {
+		t.Fatalf("a clean segmentation was marked degraded: %q", r.Degraded)
+	}
+}
+
+// The degradation has to survive out of the pipeline with its page attached, or
+// the stage row can say something happened but not where.
+func TestSegmentReportCarriesDegradedPages(t *testing.T) {
+	pages := []resolvedPage{{page: 1, text: strings.Repeat("clean page. ", 40)},
+		{page: 2, text: strings.Repeat("stubborn page. ", 40)}}
+	seg := func(_ context.Context, text, _ string) (SegResult, error) {
+		if strings.Contains(text, "stubborn") {
+			return SegResult{Fragments: []Segment{{Text: text}}, Degraded: "no fragments (after 3 attempt(s))"}, nil
+		}
+		return SegResult{Fragments: []Segment{{Text: text}}}, nil
+	}
+	rep, err := segmentLLMWith(context.Background(), seg, pages, 4000, 0, func(stagedFrag) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.degraded) != 1 || rep.degraded[0].page != 2 {
+		t.Fatalf("report did not name the degraded page: %+v", rep.degraded)
+	}
+	if rep.requests != 2 {
+		t.Errorf("requests = %d, want 2", rep.requests)
+	}
+	if d := rep.degradedDetail(); !strings.Contains(d, "no fragments") || !strings.Contains(d, "2") {
+		t.Errorf("stage detail loses the page or the reason: %q", d)
+	}
 }
 
 // The heart of the design: an open fragment is DEFERRED across a unit boundary
