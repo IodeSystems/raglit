@@ -67,6 +67,21 @@ func runHttpd(subcmd string, args []string) error {
 		if root == "" {
 			root = raglit.DefaultRoot()
 		}
+		// Refuse to step around a supervisor. --restart stops the daemon and
+		// relaunches it DETACHED, so under a systemd unit it silently swaps a
+		// supervised daemon for one systemd does not know about: the unit goes
+		// inactive (a clean exit, so Restart=on-failure correctly does nothing)
+		// and the replacement will not survive a reboot. That is the exact
+		// problem `raglit service` exists to fix, undone by the command people
+		// reach for after a rebuild.
+		if st, ok := readDaemonState(root); ok && st != nil && st.Unit != "" {
+			verb := "stop"
+			if *restart {
+				verb = "restart"
+			}
+			return fmt.Errorf("that daemon is supervised by %s — use `raglit service %s`\n"+
+				"  (--%s would leave systemd with nothing to supervise)", st.Unit, verb, verb)
+		}
 		if *stop {
 			return stopDaemon(root)
 		}
@@ -102,6 +117,10 @@ func runHttpd(subcmd string, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go runIndexWorkers(ctx, reg, lf, cfgHome, pool)
+	// Stay on the current source. Rebuilds immediately, restarts only when no
+	// index has work in flight — a re-exec mid-ingest aborts the running job, and
+	// an aborted job is not requeued.
+	go daemonSelfUpdate(func() bool { return queuesIdle(reg) })
 
 	// Directory watching: keep opt-in projects (config watch:true) re-ingested on
 	// change. Registrations persist under the daemon root and reload here.

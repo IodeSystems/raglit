@@ -269,6 +269,10 @@ func spawnDaemonDetached(subcmd string, args []string) error {
 	}
 	defer logf.Close()
 	cmd := exec.Command(exe, append([]string{subcmd}, args...)...)
+	// RAGLIT_CHILD stops the spawned daemon rebuilding a binary its parent just
+	// built — and, on the daemon in particular, rebuilding during startup before
+	// it has bound a port.
+	cmd.Env = append(os.Environ(), "RAGLIT_CHILD=1")
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = logf, logf, nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from our session
 	if err := cmd.Start(); err != nil {

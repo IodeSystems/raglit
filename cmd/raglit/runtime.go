@@ -24,6 +24,34 @@ type daemonState struct {
 	Root      string `json:"root"` // storage root it owns
 	StartedAt string `json:"started_at"`
 	Version   string `json:"version"`
+	// Unit is the systemd unit supervising this daemon, when one is ("" when it
+	// was started by hand). Recorded so --stop/--restart can refuse to step
+	// around the supervisor: --restart relaunches DETACHED, which under a unit
+	// silently swaps a supervised daemon for an unsupervised one that will not
+	// survive a reboot. Observed within minutes of the unit landing.
+	Unit string `json:"unit,omitempty"`
+}
+
+// systemdUnit returns the unit supervising this process, or "".
+//
+// INVOCATION_ID is set by systemd for every unit it starts, and is the cheap
+// "am I supervised at all" test; the unit NAME then comes from our cgroup,
+// which is where systemd records it. Reading the cgroup alone would be enough
+// on Linux but would also match a unit we merely inherited a cgroup from.
+func systemdUnit() string {
+	if os.Getenv("INVOCATION_ID") == "" {
+		return ""
+	}
+	b, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return ""
+	}
+	for _, f := range strings.Split(strings.TrimSpace(string(b)), "/") {
+		if strings.HasSuffix(f, ".service") {
+			return strings.TrimSpace(f)
+		}
+	}
+	return ""
 }
 
 // daemonStatePath is <root>/daemon.json. Clients and the daemon agree on it
@@ -42,6 +70,7 @@ func writeDaemonState(root, addr string) (func(), error) {
 		Addr:      addr,
 		Root:      root,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Unit:      systemdUnit(),
 		// The build that is actually running, not the `version` literal — which
 		// has read "0.1.0" for every build ever made and so cannot tell a
 		// months-old daemon from a fresh one. Someone reading daemon.json to

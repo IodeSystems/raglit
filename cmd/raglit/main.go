@@ -21,6 +21,10 @@ import (
 )
 
 func main() {
+	// Before anything else: a source-stamped build rebuilds itself when the tree
+	// changed and re-execs. No-op for a released binary (srcDir empty) and for
+	// spawned children. See selfbuild.go.
+	selfUpdate()
 	if len(os.Args) < 2 {
 		// No command: run the setup wizard if this home isn't initialized yet,
 		// otherwise show usage. (raglit is unusable until `init` writes config.)
