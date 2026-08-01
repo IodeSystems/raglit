@@ -314,21 +314,37 @@ func rotateImage(src image.Image, deg int) image.Image {
 	return dst
 }
 
-// descentPad grows a proposed child so a word is not cut at the seam.
+// descentPadIn grows a proposed child so a word is not cut at the seam, measured
+// in INCHES OF PAPER.
 //
 // The first verification tile clipped mid-word — "REPLAT OF BLO", "NORTHEA",
 // "SOU" — because the cut had no idea where the paragraph was. A model asked for
 // a text block returns the block, not the block plus a margin, so the margin has
 // to be added here.
 //
-// 3% of the parent on each side: about a line of text at these scales, and small
-// enough that the overlap between neighbouring children stays cheap.
-const descentPad = 0.03
+// This was 3% of the region, and the comment beside it claimed "3% of the parent
+// … about a line of text at these scales". Both halves were wrong, and in the
+// direction that hurts: `padded` took a fraction of the REGION, so the pad shrank
+// with the thing it was protecting and vanished exactly where cuts are worst.
+// Measured on a real descent — a region 2% of a 36.72in sheet is 0.73in tall, so
+// its pad was 0.022in against 6pt text at 0.083in: a QUARTER of one character.
+// The clipped reads it was meant to prevent were still arriving as "ERTI",
+// "OR'S", "NGTON", "B", and FlagClipped had already been removed in favour of it.
+//
+// A length, not a fraction. 0.15in is about two lines at the text sizes these
+// sheets carry, and it does not care how small the region is.
+const descentPadIn = 0.15
 
-// padded grows r by frac of its own size on every side, clamped to the unit
-// square.
-func (r Rect) padded(frac float64) Rect {
-	dx, dy := r.W*frac, r.H*frac
+// paddedIn grows r by pad inches on every side, clamped to the unit square.
+//
+// Page dimensions are required rather than assumed: the same fraction is a
+// different distance on a letter page and on a 27x36in plan sheet, which is the
+// whole reason the fractional version failed.
+func (r Rect) paddedIn(padIn, pageWIn, pageHIn float64) Rect {
+	if pageWIn <= 0 || pageHIn <= 0 {
+		return r
+	}
+	dx, dy := padIn/pageWIn, padIn/pageHIn
 	return Rect{X: r.X - dx, Y: r.Y - dy, W: r.W + 2*dx, H: r.H + 2*dy}.clampToUnit()
 }
 

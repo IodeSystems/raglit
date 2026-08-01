@@ -248,11 +248,14 @@ func TestChildCoordinatesAreLiftedIntoPageSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Children are PADDED, so the bbox is the proposal grown by descentPad of
-	// its own size on each side: 0.5 wide -> 0.485..1.0 (clamped at the page).
+	// Children are PADDED by a constant DISTANCE — descentPadIn inches — not by a
+	// fraction of the region. Expressed from the page width rather than as a
+	// literal, so the assertion says what the rule is instead of restating one
+	// arithmetic result of it.
 	child := root.Children[0]
-	if !nearly(child.BBox.X, 0.485) {
-		t.Fatalf("child bbox not lifted+padded as expected: %+v", child.BBox)
+	wantX := 0.5 - descentPadIn/27.0
+	if !nearly(child.BBox.X, wantX) {
+		t.Fatalf("child bbox not lifted+padded as expected: got %+v, want X=%.6f", child.BBox, wantX)
 	}
 	if len(child.Children) != 1 {
 		t.Fatalf("want a grandchild, got %d", len(child.Children))

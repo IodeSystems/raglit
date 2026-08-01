@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -37,6 +38,20 @@ type RegionReader struct {
 	MaxTransforms int // per region, 0 → 2
 	MaxCalls      int // whole document, 0 → 40
 	MinRegionIn   float64
+
+	// Hint is what the caller is looking for, threaded into every prompt.
+	//
+	// The model proposing regions is looking at a view where the thing you want
+	// may be physically unresolvable — 6pt bearing labels on a sheet seen at 4
+	// tokens per square inch — so it cannot propose what it cannot see. A hint
+	// supplies the salience the view cannot: "read every bearing, distance and
+	// monument call on the drawing" costs nothing and beats any amount of extra
+	// budget, because budget alone only re-asks the same blind view.
+	Hint string
+
+	// Tile turns on geometric subdivision of large low-resolution DRAWINGS
+	// instead of asking where to look. See tileRegion.
+	Tile bool
 
 	calls int
 	seen  map[string]bool // image SHA → already read; this IS the cycle detector
@@ -156,6 +171,38 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	}
 
 	descents, transforms := rr.route(reg, reading.Regions)
+
+	// A big low-resolution DRAWING is tiled rather than asked about.
+	//
+	// This is the case the whole package exists for and the one it was worst at.
+	// Region proposals come from a model looking at the region itself, and on a
+	// 991 square-inch sheet the root is seen at 4 tokens per square inch against
+	// a readable baseline of 39 — a tenth. At that scale block capitals in a
+	// title block survive the downscale and 6pt bearing labels do not, so the
+	// model proposes the margins, truthfully reports `exhausted`, and the
+	// drawing — every bearing, distance, lot line and monument call — is never
+	// in any region at any depth. A REGION CANNOT BE PROPOSED BY SOMETHING THAT
+	// CANNOT SEE IT, and no budget fixes that: every extra call re-asks the same
+	// blind view. Measured: 40 calls gave 23 regions and zero geometry; 200 gave
+	// 28 regions and zero geometry.
+	//
+	// So for this one shape — kind `drawing`, flagged low-resolution, large
+	// enough to be worth cutting — the tiles are computed rather than requested.
+	// Deterministic, no salience judgement, and every part of the drawing is
+	// covered exactly once instead of by whatever a blind view happened to name.
+	if rr.Tile && reg.Kind == "drawing" && reg.hasFlag(FlagLowResolution) {
+		if tiles := rr.tileRegion(reg); len(tiles) > 0 {
+			descents = append(tiles, descents...)
+			if len(descents) > rr.MaxChildren {
+				// The cap exists to stop a model naming forty overlapping
+				// blocks. Tiles are a partition and are not that, so they raise
+				// it rather than being truncated by it — cutting them would
+				// leave part of the drawing unread while reporting success.
+				descents = descents[:len(tiles)]
+			}
+		}
+	}
+
 	if len(descents) == 0 && len(transforms) == 0 {
 		reg.addFlag(FlagExhausted)
 		return nil
@@ -232,7 +279,11 @@ func (rr *RegionReader) route(parent *Region, props []RegionProposal) ([]descent
 			continue
 		}
 		if isDescent(Rect{0, 0, 1, 1}, r) {
-			padded := parent.BBox.within(r.padded(descentPad))
+			// Pad AFTER mapping into page space, not before. The proposal is in
+			// the PARENT's coordinates, so a pad applied there is scaled by the
+			// parent's own size on the way out — which is the same
+			// shrinks-with-the-region bug in a subtler place.
+			padded := parent.BBox.within(r).paddedIn(descentPadIn, rr.PageWIn, rr.PageHIn)
 			// Duplicate proposals are common — the model names the same block
 			// twice under different reasons — and each one costs a model call.
 			if dup := indexOfOverlap(ds, padded, 0.6); dup >= 0 {
@@ -386,14 +437,30 @@ func ParseRegionReading(s string) RegionReading {
 // so the region walk inherits the page cache, the repetition guard and the
 // retry policy already in place.
 func (o *OCR) AskWithOCR() func(context.Context, PageImage, int) (RegionReading, error) {
+	return o.AskWithHint("")
+}
+
+// AskWithHint is AskWithOCR with a caller's statement of what is being looked
+// for appended to whichever prompt applies.
+//
+// Appended rather than woven in: the instruction competes with the image for the
+// model's attention, and a hint that rewrites the whole prompt would also change
+// the parts that make the answer parseable.
+func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, int) (RegionReading, error) {
+	suffix := ""
+	if h := strings.TrimSpace(hint); h != "" {
+		suffix = "\n\nWHAT THE CALLER IS LOOKING FOR: " + h +
+			"\nIf this image contains any of it, transcribe that FIRST and in full, and " +
+			"propose regions covering wherever more of it appears."
+	}
 	return func(ctx context.Context, img PageImage, depth int) (RegionReading, error) {
 		prev := o.Prompt
 		// The root is asked to account for the whole sheet; a crop is asked to
 		// transcribe. Same walk, different question, decided by where we are in it.
 		if depth == 0 {
-			o.Prompt = rootPrompt
+			o.Prompt = rootPrompt + suffix
 		} else {
-			o.Prompt = regionPrompt
+			o.Prompt = regionPrompt + suffix
 		}
 		defer func() { o.Prompt = prev }()
 		text, _, shrinks, err := o.PageAsSeen(ctx, img)
@@ -409,4 +476,110 @@ func (o *OCR) AskWithOCR() func(context.Context, PageImage, int) (RegionReading,
 		out.Downscales = shrinks
 		return out, nil
 	}
+}
+
+// tileRegion cuts a region into pieces that each clear the readable baseline.
+//
+// The grid is sized from RESOLUTION, not from a fixed count: enough tiles that
+// each one is seen at letter-page detail, since that is the threshold below
+// which a reading cannot be trusted whatever it returns. A 991 square-inch sheet
+// at 4 tokens/in² needs roughly ten times the detail, so about a 4x4 grid — and
+// with the pad, neighbouring tiles overlap, so a bearing label lying on a seam
+// is read whole by one of them.
+//
+// Capped, because the point is to make the sheet legible rather than to spend
+// the budget: 6x6 is 36 calls, which is already more than most sheets deserve.
+func (rr *RegionReader) tileRegion(reg *Region) []descent {
+	if reg.TokensPerSqIn <= 0 {
+		return nil
+	}
+	// How much more detail each tile needs than the region got.
+	want := letterTokensPerSqIn / reg.TokensPerSqIn
+	if want <= 1 {
+		return nil
+	}
+	n := int(math.Ceil(math.Sqrt(want)))
+	n = min(max(n, 2), 6)
+
+	wIn, hIn := reg.BBox.W*rr.PageWIn, reg.BBox.H*rr.PageHIn
+	if wIn/float64(n) < rr.MinRegionIn || hIn/float64(n) < rr.MinRegionIn {
+		return nil // already small enough that another cut buys no resolution
+	}
+
+	var out []descent
+	tw, th := reg.BBox.W/float64(n), reg.BBox.H/float64(n)
+	for row := range n {
+		for col := range n {
+			t := Rect{
+				X: reg.BBox.X + float64(col)*tw,
+				Y: reg.BBox.Y + float64(row)*th,
+				W: tw, H: th,
+			}.paddedIn(descentPadIn, rr.PageWIn, rr.PageHIn)
+			out = append(out, descent{bbox: t, rotation: reg.Rotation, kind: "drawing"})
+		}
+	}
+	return out
+}
+
+// ReadInto re-reads ONE recorded region and grafts the result back into the tree.
+//
+// The alternative on offer was raising --depth, which re-runs the whole page and
+// re-derives the same split — so a tree that spent its budget on the margins
+// could never be sent back into the drawing. Everything needed was already
+// recorded: the bbox, the rotation and the dpi identify the crop exactly, which
+// is the property `raglit region` uses to put the same pixels back on screen.
+//
+// The subtree is REPLACED rather than merged. A re-read is a new reading, and
+// keeping the old children beside the new ones would leave two accounts of the
+// same ground with nothing to say which was current.
+func (rr *RegionReader) ReadInto(ctx context.Context, page image.Image, pageNo int, docPath, regionID string) (*Region, error) {
+	doc, ok, err := ReadRegionDoc(docPath)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("raglit: no region read recorded for %s", docPath)
+	}
+	rp, ok := doc.PageRead(pageNo)
+	if !ok || rp.Root == nil {
+		return nil, fmt.Errorf("raglit: no recorded read of page %d", pageNo)
+	}
+	target := findRegion(rp.Root, regionID)
+	if target == nil {
+		return nil, fmt.Errorf("raglit: page %d has no region %q (try `raglit region --list %s`)",
+			pageNo, regionID, docPath)
+	}
+	if rr.MaxCalls == 0 {
+		rr.MaxCalls = 40
+	}
+	if rr.MaxChildren == 0 {
+		rr.MaxChildren = 8
+	}
+	if rr.MaxTransforms == 0 {
+		rr.MaxTransforms = 2
+	}
+	if rr.MinRegionIn == 0 {
+		rr.MinRegionIn = 1.0
+	}
+	rr.seen = map[string]bool{}
+	rr.calls = 0
+
+	fresh := &Region{Page: pageNo, BBox: target.BBox, Rotation: target.Rotation,
+		Kind: target.Kind, Depth: target.Depth}
+	if err := rr.visit(ctx, page, fresh, 0); err != nil {
+		return nil, err
+	}
+	*target = *fresh
+	rp.Root.assignIDs(fmt.Sprintf("p%d", pageNo))
+	return rp.Root, nil
+}
+
+// findRegion locates a region by its recorded id.
+func findRegion(root *Region, id string) *Region {
+	for _, r := range root.Flatten() {
+		if r.ID == id {
+			return r
+		}
+	}
+	return nil
 }

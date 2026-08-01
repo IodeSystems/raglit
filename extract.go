@@ -321,6 +321,85 @@ func textLayerContent(t string) int {
 	return n
 }
 
+// pageBoilerplate is the set of lines that appear on nearly every page.
+//
+// The threshold measures whether a page has text OF ITS OWN, and a line printed
+// on all of them is not that. Two live examples from one corpus, and the second
+// is why the first fix was not enough:
+//
+//   - A diagonal "UNOFFICIAL DOCUMENT" watermark, space-padded to 144 characters
+//     by `pdftotext -layout`. textLayerContent already handles it by counting
+//     letters and digits rather than length: content 18, under the threshold.
+//   - `Authentisign ID: 0462D64D-B418-4A0D-A59D-590A2A8C9F0D`, stamped on every
+//     page of a digitally-signed PDF. That is 46 letters and digits — nearly
+//     twice the threshold — so a SCANNED exhibit carrying nothing but the
+//     signing overlay was accepted as a text-layer page and never OCR'd. Six
+//     pages of a purchase and sale agreement, including the three Exhibit A
+//     legal descriptions and the county certification, transcribed to their own
+//     header. No error anywhere, and re-indexing changed nothing, because the
+//     text layer was taken every time.
+//
+// Detected without rasterising anything: a line on ≥80% of pages, in a document
+// of at least three, says nothing about any one page. The full text is still what
+// gets INDEXED when a page qualifies — this only decides whether the page has
+// text worth taking instead of pixels worth reading.
+func pageBoilerplate(pages []string) map[string]bool {
+	if len(pages) < 3 {
+		return nil
+	}
+	seen := map[string]int{}
+	for _, t := range pages {
+		lines := map[string]bool{}
+		for _, ln := range strings.Split(t, "\n") {
+			if k := boilerKey(ln); k != "" {
+				lines[k] = true
+			}
+		}
+		for k := range lines {
+			seen[k]++
+		}
+	}
+	need := (len(pages)*4 + 4) / 5 // ceil(80%)
+	out := map[string]bool{}
+	for k, n := range seen {
+		if n >= need {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// boilerKey normalises a line for comparison: content characters only, folded.
+// Position shifts and OCR-irrelevant spacing must not stop a header matching
+// itself across pages.
+func boilerKey(line string) string {
+	var b strings.Builder
+	for _, r := range line {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	if b.Len() < 8 {
+		return "" // too short to be a distinguishing header; ignore
+	}
+	return b.String()
+}
+
+// stripLines drops the boilerplate lines from a page before it is measured.
+func stripLines(t string, boiler map[string]bool) string {
+	if len(boiler) == 0 {
+		return t
+	}
+	var keep []string
+	for _, ln := range strings.Split(t, "\n") {
+		if k := boilerKey(ln); k != "" && boiler[k] {
+			continue
+		}
+		keep = append(keep, ln)
+	}
+	return strings.Join(keep, "\n")
+}
+
 // pdfUnits extracts a PDF as per-page ingest units via the "text-layer first,
 // OCR the rest" hybrid: pdftotext gives each page's text layer; a page with real
 // text becomes a text unit (free, exact — no VLM), a page without (scanned) is
@@ -352,10 +431,15 @@ func pdfUnits(ctx context.Context, pdfPath string, describeFigures bool) ([]inge
 	if describeFigures {
 		figurePages, _ = pagesWithImages(pdfPath) // best-effort; nil on error → no escalation
 	}
+	// Boilerplate that repeats on every page is not this page's text. See
+	// pageBoilerplate: the letters-not-spaces fix caught a watermark drawn with
+	// padding, and missed one drawn with letters.
+	boiler := pageBoilerplate(texts)
+
 	units := make([]ingestUnit, 0, len(texts))
 	for i, t := range texts {
 		page := i + 1
-		if textLayerContent(t) >= pdfTextThreshold && !figurePages[page] {
+		if textLayerContent(stripLines(t, boiler)) >= pdfTextThreshold && !figurePages[page] {
 			units = append(units, ingestUnit{page: page, text: t})
 			continue
 		}

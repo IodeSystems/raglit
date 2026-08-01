@@ -30,13 +30,20 @@ func runRegions(args []string) error {
 	dpi := fs.Int("dpi", 200, "render resolution")
 	depth := fs.Int("depth", 0, "descend this many levels into the sheet (0 = read the whole sheet and stop)")
 	calls := fs.Int("max-calls", 40, "model calls allowed for the whole page")
+	hint := fs.String("hint", "", "what you are looking for; threaded into every prompt (e.g. \"every bearing, distance and monument call on the drawing\")")
+	tile := fs.Bool("tile", true, "subdivide a large low-resolution drawing geometrically instead of asking it where to look")
 	asJSON := fs.Bool("json", false, "emit the region tree as JSON")
 	write := fs.Bool("write", false, "record the read in <doc>.raglit-regions.json beside the document")
 	fs.Parse(args)
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: raglit regions [flags] FILE")
+	if fs.NArg() < 1 || fs.NArg() > 2 {
+		return fmt.Errorf("usage: raglit regions [flags] FILE [REGION-ID]\n" +
+			"  with a REGION-ID, re-read that recorded region and graft the result back")
 	}
 	path := fs.Arg(0)
+	var only string
+	if fs.NArg() == 2 {
+		only = fs.Arg(1)
+	}
 	lf.resolve(homeOf())
 	if err := lf.requireVision(); err != nil {
 		return err
@@ -56,9 +63,25 @@ func runRegions(args []string) error {
 
 	ocr := raglit.NewOCR(lf.visionClient())
 	rr := &raglit.RegionReader{
-		Ask: ocr.AskWithOCR(), PageWIn: wIn, PageHIn: hIn, DPI: *dpi,
-		MaxDepth: *depth, MaxCalls: *calls,
+		Ask: ocr.AskWithHint(*hint), PageWIn: wIn, PageHIn: hIn, DPI: *dpi,
+		MaxDepth: *depth, MaxCalls: *calls, Hint: *hint, Tile: *tile,
 	}
+	// With a REGION-ID, re-enter at that recorded region rather than at the whole
+	// page.
+	//
+	// This is what a tree that spent itself on the margins needs: raising --depth
+	// re-runs the sheet and re-derives the same split, so without this there was
+	// no way to say "go into THAT one harder". The recorded bbox, rotation and
+	// dpi are what make it possible — the crop is reproducible byte for byte,
+	// which is the same property `raglit region` relies on.
+	if only != "" {
+		root, rerr := rr.ReadInto(context.Background(), img, *page, path, only)
+		if rerr != nil {
+			return rerr
+		}
+		return emitRegions(root, path, *page, wIn, hIn, *dpi, b.Dx(), b.Dy(), *write, *asJSON)
+	}
+
 	root, rerr := rr.Read(context.Background(), img, *page)
 	// A partial tree is still worth printing — and worth RECORDING: the whole
 	// design is that a failed descent costs detail rather than coverage, and a
@@ -148,4 +171,28 @@ func renderPage(path string, page, dpi int) (image.Image, error) {
 	defer f.Close()
 	im, _, derr := image.Decode(f)
 	return im, derr
+}
+
+// emitRegions writes and/or prints a tree, shared by the whole-page read and the
+// re-read of one region so the two cannot drift in what they record.
+func emitRegions(root *raglit.Region, path string, page int, wIn, hIn float64, dpi, pxW, pxH int, write, asJSON bool) error {
+	if write {
+		text, spans := raglit.RegionTranscript(root)
+		out, err := raglit.WriteRegionDoc(path, raglit.RegionPage{
+			Page: page, WidthIn: wIn, HeightIn: hIn, DPI: dpi,
+			PxW: pxW, PxH: pxH, Root: root, Text: text, Spans: spans,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "recorded %d region(s) → %s\n", len(root.Flatten()), out)
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(root)
+	}
+	fmt.Print(root)
+	fmt.Fprintf(os.Stderr, "\n%d region(s), %d leaf/leaves\n", len(root.Flatten()), len(root.Leaves()))
+	return nil
 }
