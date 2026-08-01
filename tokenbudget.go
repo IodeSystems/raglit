@@ -239,6 +239,15 @@ func splitForEmbed(ctx context.Context, b *TokenBudget, f stagedFrag) []stagedFr
 	rest := f.text
 	for rest != "" {
 		take := b.Fit(ctx, "", rest, embedMinTake)
+		if take < len(rest) {
+			// The same boundaries SplitOversized prefers, so a fragment cut by both
+			// is cut in the same places. Not trimmed, unlike there: these pieces
+			// carry source offsets and page spans, and dropping a leading space
+			// would shift every one of them by a character.
+			if cut := cutAtBoundary(rest, take); cut >= embedMinTake {
+				take = cut
+			}
+		}
 		piece := f
 		piece.text = rest[:take]
 		piece.pageSpans = spansForSlice(f.pageSpans, off, off+take)

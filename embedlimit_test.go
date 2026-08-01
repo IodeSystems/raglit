@@ -97,3 +97,58 @@ func TestSplitForEmbedUnlimited(t *testing.T) {
 		t.Fatalf("an unknown limit split a fragment into %d pieces", len(pieces))
 	}
 }
+
+// The two splitters have to agree, or a fragment is cut twice in different
+// places and the second cut is the arbitrary one.
+//
+// SplitOversized bounds what the model returns; the sink bounds every fragment
+// on every path as a backstop. Running both against the same budget, the second
+// must find nothing to do — and where it does cut (the deterministic windower
+// never passes through the first), it must cut on the same boundaries.
+func TestTheTwoSplittersAgree(t *testing.T) {
+	tok := &fakeTokenizer{charsPerToken: 1.16} // survey density: the hard case
+	b := NewTokenBudget(context.Background(), tok, 2000)
+
+	long := strings.Repeat("N88°14'32\"E 147.03', S01°45'28\"E 100.00'. ", 400)
+	pieces := SplitOversized(context.Background(), b, []Segment{{Text: long}})
+	if len(pieces) < 2 {
+		t.Fatalf("premise broken: %d piece(s) from an oversized fragment", len(pieces))
+	}
+	for i, p := range pieces {
+		again := splitForEmbed(context.Background(), b, stagedFrag{page: 1, text: p.Text})
+		if len(again) != 1 {
+			t.Fatalf("piece %d survived SplitOversized and was cut again by the sink into %d",
+				i, len(again))
+		}
+		if again[0].text != p.Text {
+			t.Fatalf("piece %d was altered by the second pass", i)
+		}
+	}
+}
+
+// The sink's cut prefers the same boundaries, so a windower fragment — which
+// never passes through SplitOversized — is not cut mid-sentence either.
+func TestSinkSplitPrefersBoundaries(t *testing.T) {
+	tok := &fakeTokenizer{charsPerToken: 1.0}
+	b := NewTokenBudget(context.Background(), tok, 1200)
+	text := strings.Repeat("A sentence that ends here. ", 200)
+	pieces := splitForEmbed(context.Background(), b, stagedFrag{page: 1, text: text})
+	if len(pieces) < 2 {
+		t.Fatalf("premise broken: %d piece(s)", len(pieces))
+	}
+	// Every piece but the last should end at a sentence or a space, not mid-word.
+	for i, p := range pieces[:len(pieces)-1] {
+		last := p.text[len(p.text)-1]
+		if last != ' ' && last != '.' && last != '\n' {
+			t.Errorf("piece %d ends mid-word at %q", i, p.text[max(0, len(p.text)-24):])
+		}
+	}
+	// And no character is lost across the cut.
+	var joined string
+	for _, p := range pieces {
+		joined += p.text
+	}
+	if joined != text {
+		t.Errorf("the sink split lost or altered text: %d chars in, %d out", len(text), len(joined))
+	}
+}

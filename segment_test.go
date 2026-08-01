@@ -98,7 +98,7 @@ func TestSegmentReportCarriesDegradedPages(t *testing.T) {
 		}
 		return SegResult{Fragments: []Segment{{Text: text}}}, nil
 	}
-	rep, err := segmentLLMWith(context.Background(), seg, pages, 4000, nil, func(stagedFrag) {})
+	rep, err := segmentLLMWith(context.Background(), seg, pages, nil, nil, func(stagedFrag) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,14 +375,15 @@ func TestExcerptForRetryKeepsTheHeadAndMarksTheCut(t *testing.T) {
 func TestSplitOversizedBoundsAModelsFragments(t *testing.T) {
 	long := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 400) // ~17.6k chars
 	in := []Segment{{Text: "short one"}, {Text: long}, {Text: "short two"}}
-	out := SplitOversized(in, 4000)
+	b := NewTokenBudget(context.Background(), &fakeTokenizer{charsPerToken: 4.0}, 1000)
+	out := SplitOversized(context.Background(), b, in)
 
 	if len(out) <= len(in) {
 		t.Fatalf("the oversized fragment was not split: %d -> %d", len(in), len(out))
 	}
 	for i, f := range out {
-		if len(f.Text) > 4000 {
-			t.Errorf("fragment %d is %d chars, over the 4000 limit", i, len(f.Text))
+		if n, _ := b.counter.CountTokens(context.Background(), f.Text); n > 1000 {
+			t.Errorf("fragment %d is %d tokens, over the 1000 limit", i, n)
 		}
 	}
 	// Splitting, not truncating: a truncated fragment is indexed, searchable and
@@ -401,11 +402,12 @@ func TestSplitOversizedBoundsAModelsFragments(t *testing.T) {
 // documents are unaffected.
 func TestSplitOversizedLeavesNormalFragmentsAlone(t *testing.T) {
 	in := []Segment{{Text: "one"}, {Text: "two"}}
-	out := SplitOversized(in, 4000)
+	b := NewTokenBudget(context.Background(), &fakeTokenizer{charsPerToken: 4.0}, 1000)
+	out := SplitOversized(context.Background(), b, in)
 	if len(out) != 2 || out[0].Text != "one" || out[1].Text != "two" {
 		t.Errorf("normal fragments were altered: %+v", out)
 	}
-	if got := SplitOversized(in, 0); len(got) != 2 {
+	if got := SplitOversized(context.Background(), NewTokenBudget(context.Background(), nil, 0), in); len(got) != 2 {
 		t.Errorf("an unknown limit must be a no-op, got %+v", got)
 	}
 }

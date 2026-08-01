@@ -54,7 +54,7 @@ func TestSegmentInputIsCappedInTokens(t *testing.T) {
 	var got []stagedFrag
 	budget := NewTokenBudget(context.Background(), tok, limit)
 	_, err := segmentLLMWith(context.Background(),
-		endpointWithTokenLimit(limit, tok, &sizes), pages, 4000, budget,
+		endpointWithTokenLimit(limit, tok, &sizes), pages, nil, budget,
 		func(f stagedFrag) { got = append(got, f) })
 	if err != nil {
 		t.Fatalf("a page over the endpoint's limit still failed the document: %v", err)
@@ -85,7 +85,7 @@ func TestSegmentCapAdaptsToTextDensity(t *testing.T) {
 		budget := NewTokenBudget(context.Background(), tok, limit)
 		pages := []resolvedPage{{page: 1, text: body}}
 		if _, err := segmentLLMWith(context.Background(),
-			endpointWithTokenLimit(limit, tok, &sizes), pages, 4000, budget,
+			endpointWithTokenLimit(limit, tok, &sizes), pages, nil, budget,
 			func(stagedFrag) {}); err != nil {
 			t.Fatalf("density %.2f: %v", charsPerToken, err)
 		}
@@ -120,7 +120,7 @@ func TestSegmentCapHoldsWithoutATokenizer(t *testing.T) {
 	budget := NewTokenBudget(context.Background(), blind, limit)
 	pages := []resolvedPage{{page: 1, text: strings.Repeat("N88°14'32\"E 147.03', ", 900)}}
 	if _, err := segmentLLMWith(context.Background(),
-		endpointWithTokenLimit(limit, server, &sizes), pages, 4000, budget,
+		endpointWithTokenLimit(limit, server, &sizes), pages, nil, budget,
 		func(stagedFrag) {}); err != nil {
 		t.Fatalf("estimated sizing failed the document: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestSegmentUncappedSendsWholePages(t *testing.T) {
 	pages := []resolvedPage{{page: 1, text: strings.Repeat("Paragraph of the agreement. ", 500)}}
 	budget := NewTokenBudget(context.Background(), tok, 0)
 	if _, err := segmentLLMWith(context.Background(),
-		endpointWithTokenLimit(1<<30, tok, &sizes), pages, 4000, budget,
+		endpointWithTokenLimit(1<<30, tok, &sizes), pages, nil, budget,
 		func(stagedFrag) {}); err != nil {
 		t.Fatal(err)
 	}

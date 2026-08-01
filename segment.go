@@ -80,14 +80,18 @@ type Segmenter struct {
 	Client     Chatter
 	MaxRetries int // JSON fix-loop attempts after the first try (default 2)
 
-	// MaxFragChars is the ceiling a fragment must respect, already converted
-	// from the embed model's token limit. 0 → unchecked.
+	// FragBudget is the ceiling a fragment must respect — the EMBEDDER's limit,
+	// in the tokens it counts in. nil → unchecked.
 	//
 	// Enforced by asking the model again rather than by cutting, for as long as
 	// the fix loop allows: a model re-splitting its own fragment cuts at a
-	// heading or a paragraph, and splitAtBoundary cuts at whatever falls near
-	// the character count.
-	MaxFragChars int
+	// heading or a paragraph, and a splitter cuts at whatever falls near the
+	// budget.
+	//
+	// It replaces a MaxFragChars that nothing ever assigned, so this check has
+	// been returning "nothing is oversized" for every document ever indexed and
+	// the re-prompt it guards has never run once.
+	FragBudget *TokenBudget
 
 	// MaxTokens caps one unit's segmentation; 0 → maxTokensFor(the unit), i.e.
 	// scaled to the input, since the answer is the input re-emitted. See chat.go.
@@ -164,7 +168,7 @@ func (sg *Segmenter) run(ctx context.Context, parts []llm.ContentPart, fallback 
 				lastErr = fmt.Errorf("unparseable: %v", err)
 			} else if len(r.Fragments) == 0 {
 				lastErr = fmt.Errorf("no fragments")
-			} else if over := oversizedFragments(r.Fragments, sg.MaxFragChars); len(over) > 0 {
+			} else if over := oversizedFragments(ctx, sg.FragBudget, r.Fragments); len(over) > 0 {
 				// The model cannot gauge tokens, and asking it to would be asking
 				// for a guess. It CAN act on "this one is 240% of the maximum,
 				// cut it into at least three" — a proportion, in the unit it
@@ -423,42 +427,92 @@ func (a *Assembler) Close() error {
 // failure as a transcription that reads complete. A split fragment keeps every
 // character; only the boundary is arbitrary.
 //
-// Deterministic, and that is what makes it safe to run after the model: a fixed
-// window cannot propose another oversized piece, so this cannot loop.
-func SplitOversized(frags []Segment, limitChars int) []Segment {
-	if limitChars <= 0 {
+// Bounded in TOKENS by the embedder's own budget. It used to convert the token
+// limit to characters at two characters per token and check the result with an
+// estimate built on the same ratio — which is not a bound: a survey legal
+// description is 1.16 characters per token, so a piece could pass both checks
+// and still be half again over the real limit.
+func SplitOversized(ctx context.Context, b *TokenBudget, frags []Segment) []Segment {
+	if b.Unlimited() {
 		return frags
 	}
 	out := make([]Segment, 0, len(frags))
 	for _, f := range frags {
-		out = append(out, splitToFit(f.Text, limitChars)...)
+		out = append(out, splitToFit(ctx, b, f.Text)...)
 	}
 	return out
 }
 
-// splitToFit cuts text until every piece is inside the limit BY TOKENS.
+// splitToFit cuts text until every piece is inside the budget, preferring a
+// semantic boundary.
 //
-// Character length is the first cut because it is cheap, but the check that
-// decides is EstimateTokens, which never under-reports. A piece that is short
-// enough in characters and still too many tokens gets cut again — the loop
-// terminates because each pass halves the target and a single character is
-// always inside any positive budget.
-func splitToFit(text string, limitChars int) []Segment {
-	limitTokens := limitChars / worstCaseCharsPerTokenLocal
-	if len(text) <= limitChars && EstimateTokens(text) <= limitTokens {
+// Cutting where the sink would cut is the point of doing it here at all. The
+// sink enforces the same budget as a backstop for every path, so a piece this
+// function leaves oversized gets cut again there — at a rune boundary, in the
+// middle of a sentence, discarding the paragraph break this function could have
+// used. Two splitters disagreeing about where a fragment ends is worse than
+// either alone: the fragment is cut twice, and the second cut is the arbitrary
+// one.
+//
+// Terminates because Fit never returns zero: it takes at least fragMinTake, and
+// a piece that small is inside any budget worth having.
+func splitToFit(ctx context.Context, b *TokenBudget, text string) []Segment {
+	if b.Unlimited() || b.Tokens(ctx, text) <= b.limit {
 		return []Segment{{Text: text}}
 	}
 	var out []Segment
-	target := limitChars
-	for _, piece := range splitAtBoundary(text, target) {
-		if EstimateTokens(piece) <= limitTokens || target <= 1 {
-			out = append(out, Segment{Text: piece})
-			continue
+	rest := text
+	for rest != "" {
+		take := b.Fit(ctx, "", rest, fragMinTake)
+		if take < len(rest) {
+			// Back off to a paragraph or sentence end inside what fits. Never
+			// forward: that would put the piece back over the budget.
+			if cut := cutAtBoundary(rest, take); cut >= fragMinTake {
+				take = cut
+			}
 		}
-		// Still over on tokens despite fitting on characters: cut it again.
-		out = append(out, splitToFit(piece, target/2)...)
+		if piece := strings.TrimSpace(rest[:take]); piece != "" {
+			out = append(out, Segment{Text: piece})
+		}
+		rest = rest[take:]
+	}
+	if len(out) == 0 {
+		return []Segment{{Text: text}}
 	}
 	return out
+}
+
+// fragMinTake is the smallest piece worth emitting, and the floor that makes the
+// split terminate.
+const fragMinTake = 500
+
+// cutAtBoundary returns the offset at or before limit where a cut lands on a
+// paragraph break, a sentence end, or whitespace — limit itself when there is no
+// boundary to prefer, moved back to a rune start so a piece is always valid
+// UTF-8.
+//
+// Shared by every splitter, so a fragment cut twice is cut in the same places
+// both times.
+func cutAtBoundary(s string, limit int) int {
+	if limit >= len(s) {
+		return len(s)
+	}
+	// Only in the last third of the window: earlier than that and the pieces get
+	// needlessly small.
+	lo := limit * 2 / 3
+	for _, sep := range []string{"\n\n", ". ", ".\n", "\n", " "} {
+		if i := strings.LastIndex(s[lo:limit], sep); i >= 0 {
+			return lo + i + len(sep)
+		}
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		return limit
+	}
+	return cut
 }
 
 // splitAtBoundary cuts s into pieces of at most limit characters, preferring a
@@ -467,27 +521,7 @@ func splitToFit(text string, limitChars int) []Segment {
 func splitAtBoundary(s string, limit int) []string {
 	var out []string
 	for len(s) > limit {
-		cut := -1
-		// Look for a boundary in the last third of the window: earlier than that
-		// and the pieces get needlessly small.
-		lo := limit * 2 / 3
-		for _, sep := range []string{"\n\n", ". ", ".\n", "\n", " "} {
-			if i := strings.LastIndex(s[lo:limit], sep); i >= 0 {
-				cut = lo + i + len(sep)
-				break
-			}
-		}
-		if cut <= 0 {
-			// No boundary at all — a single unbroken run. Cut on a rune boundary
-			// so the piece stays valid UTF-8.
-			cut = limit
-			for cut > 0 && !utf8.RuneStart(s[cut]) {
-				cut--
-			}
-			if cut == 0 {
-				cut = limit
-			}
-		}
+		cut := cutAtBoundary(s, limit)
 		out = append(out, strings.TrimSpace(s[:cut]))
 		s = s[cut:]
 	}
@@ -496,12 +530,6 @@ func splitAtBoundary(s string, limit int) []string {
 	}
 	return out
 }
-
-// worstCaseCharsPerTokenLocal mirrors the embed package constant so segment.go
-// converts the same way. One ratio, two callers: fragment sizing and batch
-// sizing disagreeing about the unit is how a limit gets enforced in one place
-// and ignored in the other.
-const worstCaseCharsPerTokenLocal = worstCaseCharsPerToken
 
 // segTargetHeadroom is how much of the ceiling the PROMPT asks for.
 //
@@ -512,17 +540,20 @@ const worstCaseCharsPerTokenLocal = worstCaseCharsPerToken
 const segTargetHeadroom = 0.66
 
 // oversizedFragments reports which fragments breached the ceiling, and by how
-// much, as a proportion.
-func oversizedFragments(frags []Segment, limit int) map[int]float64 {
-	if limit <= 0 {
+// much, as a proportion of the budget.
+func oversizedFragments(ctx context.Context, b *TokenBudget, frags []Segment) map[int]float64 {
+	if b.Unlimited() {
 		return nil
 	}
 	out := map[int]float64{}
 	for i, f := range frags {
-		// Measured in TOKENS, because that is what the limit is really about;
-		// the character ceiling is only its safe expression.
-		if EstimateTokens(f.Text) > limit/worstCaseCharsPerTokenLocal {
-			out[i] = float64(len(f.Text)) / float64(limit)
+		// Counted in TOKENS by the embedder's own tokenizer. The character
+		// ceiling this used to compare against was the token limit converted at
+		// two characters per token, checked with an estimate built on the same
+		// ratio — so on a survey legal description at 1.16 it agreed with itself
+		// and was wrong by half.
+		if n := b.Tokens(ctx, f.Text); n > b.limit {
+			out[i] = float64(n) / float64(b.limit)
 		}
 	}
 	if len(out) == 0 {

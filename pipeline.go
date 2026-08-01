@@ -283,7 +283,11 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		// is what makes the next unit's estimate right, and a survey sheet and a
 		// brief have no business informing each other's.
 		budget := NewTokenBudget(ctx, fc.TokenCounter, fc.SegmentInputLimit)
-		rep, err := segmentLLM(ctx, sg, pages, window, budget, sink)
+		// A per-document copy, so the embedder's budget can be attached without
+		// mutating a Segmenter the worker reuses across jobs.
+		sgDoc := *sg
+		sgDoc.FragBudget = embedBudget
+		rep, err := segmentLLM(ctx, &sgDoc, pages, embedBudget, budget, sink)
 		var short *ErrSegmentShort
 		switch {
 		case errors.As(err, &short):
@@ -366,8 +370,8 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 // offsets (they are model-emitted text). `page` is the START page, and
 // pageSpans records where every later page begins inside the text — without
 // them a hit in a stitched fragment resolves to the wrong page.
-func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedLimit int, budget *TokenBudget, sink func(stagedFrag)) (segReport, error) {
-	return segmentLLMWith(ctx, sg.SegmentText, pages, embedLimit, budget, sink)
+func segmentLLM(ctx context.Context, sg *Segmenter, pages []resolvedPage, embedBudget, budget *TokenBudget, sink func(stagedFrag)) (segReport, error) {
+	return segmentLLMWith(ctx, sg.SegmentText, pages, embedBudget, budget, sink)
 }
 
 // segReport is what segmentation did, as opposed to what it returned.
@@ -414,7 +418,7 @@ func (r segReport) degradedDetail() string {
 // The seam exists for the coverage rule below, which is the part that has to be
 // tested and the part a live model cannot test: to prove the alarm fires when a
 // page is dropped, something has to drop a page on purpose.
-func segmentLLMWith(ctx context.Context, segment func(context.Context, string, string) (SegResult, error), pages []resolvedPage, embedLimit int, budget *TokenBudget, sink func(stagedFrag)) (segReport, error) {
+func segmentLLMWith(ctx context.Context, segment func(context.Context, string, string) (SegResult, error), pages []resolvedPage, embedBudget, budget *TokenBudget, sink func(stagedFrag)) (segReport, error) {
 	// Emitted content per page, against what that page was given. The segmenter
 	// is a MODEL, and a model that returns a short answer returns it without an
 	// error — so the only way to know it dropped the back half of a page is to
@@ -448,8 +452,9 @@ func segmentLLMWith(ctx context.Context, segment func(context.Context, string, s
 			}
 			// The model is ASKED for 400-800 words and is not bound by the request.
 			// Bound it here, before anything downstream has to survive a fragment no
-			// embedder will accept.
-			r.Fragments = SplitOversized(r.Fragments, embedLimit)
+			// embedder will accept — and cut at the boundaries the sink would use,
+			// so a fragment that reaches both is not cut twice in different places.
+			r.Fragments = SplitOversized(ctx, embedBudget, r.Fragments)
 			if err := a.Feed(p.page, r); err != nil {
 				return rep, err
 			}
