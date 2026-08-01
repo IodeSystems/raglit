@@ -54,7 +54,13 @@ func mountAttest(router chi.Router, api huma.API, reg *raglit.Registry) error {
 			// path bug reach the whole filesystem.
 			continue
 		}
-		svc := &attest.Service{Root: root, Ident: attest.Guest{}, Ev: multiEvidence{root: root}}
+		svc := &attest.Service{
+			Root: root, Ident: attest.Guest{}, Ev: multiEvidence{root: root},
+			// Keep the index's projection current as rulings are made, rather
+			// than only when somebody remembers to sweep. The log is still the
+			// record; this is the queryable view catching up immediately.
+			OnWrite: projectVerdicts(st, root),
+		}
 		prefix := "/api/attest/" + name
 		if err := svc.Register(api, prefix); err != nil {
 			return fmt.Errorf("attest mount %s: %w", name, err)
@@ -228,5 +234,25 @@ func attestWriteReadingsOp(reg *raglit.Registry) func(context.Context, *attestSw
 			return nil, huma.Error500InternalServerError("sweep", err)
 		}
 		return &attestSweepOut{Body: res}, nil
+	}
+}
+
+// projectVerdicts re-projects one asset's log into the index after a ruling.
+//
+// Re-projects the WHOLE log rather than appending the new entry, for the same
+// reason PutAttestations does: the log is authoritative and re-reading it is
+// idempotent, while tracking what has already been inserted is a second source
+// of truth that can drift from the first.
+func projectVerdicts(st *raglit.Store, root string) func(string) error {
+	return func(assetPath string) error {
+		log, err := attest.ReadLog(assetPath)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, assetPath)
+		if err != nil {
+			rel = filepath.Base(assetPath)
+		}
+		return st.PutAttestations(rel, log)
 	}
 }

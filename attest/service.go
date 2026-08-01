@@ -45,6 +45,15 @@ type Service struct {
 
 	// Now is injectable so a test can assert on a timestamp.
 	Now func() string
+
+	// OnWrite fires after entries are appended to an asset's log, with the
+	// asset's full path.
+	//
+	// For a host that keeps a queryable projection of the rulings — raglit puts
+	// them in the index the documents live in — this is what keeps it from going
+	// stale between sweeps. Optional: a host without one loses nothing, because
+	// the log beside the asset is the record.
+	OnWrite func(assetPath string) error
 }
 
 func (s *Service) now() string {
@@ -121,6 +130,18 @@ func (s *Service) write(ctx context.Context, full, by string, p Permission, entr
 	}
 	if err := Append(full, entries...); err != nil {
 		return huma.Error400BadRequest(err.Error())
+	}
+	// Tell the host a ruling landed, so a projection it keeps stays current.
+	//
+	// After the append, never instead of it: the log is the record and a hook
+	// that could veto a write would make the projection authoritative over the
+	// thing it projects. A failing hook is reported and does not undo the
+	// ruling — a verdict that reached the trail HAPPENED, and rolling it back
+	// because a cache complained would lose a person's work to a database.
+	if s.OnWrite != nil {
+		if err := s.OnWrite(full); err != nil {
+			return huma.Error500InternalServerError("ruling recorded, projection failed", err)
+		}
 	}
 	return nil
 }
@@ -448,7 +469,22 @@ func (s *Service) Register(api huma.API, prefix string) error {
 		if as == "" {
 			as = AsCrop
 		}
-		art, err := Render(ctx, s.Ev, st.Asset, *u, as)
+		// Render against the id the CALLER addressed, not the one stored in the
+		// reading.
+		//
+		// A producer writes the reading beside the document and has no idea what
+		// root a host will later mount — `raglit attest` roots at the document's
+		// own directory, the daemon roots at a whole corpus — so a stored id is
+		// only ever correct for the mount that happened to write it. The id in
+		// the request is root-relative BY CONSTRUCTION: authorize() just resolved
+		// it against this Root and refused anything that left it.
+		//
+		// Without this a renderer doing the obvious join(Root, Asset.ID) silently
+		// resolves to the wrong file whenever a document is not directly in the
+		// root, and reports "no such file" for a document that is plainly there.
+		addressed := st.Asset
+		addressed.ID = in.Asset
+		art, err := Render(ctx, s.Ev, addressed, *u, as)
 		if err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
 		}
