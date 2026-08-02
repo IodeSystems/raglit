@@ -87,9 +87,19 @@ fragments that exist now, so a deleted memory takes its questions with it.
   when fragment N changes unless the rebuild covers them. They must be part of
   the same regeneration, not a separate pass that can fall behind.
 
-## Consumer note
+## Consumer notes
 
-"Already surfaced, do not propose again" does NOT belong here (see
-`dun/plan/icebox.md`). Several consumers share one index, so read-state is the
-CONSUMER's, and raglit staying stateless about its readers is what lets two of
-them suppress independently.
+Two things belong to the CONSUMER rather than to an index several consumers
+share (see `dun/plan/icebox.md`):
+
+- **"Already surfaced, do not propose again"** is read-state, and read-state is
+  per-consumer. raglit staying stateless about its readers is what lets two of
+  them suppress independently.
+- **The caveat travels with the rendering.** Whatever surfaces a
+  machine-written fragment says that it is one, that it may have gone stale, and
+  how to correct it — the correction path is the only thing that makes staleness
+  NOTICEABLE, because it puts the question in front of a reader at the one
+  moment they are holding the evidence to answer it. raglit already holds half
+  of this rule for `origin='identity'` ("every renderer says so and nothing
+  quotes from it"); the other half is that a renderer must also say how to fix
+  what it is showing.
