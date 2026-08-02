@@ -394,10 +394,19 @@ func (s *Store) identityForIngest(ctx context.Context, docPath string, pages []r
 		sl.Done("identity", "person", "kept the caption a person recorded")
 		return nil
 	}
+	// The same overlay the transcription sidecar applies: a page a person has
+	// corrected is read from THEIR text, not from the OCR this run produced. The
+	// fresh machine reading is what the fragments will hold — correctly, since
+	// citations index into them — but it is not what the document says.
+	corr := correctionsForDoc(docPath)
 	texts := make([]string, 0, len(pages))
 	for _, p := range pages {
-		if strings.TrimSpace(p.text) != "" {
-			texts = append(texts, p.text)
+		text := p.text
+		if c, ok := corr[p.page]; ok && strings.TrimSpace(c.Text) != "" {
+			text = c.Text
+		}
+		if strings.TrimSpace(text) != "" {
+			texts = append(texts, text)
 		}
 	}
 	if len(texts) == 0 {

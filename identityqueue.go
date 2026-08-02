@@ -415,17 +415,19 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 			case cur.ByPerson() || (!cur.Empty() && !job.Force):
 				t.err = ErrIdentityKept
 			default:
-				c, derr := w.Store.DocText(job.Path, 0, 0, 0)
+				// The reading in force, not the machine's first attempt at it:
+				// a corrected page is what the document says. See IdentityText.
+				text, derr := w.Store.IdentityText(ctx, job.Path)
 				switch {
 				case derr != nil:
 					t.err = derr
-				case contentChars(c.Text) < identityMinTextChars:
+				case contentChars(text) < identityMinTextChars:
 					// Decided here rather than in the model call: it is a property
 					// of the text, and a document with nothing in it should not
 					// occupy a slot to be told so.
-					t.err = &ErrIdentityTooShort{Chars: contentChars(c.Text)}
+					t.err = &ErrIdentityTooShort{Chars: contentChars(text)}
 				default:
-					t.text = c.Text
+					t.text = text
 				}
 			}
 			select {

@@ -457,6 +457,63 @@ type dbExecer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
+// IdentityText is the text a caption is written from: the reading IN FORCE for
+// each page, not the machine's first attempt at it.
+//
+// The distinction is the whole of why this function exists. Fragments hold what
+// OCR produced, and they are deliberately NOT rewritten when a person corrects a
+// page — re-fragmenting would move every offset and invalidate every citation
+// already taken. So a correction lives in `page_readings` as the active reading,
+// and anything that wants what the document SAYS has to go there.
+//
+// Captioning is exactly such a consumer, and the case that proves it is the one
+// this was found on: a disputed record of survey whose corrected page fixed the
+// surveyor's name and certificate number. Those are the facts a caption states.
+// Written from fragments, the caption would have asserted, in a machine's voice
+// and at the top of a document list, the very reading a person had already ruled
+// wrong.
+//
+// Pages with no ruling fall back to the indexed text, so a corpus nobody has
+// corrected — the overwhelming majority — is unaffected and pays one indexed
+// lookup.
+func (s *Store) IdentityText(ctx context.Context, path string) (string, error) {
+	active, err := s.ActiveReadings(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	if len(active) == 0 {
+		c, err := s.DocText(path, 0, 0, 0)
+		if err != nil {
+			return "", err
+		}
+		return c.Text, nil
+	}
+	// Page grain, honouring page_spans — a reading is per page, so the text it
+	// replaces has to be identified per page too. DocText's grouping attributes a
+	// stitched fragment wholly to the page it opened on, which would overlay the
+	// correction onto the wrong page's worth of text.
+	pages, err := s.TruePages(path)
+	if err != nil {
+		return "", err
+	}
+	if len(pages) == 0 {
+		c, err := s.DocText(path, 0, 0, 0)
+		if err != nil {
+			return "", err
+		}
+		return c.Text, nil
+	}
+	parts := make([]string, 0, len(pages))
+	for _, p := range pages {
+		if r, ok := active[p.Page]; ok && strings.TrimSpace(r.Text) != "" {
+			parts = append(parts, r.Text)
+			continue
+		}
+		parts = append(parts, p.Text)
+	}
+	return strings.Join(parts, pageSep), nil
+}
+
 // Errors IdentifyDocument returns for the two states that are not failures.
 var (
 	// ErrNoIdentifier means this store was never given a model to caption with.
@@ -486,13 +543,13 @@ func (s *Store) IdentifyDocument(ctx context.Context, path string, force bool) (
 	if s.identifier == nil {
 		return DocIdentity{}, ErrNoIdentifier
 	}
-	// The document's own words — origin='' — which is what docTextLocal returns,
-	// so a re-run reads the document rather than the last caption of it.
-	content, err := s.DocText(path, 0, 0, 0)
+	// The document's own words — origin='' excludes the last caption of it — and
+	// the reading in force where a person has corrected one. See IdentityText.
+	text, err := s.IdentityText(ctx, path)
 	if err != nil {
 		return DocIdentity{}, err
 	}
-	id, err := s.identifier.Identify(ctx, content.Text)
+	id, err := s.identifier.Identify(ctx, text)
 	if err != nil {
 		return DocIdentity{}, err
 	}

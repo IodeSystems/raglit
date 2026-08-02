@@ -371,3 +371,59 @@ func TestPooledDoc_CarriesTheCaptionAndNotItsFragment(t *testing.T) {
 		t.Errorf("pooled reuse put the caption into the document's text: %q", c.Text)
 	}
 }
+
+// A caption is written from the reading IN FORCE, not from the machine's first
+// attempt at it. Fragments deliberately keep the OCR text — citations index into
+// them — so a corrected page lives only in page_readings, and anything asking
+// what the document SAYS has to look there.
+func TestIdentityText_PrefersTheCorrectedReading(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	const machineRead = "Record of survey certified by BRLICE LISSFR, certificate no. 2OO8O81O2O."
+	const corrected = "Record of survey certified by Bruce Halvor, certificate number 20080818 0120."
+	if err := s.Ingest(ctx, Document{Path: "/corpus/ros.pdf", Title: "ros.pdf",
+		Fragments: []Fragment{
+			{Page: 1, Ord: 0, Text: machineRead},
+			{Page: 2, Ord: 0, Text: "Existing corners table."},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No ruling yet → the indexed text is what the document says.
+	got, err := s.IdentityText(ctx, "/corpus/ros.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "BRLICE") {
+		t.Fatalf("uncorrected document should read as indexed:\n%s", got)
+	}
+
+	if err := s.AddPageReading(ctx, PageReading{Doc: "/corpus/ros.pdf", Page: 1,
+		Text: corrected, Source: "corrected", Note: "read at 150%", By: "carl"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.IdentityText(ctx, "/corpus/ros.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "BRLICE") {
+		t.Errorf("a caption would be written from the reading a person ruled wrong:\n%s", got)
+	}
+	if !strings.Contains(got, "Bruce Halvor") || !strings.Contains(got, "20080818 0120") {
+		t.Errorf("the correction did not reach the text a caption is written from:\n%s", got)
+	}
+	// Pages nobody ruled on are unaffected.
+	if !strings.Contains(got, "Existing corners table.") {
+		t.Errorf("an uncorrected page was dropped:\n%s", got)
+	}
+	// And the FRAGMENTS still hold the machine's words — citations index into
+	// them, so correcting a reading must not move them.
+	c, err := s.DocText("/corpus/ros.pdf", 0, 0, 0)
+	if err != nil || !strings.Contains(c.Text, "BRLICE") {
+		t.Errorf("the correction rewrote the indexed text: %v\n%s", err, c.Text)
+	}
+}

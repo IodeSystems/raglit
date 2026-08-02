@@ -172,3 +172,26 @@ func (s *Store) DocReadingHistory(doc string) ([]PageReading, error) {
 	}
 	return out, rows.Err()
 }
+
+// ActiveReadings returns the reading IN FORCE for each page of a document, by
+// page number. Pages nobody has ruled on are absent — a document with no
+// corrections returns an empty map, which is the common case and costs one
+// indexed lookup.
+func (s *Store) ActiveReadings(ctx context.Context, doc string) (map[int]PageReading, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT page, seq, text, source, note, read_by, read_at
+		   FROM page_readings WHERE doc = ? AND active = 1`, doc)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]PageReading{}
+	for rows.Next() {
+		r := PageReading{Doc: doc, Active: true}
+		if err := rows.Scan(&r.Page, &r.Seq, &r.Text, &r.Source, &r.Note, &r.By, &r.At); err != nil {
+			return nil, err
+		}
+		out[r.Page] = r
+	}
+	return out, rows.Err()
+}
