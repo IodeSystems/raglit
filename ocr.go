@@ -285,6 +285,9 @@ func spellingAssist(text string) string {
 	if text == "" {
 		return ""
 	}
+	// The block is a marker, not a mechanism: deleting the digits outright reads
+	// identically well (measured — see plan/ocr-fixtures.md). It is kept because
+	// an elision that shows itself is easier to reason about than a silent gap.
 	masked := digitRun.ReplaceAllString(text, "\u2588")
 	if strings.TrimSpace(strings.ReplaceAll(masked, "\u2588", "")) == "" {
 		return "" // nothing but numbers; no spellings to offer
