@@ -1,6 +1,7 @@
 # raglit: document identity — what a document IS, in its own words
 
-Status: BUILT 2026-08-01 (`identity.go`, `raglit identify`, `/api/identify`).
+Status: BUILT 2026-08-01 (`identity.go`, `identityqueue.go`, `raglit identify`,
+`/api/identify`, `/api/identify/queue`).
 Living doc — prune as the follow-ups land.
 
 ## Goal (from user)
@@ -99,11 +100,25 @@ BM25 can rank, because the summary does.
   model call, which is what the pool exists to avoid paying twice); the identity
   fragment is excluded from the pooled fragments and rebuilt on import, so reuse
   cannot duplicate it or replay it as document text.
+- `identityqueue.go` — captioning is QUEUED work (`identity_jobs`), not a loop
+  inside a command. Enqueueing is instant and durable; the daemon's identity
+  worker drains the rows; a machine that dies mid-sweep resumes where it stopped
+  (orphaned `running` rows are requeued, because a caption is one bounded call —
+  unlike an ingest job, which may have been killed BY its document).
+  Concurrency is the endpoint's, not an index's: `identity_slots` (default 2) is
+  what the server actually serves, and past that requests queue INSIDE the server
+  where raglit cannot see, resume, or distinguish them from an ingest job's OCR
+  call. Indexes are drained one at a time for the same reason. The worker is a
+  pipeline — a loader claims rows and reassembles text, the slot-holders do
+  nothing but the model call, a committer writes back — so database work never
+  occupies a slot. A document with nothing to read closes `skipped` (not failed,
+  not re-queued).
 - `raglit identify` — the re-runnable half, for a corpus indexed before this
-  existed. No arguments captions every document that has none; `--force` redoes a
-  machine's; `--list` reports coverage; `--name/--summary/--kind` records a
-  person's. Each caption is committed as it is produced, so an interrupted sweep
-  keeps what it did.
+  existed. No arguments queues every document that has none; `--force` redoes a
+  machine's; `--wait` follows the queue; `--list` reports coverage;
+  `--name/--summary/--kind` records a person's. `raglit status` shows what is
+  outstanding. On an embedded index with no daemon, the command drains the same
+  queue in-process.
 - `POST /api/identify` — the same two operations daemon-side, because a write on
   a daemon-routed project belongs to the daemon (storeroute.go) and because the
   daemon is what holds the model.
@@ -148,6 +163,10 @@ BM25 can rank, because the summary does.
   captioned by model A is reused as-is when config names model B. Not silent —
   `gen_model` records which model wrote it — but it means a model change does not
   re-caption a corpus on its own.
-- **`raglit identify` on a whole corpus is serial.** 406 documents is 406 calls,
-  one at a time. Resumable, so it can simply be run again, but nothing batches or
-  parallelises it.
+- **The slot budget is per-worker, not global.** Identity holds itself to two
+  concurrent calls, and the ingest pipeline's OCR calls are outside that count —
+  so a sweep running alongside a big ingest can still put three or four requests
+  at a two-slot server. The real fix is one semaphore over every model call in
+  the process; until then, drop `identity_slots` to 1 while ingesting.
+- **Nothing measures the endpoint's concurrency.** Two is configuration, taken
+  from what the server is known to run. A wrong number is silent.
