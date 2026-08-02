@@ -99,6 +99,10 @@ func aggregateStatus(reg *raglit.Registry, names []string) raglit.Status {
 		agg.Running += s.Running
 		agg.Pending += s.Pending
 		agg.Failed += s.Failed
+		agg.Identity.Pending += s.Identity.Pending
+		agg.Identity.Running += s.Identity.Running
+		agg.Identity.Done += s.Identity.Done
+		agg.Identity.Failed += s.Identity.Failed
 		if s.RatePerMin > agg.RatePerMin {
 			agg.RatePerMin = s.RatePerMin
 		}

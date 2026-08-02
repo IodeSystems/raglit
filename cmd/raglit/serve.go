@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -67,6 +69,7 @@ func runServe(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go runIndexWorkers(ctx, reg, lf, homeOf(), nil) // embedded serve: single index, no shared pool
+	go runIdentityWorkers(ctx, reg, homeOf())
 
 	s := server.NewMCPServer("raglit", version)
 	addRaglitTools(s, toolHandlers{
@@ -214,6 +217,65 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 
 // runIndexWorkers drains every index's queue, round-robin, caching one worker
 // per index. New indexes (created via ingest) are picked up on the next round.
+// runIdentityWorkers drains every index's captioning queue, ONE INDEX AT A TIME.
+//
+// Serial across indexes on purpose. The slot budget belongs to the endpoint, not
+// to an index: two indexes each draining "two at a time" is four requests at a
+// server that runs two, and the extra pair waits inside it where nothing here
+// can see or resume them. So one index is drained to empty, then the next.
+//
+// Separate from the ingest workers because the two are different work with the
+// same scarce resource — an ingest job is minutes of OCR over many pages, a
+// caption is one bounded call — and putting captions on the ingest queue would
+// have made a 400-document sweep block every incoming document behind it.
+func runIdentityWorkers(ctx context.Context, reg *raglit.Registry, home raglit.Home) {
+	cfg, _, _ := raglit.LoadConfig(home)
+	slots := cfg.IdentitySlots
+	for ctx.Err() == nil {
+		did := false
+		for _, name := range reg.Names() {
+			if ctx.Err() != nil {
+				return
+			}
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			// A row left 'running' by a dead process is work nobody is doing.
+			if n, err := st.ReclaimIdentityJobs(); err == nil && n > 0 {
+				log.Printf("raglit: identity queue %s: requeued %d orphaned job(s)", name, n)
+			}
+			q, err := st.IdentityQueue()
+			if err != nil || q.Pending == 0 {
+				continue
+			}
+			log.Printf("raglit: identity queue %s: %d pending (%d at a time)", name, q.Pending, effectiveSlots(slots))
+			n, werr := (&raglit.IdentityWorker{Store: st, Slots: slots}).Drain(ctx)
+			if werr != nil && !errors.Is(werr, raglit.ErrNoIdentifier) {
+				log.Printf("raglit: identity queue %s: %v", name, werr)
+			}
+			if n > 0 {
+				did = true
+				log.Printf("raglit: identity queue %s: %d done", name, n)
+			}
+		}
+		if !did {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+}
+
+func effectiveSlots(n int) int {
+	if n <= 0 {
+		return raglit.DefaultIdentitySlots
+	}
+	return n
+}
+
 func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home, pool *raglit.Pool) {
 	workers := map[string]*raglit.Worker{}
 	for ctx.Err() == nil {

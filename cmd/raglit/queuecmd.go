@@ -291,6 +291,10 @@ func renderStatus(st raglit.Status) {
 		fmt.Printf("  (%.1f/min)", st.RatePerMin)
 	}
 	fmt.Println()
+	if iq := st.Identity; !iq.Empty() || iq.Failed > 0 {
+		fmt.Printf("names: %d pending, %d running, %d captioned, %d failed  (identify)\n",
+			iq.Pending, iq.Running, iq.Done, iq.Failed)
+	}
 	for _, it := range st.Items {
 		eta := "eta n/a"
 		if it.ETASeconds > 0 {

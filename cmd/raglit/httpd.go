@@ -121,6 +121,8 @@ func runHttpd(subcmd string, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go runIndexWorkers(ctx, reg, lf, cfgHome, pool)
+	// Captions, on their own queue and their own slot budget. See runIdentityWorkers.
+	go runIdentityWorkers(ctx, reg, cfgHome)
 	// Stay on the current source. Rebuilds immediately, restarts as soon as no
 	// job is RUNNING — a re-exec mid-ingest aborts that job and it is not
 	// requeued, while pending rows survive and the new process picks them up.
@@ -267,6 +269,8 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("correctPage", http.MethodPost, "/api/transcribe/correct", "Record a corrected reading for one page."), correctPageOp(reg))
 	gat.Register(api, g, op("sketch", http.MethodPost, "/api/similar/build", "Build page sketches for near-duplicate detection."), sketchOp(reg))
 	gat.Register(api, g, op("reread", http.MethodPost, "/api/reread", "Purge a document's cached page OCR and re-read it."), rereadOp(reg))
+	gat.Register(api, g, op("enqueueIdentity", http.MethodPost, "/api/identify/queue", "Queue documents for captioning; the daemon drains them at the endpoint's concurrency."), enqueueIdentityOp(reg))
+	gat.Register(api, g, op("identityJobs", http.MethodGet, "/api/identity-jobs", "The captioning queue: counts and rows."), identityJobsOp(reg))
 	gat.Register(api, g, op("identify", http.MethodPost, "/api/identify", "Say what a document IS: generate a caption/summary/kind, or record a person's."), identifyOp(reg))
 	gat.Register(api, g, op("withdraw", http.MethodPost, "/api/withdraw", "Rule a document out of the corpus, with grounds. Survives re-ingest."), withdrawOp(reg))
 	gat.Register(api, g, op("restore", http.MethodPost, "/api/restore", "Return a withdrawn document to the corpus (does not re-index)."), restoreOp(reg))

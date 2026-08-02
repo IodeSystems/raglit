@@ -143,15 +143,30 @@ func Open(path string) (*Store, error) {
 	// reused the freed fragment rowid, and the new vector collided with the
 	// orphan. Which made `--fresh` — the escape hatch for a bad read — the one
 	// operation that could not be retried.
+	//
+	// busy_timeout rides the same DSN, and for a related reason: the daemon now
+	// has more than one writer in the same index — the ingest worker and the
+	// captioning worker — and a writer that arrives while another holds the lock
+	// gets SQLITE_BUSY immediately unless told to wait. Ten seconds is far past
+	// any write here, all of which are short.
 	dsn := path
-	if !strings.Contains(dsn, "?") {
-		dsn += "?_pragma=foreign_keys(1)"
-	} else {
-		dsn += "&_pragma=foreign_keys(1)"
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
 	}
+	dsn += sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
+	}
+	// An in-memory index is PER CONNECTION: the pool opening a second one does
+	// not find the first one's tables, it creates an empty database and answers
+	// "no such table". That is invisible until something uses the store from more
+	// than one goroutine — which the captioning worker does — so an in-memory
+	// store is pinned to a single connection rather than left to fail later, in a
+	// test, as a missing table nobody wrote a migration for.
+	if strings.Contains(path, ":memory:") {
+		db.SetMaxOpenConns(1)
 	}
 	// journal_mode is a DATABASE property, not a connection one — it persists in
 	// the file — so setting it once here is correct and it stays correct.

@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/iodesystems/raglit"
 )
@@ -35,6 +35,7 @@ func runIdentify(args []string) error {
 	summary := fs.String("summary", "", "record this summary (with --name)")
 	kind := fs.String("kind", "", "record this kind: "+strings.Join(raglit.IdentityKinds(), " | "))
 	by := fs.String("by", defaultWithdrawBy(), "who is recording it (with --name)")
+	wait := fs.Bool("wait", false, "follow the queue until it drains (the work continues either way)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -99,42 +100,114 @@ func runIdentify(args []string) error {
 		return nil
 	}
 
+	// QUEUED, not looped. A caption is a model call, the endpoint runs two at a
+	// time, and a corpus is hundreds — so the command's job is to record the work
+	// durably and get out of the way. The rows outlive this process; the daemon's
+	// identity worker drains them at the endpoint's real concurrency. --wait
+	// follows along, and closing it stops the watching, not the work.
 	ctx := context.Background()
-	done, kept, failed := 0, 0, 0
+	queued, err := enqueueIdentityWork(st, paths, *force, routed)
+	if err != nil {
+		return err
+	}
+	q := identityQueueNow(st, routed)
+	fmt.Printf("queued %d document(s) — %d pending, %d running, %d captioned, %d failed\n",
+		queued, q.Pending, q.Running, q.Done, q.Failed)
+	if !routed {
+		// No daemon to drain them: this process is the worker. Same queue, same
+		// rows, same resumability — an interrupted run leaves the rest pending.
+		return drainIdentityLocally(ctx, st, lf, homeOf())
+	}
+	if !*wait {
+		fmt.Println("the daemon is working them; `raglit identify --wait` follows, `--list` shows what is named")
+		return nil
+	}
+	return waitForIdentityQueue(st)
+}
+
+// enqueueIdentityWork records the work: through the daemon when routed (it owns
+// the index), directly otherwise.
+func enqueueIdentityWork(st *raglit.Store, paths []string, force, routed bool) (int, error) {
+	if !routed {
+		return st.EnqueueIdentityFor(paths, force)
+	}
+	n := 0
 	for _, p := range paths {
-		var id raglit.DocIdentity
-		var err error
-		if routed {
-			id, err = daemonIdentify(p, raglit.DocIdentity{}, "", *force)
-		} else {
-			id, err = st.IdentifyDocument(ctx, p, *force)
+		queued, err := daemonEnqueueIdentity(p, force)
+		if err != nil {
+			return n, err
 		}
-		switch {
-		case errors.Is(err, raglit.ErrIdentityKept):
-			kept++
-		case errors.Is(err, raglit.ErrNoIdentifier):
-			// Nothing further will work; say so once rather than N times.
-			return fmt.Errorf("identify: no identity model configured — run 'raglit init' or set identity_model")
-		case err != nil:
-			// One document that cannot be captioned does not stop the corpus.
-			// Named, though: a silent skip is how half a corpus ends up captioned
-			// with nothing recording which half.
+		n += queued
+	}
+	return n, nil
+}
+
+// identityQueueNow reads the queue's counts, from whichever side owns them. The
+// local read is the same rows the daemon writes, so it is accurate either way;
+// this exists so a failure to reach the daemon degrades to zeroes rather than
+// aborting a sweep that was already recorded.
+func identityQueueNow(st *raglit.Store, routed bool) raglit.IdentityQueueStatus {
+	if routed {
+		if q, err := daemonIdentityQueue(); err == nil {
+			return q
+		}
+	}
+	q, _ := st.IdentityQueue()
+	return q
+}
+
+// drainIdentityLocally works the queue in-process, for an embedded index with no
+// daemon behind it. Progress prints as each caption lands, because here the
+// person watching IS the worker.
+func drainIdentityLocally(ctx context.Context, st *raglit.Store, lf *llmFlags, home raglit.Home) error {
+	id := lf.identifier(home)
+	if id == nil {
+		return fmt.Errorf("identify: no identity model configured — run 'raglit init' or set identity_model")
+	}
+	st.SetIdentifier(id)
+	cfg, _, _ := raglit.LoadConfig(home)
+	w := &raglit.IdentityWorker{Store: st, Slots: cfg.IdentitySlots}
+	done, failed := 0, 0
+	w.OnDone = func(job raglit.IdentityJob, got raglit.DocIdentity, err error) {
+		if err != nil {
 			failed++
-			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", p, err)
-		default:
-			done++
-			printIdentity(p, id)
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", job.Path, err)
+			return
 		}
+		done++
+		printIdentity(job.Path, got)
+	}
+	if _, err := w.Drain(ctx); err != nil {
+		return err
 	}
 	fmt.Printf("identified %d document(s)", done)
-	if kept > 0 {
-		fmt.Printf(", kept %d", kept)
-	}
 	if failed > 0 {
 		fmt.Printf(", %d failed", failed)
 	}
 	fmt.Println()
 	return nil
+}
+
+// waitForIdentityQueue follows the daemon's progress until the queue is empty.
+// Interrupting it stops the watching, not the work.
+func waitForIdentityQueue(st *raglit.Store) error {
+	last := ""
+	for {
+		q, err := daemonIdentityQueue()
+		if err != nil {
+			q, _ = st.IdentityQueue()
+		}
+		line := fmt.Sprintf("%d pending, %d running, %d captioned, %d failed",
+			q.Pending, q.Running, q.Done, q.Failed)
+		if line != last {
+			fmt.Println(line)
+			last = line
+		}
+		if q.Empty() {
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
 }
 
 // identifyTargets is the work list: the named documents, or every document with
@@ -251,18 +324,71 @@ func printIdentity(path string, d raglit.DocIdentity) {
 	fmt.Println()
 }
 
+// daemonEnqueueIdentity queues one document with the daemon, returning how many
+// rows it added (0 when one is already in flight for that path).
+func daemonEnqueueIdentity(path string, force bool) (int, error) {
+	base, idx, dir, err := daemonTarget()
+	if err != nil {
+		return 0, err
+	}
+	q := urlValues("project", dir, "index", idx, "path", path)
+	if force {
+		q.Set("force", "true")
+	}
+	b, err := daemonPostJSON(base, "/api/identify/queue?"+q.Encode(), map[string]any{})
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		Queued int `json:"queued"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return 0, err
+	}
+	return out.Queued, nil
+}
+
+// daemonIdentityQueue reads the queue's counts from the daemon.
+func daemonIdentityQueue() (raglit.IdentityQueueStatus, error) {
+	var out struct {
+		Queue raglit.IdentityQueueStatus `json:"queue"`
+	}
+	base, idx, _, err := daemonTarget()
+	if err != nil {
+		return out.Queue, err
+	}
+	b, err := daemonGet(base, "/api/identity-jobs", urlValues("index", idx, "limit", "1"))
+	if err != nil {
+		return out.Queue, err
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return out.Queue, err
+	}
+	return out.Queue, nil
+}
+
+// daemonTarget resolves the three things every daemon call needs: the base URL,
+// this project's namespaced index, and the project directory.
+func daemonTarget() (base, index, dir string, err error) {
+	d, ok := raglit.ProjectDir()
+	if !ok {
+		return "", "", "", fmt.Errorf("no .raglit/ found from here")
+	}
+	base, err = ensureDaemon("", raglit.DiscoverHome)
+	if err != nil {
+		return "", "", "", err
+	}
+	index, err = daemonIndexName()
+	if err != nil {
+		return "", "", "", err
+	}
+	return base, index, d, nil
+}
+
 // daemonIdentify routes an identity write to the daemon. An empty want means
 // "generate one"; a non-empty one records a person's.
 func daemonIdentify(path string, want raglit.DocIdentity, by string, force bool) (raglit.DocIdentity, error) {
-	dir, ok := raglit.ProjectDir()
-	if !ok {
-		return raglit.DocIdentity{}, fmt.Errorf("no .raglit/ found from here")
-	}
-	base, err := ensureDaemon("", raglit.DiscoverHome)
-	if err != nil {
-		return raglit.DocIdentity{}, err
-	}
-	idx, err := daemonIndexName()
+	base, idx, dir, err := daemonTarget()
 	if err != nil {
 		return raglit.DocIdentity{}, err
 	}

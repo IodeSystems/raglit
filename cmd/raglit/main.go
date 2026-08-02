@@ -207,12 +207,15 @@ usage:
                 no slice claims. That is what says a bundle is fully linearized
                 rather than merely started.
 
-  raglit identify [--list] [--force] [--limit N] [--dry-run] [DOC...]
+  raglit identify [--list] [--force] [--limit N] [--wait] [--dry-run] [DOC...]
                 what a document IS, as opposed to what its file is called: a
                 caption, a summary and a kind, asked of the model on the text
                 already indexed. Ingest does this per document; this is for a
-                corpus indexed before it existed, and it is resumable — with no
-                arguments it captions every document that has no name yet.
+                corpus indexed before it existed. With no arguments it QUEUES
+                every document that has no name yet and returns — the rows are
+                durable, the daemon works them two at a time (the endpoint's
+                concurrency), and killing the terminal loses nothing. --wait
+                follows the queue; 'raglit status' shows what is outstanding.
                 The file is NEVER renamed: the caption is a display name and a
                 search target, and the summary is indexed so a query for
                 "purchase and sale agreement" can rank a document whose body

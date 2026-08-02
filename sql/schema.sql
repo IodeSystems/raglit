@@ -306,6 +306,34 @@ CREATE TABLE IF NOT EXISTS shingle_index (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS shingle_index_doc ON shingle_index(doc_id);
 
+-- Captioning work, queued and durable (identity.go, identityqueue.go).
+--
+-- Asking a model what a document IS is one bounded call per document, and a
+-- corpus is hundreds of them. Run from a command they live in that command: kill
+-- the terminal and the remaining work is gone, and nothing else can see what is
+-- outstanding. Run them all at once and they crowd an endpoint that serves two
+-- requests at a time — the ingest pipeline is competing for the same two.
+--
+-- So the work is ROWS. Enqueueing is instant and durable, a worker drains them
+-- at the endpoint's real concurrency, and a machine that dies mid-sweep resumes
+-- where it stopped rather than starting over.
+--
+-- One row per path (UNIQUE), re-enqueued by resetting it: two pending captions
+-- for one document is one wasted model call, and this is exactly the case where
+-- somebody re-runs the sweep because they cannot remember whether it finished.
+CREATE TABLE IF NOT EXISTS identity_jobs (
+  id          INTEGER PRIMARY KEY,
+  path        TEXT NOT NULL UNIQUE,
+  state       TEXT NOT NULL DEFAULT 'pending',  -- pending|running|done|error
+  force       INTEGER NOT NULL DEFAULT 0,       -- replace a machine caption that exists
+  error       TEXT NOT NULL DEFAULT '',
+  enqueued_at INTEGER NOT NULL,
+  started_at  INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  owner_pid   INTEGER NOT NULL DEFAULT 0        -- the claiming process; see reclaim
+);
+CREATE INDEX IF NOT EXISTS identity_jobs_state ON identity_jobs(state, id);
+
 -- Branch storage: a tombstone marks a PARENT document path as deleted-in-branch,
 -- so the parent's version does not show through the branch-over-parent overlay.
 -- Present in every index (harmless for non-branch indexes).

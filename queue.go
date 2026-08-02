@@ -289,6 +289,12 @@ type Status struct {
 	Failed     int           `json:"failed"`       // errored jobs
 	RatePerMin float64       `json:"rate_per_min"` // recent completion rate (jobs/min); 0 = unknown
 	Items      []PendingItem `json:"items"`        // running + pending, in processing order, with ETAs
+	// Identity is the CAPTIONING queue (identityqueue.go), which is separate work
+	// on the same endpoint: an ingest job is minutes of OCR over many pages, a
+	// caption is one bounded call. Reported here because "what is this index
+	// still owed" is one question, and a 400-document sweep outstanding is the
+	// kind of thing that should not need a second command to notice.
+	Identity IdentityQueueStatus `json:"identity"`
 }
 
 // NewStatus is a zero Status with a non-nil Items, so an idle queue marshals as
@@ -312,6 +318,9 @@ func (s *Store) IndexStatus() (Status, error) {
 		return st, err
 	}
 	st.Fragments = int(nf)
+	if iq, err := s.IdentityQueue(); err == nil {
+		st.Identity = iq
+	}
 
 	counts, err := s.q.JobStateCounts(ctx)
 	if err != nil {

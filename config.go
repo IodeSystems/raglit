@@ -54,6 +54,13 @@ type Config struct {
 	// configured and is a chat model; set this to caption with a stronger or
 	// cheaper text-only model than the one doing OCR.
 	IdentityModel string `json:"identity_model,omitempty"`
+	// IdentitySlots is how many captioning requests are in the model at once.
+	// 0 → DefaultIdentitySlots (2), which is what this endpoint serves
+	// concurrently. Raising it past what the server actually runs does not make
+	// anything faster: the extra requests wait INSIDE the server, where raglit
+	// cannot see them, cannot resume them, and cannot tell them apart from an
+	// ingest job's OCR call waiting for the same slot.
+	IdentitySlots int `json:"identity_slots,omitempty"`
 	// NoIdentity turns document identity off. Documents then carry only the
 	// filename they arrived with — which for a scanner-named corpus is a list
 	// nobody can navigate, so this is for a corpus whose names are already good

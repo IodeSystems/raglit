@@ -650,3 +650,91 @@ func identifyOp(reg *raglit.Registry) func(context.Context, *identifyIn) (*ident
 		return out, nil
 	}
 }
+
+// Queueing captions, daemon-side.
+//
+// Enqueue returns immediately with a count; the daemon's identity worker drains
+// the rows at the endpoint's real concurrency (runIdentityWorkers). That split
+// is the point: a 400-document sweep is durable the moment this returns, so the
+// client can be closed, and nothing depends on a CLI staying alive for an hour.
+
+type enqueueIdentityIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	Path  string `query:"path" doc:"one document; empty → every document with no caption yet"`
+	Force bool   `query:"force" doc:"re-caption documents that already have one (never a person's)"`
+}
+
+type enqueueIdentityOut struct {
+	Body struct {
+		Queued int                        `json:"queued"`
+		Queue  raglit.IdentityQueueStatus `json:"queue"`
+	}
+}
+
+func enqueueIdentityOp(reg *raglit.Registry) func(context.Context, *enqueueIdentityIn) (*enqueueIdentityOut, error) {
+	return func(_ context.Context, in *enqueueIdentityIn) (*enqueueIdentityOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		var n int
+		if strings.TrimSpace(in.Path) != "" {
+			var queued bool
+			if queued, err = st.EnqueueIdentity(in.Path, in.Force); queued {
+				n = 1
+			}
+		} else {
+			n, err = st.EnqueueMissingIdentities(in.Force)
+		}
+		if err != nil {
+			return nil, huma.Error400BadRequest("enqueue identity", err)
+		}
+		q, err := st.IdentityQueue()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("identity queue", err)
+		}
+		out := &enqueueIdentityOut{}
+		out.Body.Queued, out.Body.Queue = n, q
+		return out, nil
+	}
+}
+
+type identityJobsIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	State string `query:"state" doc:"pending|running|done|error; empty = all"`
+	Limit int    `query:"limit" doc:"max rows (default 50)"`
+}
+
+type identityJobsOut struct {
+	Body struct {
+		Queue raglit.IdentityQueueStatus `json:"queue"`
+		Jobs  []raglit.IdentityJob       `json:"jobs"`
+	}
+}
+
+func identityJobsOp(reg *raglit.Registry) func(context.Context, *identityJobsIn) (*identityJobsOut, error) {
+	return func(_ context.Context, in *identityJobsIn) (*identityJobsOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		q, err := st.IdentityQueue()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("identity queue", err)
+		}
+		jobs, err := st.IdentityJobs(in.State, limit)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("identity jobs", err)
+		}
+		out := &identityJobsOut{}
+		out.Body.Queue, out.Body.Jobs = q, jobs
+		if out.Body.Jobs == nil {
+			out.Body.Jobs = []raglit.IdentityJob{}
+		}
+		return out, nil
+	}
+}
