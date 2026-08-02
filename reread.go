@@ -44,7 +44,10 @@ func (s *Store) PurgeDocPageCache(ctx context.Context, path string) (int, error)
 		// reporting a confident zero.
 		return 0, fmt.Errorf("%s is not a rasterised document — the page cache does not apply", path)
 	}
-	units, err := pdfUnits(ctx, path, false)
+	// true: render every page, because every page is one the cache may hold. The
+	// old text-layer decision meant a page taken as text had no cached read to
+	// purge — and those are exactly the pages a re-read exists to fix.
+	units, err := pdfUnits(ctx, path, true)
 	if err != nil {
 		return 0, err
 	}

@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
 // DocKind is how a source document should be extracted to text. raglit routes
@@ -289,148 +288,7 @@ func HEICToPNG(ctx context.Context, path string) ([]byte, error) {
 	}
 	return out, nil
 }
-
-// pdfTextThreshold: a page's pdftotext output must carry at least this many
-// LETTERS AND DIGITS to count as a real text layer; below it the page is treated
-// as scanned and rasterized for OCR. Low, so a page with even a caption keeps its
-// (cheap, exact) text layer rather than paying the VLM.
-const pdfTextThreshold = 24
-
-// pdfScanTextFloor is how much text a page that is PHYSICALLY A SCAN must carry
-// before its text layer is believed.
-//
-// A full-page raster with a handful of characters over it is a scanned page with
-// an overlay, not a text page. The overlay is real text — it is genuinely in the
-// file — which is why the letters-and-digits threshold accepts it: an
-// e-signature stamp is 46 letters and digits, nearly twice pdfTextThreshold.
-//
-// pageBoilerplate catches this when the stamp repeats across pages, and cannot
-// when the document is one page long, because a line on the only page says
-// nothing about repetition. That is not an edge case in a corpus of real-estate
-// forms: measured here, two copies of a lead-based-paint disclosure — a 300 dpi
-// scan, 2550x3300, 8.4 megapixels of form — were indexed as their own
-// Authentisign envelope id and an "X". 47 characters, no error, and the document
-// that gives this whole feature its name could not be captioned because there
-// was nothing to read.
-//
-// So the structural fact decides: pixels covering the page mean the page is a
-// picture of a document, and a text layer far below what any real page carries
-// is an overlay on top of it.
-const pdfScanTextFloor = 200
-
-// textLayerContent counts the characters that are actually CONTENT.
-//
-// The obvious `len(strings.TrimSpace(t))` is wrong, and wrong in a way that
-// produced the worst corruption in a live legal corpus. `pdftotext -layout` pads
-// with spaces to preserve position on the page, so a diagonal "UNOFFICIAL
-// DOCUMENT" watermark — eighteen letters spread corner to corner — comes back as
-// 144 characters. TrimSpace only trims the ENDS; the internal padding stays,
-// sails past the threshold, and the page is accepted as a text layer that never
-// goes near OCR.
-//
-// The result: a six-page summary-judgment order, a vesting deed and a record of
-// survey all "transcribed" to nothing but their watermark, no error anywhere, and
-// re-indexing them changed nothing because there was nothing to re-read — the
-// text layer was being taken every time. Measured on all three: raw length 144,
-// content 18.
-func textLayerContent(t string) int {
-	n := 0
-	for _, r := range t {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			n++
-		}
-	}
-	return n
-}
-
-// pageBoilerplate is the set of lines that appear on nearly every page.
-//
-// The threshold measures whether a page has text OF ITS OWN, and a line printed
-// on all of them is not that. Two live examples from one corpus, and the second
-// is why the first fix was not enough:
-//
-//   - A diagonal "UNOFFICIAL DOCUMENT" watermark, space-padded to 144 characters
-//     by `pdftotext -layout`. textLayerContent already handles it by counting
-//     letters and digits rather than length: content 18, under the threshold.
-//   - `Authentisign ID: 0462D64D-B418-4A0D-A59D-590A2A8C9F0D`, stamped on every
-//     page of a digitally-signed PDF. That is 46 letters and digits — nearly
-//     twice the threshold — so a SCANNED exhibit carrying nothing but the
-//     signing overlay was accepted as a text-layer page and never OCR'd. Six
-//     pages of a purchase and sale agreement, including the three Exhibit A
-//     legal descriptions and the county certification, transcribed to their own
-//     header. No error anywhere, and re-indexing changed nothing, because the
-//     text layer was taken every time.
-//
-// Detected without rasterising anything: a line on ≥80% of pages, in a document
-// of at least three, says nothing about any one page. The full text is still what
-// gets INDEXED when a page qualifies — this only decides whether the page has
-// text worth taking instead of pixels worth reading.
-func pageBoilerplate(pages []string) map[string]bool {
-	if len(pages) < 3 {
-		return nil
-	}
-	seen := map[string]int{}
-	for _, t := range pages {
-		lines := map[string]bool{}
-		for _, ln := range strings.Split(t, "\n") {
-			if k := boilerKey(ln); k != "" {
-				lines[k] = true
-			}
-		}
-		for k := range lines {
-			seen[k]++
-		}
-	}
-	need := (len(pages)*4 + 4) / 5 // ceil(80%)
-	out := map[string]bool{}
-	for k, n := range seen {
-		if n >= need {
-			out[k] = true
-		}
-	}
-	return out
-}
-
-// boilerKey normalises a line for comparison: content characters only, folded.
-// Position shifts and OCR-irrelevant spacing must not stop a header matching
-// itself across pages.
-func boilerKey(line string) string {
-	var b strings.Builder
-	for _, r := range line {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(unicode.ToLower(r))
-		}
-	}
-	if b.Len() < 8 {
-		return "" // too short to be a distinguishing header; ignore
-	}
-	return b.String()
-}
-
-// stripLines drops the boilerplate lines from a page before it is measured.
-func stripLines(t string, boiler map[string]bool) string {
-	if len(boiler) == 0 {
-		return t
-	}
-	var keep []string
-	for _, ln := range strings.Split(t, "\n") {
-		if k := boilerKey(ln); k != "" && boiler[k] {
-			continue
-		}
-		keep = append(keep, ln)
-	}
-	return strings.Join(keep, "\n")
-}
-
-// pdfUnits extracts a PDF as per-page ingest units via the "text-layer first,
-// OCR the rest" hybrid: pdftotext gives each page's text layer; a page with real
-// text becomes a text unit (free, exact — no VLM), a page without (scanned) is
-// rasterized with pdftoppm into an image unit for the OCR path. Born-digital PDFs
-// are all text units; scanned PDFs all image units; mixed PDFs a blend.
-//
-// Without poppler it falls back to embedded-image extraction (Pagify), which
-// cannot see a text layer — so born-digital PDFs then still fail (ErrNoPageImages).
-func pdfUnits(ctx context.Context, pdfPath string, describeFigures bool) ([]ingestUnit, error) {
+func pdfUnits(ctx context.Context, pdfPath string, canOCR bool) ([]ingestUnit, error) {
 	if !HavePoppler() {
 		pages, err := Pagify(pdfPath, "")
 		if err != nil {
@@ -442,37 +300,26 @@ func pdfUnits(ctx context.Context, pdfPath string, describeFigures bool) ([]inge
 		}
 		return units, nil
 	}
-	texts, err := pdftotextPages(ctx, pdfPath)
+	if !canOCR {
+		// Nothing can read the pages. Take the text layer, because the
+		// alternative is an empty document — and it is the caller's job to have
+		// configured a model if that is not good enough.
+		texts, err := pdftotextPages(ctx, pdfPath)
+		if err != nil {
+			return nil, err
+		}
+		units := make([]ingestUnit, 0, len(texts))
+		for i, t := range texts {
+			units = append(units, ingestUnit{page: i + 1, text: t})
+		}
+		return units, nil
+	}
+	n, err := pdfPageCount(ctx, pdfPath)
 	if err != nil {
 		return nil, err
 	}
-	// Figure gate (§3a, opt-in): a text-layer page that also carries an embedded
-	// image is rasterized to the VLM so its figures get described, even though its
-	// text is clean. Detection is pdfcpu's embedded-image list (born-digital only).
-	var figurePages map[int]bool
-	if describeFigures {
-		figurePages, _ = pagesWithImages(pdfPath) // best-effort; nil on error → no escalation
-	}
-	// Boilerplate that repeats on every page is not this page's text. See
-	// pageBoilerplate: the letters-not-spaces fix caught a watermark drawn with
-	// padding, and missed one drawn with letters.
-	boiler := pageBoilerplate(texts)
-	// Pages that are physically a scan: a raster covering the sheet. Best-effort
-	// — poppler answers this without decoding anything, and a failure here simply
-	// leaves the old text-layer decision in place.
-	scanned, _ := fullPageRasterPages(ctx, pdfPath)
-
-	units := make([]ingestUnit, 0, len(texts))
-	for i, t := range texts {
-		page := i + 1
-		content := textLayerContent(stripLines(t, boiler))
-		// A scan with a thin text layer is a scan with an overlay on it, whatever
-		// the overlay says. See pdfScanTextFloor.
-		overlay := scanned[page] && content < pdfScanTextFloor
-		if content >= pdfTextThreshold && !figurePages[page] && !overlay {
-			units = append(units, ingestUnit{page: page, text: t})
-			continue
-		}
+	units := make([]ingestUnit, 0, n)
+	for page := 1; page <= n; page++ {
 		img, mime, err := pdftoppmPage(ctx, pdfPath, page)
 		if err != nil {
 			return nil, err
@@ -482,88 +329,24 @@ func pdfUnits(ctx context.Context, pdfPath string, describeFigures bool) ([]inge
 	return units, nil
 }
 
-// fullPageRasterPages reports which pages carry a raster covering the sheet —
-// i.e. which pages are pictures of a document rather than drawings of one.
-//
-// Asked of poppler's listings rather than by decoding: `pdfimages -list` prints
-// every image's pixel dimensions without unpacking a single one, and `pdfinfo`
-// gives the sheet size in points. Two cheap execs per PDF against an OCR pass
-// that costs a model call per page.
-//
-// "Covering the sheet" is pixel dimensions at least the page's dimensions in
-// POINTS, i.e. one pixel per point (72 dpi) or better across the whole sheet. A
-// letter page is 612x792, so a 2550x3300 scan qualifies twice over and a 112x112
-// logo cannot. The bar is deliberately at the floor of what a scan can be: this
-// only ever decides to LOOK at a page with the OCR cascade, and the cascade's
-// own cheap tier decides what it costs.
-func fullPageRasterPages(ctx context.Context, pdfPath string) (map[int]bool, error) {
-	info, err := exec.CommandContext(ctx, "pdfinfo", pdfPath).Output()
+// pdfPageCount asks poppler how many pages a PDF has.
+func pdfPageCount(ctx context.Context, pdfPath string) (int, error) {
+	out, err := exec.CommandContext(ctx, "pdfinfo", pdfPath).Output()
 	if err != nil {
-		return nil, fmt.Errorf("pdfinfo: %w", err)
+		return 0, fmt.Errorf("pdfinfo: %w", err)
 	}
-	pw, ph, ok := pageSizePts(string(info))
-	if !ok {
-		return nil, fmt.Errorf("pdfinfo: no page size")
-	}
-	list, err := exec.CommandContext(ctx, "pdfimages", "-list", pdfPath).Output()
-	if err != nil {
-		return nil, fmt.Errorf("pdfimages: %w", err)
-	}
-	return fullPageFromListing(string(list), pw, ph), nil
-}
-
-// pageSizePts parses `Page size:      612 x 792 pts (letter)` out of pdfinfo.
-func pageSizePts(info string) (w, h float64, ok bool) {
-	for _, ln := range strings.Split(info, "\n") {
-		if !strings.HasPrefix(ln, "Page size:") {
+	for _, ln := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(ln, "Pages:") {
 			continue
 		}
-		f := strings.Fields(strings.TrimPrefix(ln, "Page size:"))
-		if len(f) < 3 || f[1] != "x" {
-			continue
-		}
-		w, err1 := strconv.ParseFloat(f[0], 64)
-		h, err2 := strconv.ParseFloat(f[2], 64)
-		if err1 != nil || err2 != nil || w <= 0 || h <= 0 {
-			continue
-		}
-		return w, h, true
-	}
-	return 0, 0, false
-}
-
-// fullPageFromListing marks the pages whose listing carries a page-covering
-// image. Soft masks are skipped: an smask is the alpha channel of the image
-// beside it, not a second image.
-func fullPageFromListing(listing string, pageW, pageH float64) map[int]bool {
-	out := map[int]bool{}
-	for _, ln := range strings.Split(listing, "\n") {
-		f := strings.Fields(ln)
-		// page num type width height ...
-		if len(f) < 5 || f[2] == "smask" {
-			continue
-		}
-		page, err := strconv.Atoi(f[0])
+		n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(ln, "Pages:")))
 		if err != nil {
-			continue // the header rows
+			return 0, fmt.Errorf("pdfinfo: unreadable page count %q", ln)
 		}
-		w, err1 := strconv.ParseFloat(f[3], 64)
-		h, err2 := strconv.ParseFloat(f[4], 64)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		// A hair under the sheet, because a scan is often cropped by a pixel or
-		// two and a rotated page swaps the axes.
-		const cover = 0.9
-		if (w >= pageW*cover && h >= pageH*cover) || (w >= pageH*cover && h >= pageW*cover) {
-			out[page] = true
-		}
+		return n, nil
 	}
-	return out
+	return 0, fmt.Errorf("pdfinfo: no page count for %s", pdfPath)
 }
-
-// pdftotextPages returns each page's text layer in order (pdftotext separates
-// pages with a form feed).
 func pdftotextPages(ctx context.Context, pdfPath string) ([]string, error) {
 	out, err := exec.CommandContext(ctx, "pdftotext", "-layout", pdfPath, "-").Output()
 	if err != nil {
@@ -614,7 +397,7 @@ type PageText struct {
 func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error) {
 	switch ClassifyDoc(path, "") {
 	case KindPDF:
-		units, err := pdfUnits(ctx, path, ocr != nil && ocr.DescribeFigures)
+		units, err := pdfUnits(ctx, path, ocr != nil)
 		if err != nil {
 			return nil, err
 		}

@@ -511,7 +511,7 @@ func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, titl
 	// Per-page hybrid: text-layer pages become text units (free, exact), scanned
 	// pages become image units for the OCR path. Replaces the old Pagify-only path,
 	// which saw no text layer and failed on born-digital PDFs (ErrNoPageImages).
-	units, err := pdfUnits(ctx, filePath, ocr.DescribeFigures)
+	units, err := pdfUnits(ctx, filePath, ocr != nil)
 	if err != nil {
 		sl.Fail("extract", "pdf", err)
 		return 0, "", err

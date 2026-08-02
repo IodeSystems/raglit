@@ -131,6 +131,27 @@ BM25 can rank, because the summary does.
 - Config — `identity_model` (empty → the vision model, which every home already
   has and which is a chat model), `no_identity` to turn it off.
 
+### The upstream rule this forced
+
+A caption is downstream of the transcript, so captioning kept finding documents
+that had no transcript — and the reason was always the same: raglit had decided,
+from a PDF's text layer, not to READ the page.
+
+Three fixes went into that decision before it was abandoned. Count letters not
+spaces (a watermark padded to 144 characters by `pdftotext -layout`). Discount
+lines that repeat on ≥80% of pages (an `Authentisign ID` stamp, 46 characters,
+nearly twice the threshold). Notice a page-covering raster (the same stamp on a
+one-page scan, where nothing repeats). Each was correct, each was measured, and
+each missed the next case — including a 30-page purchase and sale agreement
+signed under TWO envelopes, where neither stamp reaches 80% and ten pages,
+Exhibit A among them, passed as text.
+
+The pattern is the finding: a heuristic deciding whether to look at a page keeps
+being wrong in ways nothing can detect, because the evidence that it was wrong is
+the page it declined to look at. So raglit reads every page. The text layer
+survives only when no OCR is configured at all, where the choice is between it
+and nothing.
+
 ### Verified
 
 - `identity_test.go`: the caption/summary/kind round trip; the fix loop refusing
