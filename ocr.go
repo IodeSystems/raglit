@@ -26,6 +26,12 @@ const defaultOCRPrompt = "Transcribe all text visible in this document page imag
 // With no Cheap engine it is VLM-only — the original behavior.
 type OCR struct {
 	Client Chatter
+	// Model is the vision model's id, recorded on every page this OCR reads
+	// (page_readings.model). Not used to call anything — the client already knows
+	// which model it talks to — but a transcription whose author is unrecorded
+	// cannot be told from one a different model produced, and a corpus outlives
+	// several models.
+	Model  string
 	Prompt string          // transcription instruction; "" → defaultOCRPrompt
 	Cheap  PageEngine      // optional cheap first pass; nil → VLM-only
 	Gate   GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)

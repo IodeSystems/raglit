@@ -59,6 +59,7 @@ type stagedFrag struct {
 type stagedPage struct {
 	page    int
 	engine  string
+	model   string
 	imgPath string
 }
 
@@ -132,10 +133,13 @@ func fragRecipe(mode string, window, stride, floor, figPrompt int) string {
 	return HashHex([]byte(fmt.Sprintf("mode=%s|w=%d|s=%d|f=%d|fig=%d", mode, window, stride, floor, figPrompt)))
 }
 
-// resolvedPage is one unit's text after OCR, plus its page number.
+// resolvedPage is one unit's text after OCR, plus its page number and WHO read
+// it — the engine, and the model behind it where there is one.
 type resolvedPage struct {
-	page int
-	text string
+	page   int
+	text   string
+	engine string
+	model  string
 }
 
 // ingestUnits runs the per-document pipeline and commits atomically. It resolves
@@ -159,22 +163,32 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	sawVision := false
 	for _, u := range units {
 		text := u.text
+		// The text layer, when it is used at all, is a page NOBODY read — see
+		// pdfUnits. Named so, because the one thing worse than an unread page is
+		// an unread page that looks read.
+		engine, model := "text-layer", ""
 		if u.isImage() {
 			if ocr == nil {
 				sl.Fail("ocr", "", fmt.Errorf("page %d is an image but no OCR is configured", u.page))
 				return 0, "", fmt.Errorf("page %d is an image but no OCR is configured", u.page)
 			}
-			t, engine, fromCache, err := s.ocrPageCached(ctx, ocr, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
+			t, eng, fromCache, err := s.ocrPageCached(ctx, ocr, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
 			if err != nil {
 				// Pages already transcribed on this run are in the cache, so the
 				// retry resumes here rather than starting the document again.
-				sl.Fail("ocr", engine, fmt.Errorf("page %d: %w (%d page(s) already cached and will not be re-read)", u.page, err, cachedHits))
+				sl.Fail("ocr", eng, fmt.Errorf("page %d: %w (%d page(s) already cached and will not be re-read)", u.page, err, cachedHits))
 				return 0, "", err
 			}
 			if fromCache {
 				cachedHits++
 			}
 			text = t
+			engine = eng
+			if engine == "vision" {
+				model = ocr.Model
+			} else {
+				model = engine
+			}
 			ocrEngines[engine]++
 			if engine == "vision" {
 				sawVision = true
@@ -185,12 +199,11 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			if p, e := s.savePageImage(docPath, u.page, u.mime, u.data); e == nil {
 				imgPath = p
 			}
-			provenance = append(provenance, stagedPage{page: u.page, engine: engine, imgPath: imgPath})
+			provenance = append(provenance, stagedPage{page: u.page, engine: engine, model: model, imgPath: imgPath})
 		} else if u.page >= 1 {
-			// A born-digital / text-layer page: no OCR, engine "text".
-			provenance = append(provenance, stagedPage{page: u.page, engine: "text"})
+			provenance = append(provenance, stagedPage{page: u.page, engine: engine})
 		}
-		pages = append(pages, resolvedPage{page: u.page, text: text})
+		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model})
 	}
 	// The transcription, if this index asked for one. Written here because `pages`
 	// is exactly the per-page text a transcription is, and after fragmentation it
@@ -369,6 +382,15 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		return 0, "", err
 	}
 	sl.Done("commit", "", "")
+	// What each page was read to say, and BY WHAT — recorded after the commit,
+	// so a failed ingest leaves no readings behind.
+	//
+	// Every read, not only the corrected ones. Until now a machine transcription
+	// existed only as fragments, so "what did the model say this page was" could
+	// not be asked once the text had been segmented, and a re-read by a different
+	// model overwrote the answer with no record that it had changed. A person's
+	// correction is never unseated by this — see AddPageReading.
+	s.recordPageReadings(ctx, docPath, pages)
 	return len(frags), fragMode, nil
 }
 
@@ -388,6 +410,25 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 // overlay the job came back without anybody remembering to ask. An inline call
 // could not do that — it runs once, at a moment when the answer may be "there is
 // nothing here yet", and nothing revisits it.
+
+// recordPageReadings stores this run's transcription of each page, attributed to
+// the engine and model that produced it. Best-effort: the document is indexed
+// either way, and a missing provenance row is worth less than a failed ingest.
+func (s *Store) recordPageReadings(ctx context.Context, docPath string, pages []resolvedPage) {
+	if docPath == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, p := range pages {
+		if p.page < 1 || strings.TrimSpace(p.text) == "" {
+			continue
+		}
+		_ = s.AddPageReading(ctx, PageReading{
+			Doc: docPath, Page: p.page, Text: p.text,
+			Source: "machine", Engine: p.engine, Model: p.model, At: now,
+		})
+	}
+}
 
 // segmentLLM runs the LLM segmenter over the resolved page texts, stitching the
 // open fragment across page boundaries (Assembler). Fragments carry no source
@@ -729,6 +770,12 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 	}
 	for _, p := range provenance {
 		if err := q.UpsertOcrPage(ctx, gen.UpsertOcrPageParams{DocID: docID, Page: int64(p.page), Engine: p.engine, ImagePath: p.imgPath}); err != nil {
+			return err
+		}
+		// The model behind the engine, raw because the generated query predates
+		// the column (see TruePages on regenerating the sqlc layer).
+		if _, err := tx.ExecContext(ctx, `UPDATE ocr_pages SET model=? WHERE doc_id=? AND page=?`,
+			p.model, docID, p.page); err != nil {
 			return err
 		}
 	}

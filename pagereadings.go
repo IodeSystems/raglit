@@ -19,6 +19,12 @@ type PageReading struct {
 	Seq    int    `json:"seq"`
 	Text   string `json:"text"`
 	Source string `json:"source"` // machine | corrected
+	// Engine and Model say WHICH reader produced this, where Source says only
+	// whether it was a machine at all. A corpus read by a text layer, then
+	// tesseract, then one vision model, then another cannot answer "how far do I
+	// trust this page" while all four are equally "machine".
+	Engine string `json:"engine,omitempty"` // vision | tesseract | paddleocr | text-layer
+	Model  string `json:"model,omitempty"`  // the model id behind the engine, when it has one
 	Note   string `json:"note,omitempty"`
 	By     string `json:"by,omitempty"`
 	At     string `json:"at,omitempty"`
@@ -59,14 +65,37 @@ func (s *Store) AddPageReading(ctx context.Context, r PageReading) error {
 		return tx.Commit()
 	}
 
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE page_readings SET active = 0 WHERE doc = ? AND page = ?`, r.Doc, r.Page); err != nil {
-		return err
+	// A machine NEVER unseats a person.
+	//
+	// Re-reading is routine — a new engine, a better model, a --fresh ingest —
+	// and every one of those arrives claiming to be the latest word on the page.
+	// If the newest reading always won, the first re-OCR after a correction would
+	// silently put the machine's text back in force, and the correction would
+	// survive only as history. So a machine reading lands INACTIVE when a person's
+	// correction holds the page: recorded in full, available to compare, not in
+	// force. A person's reading always takes the seat.
+	active := 1
+	if r.Source != "corrected" {
+		var heldByPerson int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM page_readings WHERE doc = ? AND page = ? AND active = 1 AND source = 'corrected'`,
+			r.Doc, r.Page).Scan(&heldByPerson); err != nil {
+			return err
+		}
+		if heldByPerson > 0 {
+			active = 0
+		}
+	}
+	if active == 1 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE page_readings SET active = 0 WHERE doc = ? AND page = ?`, r.Doc, r.Page); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO page_readings(doc, page, seq, text, source, note, read_by, read_at, active)
-		 VALUES(?,?,?,?,?,?,?,?,1)`,
-		r.Doc, r.Page, seq, r.Text, r.Source, r.Note, r.By, r.At); err != nil {
+		`INSERT INTO page_readings(doc, page, seq, text, source, engine, model, note, read_by, read_at, active)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		r.Doc, r.Page, seq, r.Text, r.Source, r.Engine, r.Model, r.Note, r.By, r.At, active); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -75,7 +104,7 @@ func (s *Store) AddPageReading(ctx context.Context, r PageReading) error {
 // PageReadings returns every recorded version of one page, oldest first.
 func (s *Store) PageReadings(ctx context.Context, doc string, page int) ([]PageReading, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT doc, page, seq, text, source, note, read_by, read_at, active
+		`SELECT doc, page, seq, text, source, engine, model, note, read_by, read_at, active
 		   FROM page_readings WHERE doc = ? AND page = ? ORDER BY seq`, doc, page)
 	if err != nil {
 		return nil, err
@@ -85,7 +114,7 @@ func (s *Store) PageReadings(ctx context.Context, doc string, page int) ([]PageR
 	for rows.Next() {
 		var r PageReading
 		var active int
-		if err := rows.Scan(&r.Doc, &r.Page, &r.Seq, &r.Text, &r.Source, &r.Note, &r.By, &r.At, &active); err != nil {
+		if err := rows.Scan(&r.Doc, &r.Page, &r.Seq, &r.Text, &r.Source, &r.Engine, &r.Model, &r.Note, &r.By, &r.At, &active); err != nil {
 			return nil, err
 		}
 		r.Active = active == 1
@@ -98,7 +127,7 @@ func (s *Store) PageReadings(ctx context.Context, doc string, page int) ([]PageR
 // the corpus's record of where a machine read was found wanting.
 func (s *Store) SupersededPages(ctx context.Context) ([]PageReading, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT doc, page, seq, text, source, note, read_by, read_at, active
+		`SELECT doc, page, seq, text, source, engine, model, note, read_by, read_at, active
 		   FROM page_readings WHERE active = 0 ORDER BY doc, page, seq`)
 	if err != nil {
 		return nil, err
@@ -108,7 +137,7 @@ func (s *Store) SupersededPages(ctx context.Context) ([]PageReading, error) {
 	for rows.Next() {
 		var r PageReading
 		var active int
-		if err := rows.Scan(&r.Doc, &r.Page, &r.Seq, &r.Text, &r.Source, &r.Note, &r.By, &r.At, &active); err != nil {
+		if err := rows.Scan(&r.Doc, &r.Page, &r.Seq, &r.Text, &r.Source, &r.Engine, &r.Model, &r.Note, &r.By, &r.At, &active); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -134,6 +163,7 @@ func RecordReadingsInto(js Judgements, s *Store) {
 			if prev, err := s.PageReadings(ctx, c.Doc, c.Page); err == nil && len(prev) == 0 {
 				_ = s.AddPageReading(ctx, PageReading{
 					Doc: c.Doc, Page: c.Page, Text: c.Superseded, Source: "machine",
+					Engine: s.engineForPage(c.Doc, c.Page),
 				})
 			}
 		}
@@ -154,7 +184,7 @@ func RecordReadingsInto(js Judgements, s *Store) {
 // 200808180120" is itself evidence of how far a sheet can be trusted. A history
 // that shows only the current answer throws away the thing the table exists for.
 func (s *Store) DocReadingHistory(doc string) ([]PageReading, error) {
-	rows, err := s.db.Query(`SELECT doc, page, seq, text, source, note, read_by, read_at, active
+	rows, err := s.db.Query(`SELECT doc, page, seq, text, source, engine, model, note, read_by, read_at, active
 		FROM page_readings WHERE doc = ? ORDER BY page, seq`, doc)
 	if err != nil {
 		return nil, err
@@ -179,7 +209,7 @@ func (s *Store) DocReadingHistory(doc string) ([]PageReading, error) {
 // indexed lookup.
 func (s *Store) ActiveReadings(ctx context.Context, doc string) (map[int]PageReading, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT page, seq, text, source, note, read_by, read_at
+		`SELECT page, seq, text, source, engine, model, note, read_by, read_at
 		   FROM page_readings WHERE doc = ? AND active = 1`, doc)
 	if err != nil {
 		return nil, err
@@ -188,10 +218,24 @@ func (s *Store) ActiveReadings(ctx context.Context, doc string) (map[int]PageRea
 	out := map[int]PageReading{}
 	for rows.Next() {
 		r := PageReading{Doc: doc, Active: true}
-		if err := rows.Scan(&r.Page, &r.Seq, &r.Text, &r.Source, &r.Note, &r.By, &r.At); err != nil {
+		if err := rows.Scan(&r.Page, &r.Seq, &r.Text, &r.Source, &r.Engine, &r.Model, &r.Note, &r.By, &r.At); err != nil {
 			return nil, err
 		}
 		out[r.Page] = r
 	}
 	return out, rows.Err()
+}
+
+// engineForPage names the reader that produced a document's page, from the
+// provenance ingest recorded. Empty when the page predates that record — which
+// is the honest answer, not a guess.
+func (s *Store) engineForPage(doc string, page int) string {
+	var engine string
+	err := s.db.QueryRow(
+		`SELECT o.engine FROM ocr_pages o JOIN documents d ON d.id = o.doc_id
+		  WHERE d.path = ? AND o.page = ?`, doc, page).Scan(&engine)
+	if err != nil {
+		return ""
+	}
+	return engine
 }

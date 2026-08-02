@@ -105,11 +105,19 @@ func runReadings(args []string) error {
 		if r.Active {
 			mark = "*"
 		}
+		// WHO read it, as specifically as the row can say: a person by name, a
+		// model by its id, an engine by its name. "machine" is not an author.
 		who := r.By
+		if who == "" {
+			who = r.Model
+		}
+		if who == "" {
+			who = r.Engine
+		}
 		if who == "" {
 			who = r.Source
 		}
-		fmt.Printf("  %s v%d  %-10s %-14s %-11s %6d chars\n", mark, r.Seq, r.Source, who, r.At, len(r.Text))
+		fmt.Printf("  %s v%d  %-10s %-24s %-11s %6d chars\n", mark, r.Seq, r.Source, who, r.At, len(r.Text))
 		if r.Note != "" {
 			fmt.Printf("      %s\n", r.Note)
 		}

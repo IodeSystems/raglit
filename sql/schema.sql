@@ -159,6 +159,18 @@ CREATE TABLE IF NOT EXISTS page_readings (
   seq        INTEGER NOT NULL DEFAULT 0,   -- 1,2,3… order the readings arrived
   text       TEXT NOT NULL,
   source     TEXT NOT NULL DEFAULT '',     -- 'machine' | 'corrected'
+  -- WHO read it. source says whether a machine or a person produced the reading;
+  -- these say WHICH. A corpus read by three different engines over a year — a
+  -- text layer, tesseract, a vision model, and tomorrow a different vision model
+  -- — cannot answer "how far do I trust this page" without them, and "machine"
+  -- covers all of it equally.
+  --
+  -- engine is the reader ('vision' | 'tesseract' | 'paddleocr' | 'text-layer');
+  -- model is the specific thing behind it (a model id for a VLM, the engine's
+  -- own name otherwise). For a person's correction both are empty and read_by
+  -- carries the answer.
+  engine     TEXT NOT NULL DEFAULT '',
+  model      TEXT NOT NULL DEFAULT '',
   note       TEXT NOT NULL DEFAULT '',     -- how it was established
   read_by    TEXT NOT NULL DEFAULT '',
   read_at    TEXT NOT NULL DEFAULT '',
@@ -222,6 +234,7 @@ CREATE TABLE IF NOT EXISTS ocr_pages (
   doc_id     INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   page       INTEGER NOT NULL,
   engine     TEXT NOT NULL DEFAULT '',
+  model      TEXT NOT NULL DEFAULT '',   -- the model behind the engine, when it has one
   image_path TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (doc_id, page)
 );

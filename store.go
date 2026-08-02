@@ -288,6 +288,12 @@ func migrate(db *sql.DB) error {
 		{"documents", "gen_model", "TEXT NOT NULL DEFAULT ''"},
 		{"documents", "gen_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"fragments", "origin", "TEXT NOT NULL DEFAULT ''"},
+		// Which reader produced a reading (pagereadings.go). An index that
+		// predates these has readings whose engine is simply unknown, which is
+		// the truth about them.
+		{"page_readings", "engine", "TEXT NOT NULL DEFAULT ''"},
+		{"page_readings", "model", "TEXT NOT NULL DEFAULT ''"},
+		{"ocr_pages", "model", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

@@ -133,6 +133,9 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		// "the cap was not raised" and "this is not the client you think it is".
 		log.Printf("raglit: ocr client model=%s 5xx-attempts=%d", *lf.visionModel, client.Retry5xxAttempts)
 		w.OCR = raglit.NewOCR(client)
+		// Recorded on every page this reads, so a transcription says which model
+		// produced it (page_readings.model) rather than only "machine".
+		w.OCR.Model = *lf.visionModel
 		attachCheapOCR(w.OCR, home)
 		// Only used when a page escalates to the VLM (llm-seg); text never does.
 		w.Segmenter = raglit.NewSegmenter(client)

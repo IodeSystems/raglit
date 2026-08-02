@@ -201,6 +201,7 @@ func runOcr(args []string) error {
 		return err
 	}
 	ocr := raglit.NewOCR(lf.visionClient())
+	ocr.Model = *lf.visionModel
 	attachCheapOCR(ocr, home)
 	for _, img := range fs.Args() {
 		data, err := os.ReadFile(img)
@@ -282,6 +283,7 @@ func runTranscribe(args []string) error {
 	var ocr *raglit.OCR
 	if lf.requireVision() == nil {
 		ocr = raglit.NewOCR(lf.visionClient())
+		ocr.Model = *lf.visionModel
 		attachCheapOCR(ocr, home)
 	}
 

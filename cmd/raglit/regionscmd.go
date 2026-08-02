@@ -62,6 +62,7 @@ func runRegions(args []string) error {
 		*page, wIn, hIn, wIn*hIn, b.Dx(), b.Dy(), *dpi)
 
 	ocr := raglit.NewOCR(lf.visionClient())
+	ocr.Model = *lf.visionModel
 	rr := &raglit.RegionReader{
 		Ask: ocr.AskWithHint(*hint), PageWIn: wIn, PageHIn: hIn, DPI: *dpi,
 		MaxDepth: *depth, MaxCalls: *calls, Hint: *hint, Tile: *tile,
