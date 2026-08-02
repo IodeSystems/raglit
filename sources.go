@@ -31,6 +31,38 @@ var builtinIgnore = []string{".*", "**/.*", "**/node_modules/**", "**/vendor/**"
 	"*" + transcriptionSuffix, "**/*" + transcriptionSuffix,
 	"*" + regionsSuffix, "**/*" + regionsSuffix}
 
+// generatedSuffixes are the files raglit itself writes beside a document. The
+// same list builtinIgnore expresses as globs, in the form a single path can be
+// tested against.
+//
+// It exists because builtinIgnore only guards `sync`, which resolves configured
+// roots through PlanSources. Every other way in — `raglit ingest <dir>`,
+// `raglit index <dir>`, a POST to /ingest — walks the filesystem itself and
+// applies no ignore rules at all, which is how eight transcriptions of documents
+// in this corpus came to be indexed as documents. Measured: one of them was
+// captioned "Transcription of halvor-ROS-disputed.pdf", body text
+// "T EN M CU DO AL CI FI OF UN".
+//
+// The rule belongs where nothing can go around it, so IsGeneratedSidecar is
+// checked at Enqueue — the one point every ingest path passes through.
+//
+// The mail-attachment directory is deliberately NOT here: an attachment is a
+// document that arrived inside another file, and indexing it is the point.
+var generatedSuffixes = []string{transcriptionSuffix, regionsSuffix}
+
+// IsGeneratedSidecar reports whether a path is raglit's own output rather than a
+// source document. Generated output is never a source: indexing a transcription
+// produces a transcription of the transcription, and the backlog grows every
+// time the indexer runs.
+func IsGeneratedSidecar(path string) bool {
+	for _, suf := range generatedSuffixes {
+		if strings.HasSuffix(path, suf) {
+			return true
+		}
+	}
+	return false
+}
+
 // PlanSources returns, per index name, the absolute file paths its configured
 // roots + rules select. baseDir is the project directory (relative roots resolve
 // against it). It shells out to `git ls-files` for a root's .gitignore semantics

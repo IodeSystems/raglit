@@ -40,7 +40,11 @@ func expandIngestTargets(args []string) ([]string, error) {
 				// directory of .docx or scanned .tif enqueued nothing and looked
 				// like it had been covered. A format added to the extractor must
 				// become discoverable in the same change, not the next one.
-				if !d.IsDir() && raglit.ClassifyDoc(p, "") != raglit.KindUnknown {
+				// Skipped silently in a WALK: a directory ingest should not
+				// report an error per generated file. Naming one explicitly still
+				// gets the refusal, from Enqueue.
+				if !d.IsDir() && !raglit.IsGeneratedSidecar(p) &&
+					raglit.ClassifyDoc(p, "") != raglit.KindUnknown {
 					abs, _ := filepath.Abs(p)
 					out = append(out, abs)
 				}

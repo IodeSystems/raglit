@@ -270,3 +270,51 @@ func TestProblemsKeepsRemoteFailures(t *testing.T) {
 		t.Fatalf("a remote failure was dropped as a dead row (%d)", n)
 	}
 }
+
+// raglit's own output, indexed as a document, is reported with the command that
+// removes it. Eight of these sat in a live corpus, one of them captioned
+// "Transcription of halvor-ROS-disputed.pdf".
+func TestProblems_ReportsRaglitsOwnOutputAsIndexed(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	// Written straight in: Enqueue now refuses these, which is the fix — this
+	// tests the report that finds the ones already there.
+	for _, p := range []string{
+		"/corpus/deed.pdf" + transcriptionSuffix,
+		"/corpus/survey.pdf" + regionsSuffix,
+	} {
+		if err := s.Ingest(ctx, Document{Path: p, Title: "x",
+			Fragments: []Fragment{{Page: 1, Ord: 0, Text: "generated text"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Ingest(ctx, Document{Path: "/corpus/deed.pdf", Title: "deed.pdf",
+		Fragments: []Fragment{{Page: 1, Ord: 0, Text: "the real document"}}}); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := s.Problems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []Problem
+	for _, p := range ps {
+		if p.Kind == ProblemGenerated {
+			found = append(found, p)
+		}
+	}
+	if len(found) != 2 {
+		t.Fatalf("reported %d generated documents, want 2: %+v", len(found), ps)
+	}
+	for _, p := range found {
+		if !IsGeneratedSidecar(p.Subject) {
+			t.Errorf("reported a real document as generated: %s", p.Subject)
+		}
+		if !strings.HasPrefix(p.Fix, "raglit forget ") {
+			t.Errorf("no usable fix on %s: %q", p.Subject, p.Fix)
+		}
+	}
+}

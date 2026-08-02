@@ -75,6 +75,13 @@ func (s *Store) EnqueueFresh(url, title string, fresh bool) (int64, error) {
 	if url == "" {
 		return 0, fmt.Errorf("raglit: enqueue: empty url")
 	}
+	// raglit's own output is not a source. Refused HERE because this is the one
+	// point every ingest path passes through — the sync planner's ignore globs
+	// guard only `sync`, and a directory walked by `ingest`/`index`/POST /ingest
+	// applied no rules at all. See IsGeneratedSidecar.
+	if IsGeneratedSidecar(url) {
+		return 0, fmt.Errorf("raglit: enqueue: %s is raglit's own output, not a source document", url)
+	}
 	// One transaction, so two callers racing on the same url cannot both see an
 	// empty queue and both insert.
 	tx, err := s.db.Begin()

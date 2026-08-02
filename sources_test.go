@@ -142,3 +142,36 @@ func TestTranscriptionsAreExcludedFromDiscoveryByDefault(t *testing.T) {
 		t.Fatal("the real document was not selected — the fixture, not the ignore, is wrong")
 	}
 }
+
+// raglit's own output is refused at ENQUEUE, not only by the sync planner's
+// ignore globs. Every other way in — `ingest <dir>`, `index <dir>`, POST /ingest
+// — walks the filesystem itself and applied no rules, which is how eight
+// transcriptions came to be indexed as documents in a live corpus.
+func TestEnqueueRefusesRaglitsOwnOutput(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, p := range []string{
+		"/corpus/deed.pdf" + transcriptionSuffix,
+		"/corpus/survey.pdf" + regionsSuffix,
+	} {
+		if !IsGeneratedSidecar(p) {
+			t.Errorf("IsGeneratedSidecar(%q) = false", p)
+		}
+		if _, err := s.Enqueue(p, ""); err == nil {
+			t.Errorf("enqueued %s — generated output is not a source", p)
+		}
+	}
+	// A real document, and a mail attachment (which IS a source that happened to
+	// arrive inside another file), are unaffected.
+	for _, p := range []string{"/corpus/deed.pdf", "/corpus/mail.eml.raglit-attachments/exhibit-a.pdf"} {
+		if IsGeneratedSidecar(p) {
+			t.Errorf("IsGeneratedSidecar(%q) = true", p)
+		}
+		if _, err := s.Enqueue(p, ""); err != nil {
+			t.Errorf("refused a source document %s: %v", p, err)
+		}
+	}
+}

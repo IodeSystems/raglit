@@ -45,6 +45,11 @@ const (
 	// ProblemRetries — a job that only completed after the endpoint made it fight
 	// for it. Not a failure, and the earliest warning that one is coming.
 	ProblemRetries ProblemKind = "llm-retries"
+	// ProblemGenerated — a document that is raglit's OWN output: a transcription
+	// or a region record written beside a real document and then indexed as if it
+	// were one. Never a judgement call, always a mistake, and self-feeding —
+	// indexing a transcription writes a transcription of it.
+	ProblemGenerated ProblemKind = "generated-indexed"
 	// ProblemWithdrawn — ruled out of the corpus on purpose. Reported so a
 	// document that is absent BY DECISION is never mistaken for one that is
 	// absent by accident, which is the confusion withdrawal exists to end.
@@ -108,6 +113,18 @@ var problemQueries = []problemQuery{
 		         AND NOT EXISTS (SELECT 1 FROM fragments f WHERE f.doc_id = d.id)
 		       ORDER BY d.path`,
 		fix: func(p Problem) string { return "raglit ingest --fresh " + p.Subject },
+	},
+	{
+		kind: ProblemGenerated,
+		// Suffix-matched in SQL rather than in Go so the report costs one query
+		// like every other. Kept in step with generatedSuffixes by the test that
+		// asserts one query per suffix.
+		sql: `SELECT d.path, 0, '', ''
+		        FROM documents d
+		       WHERE d.path LIKE '%.raglit-transcription.md'
+		          OR d.path LIKE '%.raglit-regions.json'
+		       ORDER BY d.path`,
+		fix: func(p Problem) string { return "raglit forget " + p.Subject },
 	},
 	{
 		kind: ProblemNoPages,

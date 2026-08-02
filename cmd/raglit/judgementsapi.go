@@ -738,3 +738,28 @@ func identityJobsOp(reg *raglit.Registry) func(context.Context, *identityJobsIn)
 		return out, nil
 	}
 }
+
+// Forgetting, daemon-side: drop a document row from the index. No trail, no
+// grounds, nothing stopping a re-index — see runForget for why this is not a
+// withdrawal.
+
+type forgetIn struct {
+	Index   string `query:"index" doc:"index name (default: the default index)"`
+	Project string `query:"project" doc:"project directory (unused; accepted so the CLI can send one query shape)"`
+	Path    string `query:"path" required:"true" doc:"the document to drop from the index"`
+}
+
+func forgetOp(reg *raglit.Registry) func(context.Context, *forgetIn) (*okOut, error) {
+	return func(_ context.Context, in *forgetIn) (*okOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		if err := st.DeleteDocument(in.Path); err != nil {
+			return nil, huma.Error500InternalServerError("forget", err)
+		}
+		out := &okOut{}
+		out.Body.OK = true
+		return out, nil
+	}
+}

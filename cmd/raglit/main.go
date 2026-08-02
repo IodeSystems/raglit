@@ -75,6 +75,8 @@ func main() {
 		err = runWithdraw(os.Args[2:])
 	case "withdrawn":
 		err = runWithdrawn(os.Args[2:])
+	case "forget":
+		err = runForget(os.Args[2:])
 	case "slice":
 		err = runSlice(os.Args[2:])
 	case "slices":
@@ -180,6 +182,13 @@ usage:
                 A directory withdraws what is indexed beneath it.
 
   raglit withdrawn [--json]     what has been ruled out of the corpus, and why
+
+  raglit forget [--dry-run] <path|dir>...
+                drop a document from the INDEX; the file on disk is untouched.
+                Not a withdrawal: no grounds are recorded and nothing stops a
+                re-index — for a row that should never have existed (raglit's own
+                transcription sidecars, indexed as documents) rather than for a
+                document somebody ruled out.
 
   raglit marks [--todo] [--json] [DOCPATH]
                 what an overlapping pair IS, as opposed to how much text it shares.
@@ -378,7 +387,7 @@ func runIndex(args []string) error {
 				if err != nil {
 					return err
 				}
-				if !d.IsDir() && (isText(p) || isPDF(p)) {
+				if !d.IsDir() && !raglit.IsGeneratedSidecar(p) && (isText(p) || isPDF(p)) {
 					files = append(files, p)
 				}
 				return nil

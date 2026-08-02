@@ -272,6 +272,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("enqueueIdentity", http.MethodPost, "/api/identify/queue", "Queue documents for captioning; the daemon drains them at the endpoint's concurrency."), enqueueIdentityOp(reg))
 	gat.Register(api, g, op("identityJobs", http.MethodGet, "/api/identity-jobs", "The captioning queue: counts and rows."), identityJobsOp(reg))
 	gat.Register(api, g, op("identify", http.MethodPost, "/api/identify", "Say what a document IS: generate a caption/summary/kind, or record a person's."), identifyOp(reg))
+	gat.Register(api, g, op("forget", http.MethodPost, "/api/forget", "Drop a document from the index (no grounds recorded; not a withdrawal)."), forgetOp(reg))
 	gat.Register(api, g, op("withdraw", http.MethodPost, "/api/withdraw", "Rule a document out of the corpus, with grounds. Survives re-ingest."), withdrawOp(reg))
 	gat.Register(api, g, op("restore", http.MethodPost, "/api/restore", "Return a withdrawn document to the corpus (does not re-index)."), restoreOp(reg))
 	gat.Register(api, g, op("listWithdrawals", http.MethodGet, "/api/withdrawals", "Documents ruled out of the corpus, and why."), withdrawalsOp(reg))
