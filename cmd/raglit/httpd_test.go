@@ -81,6 +81,49 @@ func TestGatDaemon_Surface(t *testing.T) {
 	}
 }
 
+// A person's caption goes through the daemon, because on a daemon-routed project
+// the daemon is the single writer — and it is what holds the model besides. The
+// filename is untouched by it: the caption is a display name and a search target.
+func TestGatDaemon_RecordsAPersonsIdentity(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	body := httpPostJSON(t, srv.URL+"/api/identify?index=default&path=file:///notes.md"+
+		"&name=Token+rotation+note&summary=A+note+recording+that+the+refresh+token+rotates+on+every+use."+
+		"&kind=analysis&by=carl", `{}`)
+	if !strings.Contains(body, "Token rotation note") || !strings.Contains(body, `"source":"person"`) {
+		t.Fatalf("identify response: %s", clip(body, 400))
+	}
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.DocumentIdentity("file:///notes.md")
+	if err != nil || !id.ByPerson() || id.Kind != "analysis" {
+		t.Fatalf("stored identity = %+v, %v", id, err)
+	}
+	// Findable by the caption, and the document's own text is unchanged.
+	if b := httpGet(t, srv.URL+"/search?index=default&q=rotation%20note"); !strings.Contains(b, `"origin":"identity"`) {
+		t.Errorf("a hit on the caption is not marked as one:\n%s", clip(b, 400))
+	}
+	if b := httpGet(t, srv.URL+"/api/get-document?path=notes"); strings.Contains(b, "Token rotation note") {
+		t.Errorf("the caption leaked into the document's text:\n%s", clip(b, 400))
+	}
+}
+
+// Generating one needs a model, and a daemon without one has to say so rather
+// than answer with an empty identity.
+func TestGatDaemon_IdentifyWithoutAModel(t *testing.T) {
+	srv, _ := gatTestServer(t)
+	resp, err := http.Post(srv.URL+"/api/identify?index=default&path=file:///notes.md", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400\n%s", resp.StatusCode, clip(string(b), 300))
+	}
+}
+
 // TestGatDaemon_IngestOptionalFields guards that a POST /ingest with only
 // `targets` (no index/title) is accepted — huma marks body fields required by
 // default, so these must be tagged omitempty.
