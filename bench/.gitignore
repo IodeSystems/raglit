@@ -1,1 +1,6 @@
-probes/*/_fixture/
+# Fixtures are committed ONLY when the page is a public record and carries no
+# third party's personal detail beyond what the recording itself publishes.
+# Everything else is rendered locally by make-fixtures.sh — see README.md.
+probes/*/_fixture/*
+!probes/ocr-survey-facts/_fixture/page.png
+!probes/ocr-survey-corners/_fixture/page.png

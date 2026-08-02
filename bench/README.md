@@ -9,18 +9,35 @@ Every probe declares `requires: { modality: image }`. A model that cannot see
 pixels is not a candidate here, and llm-bench skips it rather than scoring a
 model on prose it invented from a filename.
 
-## The fixtures are NOT in this repo
+## Which fixtures are committed, and which are not
 
-The pages come from a live legal corpus (`~/life/projects/ardley-v-brannock`).
-A recorded survey is a public record; a purchase and sale agreement and a
-permit application are not, and neither belongs in a tools repository. So
-`_fixture/` directories are generated and gitignored:
+The pages come from a live legal corpus (`~/life/projects/ardley-v-brannock`),
+and THIS REPOSITORY IS PUBLIC. A fixture committed here is world-readable and
+permanent, so the test is not "is it useful" but "is it already published".
+
+COMMITTED — `ocr-survey-facts`, `ocr-survey-corners`. Both pages of a record of
+survey recorded with the Havern County Auditor under 202205230090. A recorded
+land record is public by operation of law; anyone can pull it from the county,
+and the copy here publishes nothing the recording does not. These are also the
+only fixtures with verified ground truth, so committing them is what makes the
+bench reproducible by someone who does not have the corpus.
+
+NOT COMMITTED, generated locally:
+
+- `ocr-drawing-dimensions` — a county access permit application. Arguably a
+  public record, but the sheet carries a third party's HOME ADDRESS, and that
+  party is an opposing party in live litigation. County file, yes; GitHub, no.
+- `ocr-scanned-exhibit` — a signed purchase and sale agreement. A private
+  contract with signatures and initials on it. Not public in any sense.
+
+Regenerate the uncommitted ones (and refresh the committed ones) with:
 
     bench/make-fixtures.sh                     # renders from the default corpus
     RAGLIT_BENCH_CORPUS=/path/to/docs bench/make-fixtures.sh
 
-Without them the probes cannot run, and that is the intended failure: the bench
-refuses rather than measuring a placeholder.
+Without a fixture the probe cannot run, and that is the intended failure: the
+bench refuses rather than measuring a placeholder. A clone without the corpus can
+still run the two survey probes, which are the ones that carry ground truth.
 
 ## What each probe is for
 
