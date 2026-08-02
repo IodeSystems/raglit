@@ -363,13 +363,8 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 
 	media := extractMedia(frags, provenance)
 	s.embedMedia(ctx, media) // figure embeddings (image-or-description); best-effort
-	// What this document IS, asked once on the assembled transcript — the point
-	// where the whole text exists in one place. Best-effort: a document with no
-	// caption is still an indexed, searchable document, and failing an ingest
-	// that OCR'd thirty pages over a missing caption would be absurd.
-	ident := s.identityForIngest(ctx, docPath, pages, sl)
 	recipe := fragRecipe(fragMode, window, stride, floor, fc.FigurePrompt)
-	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs, ident); err != nil {
+	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs, nil); err != nil {
 		sl.Fail("commit", "", err)
 		return 0, "", err
 	}
@@ -377,58 +372,22 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	return len(frags), fragMode, nil
 }
 
-// identityForIngest asks the model what this document is, on the assembled
-// transcript. Returns nil when identity is off, when there is nothing to read,
-// or when the model failed — commitDoc then keeps whatever identity the document
-// already had.
+// Identity is not produced here, and that is the point.
 //
-// A PERSON's caption is never regenerated. Someone who corrected a caption did
-// so because the machine's was wrong, and re-reading the same file produces the
-// same wrong answer; overwriting on every re-ingest would make the correction
-// last exactly until the next sync.
-func (s *Store) identityForIngest(ctx context.Context, docPath string, pages []resolvedPage, sl *StageLog) *DocIdentity {
-	if s.identifier == nil || docPath == "" {
-		return nil
-	}
-	if cur, err := s.DocumentIdentity(docPath); err == nil && cur.ByPerson() {
-		sl.Done("identity", "person", "kept the caption a person recorded")
-		return nil
-	}
-	// The same overlay the transcription sidecar applies: a page a person has
-	// corrected is read from THEIR text, not from the OCR this run produced. The
-	// fresh machine reading is what the fragments will hold — correctly, since
-	// citations index into them — but it is not what the document says.
-	corr := correctionsForDoc(docPath)
-	texts := make([]string, 0, len(pages))
-	for _, p := range pages {
-		text := p.text
-		if c, ok := corr[p.page]; ok && strings.TrimSpace(c.Text) != "" {
-			text = c.Text
-		}
-		if strings.TrimSpace(text) != "" {
-			texts = append(texts, text)
-		}
-	}
-	if len(texts) == 0 {
-		return nil
-	}
-	id, err := s.identifier.Identify(ctx, strings.Join(texts, pageSep))
-	if err != nil {
-		var short *ErrIdentityTooShort
-		if errors.As(err, &short) {
-			// Not a failure worth an alarm: there was nothing to read.
-			sl.Done("identity", s.identifier.Model, "skipped — "+short.Error())
-			return nil
-		}
-		// "warn", not "fail": the document is indexed and searchable. But it is
-		// not captioned either, and a silent skip is how a corpus ends up half
-		// captioned with nothing recording which half or why.
-		sl.Record("identity", s.identifier.Model, "warn", err.Error())
-		return nil
-	}
-	sl.Done("identity", s.identifier.Model, fmt.Sprintf("%s — %s", id.Kind, id.Name))
-	return &id
-}
+// A caption is downstream OF the transcript: there is nothing to summarise until
+// the text exists, and a document whose OCR produced nothing cannot be named no
+// matter how many times it is asked. Ingest therefore does one thing about it —
+// records that the work is due, in the same transaction that commits the text
+// (see commitDoc) — and the captioning queue does the rest at the endpoint's
+// concurrency.
+//
+// What that buys is the edge firing on its own. When a document is re-read and
+// its transcript changes, the caption is re-queued by the commit itself: the
+// lead-based-paint disclosure that was indexed as its own signature stamp had
+// nothing to caption, was skipped, and the moment a real transcript replaced the
+// overlay the job came back without anybody remembering to ask. An inline call
+// could not do that — it runs once, at a moment when the answer may be "there is
+// nothing here yet", and nothing revisits it.
 
 // segmentLLM runs the LLM segmenter over the resolved page texts, stitching the
 // open fragment across page boundaries (Assembler). Fragments carry no source
@@ -813,6 +772,18 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 	}
 	if !id.Empty() {
 		if err := writeIdentity(ctx, tx, docID, id); err != nil {
+			return err
+		}
+	} else if s.identifier != nil {
+		// The DAG edge: this document now has a transcript and no caption, so a
+		// caption is due. Queued IN THIS TRANSACTION, so "the text changed" and
+		// "the caption is owed" cannot come apart — and re-queued on every
+		// re-read, which is what makes a document that had nothing to summarise
+		// get named as soon as it does. See identityqueue.go.
+		//
+		// Only when a model is configured: an index that does not caption should
+		// not accumulate work nobody will ever do.
+		if err := enqueueIdentityTx(ctx, tx, docPath); err != nil {
 			return err
 		}
 	}

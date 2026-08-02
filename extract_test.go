@@ -430,3 +430,48 @@ func TestXLSToPagesEndToEnd(t *testing.T) {
 		t.Errorf("page 2 missing expected content: %q", pages[1].Text)
 	}
 }
+
+// A page that is physically a scan, carrying an e-signature overlay for a text
+// layer, must go to OCR. Two copies of a lead-based-paint disclosure in a live
+// corpus were indexed as their Authentisign envelope id and an "X" — 47
+// characters over 8.4 megapixels of form — because the overlay clears the
+// letters-and-digits threshold and the repeat detector needs three pages to see
+// a repeat.
+func TestFullPageRaster_TellsAScanFromADrawing(t *testing.T) {
+	// Real `pdfimages -list` output: page 1 is a 300 dpi letter scan plus the
+	// signature graphics; page 2 carries only a logo.
+	const listing = `page   num  type   width height color comp bpc  enc interp  object ID x-ppi y-ppi size ratio
+--------------------------------------------------------------------------------------------
+   1     0 image    2550  3300  rgb     3   8  jpeg   no        57  0   300   300  692K 2.8%
+   1     1 image     112   112  rgb     3   8  image  no        60  0   269   269 1024B 2.7%
+   1     2 smask     112   112  gray    1   8  image  no        60  0   269   269 1264B  10%
+   2     3 image     450    96  rgb     3   8  image  no        61  0   318   318 1104B 0.9%
+`
+	got := fullPageFromListing(listing, 612, 792)
+	if !got[1] {
+		t.Error("a 2550x3300 raster on a 612x792 sheet is the page")
+	}
+	if got[2] {
+		t.Error("a 450x96 logo is not the page")
+	}
+	// A modest scan — one pixel per point — still counts: the bar is the floor of
+	// what a scan can be, and passing it only means the page gets LOOKED at.
+	if !fullPageFromListing("   1     0 image     816  1086  rgb     3   8  jpeg   no  1 0 100 100 1K 1%\n", 612, 792)[1] {
+		t.Error("a 100 dpi full-sheet scan should count as a scan")
+	}
+	// Rotated pages swap the axes.
+	if !fullPageFromListing("   1     0 image    3300  2550  rgb     3   8  jpeg   no  1 0 300 300 1K 1%\n", 612, 792)[1] {
+		t.Error("a landscape scan of a portrait sheet should count")
+	}
+}
+
+func TestPageSizePts(t *testing.T) {
+	const info = "Producer:        Instanet Solutions PDF Engine\nPages:           1\nPage size:       612 x 792 pts (letter)\n"
+	w, h, ok := pageSizePts(info)
+	if !ok || w != 612 || h != 792 {
+		t.Fatalf("pageSizePts = %v,%v,%v", w, h, ok)
+	}
+	if _, _, ok := pageSizePts("Pages: 3\n"); ok {
+		t.Error("a listing with no page size should report so, not guess")
+	}
+}

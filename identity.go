@@ -233,7 +233,7 @@ const (
 type ErrIdentityTooShort struct{ Chars int }
 
 func (e *ErrIdentityTooShort) Error() string {
-	return fmt.Sprintf("only %d characters of text — too little to identify", e.Chars)
+	return fmt.Sprintf("no transcript to read (%d characters) — a caption is downstream of the text; re-read the document first (raglit reread, or ingest --fresh)", e.Chars)
 }
 
 // Identify reads a document's assembled text and returns what it is.

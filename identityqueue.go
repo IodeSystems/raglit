@@ -95,6 +95,19 @@ func (s *Store) EnqueueIdentity(path string, force bool) (bool, error) {
 	return n > 0, err
 }
 
+// enqueueIdentityTx is EnqueueIdentity inside a caller's transaction — used by
+// commitDoc so a new transcript and the caption it owes are one atomic fact.
+func enqueueIdentityTx(ctx context.Context, tx dbExecer, path string) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO identity_jobs(path, state, force, enqueued_at) VALUES(?, 'pending', 0, ?)
+		 ON CONFLICT(path) DO UPDATE SET
+		   state='pending', error='', enqueued_at=excluded.enqueued_at,
+		   started_at=0, finished_at=0, owner_pid=0
+		 WHERE identity_jobs.state IN ('done','skipped','error')`,
+		path, time.Now().UnixNano())
+	return err
+}
+
 // EnqueueIdentityFor queues every given path, reporting how many rows it added
 // or revived. Paths already in flight are skipped, not duplicated.
 func (s *Store) EnqueueIdentityFor(paths []string, force bool) (int, error) {

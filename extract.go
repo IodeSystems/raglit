@@ -296,6 +296,28 @@ func HEICToPNG(ctx context.Context, path string) ([]byte, error) {
 // (cheap, exact) text layer rather than paying the VLM.
 const pdfTextThreshold = 24
 
+// pdfScanTextFloor is how much text a page that is PHYSICALLY A SCAN must carry
+// before its text layer is believed.
+//
+// A full-page raster with a handful of characters over it is a scanned page with
+// an overlay, not a text page. The overlay is real text — it is genuinely in the
+// file — which is why the letters-and-digits threshold accepts it: an
+// e-signature stamp is 46 letters and digits, nearly twice pdfTextThreshold.
+//
+// pageBoilerplate catches this when the stamp repeats across pages, and cannot
+// when the document is one page long, because a line on the only page says
+// nothing about repetition. That is not an edge case in a corpus of real-estate
+// forms: measured here, two copies of a lead-based-paint disclosure — a 300 dpi
+// scan, 2550x3300, 8.4 megapixels of form — were indexed as their own
+// Authentisign envelope id and an "X". 47 characters, no error, and the document
+// that gives this whole feature its name could not be captioned because there
+// was nothing to read.
+//
+// So the structural fact decides: pixels covering the page mean the page is a
+// picture of a document, and a text layer far below what any real page carries
+// is an overlay on top of it.
+const pdfScanTextFloor = 200
+
 // textLayerContent counts the characters that are actually CONTENT.
 //
 // The obvious `len(strings.TrimSpace(t))` is wrong, and wrong in a way that
@@ -435,11 +457,19 @@ func pdfUnits(ctx context.Context, pdfPath string, describeFigures bool) ([]inge
 	// pageBoilerplate: the letters-not-spaces fix caught a watermark drawn with
 	// padding, and missed one drawn with letters.
 	boiler := pageBoilerplate(texts)
+	// Pages that are physically a scan: a raster covering the sheet. Best-effort
+	// — poppler answers this without decoding anything, and a failure here simply
+	// leaves the old text-layer decision in place.
+	scanned, _ := fullPageRasterPages(ctx, pdfPath)
 
 	units := make([]ingestUnit, 0, len(texts))
 	for i, t := range texts {
 		page := i + 1
-		if textLayerContent(stripLines(t, boiler)) >= pdfTextThreshold && !figurePages[page] {
+		content := textLayerContent(stripLines(t, boiler))
+		// A scan with a thin text layer is a scan with an overlay on it, whatever
+		// the overlay says. See pdfScanTextFloor.
+		overlay := scanned[page] && content < pdfScanTextFloor
+		if content >= pdfTextThreshold && !figurePages[page] && !overlay {
 			units = append(units, ingestUnit{page: page, text: t})
 			continue
 		}
@@ -450,6 +480,86 @@ func pdfUnits(ctx context.Context, pdfPath string, describeFigures bool) ([]inge
 		units = append(units, ingestUnit{page: page, mime: mime, data: img})
 	}
 	return units, nil
+}
+
+// fullPageRasterPages reports which pages carry a raster covering the sheet —
+// i.e. which pages are pictures of a document rather than drawings of one.
+//
+// Asked of poppler's listings rather than by decoding: `pdfimages -list` prints
+// every image's pixel dimensions without unpacking a single one, and `pdfinfo`
+// gives the sheet size in points. Two cheap execs per PDF against an OCR pass
+// that costs a model call per page.
+//
+// "Covering the sheet" is pixel dimensions at least the page's dimensions in
+// POINTS, i.e. one pixel per point (72 dpi) or better across the whole sheet. A
+// letter page is 612x792, so a 2550x3300 scan qualifies twice over and a 112x112
+// logo cannot. The bar is deliberately at the floor of what a scan can be: this
+// only ever decides to LOOK at a page with the OCR cascade, and the cascade's
+// own cheap tier decides what it costs.
+func fullPageRasterPages(ctx context.Context, pdfPath string) (map[int]bool, error) {
+	info, err := exec.CommandContext(ctx, "pdfinfo", pdfPath).Output()
+	if err != nil {
+		return nil, fmt.Errorf("pdfinfo: %w", err)
+	}
+	pw, ph, ok := pageSizePts(string(info))
+	if !ok {
+		return nil, fmt.Errorf("pdfinfo: no page size")
+	}
+	list, err := exec.CommandContext(ctx, "pdfimages", "-list", pdfPath).Output()
+	if err != nil {
+		return nil, fmt.Errorf("pdfimages: %w", err)
+	}
+	return fullPageFromListing(string(list), pw, ph), nil
+}
+
+// pageSizePts parses `Page size:      612 x 792 pts (letter)` out of pdfinfo.
+func pageSizePts(info string) (w, h float64, ok bool) {
+	for _, ln := range strings.Split(info, "\n") {
+		if !strings.HasPrefix(ln, "Page size:") {
+			continue
+		}
+		f := strings.Fields(strings.TrimPrefix(ln, "Page size:"))
+		if len(f) < 3 || f[1] != "x" {
+			continue
+		}
+		w, err1 := strconv.ParseFloat(f[0], 64)
+		h, err2 := strconv.ParseFloat(f[2], 64)
+		if err1 != nil || err2 != nil || w <= 0 || h <= 0 {
+			continue
+		}
+		return w, h, true
+	}
+	return 0, 0, false
+}
+
+// fullPageFromListing marks the pages whose listing carries a page-covering
+// image. Soft masks are skipped: an smask is the alpha channel of the image
+// beside it, not a second image.
+func fullPageFromListing(listing string, pageW, pageH float64) map[int]bool {
+	out := map[int]bool{}
+	for _, ln := range strings.Split(listing, "\n") {
+		f := strings.Fields(ln)
+		// page num type width height ...
+		if len(f) < 5 || f[2] == "smask" {
+			continue
+		}
+		page, err := strconv.Atoi(f[0])
+		if err != nil {
+			continue // the header rows
+		}
+		w, err1 := strconv.ParseFloat(f[3], 64)
+		h, err2 := strconv.ParseFloat(f[4], 64)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		// A hair under the sheet, because a scan is often cropped by a pixel or
+		// two and a rotated page swaps the axes.
+		const cover = 0.9
+		if (w >= pageW*cover && h >= pageH*cover) || (w >= pageH*cover && h >= pageW*cover) {
+			out[page] = true
+		}
+	}
+	return out
 }
 
 // pdftotextPages returns each page's text layer in order (pdftotext separates

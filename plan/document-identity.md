@@ -93,9 +93,15 @@ BM25 can rank, because the summary does.
 - `identity.go` — `DocIdentity`, the vocabulary, `Identifier` (the model call),
   the store reads/writes, `IdentifyDocument` (re-run) and `RecordIdentity` (a
   person's).
-- `pipeline.go` — `identityForIngest` after the transcript is assembled;
-  `commitDoc` writes the columns AND re-emits the fragment inside the atomic
-  swap, so columns and searchable text can never disagree.
+- `pipeline.go` — ingest does NOT call the model. A caption is downstream of the
+  transcript, so `commitDoc` records that one is DUE, in the same transaction
+  that commits the text, and the captioning queue does the rest. That edge fires
+  on every re-read, which is what makes a document that had nothing to summarise
+  get named the moment it does — the lead-based-paint disclosure indexed as its
+  own signature stamp was skipped, and came back on its own when a real
+  transcript replaced the overlay. `commitDoc` also re-emits the identity
+  fragment inside the swap, so the columns and the searchable text can never
+  disagree.
 - `pool.go` — `PooledDoc.Identity` carries the caption across indexes (it is a
   model call, which is what the pool exists to avoid paying twice); the identity
   fragment is excluded from the pooled fragments and rebuilt on import, so reuse

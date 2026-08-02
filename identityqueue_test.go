@@ -298,15 +298,95 @@ func TestIdentityWorker_NothingToCaptionIsSkippedNotFailed(t *testing.T) {
 		t.Fatalf("queue = %+v, %v", q, err)
 	}
 	jobs, err := s.IdentityJobs("skipped", 5)
-	if err != nil || len(jobs) != 1 || !strings.Contains(jobs[0].Error, "too little to identify") {
+	if err != nil || len(jobs) != 1 || !strings.Contains(jobs[0].Error, "no transcript to read") {
 		t.Fatalf("skipped rows = %+v, %v", jobs, err)
 	}
-	// The next sweep leaves it alone.
+	// A bulk sweep leaves it alone: nothing changed upstream, so asking again
+	// would get the same answer.
 	if n, err := s.EnqueueMissingIdentities(false); err != nil || n != 0 {
-		t.Fatalf("re-queued %d, %v — a skip must not come back", n, err)
+		t.Fatalf("re-queued %d, %v — a skip must not come back on a plain sweep", n, err)
 	}
 	// --force still reaches it: "nothing to read" stops being true after a re-OCR.
 	if n, err := s.EnqueueMissingIdentities(true); err != nil || n != 1 {
 		t.Fatalf("--force queued %d, %v", n, err)
+	}
+}
+
+// The edge that makes this a graph rather than two sweeps: a document that
+// acquires a transcript owes a caption, and the commit that gives it one says
+// so. Without it, the lead-based-paint disclosure re-read into real text would
+// have sat there with the skip a previous run recorded when the page held
+// nothing but a signature stamp.
+func TestCommitDoc_QueuesTheCaptionItNowOwes(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	c := &countingChatter{}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+
+	// First read: a scan whose text layer is a signature overlay. Nothing to
+	// caption, and the queue records that.
+	if err := s.commitDoc("/corpus/lead-paint.pdf", "lead-paint.pdf", "text-overlap", "r",
+		[]stagedFrag{{page: 1, ord: 0, text: "Authentisign ID: 2311E4FA X"}}, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if q, _ := s.IdentityQueue(); q.Skipped != 1 {
+		t.Fatalf("queue after the thin read = %+v, want 1 skipped", q)
+	}
+
+	// Re-read: the page goes to OCR and real text lands. The commit re-arms the
+	// caption on its own — nobody re-runs `identify`.
+	if err := s.commitDoc("/corpus/lead-paint.pdf", "lead-paint.pdf", "llm-seg", "r2",
+		[]stagedFrag{{page: 1, ord: 0, text: "Form 22J Lead Based Paint Disclosure, Rev. 3/21, page 2 of 2. Disclosure of information on lead-based paint and lead-based paint hazards, continued. Buyer's acknowledgment: the buyer has received copies of all information listed above, has received the pamphlet Protect Your Family from Lead in Your Home, and has waived the opportunity to conduct a risk assessment."}},
+		nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	q, err := s.IdentityQueue()
+	if err != nil || q.Pending != 1 {
+		t.Fatalf("queue after the re-read = %+v, %v — the commit must re-arm the caption", q, err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.DocumentIdentity("/corpus/lead-paint.pdf")
+	if err != nil || id.Empty() {
+		t.Fatalf("identity after the re-read = %+v, %v", id, err)
+	}
+
+	// And a document that already has a caption is not re-asked on every commit.
+	before := c.calls
+	if err := s.commitDoc("/corpus/lead-paint.pdf", "lead-paint.pdf", "llm-seg", "r3",
+		[]stagedFrag{{page: 1, ord: 0, text: "Form 22J Lead Based Paint Disclosure, re-read again with no change of substance."}},
+		nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c.calls != before {
+		t.Errorf("model calls %d → %d: a captioned document was re-asked", before, c.calls)
+	}
+}
+
+// With no model configured, nothing accumulates: an index that does not caption
+// should not carry a queue of work nobody will ever do.
+func TestCommitDoc_QueuesNothingWithoutAModel(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.commitDoc("/corpus/x.pdf", "x.pdf", "text-overlap", "r",
+		[]stagedFrag{{page: 1, ord: 0, text: "some text"}}, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if q, _ := s.IdentityQueue(); q.Pending != 0 {
+		t.Fatalf("queued %+v with no identity model configured", q)
 	}
 }
