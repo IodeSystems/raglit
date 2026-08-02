@@ -111,8 +111,8 @@ func runIdentify(args []string) error {
 		return err
 	}
 	q := identityQueueNow(st, routed)
-	fmt.Printf("queued %d document(s) — %d pending, %d running, %d captioned, %d failed\n",
-		queued, q.Pending, q.Running, q.Done, q.Failed)
+	fmt.Printf("queued %d document(s) — %d pending, %d running, %d captioned, %d skipped, %d failed\n",
+		queued, q.Pending, q.Running, q.Done, q.Skipped, q.Failed)
 	if !routed {
 		// No daemon to drain them: this process is the worker. Same queue, same
 		// rows, same resumability — an interrupted run leaves the rest pending.
@@ -197,8 +197,8 @@ func waitForIdentityQueue(st *raglit.Store) error {
 		if err != nil {
 			q, _ = st.IdentityQueue()
 		}
-		line := fmt.Sprintf("%d pending, %d running, %d captioned, %d failed",
-			q.Pending, q.Running, q.Done, q.Failed)
+		line := fmt.Sprintf("%d pending, %d running, %d captioned, %d skipped, %d failed",
+			q.Pending, q.Running, q.Done, q.Skipped, q.Failed)
 		if line != last {
 			fmt.Println(line)
 			last = line

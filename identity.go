@@ -384,18 +384,27 @@ func (s *Store) DocumentIdentity(path string) (DocIdentity, error) {
 // A person's identity (Source 'person') is what a re-run must not touch; that
 // rule lives in the CALLER, because this is also how a correction is written.
 func (s *Store) SetDocumentIdentity(ctx context.Context, path string, d DocIdentity) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	// The lookup is OUTSIDE the transaction on purpose. A transaction that reads
+	// and then writes takes a read snapshot first, and upgrading it fails with
+	// SQLITE_BUSY the instant another writer has committed — a failure
+	// busy_timeout cannot wait out. Resolving the id first leaves a transaction
+	// that only writes, which waits its turn like any other writer.
+	//
+	// Safe against a document deleted in between: the UPDATE and INSERT below
+	// then affect nothing and touch no other document, because a row id is never
+	// reused for a different path within a live index.
 	var docID int64
-	if err := tx.QueryRow(`SELECT id FROM documents WHERE path = ?`, path).Scan(&docID); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM documents WHERE path = ?`, path).Scan(&docID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("raglit: no document with path %q", path)
 		}
 		return err
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
 	if err := writeIdentity(ctx, tx, docID, d); err != nil {
 		return err
 	}

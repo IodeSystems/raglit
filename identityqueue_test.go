@@ -263,3 +263,50 @@ func TestIdentityWorker_RecordsAFailureAndCarriesOn(t *testing.T) {
 		t.Errorf("the row does not say why it failed: %q", jobs[0].Error)
 	}
 }
+
+// A document with nothing to read is SKIPPED, not failed — and a later sweep
+// does not queue it again. Counting it as a failure puts a permanent red number
+// on a corpus that is fine, and re-queueing it makes work that can never
+// succeed look outstanding forever.
+func TestIdentityWorker_NothingToCaptionIsSkippedNotFailed(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.Ingest(ctx, Document{Path: "/corpus/blank.pdf", Title: "blank.pdf",
+		Fragments: []Fragment{{Page: 1, Ord: 0, Text: "p. 3"}}}); err != nil {
+		t.Fatal(err)
+	}
+	c := &countingChatter{}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+	if n, err := s.EnqueueMissingIdentities(false); err != nil || n != 1 {
+		t.Fatalf("queued %d, %v", n, err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	calls := c.calls
+	c.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("model calls = %d — an empty document should never reach the model", calls)
+	}
+	q, err := s.IdentityQueue()
+	if err != nil || q.Skipped != 1 || q.Failed != 0 {
+		t.Fatalf("queue = %+v, %v", q, err)
+	}
+	jobs, err := s.IdentityJobs("skipped", 5)
+	if err != nil || len(jobs) != 1 || !strings.Contains(jobs[0].Error, "too little to identify") {
+		t.Fatalf("skipped rows = %+v, %v", jobs, err)
+	}
+	// The next sweep leaves it alone.
+	if n, err := s.EnqueueMissingIdentities(false); err != nil || n != 0 {
+		t.Fatalf("re-queued %d, %v — a skip must not come back", n, err)
+	}
+	// --force still reaches it: "nothing to read" stops being true after a re-OCR.
+	if n, err := s.EnqueueMissingIdentities(true); err != nil || n != 1 {
+		t.Fatalf("--force queued %d, %v", n, err)
+	}
+}

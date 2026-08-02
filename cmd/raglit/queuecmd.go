@@ -292,8 +292,8 @@ func renderStatus(st raglit.Status) {
 	}
 	fmt.Println()
 	if iq := st.Identity; !iq.Empty() || iq.Failed > 0 {
-		fmt.Printf("names: %d pending, %d running, %d captioned, %d failed  (identify)\n",
-			iq.Pending, iq.Running, iq.Done, iq.Failed)
+		fmt.Printf("names: %d pending, %d running, %d captioned, %d skipped, %d failed  (identify)\n",
+			iq.Pending, iq.Running, iq.Done, iq.Skipped, iq.Failed)
 	}
 	for _, it := range st.Items {
 		eta := "eta n/a"

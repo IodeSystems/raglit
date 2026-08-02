@@ -35,7 +35,7 @@ import (
 type IdentityJob struct {
 	ID         int64  `json:"id"`
 	Path       string `json:"path"`
-	State      string `json:"state"` // pending|running|done|error
+	State      string `json:"state"` // pending|running|done|skipped|error
 	Force      bool   `json:"force,omitempty"`
 	Error      string `json:"error,omitempty"`
 	EnqueuedAt int64  `json:"enqueued_at,omitempty"`
@@ -49,6 +49,12 @@ type IdentityQueueStatus struct {
 	Pending int `json:"pending"`
 	Running int `json:"running"`
 	Done    int `json:"done"`
+	// Skipped is documents there was nothing to caption for — a scanned page with
+	// forty characters on it, an empty attachment. Its own state rather than a
+	// failure: nothing went wrong, nothing will go better next time, and counting
+	// it as failed puts a permanent red number on a corpus that is fine. Kept out
+	// of the re-queue for the same reason.
+	Skipped int `json:"skipped"`
 	Failed  int `json:"failed"`
 }
 
@@ -57,8 +63,14 @@ func (q IdentityQueueStatus) Empty() bool { return q.Pending == 0 && q.Running =
 
 // EnqueueIdentity queues one document for captioning. Idempotent per path: an
 // existing pending/running row is left alone (re-queueing a document already in
-// flight buys a duplicate model call and nothing else), and a terminal row is
-// reset to pending. Returns false when an in-flight job already covers it.
+// flight buys a duplicate model call and nothing else), and a TERMINAL row —
+// done, skipped or error — is reset to pending. Returns false when an in-flight
+// job already covers it.
+//
+// Reviving a skipped row is deliberate and is the reason this takes a path at
+// all: the bulk enqueue leaves skips alone (nothing to read is not work), but a
+// document named explicitly, or a --force sweep, is somebody saying that has
+// changed — which it does the moment a document is re-OCR'd.
 func (s *Store) EnqueueIdentity(path string, force bool) (bool, error) {
 	if strings.TrimSpace(path) == "" {
 		return false, fmt.Errorf("raglit: enqueue identity: empty path")
@@ -74,7 +86,7 @@ func (s *Store) EnqueueIdentity(path string, force bool) (bool, error) {
 		   started_at  = 0,
 		   finished_at = 0,
 		   owner_pid   = 0
-		 WHERE identity_jobs.state IN ('done','error')`,
+		 WHERE identity_jobs.state IN ('done','skipped','error')`,
 		path, boolInt(force), now)
 	if err != nil {
 		return false, err
@@ -112,26 +124,63 @@ func (s *Store) EnqueueMissingIdentities(force bool) (int, error) {
 		for _, d := range docs {
 			paths = append(paths, d.Path)
 		}
-	} else if paths, err = s.DocumentsMissingIdentity(); err != nil {
+	} else if paths, err = s.captionableMissing(); err != nil {
 		return 0, err
 	}
 	return s.EnqueueIdentityFor(paths, force)
 }
 
-// claimNextIdentityJob takes the oldest pending row and marks it running, in one
-// transaction so two workers cannot claim the same document. Returns nil when
-// the queue is empty.
-func (s *Store) claimNextIdentityJob() (*IdentityJob, error) {
-	tx, err := s.db.Begin()
+// captionableMissing is DocumentsMissingIdentity minus the documents a previous
+// sweep already established have nothing to caption. Re-queueing those is a
+// guaranteed no-op that would nonetheless read as outstanding work forever.
+// --force still reaches them, because "nothing to read" can stop being true when
+// a document is re-OCR'd.
+func (s *Store) captionableMissing() ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT d.path FROM documents d
+		  WHERE TRIM(d.gen_name) = ''
+		    AND NOT EXISTS (SELECT 1 FROM identity_jobs j WHERE j.path = d.path AND j.state = 'skipped')
+		  ORDER BY d.added_at`)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// claimNextIdentityJob takes the oldest pending row and marks it running.
+//
+// ONE statement, not a transaction, and that is load-bearing. A deferred
+// transaction that SELECTs and then UPDATEs takes a read snapshot first, and
+// upgrading it to a write fails with SQLITE_BUSY *immediately* if any other
+// writer committed in between — busy_timeout does not apply to a snapshot
+// upgrade, because waiting cannot help: the snapshot is already stale. With two
+// writers in this worker alone (this claim, and the committer storing captions)
+// that raced within seconds on a live index. An UPDATE ... RETURNING is a single
+// write statement: it waits its turn like any other writer, and cannot see a
+// snapshot that has moved under it.
+//
+// Returns nil when the queue is empty.
+func (s *Store) claimNextIdentityJob() (*IdentityJob, error) {
 	var j IdentityJob
 	var force int
-	err = tx.QueryRow(
-		`SELECT id, path, force, enqueued_at FROM identity_jobs
-		  WHERE state='pending' ORDER BY id LIMIT 1`).
+	now := time.Now().UnixNano()
+	err := s.db.QueryRow(
+		`UPDATE identity_jobs SET state='running', started_at=?, owner_pid=?
+		  WHERE id = (SELECT id FROM identity_jobs WHERE state='pending' ORDER BY id LIMIT 1)
+		 RETURNING id, path, force, enqueued_at`,
+		// The claiming process is stamped for the same reason ingest stamps it: a
+		// 'running' row outlives the process that owned it, and without the pid a
+		// fresh worker cannot tell its own live work from a dead worker's leftovers.
+		now, os.Getpid()).
 		Scan(&j.ID, &j.Path, &force, &j.EnqueuedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -139,26 +188,20 @@ func (s *Store) claimNextIdentityJob() (*IdentityJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UnixNano()
-	// The claiming process is stamped for the same reason ingest stamps it: a
-	// 'running' row outlives the process that owned it, and without the pid a
-	// fresh worker cannot tell its own live work from a dead worker's leftovers.
-	if _, err := tx.Exec(
-		`UPDATE identity_jobs SET state='running', started_at=?, owner_pid=? WHERE id=?`,
-		now, os.Getpid(), j.ID); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
 	j.State, j.Force, j.StartedAt = "running", force != 0, now
 	return &j, nil
 }
 
-// finishIdentityJob records a job's outcome. An empty err is success.
+// finishIdentityJob records a job's outcome: done, skipped (with the reason a
+// caption was not possible), or error.
 func (s *Store) finishIdentityJob(id int64, err error) error {
 	state, msg := "done", ""
-	if err != nil {
+	var short *ErrIdentityTooShort
+	switch {
+	case err == nil:
+	case errors.As(err, &short):
+		state, msg = "skipped", err.Error()
+	default:
 		state, msg = "error", err.Error()
 	}
 	_, e := s.db.Exec(`UPDATE identity_jobs SET state=?, error=?, finished_at=? WHERE id=?`,
@@ -229,6 +272,8 @@ func (s *Store) IdentityQueue() (IdentityQueueStatus, error) {
 			q.Running = n
 		case "done":
 			q.Done = n
+		case "skipped":
+			q.Skipped = n
 		case "error":
 			q.Failed = n
 		}
@@ -331,10 +376,11 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 		poll = 2 * time.Second
 	}
 
-	// Buffered by one per slot: enough that a caller never waits on sqlite for
-	// its next document, small enough that a claimed row is worked within
-	// seconds rather than parked in memory where a crash loses the claim.
-	loaded := make(chan identityTask, slots)
+	// Buffered by ONE. A claimed row reads as 'running' to everything else, so a
+	// deep buffer would report work in flight that is sitting in memory — and on
+	// a crash, that is what has to be reclaimed. One document prepared ahead is
+	// enough that a slot never waits on sqlite for its next input.
+	loaded := make(chan identityTask, 1)
 	finished := make(chan identityTask, slots)
 
 	var loadErr error
@@ -370,9 +416,15 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 				t.err = ErrIdentityKept
 			default:
 				c, derr := w.Store.DocText(job.Path, 0, 0, 0)
-				if derr != nil {
+				switch {
+				case derr != nil:
 					t.err = derr
-				} else {
+				case contentChars(c.Text) < identityMinTextChars:
+					// Decided here rather than in the model call: it is a property
+					// of the text, and a document with nothing in it should not
+					// occupy a slot to be told so.
+					t.err = &ErrIdentityTooShort{Chars: contentChars(c.Text)}
+				default:
 					t.text = c.Text
 				}
 			}
@@ -418,6 +470,9 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 			// closes done, so a re-run does not keep re-asking.
 			err = nil
 		}
+		// A too-short document closes SKIPPED, carrying the reason — see
+		// finishIdentityJob. It is passed through here rather than nil'd so the
+		// row records why, and so a caller's OnDone can tell the two apart.
 		if ferr := w.Store.finishIdentityJob(t.job.ID, err); ferr != nil && firstErr == nil {
 			firstErr = ferr
 		}
