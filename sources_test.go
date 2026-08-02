@@ -1,6 +1,10 @@
 package raglit
 
 import (
+	"bytes"
+	"image"
+	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -174,4 +178,35 @@ func TestEnqueueRefusesRaglitsOwnOutput(t *testing.T) {
 			t.Errorf("refused a source document %s: %v", p, err)
 		}
 	}
+}
+
+// An image too small to be a page is not a document. Thirty-one email signature
+// logos — 342x174 — were indexed and captioned in one corpus before anything
+// asked the question; they arrive through the mail-attachment path, which is how
+// they got past every rule about what a document is.
+func TestImageTooSmallToBeAPage(t *testing.T) {
+	png := func(w, h int) []byte {
+		var b bytes.Buffer
+		if err := pngEncode(&b, w, h); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	if small, dims := ImageTooSmallToBeAPage(png(342, 174)); !small {
+		t.Errorf("a 342x174 signature logo passed as a page (%s)", dims)
+	}
+	// A scanned letter page at 200 DPI, and a fax-grade 100 DPI page, both stay.
+	for _, d := range [][2]int{{1700, 2200}, {850, 1100}} {
+		if small, dims := ImageTooSmallToBeAPage(png(d[0], d[1])); small {
+			t.Errorf("a %dx%d page was excluded (%s)", d[0], d[1], dims)
+		}
+	}
+	// Undecodable bytes are not evidence of anything.
+	if small, _ := ImageTooSmallToBeAPage([]byte("not an image")); small {
+		t.Error("undecodable data should not be judged")
+	}
+}
+
+func pngEncode(w io.Writer, width, height int) error {
+	return png.Encode(w, image.NewRGBA(image.Rect(0, 0, width, height)))
 }

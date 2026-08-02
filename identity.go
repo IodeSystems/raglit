@@ -106,6 +106,12 @@ var identityKinds = []string{
 	"court filing",
 	"certification",
 	"analysis",
+	// notes — a document somebody MADE about the matter rather than one that was
+	// filed in it: a timeline, a witness list, a call transcript, a packet
+	// assembled for counsel. Added deliberately, once, because "other" was 9% of
+	// a real corpus after the junk was removed, and a working file is not an
+	// absence of a kind — it is a kind the vocabulary did not have.
+	"notes",
 	"other",
 }
 
@@ -144,6 +150,17 @@ var identityKindAliases = map[string]string{
 	"assessment":         "analysis",
 	"inspection":         "analysis",
 	"study":              "analysis",
+	"timeline":           "notes",
+	"transcript":         "notes",
+	"call transcript":    "notes",
+	"summary":            "notes",
+	"worklist":           "notes",
+	"checklist":          "notes",
+	"packet":             "notes",
+	"witness list":       "notes",
+	"working document":   "notes",
+	"work product":       "notes",
+	"log":                "notes",
 }
 
 // NormalizeKind maps a model's answer onto identityKinds, returning ok=false

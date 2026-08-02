@@ -1,6 +1,12 @@
 package raglit
 
 import (
+	"bytes"
+	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"os/exec"
 	"path"
@@ -49,6 +55,36 @@ var builtinIgnore = []string{".*", "**/.*", "**/node_modules/**", "**/vendor/**"
 // The mail-attachment directory is deliberately NOT here: an attachment is a
 // document that arrived inside another file, and indexing it is the point.
 var generatedSuffixes = []string{transcriptionSuffix, regionsSuffix}
+
+// imageDocumentFloorPx is the smallest image that can be a PAGE.
+//
+// A scanned letter page at the 200 DPI raglit renders is 1700x2200 — 3.7
+// megapixels. An email signature logo is 342x174 — 60 KILOpixels, sixty times
+// smaller, and there were 31 of them indexed as documents in one corpus,
+// captioned "Tritt-Collins Real Estate Co logo" by a model doing its best with
+// what it was handed. They arrived as mail attachments, which is how they got
+// past every rule about what a document is.
+//
+// A quarter of a megapixel is deliberately far below any real page and far above
+// any icon: a phone photograph of a document is several megapixels, a fax at 100
+// DPI is still ~0.9. Nothing that clears this floor is being excluded for being
+// small; the floor exists to say that a 342x174 graphic is not a document, which
+// is a claim about what it IS, not about how much text it happens to carry.
+const imageDocumentFloorPx = 250_000
+
+// ImageTooSmallToBeAPage reports whether an image is below the floor, with its
+// dimensions for the message. Undecodable images pass — a format this build
+// cannot read is not evidence of anything, and the OCR path will say so better.
+func ImageTooSmallToBeAPage(data []byte) (bool, string) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return false, ""
+	}
+	if px := cfg.Width * cfg.Height; px < imageDocumentFloorPx {
+		return true, fmt.Sprintf("%dx%d (%d px)", cfg.Width, cfg.Height, px)
+	}
+	return false, ""
+}
 
 // IsGeneratedSidecar reports whether a path is raglit's own output rather than a
 // source document. Generated output is never a source: indexing a transcription

@@ -427,3 +427,22 @@ func TestIdentityText_PrefersTheCorrectedReading(t *testing.T) {
 		t.Errorf("the correction rewrote the indexed text: %v\n%s", err, c.Text)
 	}
 }
+
+// The vocabulary gained a term because a corpus said it was missing one: after
+// the junk was excluded, 9% of captions still landed in "other", and every one
+// of them was a working file — a timeline, a witness list, a call transcript, a
+// packet assembled for counsel. Those are not an absence of a kind.
+func TestNormalizeKind_NotesCoversWorkProduct(t *testing.T) {
+	for _, in := range []string{"notes", "timeline", "transcript", "witness list", "packet", "worklist", "log"} {
+		got, ok := NormalizeKind(in)
+		if !ok || got != "notes" {
+			t.Errorf("NormalizeKind(%q) = %q,%v; want notes", in, got, ok)
+		}
+	}
+	// And it did not swallow the filed kinds it sits next to.
+	for in, want := range map[string]string{"deed": "deed", "letter": "correspondence", "report": "analysis"} {
+		if got, _ := NormalizeKind(in); got != want {
+			t.Errorf("NormalizeKind(%q) = %q; want %q", in, got, want)
+		}
+	}
+}

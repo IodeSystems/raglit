@@ -282,6 +282,14 @@ func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, ki
 			sl.Fail("extract", "image", err)
 			return 0, "", err
 		}
+		// An image too small to be a page is not a document. See
+		// ImageTooSmallToBeAPage: a mail signature logo arrives through the
+		// attachment path looking exactly like a scan, and 31 of them were
+		// indexed — and captioned — in one corpus before anything asked.
+		if small, dims := ImageTooSmallToBeAPage(f.Data); small {
+			sl.Done("extract", "image", "skipped: "+dims+" is too small to be a page")
+			return 0, "", nil
+		}
 		mime, data := mimeForExt(filepath.Ext(job.URL)), f.Data
 		// HEIC/HEIF needs a real file on disk — the converter is a CLI tool, not
 		// a library call — so only pay for writeTemp on the format that needs it.
