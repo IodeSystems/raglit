@@ -1,6 +1,7 @@
 # raglit: document identity — what a document IS, in its own words
 
-Status: proposed 2026-08-01. Not built.
+Status: BUILT 2026-08-01 (`identity.go`, `raglit identify`, `/api/identify`).
+Living doc — prune as the follow-ups land.
 
 ## Goal (from user)
 
@@ -30,75 +31,123 @@ ranks a file called "Lead-Based Paint".
 
 Scanner names (`0428_001.pdf`, `1636_001.pdf`) are the same problem without the
 malice. They carry no signal at all, so a document list of 406 of them is a list
-nobody can navigate, and the review UI now makes that plain: the Documents tab is
-mostly indistinguishable rows.
+nobody can navigate.
 
-## What to add
+## Delivered
 
-At the end of a read — the point where the whole transcript exists in one place
-and has cost nothing extra to obtain — ask for three things and store them:
+Three fields, asked of the model ONCE per document on the assembled transcript —
+the point where the whole text exists in one place and has cost nothing extra to
+obtain:
 
-- **`name`** — what a person would call this filing. `2021-05-25 Form 21
-  purchase and sale agreement, executed (Ardley/Brannock)`. Not a slug, not a
-  filename; a caption.
-- **`summary`** — what the document is and what it covers, in a few sentences.
-  The instrument, the parties, the date, the ground it concerns, what it does.
-- **`kind`** — deed · survey · agreement · correspondence · court filing ·
-  certification · analysis. A small closed vocabulary, because an open one
-  produces forty spellings of "letter".
+- **`name`** — the caption a person would file it under.
+- **`summary`** — the instrument, the parties, the date, the ground it concerns,
+  what it does.
+- **`kind`** — from a CLOSED vocabulary, settled here rather than by whatever the
+  first model returned: `deed · survey · agreement · correspondence ·
+  court filing · certification · analysis · other`. `NormalizeKind` maps the
+  aliases a model actually emits (letter/email/memo → correspondence, contract/
+  lease → agreement, plat → survey, motion/petition/declaration → court filing);
+  anything else is REFUSED and re-prompted with the list. "other" is the escape
+  hatch and is meant to stay rare — a corpus where it is common means the
+  vocabulary is wrong, and the fix is to add a term deliberately, once.
 
-Stored on `documents` (new columns), and **indexed as a fragment** so the summary
-is searchable text like any other. That is the part that fixes discovery: a query
-for "purchase and sale agreement" then matches a document whose body never says
-those words in a form BM25 can rank, because the summary does.
+Stored on `documents` (`gen_name`, `gen_summary`, `gen_kind`, `gen_source`,
+`gen_model`, `gen_at`) and indexed as ONE fragment marked `fragments.origin =
+'identity'`. That is the part that fixes discovery: a query for "purchase and
+sale agreement" now ranks a document whose body never says those words in a form
+BM25 can rank, because the summary does.
 
-## Design notes, and the traps
+### The rules that keep it a machine claim
 
-**It is a machine claim, and must be labelled as one.** A generated name is a
-reading, exactly like a transcription — so it belongs in the same discipline that
-already exists for readings: it is attestable, correctable by a person, and a
-correction supersedes rather than overwrites. `page_readings` and `attestations`
-already do this; a name and summary are one more thing a person can rule on. A
-generated caption presented as fact is how "Lead-Based Paint" happens again in
-the other direction.
+- **The file is never renamed.** The path is what fragments, page images, region
+  trees, readings, verdicts, the audit trail and every citation already written
+  into a legal packet join on. Both names are shown everywhere (CLI, review UI,
+  `/api/documents`), because "this file is called X and is actually Y" is itself
+  the finding.
+- **The generated text is marked, and the mark is enforced in both directions.**
+  `fragments.origin` distinguishes it in the database, the fragment's own first
+  line says a machine wrote it (text travels — into a search result, a context
+  window, a clipboard), search results carry `origin` and say so, and every path
+  that REASSEMBLES a document filters it out: `DocText`/`get_document`,
+  `TruePages`, `ReferencesTo`, the pool export, and the per-document fragment
+  count.
+- **A person can overrule it and their caption is never regenerated.**
+  `gen_source` is `machine` or `person`; `raglit identify --name …` records a
+  person's, and both the ingest path (`identityForIngest`) and the commit itself
+  (`commitDoc`) refuse to overwrite it — the second is the one that matters,
+  because it is the single point every ingest path passes through, including
+  pooled reuse carrying another index's caption.
+- **A failure yields no identity, never a guess.** The model output is
+  schema-validated with the segmenter's fix-loop; a caption that is empty, a
+  summary that distinguishes nothing, or a kind outside the vocabulary is
+  re-prompted, and a run that never produces a valid answer returns an error. A
+  document with no caption is still findable by filename; a document with a WRONG
+  caption is one whose list entry lies with a machine's confidence.
+- **A bad identity never fails an ingest.** It is recorded as a `warn` stage row
+  (`identity`), so a half-captioned corpus says which half and why instead of
+  being silent.
 
-**Never rename the file.** The path is the identity everything else joins on —
-fragments, page images, region trees, readings, verdicts, the audit trail, and
-every citation already written into a legal packet. The generated name is a
-DISPLAY name and a search target, nothing more. The stored filename stays, and
-both are shown, because "this file is called X and is actually Y" is itself the
-finding.
+### Where it plugs in
 
-**Summaries must not be searched as if they were the document.** A hit on a
-generated summary is a hit on a machine's paraphrase, and a person citing it has
-cited nothing. Fragments carry their origin already; the summary fragment needs
-to be marked so search results can say so, and so a quotation tool refuses to
-quote from it.
+- `identity.go` — `DocIdentity`, the vocabulary, `Identifier` (the model call),
+  the store reads/writes, `IdentifyDocument` (re-run) and `RecordIdentity` (a
+  person's).
+- `pipeline.go` — `identityForIngest` after the transcript is assembled;
+  `commitDoc` writes the columns AND re-emits the fragment inside the atomic
+  swap, so columns and searchable text can never disagree.
+- `pool.go` — `PooledDoc.Identity` carries the caption across indexes (it is a
+  model call, which is what the pool exists to avoid paying twice); the identity
+  fragment is excluded from the pooled fragments and rebuilt on import, so reuse
+  cannot duplicate it or replay it as document text.
+- `raglit identify` — the re-runnable half, for a corpus indexed before this
+  existed. No arguments captions every document that has none; `--force` redoes a
+  machine's; `--list` reports coverage; `--name/--summary/--kind` records a
+  person's. Each caption is committed as it is produced, so an interrupted sweep
+  keeps what it did.
+- `POST /api/identify` — the same two operations daemon-side, because a write on
+  a daemon-routed project belongs to the daemon (storeroute.go) and because the
+  daemon is what holds the model.
+- Config — `identity_model` (empty → the vision model, which every home already
+  has and which is a chat model), `no_identity` to turn it off.
 
-**Cost.** One extra model call per document at ingest, on the assembled text
-rather than per page. Cheap next to OCR. It should be skippable
-(`--no-identity`) and re-runnable on its own for a corpus already indexed, since
-the ardley index is 406 documents that will not be re-OCR'd to get captions.
+### Verified
 
-## Open
+- `identity_test.go`: the caption/summary/kind round trip; the fix loop refusing
+  an invented kind; refusal rather than a guess; the vocabulary and its aliases;
+  the head+tail excerpt with the gap marked; the summary searchable AND excluded
+  from `DocText`/`TruePages`/the fragment count; one identity fragment however
+  many times it is written; identity surviving a re-ingest with its fragment;
+  a person's caption surviving an ingest carrying a machine's; `IdentifyDocument`
+  keeping/forcing/refusing correctly; the pool round trip.
+- `cmd/raglit/identifycmd_test.go`: coverage listing names the unnamed; a
+  person's ruling sticks and does not rename the file; an unknown kind is
+  refused; no model configured says so.
+- Live, against the configured endpoint: a text document ingested with `raglit
+  index` came back captioned "2021-05-25 Purchase and Sale Agreement
+  (Ardley/Brannock)", kind `agreement`; a person's `--name` superseded it; a
+  re-ingest and a `--force` sweep both left the person's caption alone; the
+  search hit on the summary printed marked.
 
-- **Does the summary reach the embedding?** Searchable-as-text is clearly right.
-  Embedded as a vector is arguably better for recall and arguably pollution —
-  a paraphrase competing with the document's own words. Decide by measuring on
+## Open / not done
+
+- **The summary is NOT embedded**, even on an `--embed` index — lexical indexing
+  is unambiguously right, and whether a paraphrase belongs in the same vector
+  space as the document's own words is the open question. Decide by measuring on
   the ardley corpus, not by argument.
+- **Not an attest unit.** The plan called for the name and summary to be
+  attestable the way a page reading is. What shipped is the weaker,
+  simpler form of the same rule: `gen_source='person'` supersedes and is never
+  regenerated. It is not content-addressed, it does not accumulate versions, and
+  a correction does not appear in the document's history. Fold it into
+  `page_readings`/`attestations` when identity has to answer "what did this
+  caption say when that packet cited it".
 - **Re-generation policy.** A corrected transcription should probably invalidate
-  a name derived from the old one. That is the same supersede-not-overwrite
-  question `page_readings` answers, and the answer is probably the same.
-- **`kind` vocabulary** should be settled before anything writes it, or it will
-  be settled by whatever the first model returns.
-
-## Where it plugs in
-
-- `extract.go` / the ingest pipeline — after the transcript is assembled.
-- `documents` table — `gen_name`, `gen_summary`, `gen_kind`, plus provenance
-  (model, when) so a caption can be told from a human one.
-- `/api/documents` and `/api/doc-detail` — return both names; the review UI shows
-  the generated one with the filename beneath it.
-- Search — the summary as a marked fragment.
-- attest — the name and summary as attestable units, so a person can correct a
-  caption and have that stick.
+  a caption derived from the old one. Nothing does that yet — `raglit identify
+  --force <doc>` is the manual answer.
+- **The pool recipe does not include the identity model.** A pooled document
+  captioned by model A is reused as-is when config names model B. Not silent —
+  `gen_model` records which model wrote it — but it means a model change does not
+  re-caption a corpus on its own.
+- **`raglit identify` on a whole corpus is serial.** 406 documents is 406 calls,
+  one at a time. Resumable, so it can simply be run again, but nothing batches or
+  parallelises it.

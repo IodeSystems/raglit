@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -585,5 +586,67 @@ func resolveProjectDir(explicit, docPath string) (string, error) {
 			return "", fmt.Errorf("no .raglit/ above %q — name the project explicitly", docPath)
 		}
 		dir = parent
+	}
+}
+
+// Identity, daemon-side.
+//
+// A write, so it belongs to the daemon for the reason storeroute.go gives — and
+// this one needs the model besides, which the daemon has and a read-only CLI
+// does not. Two operations behind one endpoint, told apart by whether a name was
+// given: with one, a PERSON is saying what the document is; without, the model
+// is asked.
+
+type identifyIn struct {
+	Index   string `query:"index" doc:"index name (default: the default index)"`
+	Project string `query:"project" doc:"project directory (unused; accepted so the CLI can send one query shape)"`
+	Path    string `query:"path" required:"true" doc:"the document to identify"`
+	Name    string `query:"name" doc:"a person's caption for this document; empty → ask the model"`
+	Summary string `query:"summary" doc:"a person's summary (with name)"`
+	Kind    string `query:"kind" doc:"a person's kind (with name)"`
+	By      string `query:"by" doc:"who is recording it (with name)"`
+	Force   bool   `query:"force" doc:"re-generate a caption that already exists (never a person's)"`
+}
+
+type identifyOut struct {
+	Body struct {
+		Path     string             `json:"path"`
+		Identity raglit.DocIdentity `json:"identity"`
+		// Kept reports that the document already had an identity this call must
+		// not replace — not an error, and the difference matters to a caller
+		// sweeping a corpus.
+		Kept bool `json:"kept,omitempty"`
+	}
+}
+
+func identifyOp(reg *raglit.Registry) func(context.Context, *identifyIn) (*identifyOut, error) {
+	return func(ctx context.Context, in *identifyIn) (*identifyOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		out := &identifyOut{}
+		out.Body.Path = in.Path
+		if strings.TrimSpace(in.Name) != "" || strings.TrimSpace(in.Summary) != "" || strings.TrimSpace(in.Kind) != "" {
+			id, err := st.RecordIdentity(ctx, in.Path,
+				raglit.DocIdentity{Name: in.Name, Summary: in.Summary, Kind: in.Kind}, in.By)
+			if err != nil {
+				return nil, huma.Error400BadRequest("record identity", err)
+			}
+			out.Body.Identity = id
+			return out, nil
+		}
+		id, err := st.IdentifyDocument(ctx, in.Path, in.Force)
+		switch {
+		case errors.Is(err, raglit.ErrIdentityKept):
+			out.Body.Identity, out.Body.Kept = id, true
+			return out, nil
+		case errors.Is(err, raglit.ErrNoIdentifier):
+			return nil, huma.Error400BadRequest("this daemon has no identity model configured")
+		case err != nil:
+			return nil, huma.Error500InternalServerError("identify", err)
+		}
+		out.Body.Identity = id
+		return out, nil
 	}
 }

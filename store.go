@@ -50,6 +50,10 @@ type Store struct {
 	// figure search; nil → figures fall back to embedding their DESCRIPTION with
 	// the text embedder (same space as fragments, so text queries can match).
 	imageEmbedder ImageEmbedder
+	// identifier, when set, asks a model what each ingested document IS — a
+	// caption, a summary and a kind (identity.go). nil → documents keep only the
+	// filename they arrived with.
+	identifier *Identifier
 	// writebackTranscription materialises <doc>.raglit-transcription.md beside each
 	// ingested document. Off unless the index config asks for it: an indexer that
 	// writes into the corpus uninvited is a surprise nobody wants.
@@ -93,6 +97,12 @@ func (s *Store) SetDocumentHash(path, hash string) error {
 // SetEmbedder enables vector search: fragments are embedded on Ingest and
 // VecSearch/HybridSearch become available. nil disables it.
 func (s *Store) SetEmbedder(e *Embedder) { s.embedder = e }
+
+// SetIdentifier enables document identity: each ingested document is captioned,
+// summarised and typed by the model (identity.go), and the summary is indexed.
+// nil disables it — an ingest then leaves whatever identity the document already
+// had, because a caption is not invalidated by re-reading the same file.
+func (s *Store) SetIdentifier(id *Identifier) { s.identifier = id }
 
 // SetImageEmbedder enables IMAGE embeddings for figures (a CLIP-style tower):
 // each figure is embedded from its image rather than its description. nil (the
@@ -254,6 +264,15 @@ func migrate(db *sql.DB) error {
 		// in raw SQL rather than in sixty broken ones.
 		{"ingest_jobs", "fresh", "INTEGER NOT NULL DEFAULT 0"},
 		{"page_readings", "note", "TEXT NOT NULL DEFAULT ''"},
+		// Document identity (identity.go). An index that predates these reads as
+		// "no caption yet", which is what `raglit identify` looks for.
+		{"documents", "gen_name", "TEXT NOT NULL DEFAULT ''"},
+		{"documents", "gen_summary", "TEXT NOT NULL DEFAULT ''"},
+		{"documents", "gen_kind", "TEXT NOT NULL DEFAULT ''"},
+		{"documents", "gen_source", "TEXT NOT NULL DEFAULT ''"},
+		{"documents", "gen_model", "TEXT NOT NULL DEFAULT ''"},
+		{"documents", "gen_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"fragments", "origin", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
@@ -503,7 +522,19 @@ type Hit struct {
 	Ord   int
 	Text  string
 	Score float64
+	// Origin is empty for the document's own words and "identity" for the
+	// generated caption/summary (identity.go). It ranks in the same list on
+	// purpose — a summary is how a document whose body never says "purchase and
+	// sale agreement" becomes findable by that query — but it is a machine's
+	// paraphrase, so every renderer says so and nothing quotes from it.
+	Origin string
 }
+
+// IsDescription reports whether this hit is a DESCRIPTION of a document — its
+// caption and summary — rather than text from the document itself. True for a
+// machine's and for a person's alike: neither is the instrument, and neither can
+// be quoted as if it were.
+func (h Hit) IsDescription() bool { return h.Origin != "" }
 
 // pathPredicate returns a bare SQL predicate + its arg constraining d.path to
 // documents whose path STARTS WITH pathPrefix (a subtree scope), or ("", nil) for
@@ -536,7 +567,7 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 	args := append([]any{match}, pargs...)
 	args = append(args, limit)
 	rows, err := s.db.Query(
-		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, bm25(fragments_fts) AS score
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, bm25(fragments_fts) AS score
 		 FROM fragments_fts
 		 JOIN fragments f ON f.id = fragments_fts.rowid
 		 JOIN documents d ON d.id = f.doc_id
@@ -552,7 +583,7 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 		var h Hit
 		var bm25 float64
 		var spans string
-		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &bm25); err != nil {
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin, &bm25); err != nil {
 			return nil, err
 		}
 		// A fragment can cross page boundaries; f.page is only where it started.
@@ -594,7 +625,7 @@ func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, lim
 		where = " WHERE " + pred
 	}
 	rows, err := s.db.Query(
-		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, fv.vec
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, fv.vec
 		 FROM fragment_vectors fv
 		 JOIN fragments f ON f.id = fv.fragment_id
 		 JOIN documents d ON d.id = f.doc_id`+where, pargs...)
@@ -607,7 +638,7 @@ func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, lim
 		var h Hit
 		var blob []byte
 		var spans string
-		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &blob); err != nil {
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin, &blob); err != nil {
 			return nil, err
 		}
 		// A vector hit has no literal terms to locate, so this usually falls back

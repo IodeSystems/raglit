@@ -26,6 +26,7 @@ type Registry struct {
 	stores        map[string]*Store
 	embedder      *Embedder
 	imageEmbedder ImageEmbedder
+	identifier    *Identifier
 }
 
 // OpenRegistry prepares a single-home registry (all indexes as sqlite siblings
@@ -72,6 +73,17 @@ func (r *Registry) SetImageEmbedder(ie ImageEmbedder) {
 	}
 }
 
+// SetIdentifier makes every index (already open or opened later) caption its
+// ingested documents (identity.go). nil disables it.
+func (r *Registry) SetIdentifier(id *Identifier) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.identifier = id
+	for _, s := range r.stores {
+		s.SetIdentifier(id)
+	}
+}
+
 // Get opens (once, then caches) the named index, creating it if absent.
 func (r *Registry) Get(name string) (*Store, error) {
 	name = normalizeIndexName(name)
@@ -111,6 +123,9 @@ func (r *Registry) getLocked(name string) (*Store, error) {
 	}
 	if r.imageEmbedder != nil {
 		s.SetImageEmbedder(r.imageEmbedder)
+	}
+	if r.identifier != nil {
+		s.SetIdentifier(r.identifier)
 	}
 	r.stores[name] = s
 	return s, nil

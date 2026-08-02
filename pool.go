@@ -61,6 +61,16 @@ type PooledDoc struct {
 	FragRecipe string           `json:"frag_recipe,omitempty"`
 	Fragments  []PooledFragment `json:"fragments"`
 	Pages      []PooledPage     `json:"pages"`
+	// Identity is the document's caption/summary/kind (identity.go), carried for
+	// the same reason PageSpans is: reuse replays a document without OCR or the
+	// model, so anything a model established has to survive here or it is lost on
+	// every reuse — and the identity call is a model call, which is the cost the
+	// pool exists to avoid paying twice.
+	//
+	// The identity FRAGMENT is not in Fragments — it is rebuilt from this on
+	// import, so a pooled document cannot end up with two of them, and an older
+	// payload that predates this field simply has no caption.
+	Identity *DocIdentity `json:"identity,omitempty"`
 }
 
 const poolSchema = `
@@ -336,17 +346,39 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 	if fr, err := s.q.GetDocumentFrag(ctx, doc.ID); err == nil {
 		out.FragMode, out.FragRecipe = fr.FragMode, fr.FragRecipe
 	}
-	frows, err := s.q.ExportFragments(ctx, doc.ID)
+	if id, err := s.DocumentIdentity(path); err == nil && !id.Empty() {
+		out.Identity = &id
+	}
+	// Raw SQL rather than the generated ExportFragments, for the origin filter:
+	// the identity fragment is a MODEL's description of the document, and pooling
+	// it as an ordinary fragment would replay it into the next index as the
+	// document's own text — precisely what fragments.origin exists to stop. It
+	// travels in Identity instead. (Raw for the same reason TruePages is; see
+	// its comment on regenerating the sqlc layer.)
+	frows, err := s.db.QueryContext(ctx,
+		`SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, COALESCE(fv.vec, x'')
+		   FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
+		  WHERE f.doc_id = ? AND f.origin = '' ORDER BY f.page, f.ord`, doc.ID)
 	if err != nil {
 		return PooledDoc{}, err
 	}
-	for _, r := range frows {
-		pf := PooledFragment{Page: int(r.Page), Ord: int(r.Ord), StartOff: int(r.StartOff),
-			EndOff: int(r.EndOff), PageSpans: DecodePageSpans(r.PageSpans), Text: r.Text}
-		if len(r.Vec) > 0 {
-			pf.Vec = decodeVec(r.Vec)
+	defer frows.Close()
+	for frows.Next() {
+		var page, ord, startOff, endOff int64
+		var text, spans string
+		var vec []byte
+		if err := frows.Scan(&page, &ord, &text, &startOff, &endOff, &spans, &vec); err != nil {
+			return PooledDoc{}, err
+		}
+		pf := PooledFragment{Page: int(page), Ord: int(ord), StartOff: int(startOff),
+			EndOff: int(endOff), PageSpans: DecodePageSpans(spans), Text: text}
+		if len(vec) > 0 {
+			pf.Vec = decodeVec(vec)
 		}
 		out.Fragments = append(out.Fragments, pf)
+	}
+	if err := frows.Err(); err != nil {
+		return PooledDoc{}, err
 	}
 	prows, err := s.q.ListOcrPagesByDoc(ctx, doc.ID)
 	if err != nil {
@@ -386,7 +418,7 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 	// (cheap; figures are few) so pooled figures are searchable too.
 	media := extractMedia(frags, prov)
 	s.embedMedia(ctx, media)
-	if err := s.commitDoc(docPath, title, doc.FragMode, doc.FragRecipe, frags, prov, media, vecs); err != nil {
+	if err := s.commitDoc(docPath, title, doc.FragMode, doc.FragRecipe, frags, prov, media, vecs, doc.Identity); err != nil {
 		return 0, err
 	}
 	return len(frags), nil

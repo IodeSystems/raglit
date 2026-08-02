@@ -48,6 +48,17 @@ type Config struct {
 	FragWindow int `json:"frag_window,omitempty"`
 	FragStride int `json:"frag_stride,omitempty"`
 	FragFloor  int `json:"frag_floor,omitempty"`
+	// IdentityModel names the chat model that says what a document IS — a
+	// caption, a summary and a kind, asked once per document on the assembled
+	// transcript (identity.go). Empty → the vision model, which is already
+	// configured and is a chat model; set this to caption with a stronger or
+	// cheaper text-only model than the one doing OCR.
+	IdentityModel string `json:"identity_model,omitempty"`
+	// NoIdentity turns document identity off. Documents then carry only the
+	// filename they arrived with — which for a scanner-named corpus is a list
+	// nobody can navigate, so this is for a corpus whose names are already good
+	// (a code tree) or an endpoint you do not want the extra call on.
+	NoIdentity bool `json:"no_identity,omitempty"`
 	// DefaultIndex is the index used when a command gives no --index. Empty →
 	// "default". Set it in the wizard to make one named index your working default.
 	DefaultIndex string `json:"default_index,omitempty"`

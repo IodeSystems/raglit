@@ -61,33 +61,68 @@ type DocSummary struct {
 	FragMode  string         `json:"frag_mode"` // how it was fragmented: text-overlap | llm-seg
 	Engines   map[string]int `json:"engines"`   // engine → page count
 	AddedAt   int64          `json:"added_at"`
+	// GenName / GenKind / GenSource are what the document IS (identity.go), for a
+	// list a person can navigate. Both names travel: the caption is what a reader
+	// needs, and the filename is what everything else joins on — and where they
+	// disagree, THAT is the finding.
+	GenName   string `json:"gen_name,omitempty"`
+	GenKind   string `json:"gen_kind,omitempty"`
+	GenSource string `json:"gen_source,omitempty"` // machine | person
 }
 
 // Documents lists indexed documents with fragment/page/engine counts, newest
 // first. Docs with no OCR-tracked pages (plain text) report Pages 0.
+// Raw SQL rather than the generated ListDocumentSummaries, for two columns it
+// does not have and one count it now gets wrong: the identity fragment is a
+// model's description of the document, so it belongs neither in the document's
+// fragment count nor invisible in its row. (Raw for the reason TruePages gives —
+// see its comment on regenerating the sqlc layer.)
 func (s *Store) documentsLocal() ([]DocSummary, error) {
 	ctx := context.Background()
-	rows, err := s.q.ListDocumentSummaries(ctx)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT d.id, d.path, d.title, d.added_at, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
+		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND f.origin = '') AS fragments
+		   FROM documents d ORDER BY d.added_at DESC`)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]DocSummary, len(rows))
-	for i, r := range rows {
-		ds := DocSummary{Path: r.Path, Title: r.Title, Fragments: int(r.Fragments), FragMode: r.FragMode, AddedAt: r.AddedAt, Engines: map[string]int{}}
+	// Drained FULLY before the per-document queries below. An open rows cursor
+	// holds its connection, and the pool answers the next query on a second one —
+	// which for a ":memory:" index is a DIFFERENT, empty database. That is not a
+	// slow path, it is "no such table: ocr_pages".
+	var out []DocSummary
+	var ids []int64
+	for rows.Next() {
+		var id, addedAt, frags int64
+		var path, title, fragMode, genName, genKind, genSource string
+		if err := rows.Scan(&id, &path, &title, &addedAt, &fragMode, &genName, &genKind, &genSource, &frags); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, DocSummary{Path: path, Title: title, Fragments: int(frags), FragMode: fragMode,
+			AddedAt: addedAt, Engines: map[string]int{},
+			GenName: genName, GenKind: genKind, GenSource: genSource})
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for i, id := range ids {
 		// Per-doc engine breakdown (a second pass keeps the query simple).
-		ec, err := s.q.OcrEngineCountsByDoc(ctx, r.ID)
+		ec, err := s.q.OcrEngineCountsByDoc(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 		for _, e := range ec {
 			n := int(e.N)
-			ds.Engines[e.Engine] = n
-			ds.Pages += n
+			out[i].Engines[e.Engine] = n
+			out[i].Pages += n
 			if e.Engine == "vision" {
-				ds.Vision += n
+				out[i].Vision += n
 			}
 		}
-		out[i] = ds
 	}
 	return out, nil
 }

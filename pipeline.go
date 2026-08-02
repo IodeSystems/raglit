@@ -363,13 +363,62 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 
 	media := extractMedia(frags, provenance)
 	s.embedMedia(ctx, media) // figure embeddings (image-or-description); best-effort
+	// What this document IS, asked once on the assembled transcript — the point
+	// where the whole text exists in one place. Best-effort: a document with no
+	// caption is still an indexed, searchable document, and failing an ingest
+	// that OCR'd thirty pages over a missing caption would be absurd.
+	ident := s.identityForIngest(ctx, docPath, pages, sl)
 	recipe := fragRecipe(fragMode, window, stride, floor, fc.FigurePrompt)
-	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs); err != nil {
+	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs, ident); err != nil {
 		sl.Fail("commit", "", err)
 		return 0, "", err
 	}
 	sl.Done("commit", "", "")
 	return len(frags), fragMode, nil
+}
+
+// identityForIngest asks the model what this document is, on the assembled
+// transcript. Returns nil when identity is off, when there is nothing to read,
+// or when the model failed — commitDoc then keeps whatever identity the document
+// already had.
+//
+// A PERSON's caption is never regenerated. Someone who corrected a caption did
+// so because the machine's was wrong, and re-reading the same file produces the
+// same wrong answer; overwriting on every re-ingest would make the correction
+// last exactly until the next sync.
+func (s *Store) identityForIngest(ctx context.Context, docPath string, pages []resolvedPage, sl *StageLog) *DocIdentity {
+	if s.identifier == nil || docPath == "" {
+		return nil
+	}
+	if cur, err := s.DocumentIdentity(docPath); err == nil && cur.ByPerson() {
+		sl.Done("identity", "person", "kept the caption a person recorded")
+		return nil
+	}
+	texts := make([]string, 0, len(pages))
+	for _, p := range pages {
+		if strings.TrimSpace(p.text) != "" {
+			texts = append(texts, p.text)
+		}
+	}
+	if len(texts) == 0 {
+		return nil
+	}
+	id, err := s.identifier.Identify(ctx, strings.Join(texts, pageSep))
+	if err != nil {
+		var short *ErrIdentityTooShort
+		if errors.As(err, &short) {
+			// Not a failure worth an alarm: there was nothing to read.
+			sl.Done("identity", s.identifier.Model, "skipped — "+short.Error())
+			return nil
+		}
+		// "warn", not "fail": the document is indexed and searchable. But it is
+		// not captioned either, and a silent skip is how a corpus ends up half
+		// captioned with nothing recording which half or why.
+		sl.Record("identity", s.identifier.Model, "warn", err.Error())
+		return nil
+	}
+	sl.Done("identity", s.identifier.Model, fmt.Sprintf("%s — %s", id.Kind, id.Name))
+	return &id
 }
 
 // segmentLLM runs the LLM segmenter over the resolved page texts, stitching the
@@ -662,7 +711,13 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 // triggers clean the mirror), then insert the new fragments (capturing their ids
 // for vectors + media), vectors, page provenance, and media rows. All-or-nothing
 // — search never observes a half-updated document.
-func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []stagedFrag, provenance []stagedPage, media []stagedMedia, vecs map[int][]float32) error {
+//
+// ident is what this ingest established about the document, or nil for "keep
+// what is recorded". Either way the identity FRAGMENT is rewritten here, because
+// the fragment wipe above just deleted it: a document whose identity columns
+// survive an ingest but whose summary is no longer indexed is exactly the silent
+// half-state this transaction exists to make impossible.
+func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []stagedFrag, provenance []stagedPage, media []stagedMedia, vecs map[int][]float32, ident *DocIdentity) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -732,6 +787,24 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 			}); err != nil {
 				return fmt.Errorf("raglit: store media vector: %w", err)
 			}
+		}
+	}
+	id := DocIdentity{}
+	if err := tx.QueryRow(
+		`SELECT gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at FROM documents WHERE id=?`,
+		docID).Scan(&id.Name, &id.Summary, &id.Kind, &id.Source, &id.Model, &id.At); err != nil {
+		return fmt.Errorf("raglit: read identity: %w", err)
+	}
+	// A person's caption outranks anything an ingest brings — including a pooled
+	// document's, which carries the caption of whichever index cached it first.
+	// Enforced here rather than only at the call site because this is the one
+	// point every ingest path passes through.
+	if ident != nil && !id.ByPerson() {
+		id = *ident
+	}
+	if !id.Empty() {
+		if err := writeIdentity(ctx, tx, docID, id); err != nil {
+			return err
 		}
 	}
 	return tx.Commit()

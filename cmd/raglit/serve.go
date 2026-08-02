@@ -60,6 +60,7 @@ func runServe(args []string) error {
 	if ie := buildImageEmbedder(homeOf()); ie != nil {
 		reg.SetImageEmbedder(ie)
 	}
+	reg.SetIdentifier(lf.identifier(homeOf()))
 
 	// One background loop drains every index's queue round-robin (per-index
 	// workers cached). A configured model gives PDF OCR + LLM text segmentation.
@@ -101,7 +102,9 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 		mcp.NewTool("search",
 			mcp.WithDescription(
 				"Search the document index(es). Returns ranked fragments as JSON "+
-					"{hits:[{index,doc_id,title,page,score,snippet}]}, best first. `index` "+
+					"{hits:[{index,doc_id,title,page,score,snippet,origin}]}, best first. A hit "+
+					"with origin=\"identity\" is the document's GENERATED caption/summary, not "+
+					"its own words — use it to find the document, never to quote it. `index` "+
 					"selects one index or a comma-separated set; omit it to search ALL "+
 					"(results merged with reciprocal-rank fusion, each hit tagged by index)."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language or keyword query")),
@@ -584,6 +587,11 @@ func taggedHits(hits []indexedHit) any {
 		Page    int     `json:"page"`
 		Score   float64 `json:"score"`
 		Snippet string  `json:"snippet"`
+		// Origin marks a hit on GENERATED text — the document's caption and
+		// summary (identity.go), not its own words. It ranks in the same list
+		// because that is what makes a badly named document findable, and it is
+		// labelled because an agent quoting it would be quoting a paraphrase.
+		Origin string `json:"origin,omitempty"`
 	}
 	out := struct {
 		Hits []outHit `json:"hits"`
@@ -596,7 +604,7 @@ func taggedHits(hits []indexedHit) any {
 		}
 		out.Hits = append(out.Hits, outHit{
 			Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
-			Score: h.Score, Snippet: clip(oneLine(h.Text), 300),
+			Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
 		})
 	}
 	return out

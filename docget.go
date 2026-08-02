@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	gen "github.com/iodesystems/raglit/internal/db"
-	"github.com/iodesystems/sqlc-go-codegen-metaquery/metaquery"
-	"github.com/iodesystems/sqlc-go-codegen-metaquery/metaquery/mqsqlite"
 )
 
 // Document content retrieval — the read side for an agent that has a search hit
@@ -101,17 +99,39 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 	}
 	out.Path, out.Title = doc.Path, doc.Title
 
-	// Page-range filter via a metaquery Builder over the base ListFragmentsForDoc
-	// (dynamic from/to WHERE + the page/ord ordering, no hand-built SQL).
-	b := gen.WrapListFragmentsForDoc(doc.ID).OrderBy("page", metaquery.Asc).OrderBy("ord", metaquery.Asc)
+	// Raw SQL rather than a metaquery Builder over ListFragmentsForDoc, because
+	// of the origin filter: this function's contract is "the document's indexed
+	// text", and the generated identity fragment is a model's DESCRIPTION of the
+	// document. A Builder cannot express it — it wraps the base query as a
+	// derived table, whose columns are the five the query selects, so filtering on
+	// origin there fails with "no such column". (Raw for the reason TruePages
+	// gives; see its comment on regenerating the sqlc layer.)
+	q := `SELECT page, ord, text, start_off, end_off FROM fragments
+	       WHERE doc_id = ? AND origin = ''`
+	args := []any{doc.ID}
 	if from > 0 {
-		b = b.Where("page", metaquery.OpGe, from)
+		q += " AND page >= ?"
+		args = append(args, from)
 	}
 	if to > 0 {
-		b = b.Where("page", metaquery.OpLe, to)
+		q += " AND page <= ?"
+		args = append(args, to)
 	}
-	res, err := mqsqlite.Scan[gen.ListFragmentsForDocRow](ctx, s.db, b)
+	q += " ORDER BY page, ord"
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
+		return DocContent{}, err
+	}
+	defer rows.Close()
+	var frags []gen.ListFragmentsForDocRow
+	for rows.Next() {
+		var r gen.ListFragmentsForDocRow
+		if err := rows.Scan(&r.Page, &r.Ord, &r.Text, &r.StartOff, &r.EndOff); err != nil {
+			return DocContent{}, err
+		}
+		frags = append(frags, r)
+	}
+	if err := rows.Err(); err != nil {
 		return DocContent{}, err
 	}
 
@@ -119,14 +139,14 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 	// every overlap region), so reassemble from their [start,end) spans; llm-seg /
 	// synthetic documents have no spans (0/0) and join directly.
 	offsetMode := false
-	for _, r := range res.Data {
+	for _, r := range frags {
 		if r.EndOff > r.StartOff {
 			offsetMode = true
 			break
 		}
 	}
 	if offsetMode {
-		out.Pages, out.Text = reassembleOffsets(res.Data)
+		out.Pages, out.Text = reassembleOffsets(frags)
 	} else {
 		// Group fragments into pages, preserving order; join with pageSep.
 		curPage := int64(-1)
@@ -137,7 +157,7 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 			}
 			buf = nil
 		}
-		for _, r := range res.Data {
+		for _, r := range frags {
 			if r.Page != curPage {
 				flush()
 				curPage = r.Page
@@ -286,7 +306,7 @@ func (s *Store) TruePages(exactPath string) ([]PageText, error) {
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT page, ord, text, start_off, end_off, page_spans
-		 FROM fragments WHERE doc_id = ? ORDER BY page, ord`, doc.ID)
+		 FROM fragments WHERE doc_id = ? AND origin = '' ORDER BY page, ord`, doc.ID)
 	if err != nil {
 		return nil, err
 	}

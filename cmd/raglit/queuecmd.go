@@ -133,6 +133,12 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		// Only used when a page escalates to the VLM (llm-seg); text never does.
 		w.Segmenter = raglit.NewSegmenter(client)
 	}
+	// What each ingested document IS, asked once per document (identity.go). Set
+	// on the STORE rather than the worker because the identity call happens in
+	// the commit path, which is the store's — and setting it here covers every
+	// route into that path: `work`, `ingest --now`, and each of the daemon's
+	// per-index workers.
+	store.SetIdentifier(lf.identifier(home))
 	// Cross-index pool (daemon only): key ingest work by (recipe, file). The
 	// recipe is the models + config that shape the output — including the
 	// fragmenter (§5) — so alt models OR a stride change reprocess.

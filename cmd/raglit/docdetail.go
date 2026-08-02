@@ -35,6 +35,11 @@ type DocDetail struct {
 	Title string `json:"title"`
 	Kind  string `json:"kind"`
 
+	// Identity is what this document IS, as opposed to what its file is called
+	// (identity.go): a caption, a summary, a kind, and whether a machine or a
+	// person said so. Nil when nobody has established it.
+	Identity *raglit.DocIdentity `json:"identity,omitempty"`
+
 	// Original is where the raw bytes can be fetched, or empty when this mount
 	// cannot serve them. A link rather than the bytes: a scanned deed is
 	// megabytes and nothing on the page needs it until somebody asks.
@@ -234,6 +239,9 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 		}
 
 		d := DocDetail{Path: rel, Kind: detailKind(abs)}
+		if id, ierr := st.DocumentIdentity(abs); ierr == nil && !id.Empty() {
+			d.Identity = &id
+		}
 		if root != "" {
 			d.Original = "/api/attest/" + in.Index + "/source?asset=" + url.QueryEscape(rel)
 		}

@@ -143,13 +143,13 @@ func TestCommitDoc_ReplacesPriorPages(t *testing.T) {
 	// First commit: one vision page.
 	if err := s.commitDoc("file:///d", "D", "llm-seg", "r1",
 		[]stagedFrag{{page: 1, ord: 0, text: "old"}},
-		[]stagedPage{{page: 1, engine: "vision"}}, nil, nil); err != nil {
+		[]stagedPage{{page: 1, engine: "vision"}}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Reingest (atomic swap): different page set → prior provenance is replaced.
 	if err := s.commitDoc("file:///d", "D", "text-overlap", "r2",
 		[]stagedFrag{{page: 2, ord: 0, text: "new"}},
-		[]stagedPage{{page: 2, engine: "text"}}, nil, nil); err != nil {
+		[]stagedPage{{page: 2, engine: "text"}}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	_, pages, _ := s.DocReview("file:///d")

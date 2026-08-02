@@ -105,6 +105,10 @@ func runHttpd(subcmd string, args []string) error {
 	if ie := buildImageEmbedder(cfgHome); ie != nil {
 		reg.SetImageEmbedder(ie)
 	}
+	// What each ingested document IS (identity.go). Set on the REGISTRY as well
+	// as on each worker's store, because /api/identify captions an already-
+	// indexed corpus and runs on a store the ingest path may never have touched.
+	reg.SetIdentifier(lf.identifier(cfgHome))
 	// Shared document pool: ingest work (extract/OCR/segment/embed) is cached by
 	// (recipe, file hash) under the daemon's storage root, so the same file — in
 	// ANY index, or on a retry — is reused instead of reprocessed.
@@ -263,6 +267,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("correctPage", http.MethodPost, "/api/transcribe/correct", "Record a corrected reading for one page."), correctPageOp(reg))
 	gat.Register(api, g, op("sketch", http.MethodPost, "/api/similar/build", "Build page sketches for near-duplicate detection."), sketchOp(reg))
 	gat.Register(api, g, op("reread", http.MethodPost, "/api/reread", "Purge a document's cached page OCR and re-read it."), rereadOp(reg))
+	gat.Register(api, g, op("identify", http.MethodPost, "/api/identify", "Say what a document IS: generate a caption/summary/kind, or record a person's."), identifyOp(reg))
 	gat.Register(api, g, op("withdraw", http.MethodPost, "/api/withdraw", "Rule a document out of the corpus, with grounds. Survives re-ingest."), withdrawOp(reg))
 	gat.Register(api, g, op("restore", http.MethodPost, "/api/restore", "Return a withdrawn document to the corpus (does not re-index)."), restoreOp(reg))
 	gat.Register(api, g, op("listWithdrawals", http.MethodGet, "/api/withdrawals", "Documents ruled out of the corpus, and why."), withdrawalsOp(reg))
@@ -419,6 +424,9 @@ type hitRow struct {
 	Page    int     `json:"page"`
 	Score   float64 `json:"score"`
 	Snippet string  `json:"snippet"`
+	// Origin marks a hit on the document's GENERATED caption/summary rather than
+	// on the document (identity.go): findable by it, not quotable from it.
+	Origin string `json:"origin,omitempty"`
 }
 type searchIn struct {
 	Query string `query:"q"`
@@ -464,7 +472,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			}
 			out.Body.Hits = append(out.Body.Hits, hitRow{
 				Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
-				Score: h.Score, Snippet: clip(oneLine(h.Text), 300),
+				Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
 			})
 		}
 		return out, nil

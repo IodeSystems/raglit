@@ -14,7 +14,21 @@ CREATE TABLE IF NOT EXISTS documents (
   -- inputs (mode + window/stride/floor + figure-prompt version), so a stride change
   -- marks exactly the affected documents stale — narrower than the pool recipe.
   frag_mode    TEXT NOT NULL DEFAULT '',
-  frag_recipe  TEXT NOT NULL DEFAULT ''
+  frag_recipe  TEXT NOT NULL DEFAULT '',
+  -- What this document IS, as opposed to what its file is called: a caption, a
+  -- few sentences of what it covers, and a kind from a closed vocabulary. See
+  -- identity.go. The path and title are NOT touched by any of this — a filename
+  -- is what everything joins on, and "this file is called X and is actually Y"
+  -- is itself a finding, so both are kept and both are shown.
+  --
+  -- gen_source records WHO said it: 'machine' (a model read the transcript) or
+  -- 'person' (someone corrected it). A person's caption is not regenerated.
+  gen_name     TEXT NOT NULL DEFAULT '',
+  gen_summary  TEXT NOT NULL DEFAULT '',
+  gen_kind     TEXT NOT NULL DEFAULT '',
+  gen_source   TEXT NOT NULL DEFAULT '',
+  gen_model    TEXT NOT NULL DEFAULT '',
+  gen_at       INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS fragments (
   id     INTEGER PRIMARY KEY,
@@ -37,7 +51,19 @@ CREATE TABLE IF NOT EXISTS fragments (
   -- for the rest of it, so a search hit inside one could not be resolved to the
   -- page it is actually on — which is the whole point of storing a page.
   -- Empty means the fragment lies entirely on `page`.
-  page_spans TEXT NOT NULL DEFAULT ''
+  page_spans TEXT NOT NULL DEFAULT '',
+  -- Where this text came from. Empty (the overwhelming default) means the
+  -- document's own words. 'identity' means a MODEL wrote it — the generated
+  -- caption and summary, indexed so a query for "purchase and sale agreement"
+  -- can rank a document whose body never says it.
+  --
+  -- The column exists so those two can never be confused. A hit on a paraphrase
+  -- is not a hit on the instrument, and a person quoting one has quoted nothing,
+  -- so search marks it and every path that REASSEMBLES a document (get_document,
+  -- TruePages, the transcription export, the pool) filters it out. Adding
+  -- generated text to `fragments` without this column would put a machine's
+  -- words inside the document's text with nothing able to tell them apart.
+  origin TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS fragments_doc ON fragments(doc_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS fragments_fts USING fts5(

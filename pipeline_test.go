@@ -171,7 +171,7 @@ func TestPageBoundariesRoundTripThroughTheStore(t *testing.T) {
 	if want == 0 {
 		t.Fatal("fixture produced no page-spanning fragment")
 	}
-	if err := s.commitDoc("/tmp/doc.pdf", "doc", "overlap", "", frags, nil, nil, nil); err != nil {
+	if err := s.commitDoc("/tmp/doc.pdf", "doc", "overlap", "", frags, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 

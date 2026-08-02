@@ -98,6 +98,30 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home) {
 	}
 }
 
+// identifier builds the document-identity model client from config, or returns
+// nil when identity is off or no model is configured.
+//
+// It defaults to the VISION model because that is the one every raglit home
+// already has, and it is a chat model — the identity call is text in, JSON out,
+// so a vision model serves it. config.identity_model overrides.
+//
+// Same batch retry policy as the rest of ingest: this call happens at the end of
+// a document that may have cost thirty OCR requests, and losing the caption to a
+// transient 502 wastes the one moment the whole transcript is in hand.
+func (f *llmFlags) identifier(home raglit.Home) *raglit.Identifier {
+	cfg, _, _ := raglit.LoadConfig(home)
+	if cfg.NoIdentity {
+		return nil
+	}
+	model := firstNonEmpty(cfg.IdentityModel, *f.visionModel)
+	if model == "" {
+		return nil
+	}
+	c := llm.NewClient(*f.url, *f.key, model)
+	c.Retry5xxAttempts = visionRetry5xxAttempts
+	return raglit.NewIdentifier(c, model)
+}
+
 // embedClientForProbe is the embed client with the same batch retry policy as
 // ingest. The embedder was the ONE client built without it, which is why its
 // failures logged a different retry cap than the OCR client and sent an

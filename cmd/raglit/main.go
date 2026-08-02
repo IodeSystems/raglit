@@ -105,6 +105,8 @@ func main() {
 		err = runTranscribe(os.Args[2:])
 	case "readings":
 		err = runReadings(os.Args[2:])
+	case "identify":
+		err = runIdentify(os.Args[2:])
 	case "health":
 		err = runHealth(os.Args[2:])
 	case "doctor":
@@ -204,6 +206,22 @@ usage:
                 declared sub-documents, with coverage: which pages of a bundle
                 no slice claims. That is what says a bundle is fully linearized
                 rather than merely started.
+
+  raglit identify [--list] [--force] [--limit N] [--dry-run] [DOC...]
+                what a document IS, as opposed to what its file is called: a
+                caption, a summary and a kind, asked of the model on the text
+                already indexed. Ingest does this per document; this is for a
+                corpus indexed before it existed, and it is resumable — with no
+                arguments it captions every document that has no name yet.
+                The file is NEVER renamed: the caption is a display name and a
+                search target, and the summary is indexed so a query for
+                "purchase and sale agreement" can rank a document whose body
+                never says it. Search marks such a hit — findable by it, not
+                quotable from it.
+
+  raglit identify --name "..." [--summary "..."] [--kind K] <DOC>
+                a PERSON saying what the document is. Supersedes the machine's
+                caption and is never regenerated over.
 
   raglit mark <A> <B> <copy|version|unrelated> [--supersedes PATH] [--note ...]
                 record that ruling. Appended to raglit-audit.jsonl beside the
@@ -448,6 +466,12 @@ func runSearch(args []string) error {
 		loc := h.Path
 		if h.Page > 0 {
 			loc = fmt.Sprintf("%s p%d", h.Path, h.Page)
+		}
+		if h.IsDescription() {
+			// The hit is on the document's caption/summary, which is a machine's
+			// description of it. Said here rather than left to the page number,
+			// because there is no page and the text reads like the document.
+			loc += "  [what this document is — a description of it, not its words]"
 		}
 		fmt.Printf("%d. [%.3f] %s\n   %s\n", i+1, h.Score, loc, clip(oneLine(h.Text), 160))
 	}
