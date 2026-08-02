@@ -95,6 +95,7 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home) {
 	if eng != nil {
 		ocr.Cheap = eng
 		ocr.Gate = cfg.OCR.Gibberish
+		ocr.Assist = strings.EqualFold(strings.TrimSpace(cfg.OCR.Mode), "assist")
 	}
 }
 

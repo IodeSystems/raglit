@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,15 @@ type PageOCR struct {
 	Lines          []OCRLine
 	MeanConfidence float64
 	BoxCount       int
+	// MedianGlyphPx is the median height of recognised text, in pixels of the
+	// image as given — min(width, height) per word, because text that runs
+	// sideways up a sheet has its height on the other axis. 0 when the engine
+	// does not report geometry.
+	//
+	// It is how a page says it needs a better look: the pages every reader read
+	// correctly measure 18-25 px here, and the page they all misread measures 10.
+	// See renderDPIFor.
+	MedianGlyphPx int
 }
 
 // PageEngine is a CHEAP first-pass OCR over one rendered page image — the tier
@@ -111,6 +121,7 @@ func parseTesseractTSV(tsv string) PageOCR {
 		confSum float64
 		words   int
 		prevKey string
+		glyphs  []int
 	)
 	for i, ln := range strings.Split(tsv, "\n") {
 		if i == 0 || ln == "" { // header / trailing blank
@@ -128,6 +139,18 @@ func parseTesseractTSV(tsv string) PageOCR {
 		if err != nil || conf < 0 { // -1 = no recognition
 			continue
 		}
+		// The word's box: min(width, height) is its text height whichever way it
+		// runs. Sideways blocks are not exotic here — a survey's certificate runs
+		// up the edge of the sheet.
+		if w, werr := strconv.Atoi(cols[8]); werr == nil {
+			if h, herr := strconv.Atoi(cols[9]); herr == nil && w > 0 && h > 0 {
+				if w < h {
+					glyphs = append(glyphs, w)
+				} else {
+					glyphs = append(glyphs, h)
+				}
+			}
+		}
 		key := cols[2] + "/" + cols[3] + "/" + cols[4] // block/par/line
 		if words > 0 {
 			if key == prevKey {
@@ -144,6 +167,10 @@ func parseTesseractTSV(tsv string) PageOCR {
 	po := PageOCR{Text: strings.TrimSpace(text.String()), BoxCount: words}
 	if words > 0 {
 		po.MeanConfidence = (confSum / float64(words)) / 100.0
+	}
+	if len(glyphs) > 0 {
+		sort.Ints(glyphs)
+		po.MedianGlyphPx = glyphs[len(glyphs)/2]
 	}
 	return po
 }

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	xdraw "golang.org/x/image/draw"
+	"regexp"
 	"strings"
 
 	"github.com/iodesystems/agentkit/llm"
@@ -45,6 +46,26 @@ type OCR struct {
 	// MaxTokens caps one page transcription; 0 → defaultOCRMaxTokens. See
 	// chat.go for why an unbounded transcription is not a safe default.
 	MaxTokens int
+
+	// Assist changes what the cheap engine is FOR: not a substitute for the
+	// vision model but a spelling reference handed to it.
+	//
+	// The cascade's bargain is "if the cheap read looks clean, keep it and skip
+	// the model". That is a cost decision, and on a corpus of filed documents it
+	// buys the wrong thing: measured here, tesseract reads a surveyor's
+	// certificate as 20123164 with 86% confidence — clean-looking, wrong, and
+	// the gibberish gate passes it.
+	//
+	// The two readers fail differently, which is what makes the assist work. The
+	// vision model normalises proper names (HALVOR → HALVR) and tesseract does
+	// not; tesseract mangles digits and the vision model, at sufficient
+	// resolution, does not. So the model reads the page, with the cheap engine's
+	// WORDS for spelling and its NUMBERS REMOVED — measured on the disputed
+	// record of survey, that combination got all four checked facts right,
+	// including one auditor's file number that no other configuration read
+	// correctly. Handing over the numbers as well loses two of them: the model
+	// copies them, whatever the instructions say.
+	Assist bool
 }
 
 // NewOCR wraps a Chatter (an *llm.Client) as an OCR transcriber. The cheap tier
@@ -74,18 +95,22 @@ func (o *OCR) PageWithEngine(ctx context.Context, img PageImage) (text, engine s
 // — it records the number per region so the crop can be re-rendered exactly, and
 // every other caller wants the text and the engine and nothing else.
 func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine string, shrinks int, err error) {
+	assist := ""
 	if o.Cheap != nil {
 		if po, cerr := o.Cheap.OCRPage(ctx, img); cerr == nil {
-			// A non-gibberish result (including a legitimately empty page) is
-			// trusted — do not pay the VLM for clean or blank pages.
-			if gib, _ := o.Gate.IsGibberish(po); !gib {
-				// The cheap engine reads the image as given; nothing was shrunk.
+			if o.Assist {
+				assist = spellingAssist(po.Text)
+			} else if gib, _ := o.Gate.IsGibberish(po); !gib {
+				// Cascade mode: a non-gibberish result (including a legitimately
+				// empty page) is trusted — do not pay the VLM for clean or blank
+				// pages. The cheap engine reads the image as given; nothing was
+				// shrunk.
 				return strings.TrimSpace(po.Text), o.Cheap.Name(), 0, nil
 			}
 		}
 		// cheap error or gibberish → fall through to the VLM.
 	}
-	t, n, verr := o.visionPage(ctx, img)
+	t, n, verr := o.visionPage(ctx, img, assist)
 	if verr != nil {
 		return "", "", 0, verr
 	}
@@ -98,7 +123,7 @@ func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine strin
 // Reports the number of context downscales it had to apply, which is the only
 // part of the image the model saw that a caller cannot reconstruct from what it
 // passed in.
-func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, int, error) {
+func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (string, int, error) {
 	if o.Client == nil {
 		return "", 0, fmt.Errorf("raglit: ocr page %d needs the vision model but none is configured", img.Page)
 	}
@@ -110,7 +135,7 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage) (string, int, error
 	// the description lands in the page text, flows into fragments, and indexes as
 	// searchable text — no new infrastructure. A described diagram beats an
 	// invisible one; this is why a page reaches the VLM at all.
-	prompt += figureInstruction
+	prompt += figureInstruction + assist
 	msg := llm.Message{Role: "user", Parts: []llm.ContentPart{
 		llm.TextPart(prompt),
 		llm.ImageData(img.Mime, img.Data),
@@ -245,3 +270,34 @@ func downscalePNG(data []byte, factor float64) ([]byte, error) {
 	}
 	return out.Bytes(), nil
 }
+
+// spellingAssist turns a cheap engine's page text into a spelling reference for
+// the vision model — WITH EVERY NUMBER REMOVED.
+//
+// The removal is the point, and it was measured. Handed tesseract's full text,
+// the model adopts its digits: a certificate number it had read correctly on its
+// own came back as tesseract's misreading, and an instruction to prefer the
+// image for numbers did not change that. Anchoring beats instruction. With the
+// digits gone there is nothing wrong to copy, and what remains — the spelling of
+// words and names — is the half tesseract is actually better at.
+func spellingAssist(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	masked := digitRun.ReplaceAllString(text, "\u2588")
+	if strings.TrimSpace(strings.ReplaceAll(masked, "\u2588", "")) == "" {
+		return "" // nothing but numbers; no spellings to offer
+	}
+	return "\n\nA character-level OCR engine read this same page and produced the text " +
+		"below. EVERY NUMBER HAS BEEN REMOVED FROM IT deliberately: it is unreliable on " +
+		"digits, so read every number in this document from the image yourself.\n\n" +
+		"Use it ONLY for the spelling of words and proper names — where it spells a name " +
+		"differently than you would, it is probably right and you are probably " +
+		"normalising it.\n\n--- words seen (numbers removed) ---\n" + masked +
+		"\n--- end ---"
+}
+
+// digitRun matches a number and whatever punctuation runs through it, so a
+// recording number, a date and a dollar amount all leave nothing copyable.
+var digitRun = regexp.MustCompile(`[0-9][0-9.,/:$-]*`)

@@ -288,7 +288,7 @@ func HEICToPNG(ctx context.Context, path string) ([]byte, error) {
 	}
 	return out, nil
 }
-func pdfUnits(ctx context.Context, pdfPath string, canOCR bool) ([]ingestUnit, error) {
+func pdfUnits(ctx context.Context, pdfPath string, canOCR bool, cheap PageEngine) ([]ingestUnit, error) {
 	if !HavePoppler() {
 		pages, err := Pagify(pdfPath, "")
 		if err != nil {
@@ -324,7 +324,18 @@ func pdfUnits(ctx context.Context, pdfPath string, canOCR bool) ([]ingestUnit, e
 		if err != nil {
 			return nil, err
 		}
-		units = append(units, ingestUnit{page: page, mime: mime, data: img})
+		u := ingestUnit{page: page, mime: mime, data: img, dpi: baseRenderDPI}
+		// A page whose own text is too small to read at 200 is re-rendered
+		// larger, once, before any reader sees it. The measurement costs about a
+		// second and is the cheap engine's; without one the base resolution
+		// stands, because guessing at the size of text nothing has measured is
+		// how 200 became a constant in the first place.
+		if dpi := renderDPIFor(ctx, cheap, PageImage{Page: page, Mime: mime, Data: img}); dpi > baseRenderDPI {
+			if big, bmime, berr := pdftoppmPageAt(ctx, pdfPath, page, dpi); berr == nil {
+				u.mime, u.data, u.dpi = bmime, big, dpi
+			}
+		}
+		units = append(units, u)
 	}
 	return units, nil
 }
@@ -359,8 +370,82 @@ func pdftotextPages(ctx context.Context, pdfPath string) ([]string, error) {
 	return pages, nil
 }
 
+// Render resolution — what any reader can possibly see.
+//
+// 200 DPI is the floor and the common case: a typed pleading is ~9pt, which is
+// 25 pixels of glyph height at 200, and every reader handles it. It is NOT
+// enough for everything. Measured on a recorded survey whose lettering is ~3.6pt
+// (10 pixels at 200), three independent readers — a 27B vision model, tesseract,
+// and a current SOTA OCR model — all misread the surveyor's certificate number
+// at 200, and the vision model read it exactly right at 400.
+//
+// Raising it everywhere is the wrong answer: pixels cost tokens, linearly, and
+// prefill went from 3.3s to 24s per page in that experiment. So the resolution
+// is chosen PER PAGE from what is actually on it — see renderDPIFor.
+const (
+	baseRenderDPI = 200
+	maxRenderDPI  = 600
+	// targetGlyphPx is the glyph height a reader needs. 20 pixels is where the
+	// measured failures stop: the pages every reader got right sit at 18-25 px
+	// of median glyph height, and the page they all got wrong sits at 10.
+	targetGlyphPx = 20
+	// smallTextGlyphPx is the height below which a page is re-rendered at all.
+	// Between it and targetGlyphPx the gain does not pay for the tokens.
+	smallTextGlyphPx = 14
+)
+
+// cheapOf is the cascade's cheap engine, when there is one. nil OCR or no cheap
+// tier → no measurement, and the base resolution stands.
+func cheapOf(o *OCR) PageEngine {
+	if o == nil {
+		return nil
+	}
+	return o.Cheap
+}
+
+// renderDPIFor picks a page's render resolution from the size of its own text.
+//
+// The measurement is tesseract's, and costs a second: its word boxes give glyph
+// height directly, on whichever axis the text runs — min(width, height), because
+// a survey's certificate block runs sideways up the sheet and its words are 10
+// pixels wide and 60 tall.
+//
+// Returns baseRenderDPI when the text is ordinary, when tesseract is not
+// configured, or when it finds nothing to measure. A page with no legible text
+// at 200 is not helped by guessing.
+func renderDPIFor(ctx context.Context, eng PageEngine, img PageImage) int {
+	if eng == nil {
+		return baseRenderDPI
+	}
+	po, err := eng.OCRPage(ctx, img)
+	if err != nil || po.BoxCount == 0 || len(po.Lines) == 0 {
+		return baseRenderDPI
+	}
+	med := po.MedianGlyphPx
+	if med <= 0 || med >= smallTextGlyphPx {
+		return baseRenderDPI
+	}
+	dpi := baseRenderDPI * targetGlyphPx / med
+	if dpi > maxRenderDPI {
+		dpi = maxRenderDPI
+	}
+	if dpi < baseRenderDPI {
+		dpi = baseRenderDPI
+	}
+	return dpi
+}
+
+// pdftoppmPage renders one PDF page to a PNG at the given DPI for OCR.
+func pdftoppmPageAt(ctx context.Context, pdfPath string, page, dpi int) ([]byte, string, error) {
+	return pdftoppmPageDPI(ctx, pdfPath, page, dpi)
+}
+
 // pdftoppmPage renders one PDF page to a PNG (200 DPI) for OCR.
 func pdftoppmPage(ctx context.Context, pdfPath string, page int) ([]byte, string, error) {
+	return pdftoppmPageDPI(ctx, pdfPath, page, baseRenderDPI)
+}
+
+func pdftoppmPageDPI(ctx context.Context, pdfPath string, page, dpi int) ([]byte, string, error) {
 	dir, err := os.MkdirTemp("", "raglit-ppm-")
 	if err != nil {
 		return nil, "", err
@@ -368,7 +453,7 @@ func pdftoppmPage(ctx context.Context, pdfPath string, page int) ([]byte, string
 	defer os.RemoveAll(dir)
 	prefix := filepath.Join(dir, "p")
 	ps := fmt.Sprintf("%d", page)
-	cmd := exec.CommandContext(ctx, "pdftoppm", "-png", "-r", "200", "-f", ps, "-l", ps, "-singlefile", pdfPath, prefix)
+	cmd := exec.CommandContext(ctx, "pdftoppm", "-png", "-r", strconv.Itoa(dpi), "-f", ps, "-l", ps, "-singlefile", pdfPath, prefix)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, "", fmt.Errorf("pdftoppm p%d: %w (%s)", page, err, strings.TrimSpace(string(out)))
 	}
@@ -397,7 +482,7 @@ type PageText struct {
 func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error) {
 	switch ClassifyDoc(path, "") {
 	case KindPDF:
-		units, err := pdfUnits(ctx, path, ocr != nil)
+		units, err := pdfUnits(ctx, path, ocr != nil, cheapOf(ocr))
 		if err != nil {
 			return nil, err
 		}

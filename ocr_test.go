@@ -204,3 +204,33 @@ func TestOCR_ContextOverflowGivesUpRatherThanShrinkingForever(t *testing.T) {
 		t.Errorf("want %d attempts, got %d", maxContextShrinks+1, n)
 	}
 }
+
+// The assist hands the vision model WORDS and withholds NUMBERS.
+//
+// Measured on a disputed record of survey: given tesseract's full text, the
+// model adopted its misread certificate number (20123164) over the correct one
+// it had produced unaided (20123169), and telling it to prefer the image for
+// digits did not change that. With the digits removed there is nothing wrong to
+// copy, and the spelling anchor still lands — that configuration read all four
+// checked facts correctly, including one auditor's file number no other
+// configuration read right.
+func TestSpellingAssist_KeepsWordsAndRemovesNumbers(t *testing.T) {
+	const tess = "INSCRIBED HALVOR 20123164.\nAUDITOR'S FILE NUMBER 202101080106 WILL NEED\nFEE $292.50 ON 05/23/2022"
+	got := spellingAssist(tess)
+	for _, want := range []string{"INSCRIBED", "HALVOR", "AUDITOR'S FILE NUMBER", "numbers removed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("assist dropped %q:\n%s", want, got)
+		}
+	}
+	for _, gone := range []string{"20123164", "202101080106", "292.50", "05/23/2022", "2022"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("assist leaked the number %q — the model will copy it:\n%s", gone, got)
+		}
+	}
+	if spellingAssist("  ") != "" {
+		t.Error("an empty page should offer no assist")
+	}
+	if spellingAssist("20123164 202101080106 05/23/2022") != "" {
+		t.Error("a page of nothing but numbers offers no spellings, so it should offer no assist")
+	}
+}

@@ -248,6 +248,11 @@ CREATE TABLE IF NOT EXISTS ocr_pages (
   page       INTEGER NOT NULL,
   engine     TEXT NOT NULL DEFAULT '',
   model      TEXT NOT NULL DEFAULT '',   -- the model behind the engine, when it has one
+  -- The resolution this page was RENDERED at, which decides what any reader can
+  -- possibly see. Measured on a record of survey whose lettering is ~3.6pt: at
+  -- 200 the certificate number reads 201364, at 400 it reads 20123169. Recorded
+  -- because "why is this page wrong" is unanswerable afterwards without it.
+  dpi        INTEGER NOT NULL DEFAULT 0,
   image_path TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (doc_id, page)
 );

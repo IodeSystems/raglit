@@ -295,6 +295,7 @@ func migrate(db *sql.DB) error {
 		{"page_readings", "engine", "TEXT NOT NULL DEFAULT ''"},
 		{"page_readings", "model", "TEXT NOT NULL DEFAULT ''"},
 		{"ocr_pages", "model", "TEXT NOT NULL DEFAULT ''"},
+		{"ocr_pages", "dpi", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
@@ -518,7 +519,7 @@ func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, titl
 	// Per-page hybrid: text-layer pages become text units (free, exact), scanned
 	// pages become image units for the OCR path. Replaces the old Pagify-only path,
 	// which saw no text layer and failed on born-digital PDFs (ErrNoPageImages).
-	units, err := pdfUnits(ctx, filePath, ocr != nil)
+	units, err := pdfUnits(ctx, filePath, ocr != nil, cheapOf(ocr))
 	if err != nil {
 		sl.Fail("extract", "pdf", err)
 		return 0, "", err

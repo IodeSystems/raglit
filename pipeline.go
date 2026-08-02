@@ -39,6 +39,10 @@ type ingestUnit struct {
 	mime string
 	data []byte // set → image unit
 	text string // set → text unit
+	// dpi is the resolution this page was rendered at, carried through to the
+	// page's provenance: it decides what any reader could possibly see, and
+	// without it "why is this page wrong" cannot be answered afterwards.
+	dpi int
 }
 
 func (u ingestUnit) isImage() bool { return len(u.data) > 0 }
@@ -60,6 +64,7 @@ type stagedPage struct {
 	page    int
 	engine  string
 	model   string
+	dpi     int
 	imgPath string
 }
 
@@ -199,7 +204,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			if p, e := s.savePageImage(docPath, u.page, u.mime, u.data); e == nil {
 				imgPath = p
 			}
-			provenance = append(provenance, stagedPage{page: u.page, engine: engine, model: model, imgPath: imgPath})
+			provenance = append(provenance, stagedPage{page: u.page, engine: engine, model: model, dpi: u.dpi, imgPath: imgPath})
 		} else if u.page >= 1 {
 			provenance = append(provenance, stagedPage{page: u.page, engine: engine})
 		}
@@ -786,8 +791,8 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		}
 		// The model behind the engine, raw because the generated query predates
 		// the column (see TruePages on regenerating the sqlc layer).
-		if _, err := tx.ExecContext(ctx, `UPDATE ocr_pages SET model=? WHERE doc_id=? AND page=?`,
-			p.model, docID, p.page); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE ocr_pages SET model=?, dpi=? WHERE doc_id=? AND page=?`,
+			p.model, p.dpi, docID, p.page); err != nil {
 			return err
 		}
 	}

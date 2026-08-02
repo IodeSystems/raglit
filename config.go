@@ -102,7 +102,8 @@ type Config struct {
 	// the local .raglit/ then holds config only. Precedence for the effective
 	// daemon: --daemon flag > $RAGLIT_DAEMON > this. Empty → local (embedded) mode.
 	DaemonURL string `json:"daemon_url,omitempty"`
-	// OCR configures the cheap first-pass tier of the OCR cascade. Zero value →
+	// OCR configures the cheap tier — either as the cascade's first pass or as
+	// the vision model's spelling reference (OCRConfig.Mode). Zero value →
 	// VLM-only (every page transcribed by the vision model).
 	OCR OCRConfig `json:"ocr,omitempty"`
 	// ImageEmbed optionally configures an image embedder for FIGURES: when its
@@ -183,6 +184,18 @@ type OCRConfig struct {
 	// to the VLM so their figures are described inline (§3a figure gate). OFF by
 	// default: it forces those pages onto the vision/llm-seg path (costly).
 	DescribeFigures bool `json:"describe_figures,omitempty"`
+	// Mode decides what the cheap engine is for.
+	//
+	//   "cascade" (default) — it reads first, and the vision model is paid for
+	//     only when the gibberish gate rejects the result. A cost decision.
+	//   "assist" — the vision model reads every page, with the cheap engine's
+	//     WORDS as a spelling reference and its numbers removed. See OCR.Assist:
+	//     the two readers fail differently, and this is how each one's strength
+	//     is used without importing the other's errors.
+	//
+	// A corpus where a misread digit is expensive wants "assist"; a corpus where
+	// throughput matters more than a certificate number wants "cascade".
+	Mode string `json:"mode,omitempty"`
 }
 
 // LoadConfig reads the home's config. exists is false (with nil error) when the
