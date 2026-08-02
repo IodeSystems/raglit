@@ -390,3 +390,78 @@ func TestCommitDoc_QueuesNothingWithoutAModel(t *testing.T) {
 		t.Fatalf("queued %+v with no identity model configured", q)
 	}
 }
+
+// The edge re-arms when the TEXT changes, not only when a caption is missing.
+//
+// A re-read replaces a transcript wholesale — a page that was a signature stamp
+// becomes an agreement — and the caption written from the old one still
+// describes the stamp. "Has no caption" could not detect that; the hash of the
+// text a caption was written from can.
+func TestCommitDoc_ReArmsWhenTheTextChangesUnderACaption(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	c := &countingChatter{}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+	const doc = "/corpus/psa.pdf"
+
+	commit := func(text string) {
+		t.Helper()
+		if err := s.commitDoc(doc, "psa.pdf", "llm-seg", "r",
+			[]stagedFrag{{page: 1, ord: 0, text: text}}, nil, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drain := func() {
+		t.Helper()
+		if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	commit("Authentisign ID: 2311E4FA. X. " + psaText)
+	drain()
+	first, err := s.DocumentIdentity(doc)
+	if err != nil || first.Empty() || first.TextHash == "" {
+		t.Fatalf("first caption = %+v, %v", first, err)
+	}
+	calls := c.calls
+
+	// Committing the SAME text again owes nothing.
+	commit("Authentisign ID: 2311E4FA. X. " + psaText)
+	drain()
+	if c.calls != calls {
+		t.Errorf("an unchanged re-ingest re-captioned (%d → %d calls)", calls, c.calls)
+	}
+
+	// A re-read that actually changes the text does.
+	commit("EXHIBIT A. Legal description of the parcel, metes and bounds, together with the appurtenant easement recorded under auditor's file number 202107080106, and the signatures of both parties, witnessed and acknowledged before a notary public in and for the State of Washington, residing at Mount Vernon.")
+	if q, _ := s.IdentityQueue(); q.Pending != 1 {
+		t.Fatalf("queue after a changed transcript = %+v, want 1 pending", q)
+	}
+	drain()
+	if c.calls != calls+1 {
+		t.Errorf("a changed transcript did not re-caption (%d → %d calls)", calls, c.calls)
+	}
+	second, err := s.DocumentIdentity(doc)
+	if err != nil || second.TextHash == first.TextHash {
+		t.Fatalf("the caption still claims the old text: %+v", second)
+	}
+
+	// A person's caption is never re-armed by a re-read.
+	if _, err := s.RecordIdentity(ctx, doc, DocIdentity{Name: "Mine, and it stays"}, "carl"); err != nil {
+		t.Fatal(err)
+	}
+	calls = c.calls
+	commit("A third and entirely different transcript of this document, long enough to clear the floor below which there is nothing worth captioning, and different in every word from the two that came before it.")
+	drain()
+	if c.calls != calls {
+		t.Errorf("a re-read re-captioned over a person's ruling (%d → %d calls)", calls, c.calls)
+	}
+	if got, _ := s.DocumentIdentity(doc); got.Name != "Mine, and it stays" {
+		t.Errorf("person's caption = %+v", got)
+	}
+}

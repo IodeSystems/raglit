@@ -411,6 +411,18 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 // could not do that — it runs once, at a moment when the answer may be "there is
 // nothing here yet", and nothing revisits it.
 
+// textHashOf fingerprints the document's own words as committed — the same
+// measure IdentityTextHash applies to the text a caption is written from, so the
+// two are comparable. The identity fragment is not among these: a caption is not
+// part of the text it describes.
+func textHashOf(frags []stagedFrag) string {
+	parts := make([]string, 0, len(frags))
+	for _, f := range frags {
+		parts = append(parts, f.text)
+	}
+	return IdentityTextHash(strings.Join(parts, pageSep))
+}
+
 // recordPageReadings stores this run's transcription of each page, attributed to
 // the engine and model that produced it. Best-effort: the document is indexed
 // either way, and a missing provenance row is worth less than a failed ingest.
@@ -806,8 +818,8 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 	}
 	id := DocIdentity{}
 	if err := tx.QueryRow(
-		`SELECT gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at FROM documents WHERE id=?`,
-		docID).Scan(&id.Name, &id.Summary, &id.Kind, &id.Source, &id.Model, &id.At); err != nil {
+		`SELECT gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at, gen_text_hash FROM documents WHERE id=?`,
+		docID).Scan(&id.Name, &id.Summary, &id.Kind, &id.Source, &id.Model, &id.At, &id.TextHash); err != nil {
 		return fmt.Errorf("raglit: read identity: %w", err)
 	}
 	// A person's caption outranks anything an ingest brings — including a pooled
@@ -818,17 +830,31 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		id = *ident
 	}
 	if !id.Empty() {
+		// The caption survives the fragment wipe above, and so must the fragment
+		// that makes it searchable.
 		if err := writeIdentity(ctx, tx, docID, id); err != nil {
 			return err
 		}
-	} else if s.identifier != nil {
-		// The DAG edge: this document now has a transcript and no caption, so a
-		// caption is due. Queued IN THIS TRANSACTION, so "the text changed" and
-		// "the caption is owed" cannot come apart — and re-queued on every
-		// re-read, which is what makes a document that had nothing to summarise
-		// get named as soon as it does. See identityqueue.go.
+	}
+	// Independently of whether one exists: is one OWED? These are separate
+	// questions, and folding them into one branch meant a caption could only ever
+	// be queued for a document that had none — so a re-read that replaced a
+	// document's text wholesale left the old summary in place, describing a
+	// transcript that no longer existed.
+	if s.identifier != nil && !id.ByPerson() && id.TextHash != textHashOf(frags) {
+		// The DAG edge: a caption is downstream of the transcript, so it is owed
+		// whenever the transcript it was written from is not the transcript the
+		// document now has. That covers both directions — a document with no
+		// caption (empty hash, empty caption), and a document whose text was
+		// REPLACED under an existing caption, which is what a re-read does: a
+		// page that was a signature stamp becomes an agreement, and the summary
+		// still describes the stamp.
 		//
-		// Only when a model is configured: an index that does not caption should
+		// Queued IN THIS TRANSACTION, so "the text changed" and "the caption is
+		// owed" cannot come apart. A person's caption is left alone: it is a
+		// ruling about the document, not about one machine's reading of it.
+		//
+		// Only when a model is configured — an index that does not caption should
 		// not accumulate work nobody will ever do.
 		if err := enqueueIdentityTx(ctx, tx, docPath); err != nil {
 			return err

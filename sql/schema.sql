@@ -28,7 +28,20 @@ CREATE TABLE IF NOT EXISTS documents (
   gen_kind     TEXT NOT NULL DEFAULT '',
   gen_source   TEXT NOT NULL DEFAULT '',
   gen_model    TEXT NOT NULL DEFAULT '',
-  gen_at       INTEGER NOT NULL DEFAULT 0
+  gen_at       INTEGER NOT NULL DEFAULT 0,
+  -- The TEXT the caption was written from, hashed.
+  --
+  -- A caption is downstream of the transcript, so it goes stale when the
+  -- transcript changes — and a re-read changes it constantly: a page that was a
+  -- signature stamp becomes a purchase and sale agreement, a corrected reading
+  -- replaces a misread certificate number. Without this the only detectable
+  -- state was "has no caption at all", so a document whose text had been
+  -- replaced wholesale kept a summary describing the old one, and nothing could
+  -- tell the two apart.
+  --
+  -- Empty means unknown — a caption written before this column existed. Treated
+  -- as stale, because it is exactly as trustworthy as an unverified one.
+  gen_text_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS fragments (
   id     INTEGER PRIMARY KEY,

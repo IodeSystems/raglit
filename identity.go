@@ -56,6 +56,18 @@ type DocIdentity struct {
 	Source string `json:"source,omitempty"`
 	Model  string `json:"model,omitempty"`
 	At     int64  `json:"at,omitempty"` // unix nanos
+	// TextHash fingerprints the text this caption was written from, so a
+	// transcript that changes underneath it can be detected. See
+	// documents.gen_text_hash.
+	TextHash string `json:"text_hash,omitempty"`
+}
+
+// IdentityTextHash fingerprints the text a caption is written from. Content
+// only — the same words in the same order hash the same however they were
+// fragmented, so a re-fragmentation that changes no words does not read as a
+// changed document.
+func IdentityTextHash(text string) string {
+	return HashHex([]byte(strings.Join(strings.Fields(text), " ")))
 }
 
 // Empty reports whether nothing has been established about this document.
@@ -368,9 +380,9 @@ func validateIdentity(d DocIdentity) (DocIdentity, error) {
 func (s *Store) DocumentIdentity(path string) (DocIdentity, error) {
 	var d DocIdentity
 	err := s.db.QueryRow(
-		`SELECT gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at
+		`SELECT gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at, gen_text_hash
 		   FROM documents WHERE path = ?`, path).
-		Scan(&d.Name, &d.Summary, &d.Kind, &d.Source, &d.Model, &d.At)
+		Scan(&d.Name, &d.Summary, &d.Kind, &d.Source, &d.Model, &d.At, &d.TextHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DocIdentity{}, fmt.Errorf("raglit: no document with path %q", path)
 	}
@@ -421,9 +433,9 @@ func (s *Store) SetDocumentIdentity(ctx context.Context, path string, d DocIdent
 // sixty broken ones.
 func writeIdentity(ctx context.Context, tx dbExecer, docID int64, d DocIdentity) error {
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE documents SET gen_name=?, gen_summary=?, gen_kind=?, gen_source=?, gen_model=?, gen_at=?
+		`UPDATE documents SET gen_name=?, gen_summary=?, gen_kind=?, gen_source=?, gen_model=?, gen_at=?, gen_text_hash=?
 		  WHERE id=?`,
-		d.Name, d.Summary, d.Kind, d.Source, d.Model, d.At, docID); err != nil {
+		d.Name, d.Summary, d.Kind, d.Source, d.Model, d.At, d.TextHash, docID); err != nil {
 		return fmt.Errorf("raglit: set identity: %w", err)
 	}
 	// One identity fragment per document, replaced rather than accumulated.
@@ -514,6 +526,17 @@ func (s *Store) IdentityText(ctx context.Context, path string) (string, error) {
 	return strings.Join(parts, pageSep), nil
 }
 
+// documentTextHash fingerprints a document's indexed words — the same measure
+// commitDoc applies to what it just committed.
+func (s *Store) documentTextHash(ctx context.Context, path string) (string, error) {
+	_ = ctx
+	c, err := s.DocText(path, 0, 0, 0)
+	if err != nil {
+		return "", err
+	}
+	return IdentityTextHash(c.Text), nil
+}
+
 // Errors IdentifyDocument returns for the two states that are not failures.
 var (
 	// ErrNoIdentifier means this store was never given a model to caption with.
@@ -553,6 +576,13 @@ func (s *Store) IdentifyDocument(ctx context.Context, path string, force bool) (
 	if err != nil {
 		return DocIdentity{}, err
 	}
+	// Hashed on the INDEXED text, not on the text the model read. The two differ
+	// when a person has corrected a page — IdentityText overlays the reading in
+	// force — and commitDoc can only compare what it commits, which is
+	// fragments. Measuring both sides the same way keeps a corrected document
+	// from reading as permanently stale. A correction has its own edge; see
+	// AddPageReading.
+	id.TextHash, _ = s.documentTextHash(ctx, path)
 	if err := s.SetDocumentIdentity(ctx, path, id); err != nil {
 		return DocIdentity{}, err
 	}
@@ -571,12 +601,16 @@ func (s *Store) RecordIdentity(ctx context.Context, path string, d DocIdentity, 
 		return DocIdentity{}, err
 	}
 	out := DocIdentity{
-		Name:    firstNonBlank(d.Name, cur.Name),
-		Summary: firstNonBlank(d.Summary, cur.Summary),
-		Kind:    firstNonBlank(d.Kind, cur.Kind),
-		Source:  IdentityByPerson,
-		Model:   strings.TrimSpace(by),
-		At:      time.Now().UnixNano(),
+		// A person's caption carries the CURRENT text's hash, so a later re-read
+		// does not mark it stale — it would not be regenerated anyway, and a
+		// permanent "stale" on a ruling nobody will overturn is noise.
+		TextHash: cur.TextHash,
+		Name:     firstNonBlank(d.Name, cur.Name),
+		Summary:  firstNonBlank(d.Summary, cur.Summary),
+		Kind:     firstNonBlank(d.Kind, cur.Kind),
+		Source:   IdentityByPerson,
+		Model:    strings.TrimSpace(by),
+		At:       time.Now().UnixNano(),
 	}
 	if strings.TrimSpace(out.Name) == "" {
 		return DocIdentity{}, fmt.Errorf("raglit: an identity needs a name")

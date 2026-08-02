@@ -98,7 +98,20 @@ func (s *Store) AddPageReading(ctx context.Context, r PageReading) error {
 		r.Doc, r.Page, seq, r.Text, r.Source, r.Engine, r.Model, r.Note, r.By, r.At, active); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// A correction changes what the document SAYS, so the caption written from
+	// the old reading is owed again — the same edge a re-read fires, from the
+	// other direction. The document's own caption is left alone when a person
+	// wrote it; IdentifyDocument refuses those anyway, and queueing work that is
+	// certain to be declined is just noise in the queue.
+	if active == 1 && r.Source == "corrected" && s.identifier != nil {
+		if cur, err := s.DocumentIdentity(r.Doc); err == nil && !cur.ByPerson() && !cur.Empty() {
+			_, _ = s.EnqueueIdentity(r.Doc, true)
+		}
+	}
+	return nil
 }
 
 // PageReadings returns every recorded version of one page, oldest first.

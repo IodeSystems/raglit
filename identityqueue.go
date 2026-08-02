@@ -97,11 +97,17 @@ func (s *Store) EnqueueIdentity(path string, force bool) (bool, error) {
 
 // enqueueIdentityTx is EnqueueIdentity inside a caller's transaction — used by
 // commitDoc so a new transcript and the caption it owes are one atomic fact.
+//
+// force is set, because this is only reached when the text a caption was written
+// from is not the text the document now has. Without it the worker would find an
+// existing caption and decline, which is exactly the stale caption being
+// replaced. A PERSON's caption is still refused downstream (IdentifyDocument),
+// and commitDoc does not queue those at all.
 func enqueueIdentityTx(ctx context.Context, tx dbExecer, path string) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO identity_jobs(path, state, force, enqueued_at) VALUES(?, 'pending', 0, ?)
+		`INSERT INTO identity_jobs(path, state, force, enqueued_at) VALUES(?, 'pending', 1, ?)
 		 ON CONFLICT(path) DO UPDATE SET
-		   state='pending', error='', enqueued_at=excluded.enqueued_at,
+		   state='pending', force=1, error='', enqueued_at=excluded.enqueued_at,
 		   started_at=0, finished_at=0, owner_pid=0
 		 WHERE identity_jobs.state IN ('done','skipped','error')`,
 		path, time.Now().UnixNano())
@@ -143,12 +149,23 @@ func (s *Store) EnqueueMissingIdentities(force bool) (int, error) {
 	return s.EnqueueIdentityFor(paths, force)
 }
 
-// captionableMissing is DocumentsMissingIdentity minus the documents a previous
-// sweep already established have nothing to caption. Re-queueing those is a
-// guaranteed no-op that would nonetheless read as outstanding work forever.
-// --force still reaches them, because "nothing to read" can stop being true when
-// a document is re-OCR'd.
+// captionableMissing is every document that OWES a caption: one that has none,
+// and one whose caption was written from a transcript the document no longer
+// has (gen_text_hash empty or stale). A person's caption is never owed again.
+//
+// Documents a previous sweep established have nothing to caption are excluded —
+// re-queueing those is a guaranteed no-op that would nonetheless read as
+// outstanding work forever. --force still reaches them, because "nothing to
+// read" stops being true the moment a document is re-OCR'd.
+//
+// The staleness test is done in Go rather than SQL because the hash is over the
+// REASSEMBLED text — overlapping windows are de-overlapped, which sqlite cannot
+// express — and it is the same comparison commitDoc makes.
 func (s *Store) captionableMissing() ([]string, error) {
+	stale, err := s.staleCaptions()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.Query(
 		`SELECT d.path FROM documents d
 		  WHERE TRIM(d.gen_name) = ''
@@ -166,7 +183,48 @@ func (s *Store) captionableMissing() ([]string, error) {
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return append(out, stale...), nil
+}
+
+// staleCaptions lists documents whose caption describes a transcript the
+// document no longer has — the backlog form of the edge commitDoc fires. A
+// caption with no recorded source text (written before the hash existed) counts
+// as stale: it is exactly as trustworthy as one that is.
+func (s *Store) staleCaptions() ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT path, gen_text_hash FROM documents
+		  WHERE TRIM(gen_name) <> '' AND gen_source <> 'person' ORDER BY added_at`)
+	if err != nil {
+		return nil, err
+	}
+	type doc struct{ path, hash string }
+	var docs []doc
+	for rows.Next() {
+		var d doc
+		if err := rows.Scan(&d.path, &d.hash); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		docs = append(docs, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	ctx := context.Background()
+	var out []string
+	for _, d := range docs {
+		h, err := s.documentTextHash(ctx, d.path)
+		if err != nil || h == d.hash {
+			continue
+		}
+		out = append(out, d.path)
+	}
+	return out, nil
 }
 
 // claimNextIdentityJob takes the oldest pending row and marks it running.
@@ -357,8 +415,13 @@ type IdentityWorker struct {
 type identityTask struct {
 	job  IdentityJob
 	text string
-	id   DocIdentity
-	err  error
+	// textHash fingerprints the INDEXED text as it stood when this job was
+	// loaded, so the caption records what it was written from and a later commit
+	// can tell whether the transcript has moved. Computed by the loader, off a
+	// slot, from the same read.
+	textHash string
+	id       DocIdentity
+	err      error
 }
 
 // Drain works the queue until it is empty, returning how many jobs finished
@@ -441,6 +504,9 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 					t.err = &ErrIdentityTooShort{Chars: contentChars(text)}
 				default:
 					t.text = text
+					if h, herr := w.Store.documentTextHash(ctx, job.Path); herr == nil {
+						t.textHash = h
+					}
 				}
 			}
 			select {
@@ -478,6 +544,7 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 		// job, not a lost one — the row keeps the reason.
 		err := t.err
 		if err == nil {
+			t.id.TextHash = t.textHash
 			err = w.Store.SetDocumentIdentity(ctx, t.job.Path, t.id)
 		}
 		if errors.Is(err, ErrIdentityKept) {

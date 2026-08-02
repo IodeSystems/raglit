@@ -287,6 +287,7 @@ func migrate(db *sql.DB) error {
 		{"documents", "gen_source", "TEXT NOT NULL DEFAULT ''"},
 		{"documents", "gen_model", "TEXT NOT NULL DEFAULT ''"},
 		{"documents", "gen_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"documents", "gen_text_hash", "TEXT NOT NULL DEFAULT ''"},
 		{"fragments", "origin", "TEXT NOT NULL DEFAULT ''"},
 		// Which reader produced a reading (pagereadings.go). An index that
 		// predates these has readings whose engine is simply unknown, which is
