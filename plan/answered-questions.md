@@ -74,6 +74,46 @@ summary compounds its own errors silently, and the full fragment set is cheap to
 re-read. The same holds for the question list: regenerate it against the
 fragments that exist now, so a deleted memory takes its questions with it.
 
+## The operation set is `attest`'s, already (USER, 2026-08-02)
+
+create · refine · delete · attest — and every one of them is an existing Kind in
+`attest/attestation.go`. Nothing new is needed but the decision to point it at
+question units:
+
+| operation | kind | note |
+|---|---|---|
+| refine an answer | `corrected` | the correction IS the record, not a rewrite |
+| delete a void question | `retract` | appended, never a row removal |
+| a person checked it | `confirmed` | the escalation, for a load-bearing answer |
+| a person read past it | `affirmed` | the ordinary pass |
+| the source does not support it | `unsupported` | the answer was invented |
+| cannot tell | `unclear` | categorical, never a score |
+
+Append-only, one JSON object per line, for the reason already written down: a
+mutable verdict file answers "what is the current ruling" and DESTROYS the record
+of how it was reached. A memory that was corrected twice and then confirmed is a
+different object from one that was simply written correctly, and only the log
+can tell them apart.
+
+## Orphaning is the staleness detector — and it already exists
+
+This is the part that closes the problem `dun/plan/icebox.md` records as
+unsolved. Unit ids are content-addressed, the log is SEPARATE from the reading
+and is never rewritten by a re-read, and `attest/state.go` reports
+`Orphaned []Entry` — a verdict whose unit no longer exists is surfaced rather
+than quietly re-attached to a claim nobody ruled on.
+
+Point that at questions and staleness detects ITSELF. Address a question unit by
+its content — the question plus the answer it was derived from — and a rebuild
+that changes the answer produces a NEW id, orphaning every attestation against
+the old one. "This was confirmed, and then it changed" stops being something
+anyone has to notice: it is the difference between two sets, computed on
+reingest.
+
+The two halves are complementary, not redundant. Orphaning catches what changed
+underneath a verdict; the correction path in the rendering (below) catches what
+was wrong from the start and never changed. Neither finds the other's case.
+
 ## Risks
 
 - **The summary launders a wrong fragment into an authoritative claim.** A bad
