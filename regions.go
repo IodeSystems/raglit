@@ -162,6 +162,16 @@ const (
 	// FlagExhausted — the model proposed nothing further. The one POSITIVE
 	// signal, and the only one meaning "this is as good as it gets".
 	FlagExhausted = "exhausted"
+	// FlagTransformSuspect — this region's reading has almost nothing in common
+	// with what its PARENT said is here. Not a claim that the text is wrong: a
+	// claim that the TRANSFORM is, because a crop or a rotation applied the wrong
+	// way round does not garble the content, it returns a reading about something
+	// else. Observed as clockwise-for-counter-clockwise and as a bad root.
+	//
+	// Recorded rather than corrected. Acting on it means re-rendering the PARENT
+	// — the child cannot fix a rotation it did not choose — and that loop is not
+	// built.
+	FlagTransformSuspect = "transform-suspect"
 	// FlagBudget — descent stopped because the budget ran out, not because the
 	// region was finished. Recorded so a thin read is never mistaken for a
 	// complete one.
