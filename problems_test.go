@@ -121,9 +121,13 @@ func TestProblemsReportsWithdrawalsSeparately(t *testing.T) {
 }
 
 // A clean index reports nothing. A view that always has rows is one nobody reads.
+// The document is a REAL file on disk, not a synthetic path. It used to be
+// "/a.md", which no index would ever contain and which the missing-file check
+// correctly calls a problem — an index whose document is not where its row says
+// is not a healthy index, and the fixture was quietly asserting otherwise.
 func TestProblemsSilentOnAHealthyIndex(t *testing.T) {
 	s := testStore(t)
-	if err := s.Ingest(context.Background(), Document{Path: "/a.md",
+	if err := s.Ingest(context.Background(), Document{Path: existingFile(t, "a.md"),
 		Fragments: []Fragment{{Text: "text"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -315,6 +319,99 @@ func TestProblems_ReportsRaglitsOwnOutputAsIndexed(t *testing.T) {
 		}
 		if !strings.HasPrefix(p.Fix, "raglit forget ") {
 			t.Errorf("no usable fix on %s: %q", p.Subject, p.Fix)
+		}
+	}
+}
+
+// The failure nothing else noticed: a row whose file has moved.
+//
+// Search keeps working — the fragments are in SQLite — so the corpus looks fine
+// from the one angle anybody checks. It breaks only when something goes back to
+// the file, and each of those breaks far from anything that names the cause.
+func TestProblemsFindsDocumentsWhoseFileIsGone(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	here := existingFile(t, "here.md")
+	gone := filepath.Join(filepath.Dir(here), "moved-away.md")
+
+	for _, p := range []string{here, gone} {
+		if err := s.Ingest(ctx, Document{Path: p, Fragments: []Fragment{{Text: "text"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var got []Problem
+	for _, p := range mustProblems(t, s) {
+		if p.Kind == ProblemMissingFile {
+			got = append(got, p)
+		}
+	}
+	if len(got) != 1 || got[0].Subject != gone {
+		t.Fatalf("want only %s reported missing, got %+v", gone, got)
+	}
+	// The row is dead, but the DOCUMENT usually is not — the file has moved and
+	// is still in the tree. A fix that says only "forget" would read as "this is
+	// lost", so the detail has to say otherwise.
+	if !strings.Contains(got[0].Detail, "MOVED") {
+		t.Errorf("detail does not say the file may have moved: %q", got[0].Detail)
+	}
+	if got[0].Fix == "" {
+		t.Error("a missing-file row carries no fix")
+	}
+}
+
+// A slice names a PAGE RANGE of a parent, not a file, so stat can never succeed
+// on one. This is the false positive anybody writing this check hits first: it
+// reported five of them on the corpus that prompted the feature, before the
+// check learned to skip them.
+func TestProblemsDoesNotCallSlicesMissingFiles(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	parent := existingFile(t, "bundle.pdf")
+	if err := s.Ingest(ctx, Document{Path: parent, Fragments: []Fragment{{Text: "text"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest(ctx, Document{Path: parent + "#p1-8",
+		Fragments: []Fragment{{Text: "slice text"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range mustProblems(t, s) {
+		if p.Kind == ProblemMissingFile {
+			t.Fatalf("a slice was reported as a missing file: %+v", p)
+		}
+	}
+}
+
+// Withdrawn is absent ON PURPOSE and has its own kind. Reporting it twice — once
+// as a decision and once as a fault — is the confusion withdrawal exists to end.
+func TestProblemsDoesNotCallWithdrawnDocumentsMissing(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	gone := filepath.Join(t.TempDir(), "withdrawn-and-deleted.md")
+	if err := s.Ingest(ctx, Document{Path: gone, Fragments: []Fragment{{Text: "text"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Withdraw(Withdrawal{Path: gone, Reason: "ruled out"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range mustProblems(t, s) {
+		if p.Kind == ProblemMissingFile {
+			t.Fatalf("a withdrawn document was also reported missing: %+v", p)
+		}
+	}
+}
+
+// A remote document cannot be stat'ed. Calling it missing because a server is
+// unreachable would be a false alarm that arrives every time the network does.
+func TestProblemsDoesNotCallRemoteDocumentsMissing(t *testing.T) {
+	s := testStore(t)
+	if err := s.Ingest(context.Background(), Document{Path: "https://example.com/a.pdf",
+		Fragments: []Fragment{{Text: "text"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range mustProblems(t, s) {
+		if p.Kind == ProblemMissingFile {
+			t.Fatalf("a remote document was reported as a missing file: %+v", p)
 		}
 	}
 }

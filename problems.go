@@ -54,6 +54,27 @@ const (
 	// document that is absent BY DECISION is never mistaken for one that is
 	// absent by accident, which is the confusion withdrawal exists to end.
 	ProblemWithdrawn ProblemKind = "withdrawn"
+	// ProblemMissingFile — an indexed document whose file is no longer at the
+	// path the row records.
+	//
+	// The quietest failure in this list, because search keeps working: the
+	// fragments live in SQLite and answer queries exactly as before. What breaks
+	// is everything that goes back to the FILE — download the original, re-read
+	// it, show a page image, write a reading so it can be reviewed — and each of
+	// those fails on its own, far from anything that would name the cause.
+	//
+	// Found on the corpus this was written against, and only because a review
+	// sweep tried to open 355 documents and 43 were not there. Nothing else had
+	// noticed. Most were a deliberate archival move (documents/ → legacy/) and
+	// several were content-preserving renames whose new path was never ingested,
+	// so four court filings existed on disk under better names and were absent
+	// from the corpus entirely.
+	//
+	// Usually RECOVERABLE, which is why the fix is not simply "forget": the bytes
+	// are generally still in the tree. 39 of those 43 were found on disk at
+	// another path. A row is a pointer, and a moved file breaks the pointer, not
+	// the document.
+	ProblemMissingFile ProblemKind = "missing-file"
 )
 
 // Problem is one thing worth a person's attention.
@@ -124,6 +145,42 @@ var problemQueries = []problemQuery{
 		       WHERE d.path LIKE '%.raglit-transcription.md'
 		          OR d.path LIKE '%.raglit-regions.json'
 		       ORDER BY d.path`,
+		fix: func(p Problem) string { return "raglit forget " + p.Subject },
+	},
+	{
+		kind: ProblemMissingFile,
+		// Before no-pages on purpose. That kind's fix is `raglit reread <path>`,
+		// which cannot work when there is nothing at the path — a reader who sees
+		// "no pages" first is sent to run a command that fails for a reason this
+		// row is the only one that states.
+		//
+		// Three exclusions, each for a different reason. Slices (#pN-M) name a
+		// PAGE RANGE of a parent, not a file, so stat can never succeed on one —
+		// they are the false positive anybody writing this check hits first.
+		// Withdrawn paths are absent on purpose and reported under their own kind.
+		// raglit's own generated output is reported as generated-indexed, whose
+		// fix is the same `forget`, and listing it twice is noise.
+		// The detail is a fixed sentence rather than recorded evidence, because
+		// there is none to quote: the finding IS the absence. It says what the
+		// report cannot work out — where the file went — so the reader does not
+		// read `forget` as "this document is lost".
+		sql: `SELECT d.path, 0, '',
+		             'The row is a pointer and the file is not at the end of it. ' ||
+		             'Usually the file MOVED and is still in the tree: ingest it at its ' ||
+		             'new path first, then forget this row. Forgetting alone drops the ' ||
+		             'document from the corpus and leaves the copy that still exists unindexed.'
+		        FROM documents d
+		       WHERE d.path NOT LIKE '%#p%'
+		         AND d.path NOT LIKE '%.raglit-transcription.md'
+		         AND d.path NOT LIKE '%.raglit-regions.json'
+		         AND NOT EXISTS (SELECT 1 FROM withdrawals w WHERE w.path = d.path)
+		       ORDER BY d.path`,
+		keep: documentFileIsGone,
+		// `forget`, and not an ingest of the containing directory. The directory
+		// is a guess: the case this was built from moved files from documents/ to
+		// legacy/, so re-ingesting the old parent finds nothing. Worse,
+		// filepath.Dir of a top-level path is "/", and offering to re-ingest the
+		// filesystem root is not a suggestion anybody should be one click from.
 		fix: func(p Problem) string { return "raglit forget " + p.Subject },
 	},
 	{
@@ -260,4 +317,41 @@ func jobTargetIsStillReachable(p Problem) bool {
 	}
 	_, statErr := os.Stat(path)
 	return statErr == nil
+}
+
+// documentFileIsGone reports whether an indexed document's local file is no
+// longer where its row says it is.
+//
+// The mirror of jobTargetIsStillReachable, and it errs the other way on purpose.
+// That function decides whether a FAILURE is still worth acting on and keeps
+// anything it cannot rule out; this one decides whether to accuse a corpus of
+// having lost a document, so it only says so when it actually looked and the
+// file was not there.
+//
+// Hence what is NOT reported. A remote URL cannot be stat'ed, and calling a
+// document missing because a server is unreachable would be a false alarm that
+// arrives every time the network does. A relative path cannot be resolved from
+// here at all — it means whatever the working directory of the process opening
+// it happens to be, which is not this one — so it is a broken row of a different
+// kind, and guessing at it would put a path in the report that nobody can check.
+func documentFileIsGone(p Problem) bool {
+	raw := p.Subject
+	path := raw
+	if u, err := url.Parse(raw); err == nil {
+		switch u.Scheme {
+		case "http", "https":
+			return false
+		case "file":
+			path = fileURLPath(u)
+		case "":
+			// A bare local path, which is what nearly every row is.
+		default:
+			return false
+		}
+	}
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	_, err := os.Stat(path)
+	return os.IsNotExist(err)
 }
