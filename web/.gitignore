@@ -1,0 +1,7 @@
+node_modules/
+
+# dist is NOT ignored. It is committed on purpose: `go install
+# github.com/iodesystems/raglit/cmd/raglit@latest` has to work on a machine with
+# no node, and //go:embed only sees files present in the module.
+# Generated — never hand-edit. Rebuild with `make web`.
+*.tsbuildinfo

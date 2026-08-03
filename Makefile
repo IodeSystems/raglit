@@ -18,7 +18,20 @@ ifeq ($(GOBIN),)
 GOBIN   := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: build install release test lint clean
+.PHONY: build install release test lint clean web web-dev
+
+# The review UI is a React/vite app in web/, and web/dist is COMMITTED and
+# //go:embed'd (web/embed.go says why). So `web` is not part of `build`: a Go
+# build must keep working on a machine with no node, which is the whole reason
+# the output is in the tree.
+#
+# Run it after changing anything under web/src, and commit what it writes. A dist
+# that lags its source is a UI fix that does not appear, with a green build.
+web: ## rebuild the embedded review UI (commit web/dist afterwards)
+	cd web && npm ci && npm run build
+
+web-dev: ## vite dev server against a running daemon (RAGLIT_DAEMON=url to point it)
+	cd web && npm run dev
 
 build: ## build ./raglit, source-stamped
 	go build -ldflags "$(LDFLAGS)" -o raglit ./cmd/raglit
