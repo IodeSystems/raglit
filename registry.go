@@ -212,6 +212,48 @@ func (r *Registry) ForkBranch(name, parent string) error {
 
 // DeleteBranch closes and removes a branch (its scoped storage), leaving the
 // parent untouched. Errors if `name` is not a branch.
+// DeleteIndex removes an index entirely — its store, its directory, its
+// originals and its pages.
+//
+// THE POOL IS NOT TOUCHED, and that is the whole point of the split. The pool
+// cost LLM calls (extract/OCR/segment/embed) and is shared by every index; an
+// index is the cheap part, rebuildable FROM the pool without a single model
+// call. Deleting the expensive half to reclaim the cheap one would turn a
+// cleanup into a re-embedding bill, so index lifetime is the caller's business
+// and pool lifetime belongs to Pool.GC.
+//
+// Refuses an index that a branch is layered over: a branch reads
+// branch-over-parent, so removing the parent leaves it reading half a
+// conversation with no way to say which half is missing.
+func (r *Registry) DeleteIndex(name string) error {
+	if r.scopedRoot == "" {
+		return fmt.Errorf("raglit: deleting an index requires the daemon's scoped storage (no --home)")
+	}
+	name = normalizeIndexName(name)
+	if name == "default" {
+		return fmt.Errorf("raglit: refusing to delete the default index")
+	}
+	home := r.indexHome(name)
+	if _, err := os.Stat(string(home)); err != nil {
+		return fmt.Errorf("raglit: no index %q", name)
+	}
+	for _, other := range r.Names() {
+		if other == name {
+			continue
+		}
+		if meta, ok := readBranchMeta(r.indexHome(other)); ok && normalizeIndexName(meta.Parent) == name {
+			return fmt.Errorf("raglit: %q is the parent of branch %q — delete the branch first", name, other)
+		}
+	}
+	r.mu.Lock()
+	if s, ok := r.stores[name]; ok {
+		s.Close()
+		delete(r.stores, name)
+	}
+	r.mu.Unlock()
+	return os.RemoveAll(string(home))
+}
+
 func (r *Registry) DeleteBranch(name string) error {
 	if r.scopedRoot == "" {
 		return fmt.Errorf("raglit: branches require a scoped daemon (no --home)")

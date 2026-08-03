@@ -51,6 +51,8 @@ func main() {
 		err = runSync(os.Args[2:])
 	case "branch":
 		err = runBranch(os.Args[2:])
+	case "drop-index":
+		err = runDropIndex(os.Args[2:])
 	case "watch":
 		err = runWatch(os.Args[2:])
 	case "status":
