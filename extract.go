@@ -238,6 +238,46 @@ func IsOpaque(head []byte) bool {
 	return true
 }
 
+// minifiedLineBytes is the line length past which a file is machine-written
+// rather than authored.
+//
+// Set conservatively, from measurement rather than taste. Across this project's
+// own tree the longest line in a hand-written file is ~2,000 characters and
+// typical prose is 60; a minified bundle is 289,407 characters on ONE line.
+// 5,000 sits in the empty space between them, so a false positive would need a
+// single paragraph of five thousand characters — which is not prose.
+//
+// MAX line length, not mean. Mean was the obvious choice and is wrong: markdown
+// written without hard wrapping is one line per paragraph, which lands near 300
+// on the same scale as a minified stylesheet at 359. The maximum separates
+// "someone wrote a long paragraph" from "a machine emitted a file with no line
+// structure at all".
+const minifiedLineBytes = 5000
+
+// IsMinified reports whether these bytes have no line structure a human put
+// there — a minified bundle, a generated blob, a one-line data dump.
+//
+// Such a file is TEXT, so IsOpaque passes it and the reader indexes it happily:
+// measured here, a 289 KB minified xterm.js would fragment into hundreds of
+// chunks of unreadable JavaScript and embed every one, answering no question
+// anyone will ever ask. It is git-tracked, so a caller filtering by .gitignore
+// cannot help — the defence has to be about the bytes.
+func IsMinified(head []byte) bool {
+	longest, start := 0, 0
+	for i := 0; i < len(head); i++ {
+		if head[i] == '\n' {
+			if i-start > longest {
+				longest = i - start
+			}
+			start = i + 1
+		}
+	}
+	if len(head)-start > longest {
+		longest = len(head) - start
+	}
+	return longest >= minifiedLineBytes
+}
+
 // ClassifyPath is ClassifyDoc for a file that exists on disk: the extension
 // decides, and only when it decides nothing does the content get a say.
 //

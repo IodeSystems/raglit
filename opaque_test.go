@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,4 +70,50 @@ func TestIsOpaque_OnlyGuardsTheUnknownPath(t *testing.T) {
 		t.Fatalf("an extensionless file should still be KindUnknown, got %v", k)
 	}
 	_ = strings.TrimSpace
+}
+
+// A minified bundle is TEXT, so IsOpaque passes it and the reader indexes it
+// happily — 289 KB of xterm.js fragmenting into hundreds of chunks of
+// unreadable JavaScript, each embedded, answering no question anyone will ask.
+// It is git-tracked too, so a caller filtering by .gitignore cannot help.
+func TestIsMinified_CatchesMachineOutputWithoutCatchingProse(t *testing.T) {
+	long := strings.Repeat("var a=1,b=2,c=3;function f(){return a+b+c}", 400) // ~16k, one line
+	if !IsMinified([]byte(long)) {
+		t.Error("a 16k single line is machine output")
+	}
+	// Measured on the file that prompted this: no newline at all in the head.
+	if !IsMinified(bytes.Repeat([]byte("x"), 8000)) {
+		t.Error("a head with no line breaks at all is machine output")
+	}
+
+	// The false positive that mean-line-length would have caused: markdown
+	// written without hard wrapping is ONE LINE PER PARAGRAPH, which lands on
+	// the same scale as a minified stylesheet.
+	para := strings.Repeat("This is an ordinary sentence of unwrapped prose. ", 20) // ~960 chars
+	unwrapped := para + "\n\n" + para + "\n\n" + para + "\n"
+	if IsMinified([]byte(unwrapped)) {
+		t.Error("unwrapped prose is not minified — max line, not mean, is the signal")
+	}
+	// Ordinary source and short text are nowhere near.
+	for _, ok := range []string{
+		"package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n",
+		"# Title\n\nA paragraph.\n\n- a list item\n",
+		"a,b,c\n1,2,3\n",
+		"",
+	} {
+		if IsMinified([]byte(ok)) {
+			t.Errorf("false positive on %q", ok[:min(len(ok), 20)])
+		}
+	}
+	// A long line that is still plausibly authored stays in.
+	if IsMinified([]byte(strings.Repeat("word ", 400))) { // 2000 chars
+		t.Error("2k of prose on one line must not be refused; the threshold is 5k")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
