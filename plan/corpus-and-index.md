@@ -65,11 +65,50 @@ takes the write lock, or corpus rows carry a `created_at` and the sweep ignores
 anything younger than a few minutes. The second is cheaper and racier; the first
 is correct and blocks a writer briefly.
 
-## Scope
+## Scope: project IS the corpus, directory+branch IS the index (USER, 2026-08-03)
 
-The corpus is per-HOME, not per-index — that is the whole point. One shared
-daemon holds one home, N project-namespaced indexes, and one corpus underneath
-them all, so identical content across projects is embedded once.
+    --project  dun                 → corpus-dun.sqlite      the embeddings
+    --index    dun-feature-x       → index-dun-feature-x.sqlite   the membership
+
+The usage this is FOR: two worktrees of one repo on two branches. Each gets its
+own index, so a search returns this branch's files and not a sibling's — and
+both draw on one corpus, so the files they share cost one embedding between
+them. Isolation and reuse at once, which is exactly what a single index cannot
+give you.
+
+dun needs precisely this. Its plan already records the day pointing raglit at a
+workspace root indexed 16 worktree COPIES and every workspace-wide search came
+back entirely stale duplicates. Per-worktree indexes make that unreachable; the
+corpus is what stops the isolation costing 16× the embeddings.
+
+Corpus per PROJECT, not per home: two unrelated projects sharing a vendored file
+will embed it twice. That is the deliberate trade — a shared-everything corpus
+is one namespace to corrupt, and cross-project reuse is worth less than
+per-project blast radius.
+
+## Where it physically lives
+
+An index is ONE SQLITE FILE (`index-<name>.sqlite`, see `home.go`), so a corpus
+shared BETWEEN indexes cannot live inside one of them. It is its own database,
+`corpus-<project>.sqlite`, joined at query time:
+
+    ATTACH DATABASE '<home>/corpus-<project>.sqlite' AS corpus;
+
+    SELECT …, c.vec
+      FROM fragment_vectors fv
+      JOIN fragments f ON f.id = fv.fragment_id
+      JOIN documents d ON d.id = f.doc_id
+      JOIN corpus.corpus c ON c.key = fv.corpus_key
+
+which keeps `VecSearch`'s shape — scan, score in Go — unchanged.
+
+**ATTACH is per-CONNECTION, and that is only safe here by accident of an
+existing decision.** `Store.Open` already calls `db.SetMaxOpenConns(1)`, so
+there is one connection and the attach persists on it. Raise that limit and the
+pool will hand out connections with no corpus attached, and the failure is
+`no such table: corpus.corpus` — intermittently, under concurrency only, which
+is the worst way to find out. If the single-connection decision is ever revised,
+the attach must move into a connect hook in the same change.
 
 ## Risks
 
