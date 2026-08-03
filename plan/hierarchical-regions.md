@@ -219,6 +219,221 @@ applied the wrong way round does not garble a reading, it returns a reading abou
 somewhere else. Recorded, not acted on — correcting it means re-rendering the
 parent, and the child cannot do that.
 
+### A complex sheet, turn by turn
+
+Status: DESIGN. Turn 1 and turn 2 exist; the placeholder assembly and the
+escalation turn do not.
+
+A simple page never reaches this. It is one turn: the sheet comes back with no
+flags and no proposals, and that is the document. The turns below are what a
+sheet costs when the first one says it is not enough — so the triage is not a
+separate decision, it is the absence of a reason to continue.
+
+---
+
+**TURN 1 — the sheet.** Asked once, of the whole page.
+
+*Given:* the page rendered whole; whatever `DamageOf` measured about those
+pixels; the caller's hint if there is one.
+
+*Answers:*
+
+```json
+{ "description": "... prose, with {{region:existing-corners}} where a named
+                  area is too small to read at this scale ...",
+  "kind": "drawing",
+  "regions": [ {"name":"existing-corners", "x":0.10,"y":0.11,"w":0.76,"h":0.80,
+                "rotation":270, "filter":"", "kind":"table",
+                "reason":"monument table, lettering below this scale"} ] }
+```
+
+*Result choices, and what each costs:*
+
+| the sheet came back | meaning | next |
+|---|---|---|
+| no regions, no flags | it is a page of text | **DONE — one call** |
+| no regions, but flagged | it cannot see its own problem | tile it (`tileRegion`) |
+| regions, each named | it knows where it cannot read | turn 2 per region |
+
+The description is written with the named regions as PLACEHOLDERS, and the
+parent's own attempt at each one is kept behind the placeholder rather than
+discarded. That is what stops descent from becoming load-bearing: if turn 2
+fails, assembly falls back to what the sheet said, and the span records which
+level it came from. A hole in a document is worse than a blurry sentence in it.
+
+---
+
+**TURN 2 — a region.** Asked once per named region, at that region's own
+rotation and filter.
+
+*Given:*
+
+- the region CROPPED and transformed — the pixels, at the resolution the sheet
+  never had;
+- what was MEASURED about those pixels (`blurred`, `faded`, `low-resolution`);
+- the EXPECTATION — one line, what the sheet said is in here;
+- the sheet's STRUCTURE — the placeholder map, so it knows where it sits and
+  what is adjacent.
+
+*Deliberately NOT given: the sheet's character-level transcription of THIS
+region.* It is a reading taken at four tokens per square inch — the same class
+of artifact as tesseract's numbers, and measured, "handing the model tesseract's
+numbers makes it adopt them over its own correct reading, and an instruction to
+prefer the image does not stop that." The child is looking at pixels that would
+have told it the truth. Do not hand it the parent's invention. If context
+demands the parent's text at all, mask the digits — masking and deleting
+measured identically, so the marker is not load-bearing.
+
+*Answers:*
+
+```json
+{ "verdict": "read" | "transform-invalid" | "wrong-region" | "needs-descent" | "illegible",
+  "description": "...verbatim transcription...",
+  "regions": [ ...only when verdict is needs-descent... ],
+  "because": "one line, for a human reading the record" }
+```
+
+| verdict | what the child is claiming | what happens |
+|---|---|---|
+| `read` | this is the region, here are its characters | fills its placeholder; judged as now |
+| `needs-descent` | legible, but finer detail is nested inside | recurse — its own rotation and filter per child |
+| `transform-invalid` | the RENDERING is wrong: upside down, mirrored, a repair that destroyed it | **TURN 3** |
+| `wrong-region` | legible, but this is not what the sheet said is here — the BOX is wrong | **TURN 3** |
+| `illegible` | right box, right orientation, the pixels are not there | no turn 3 — re-render at higher dpi, or a human |
+
+`transform-invalid` and `wrong-region` are separated because the remedies are
+different: one is a rotation or a filter, the other is a bounding box. A child
+that cannot tell them apart says `transform-invalid` and turn 3 decides.
+
+The computed `transform-suspect` flag stays alongside these. It catches the case
+no verdict will: a child that confidently transcribes the wrong thing and
+reports `read`.
+
+---
+
+**TURN 3 — re-orient.** The PARENT's turn, not the child's, because the child
+cannot fix a choice it did not make.
+
+*Given:* nothing new to look at. Turn 3 RESUMES TURN 1's SESSION and appends a
+question. The page is already in that context, already at the root's resolution,
+and — measured — already in the server's prefix cache:
+
+```
+turn 1   prompt 14,652   image + question     25.7s   cached      0
+turn 2   prompt 14,734   text appended         1.1s   cached 14,648
+turn 3   prompt 14,755   text appended         1.1s   cached 14,730
+```
+
+An escalation costs about a hundred tokens and a second, not another 14.6k and
+25 seconds. The design requirement — that the escalation look at the ORIGINAL
+page rather than the transformed crop, because re-asking over a suspect crop asks
+the question inside the mistake — is satisfied by construction: the session's
+image is the root's own untransformed render.
+
+Appended as TEXT:
+
+- the box and transform that were tried, and every other transform already tried
+  on this region (the SHA set — a re-pick that renders to seen bytes is refused
+  before it costs a call);
+- the child's verdict and its `because`;
+- the child's transcription, if it produced one — it may be a correct reading of
+  the WRONG area, which is the evidence for a re-pick.
+
+NOT appended: the child's crop as an image. That is a fresh encode and forfeits
+the entire saving; the parent proposed the box and can reason about it from
+coordinates.
+
+*Two limits this imposes.* The parent is looking at the page at ROOT resolution —
+four tokens per square inch on an E-size sheet — so it can re-pick and re-orient
+and cannot check the child's characters. And turn 3 must never TRANSCRIBE: its
+session holds the root's own low-resolution reading, so anything it wrote would
+be the contaminated kind. `keep` means the child's reading stands, never "here is
+a better one".
+
+*Answers:*
+
+```json
+{ "action": "retransform" | "repick" | "keep" | "abandon",
+  "regions": [ ...for retransform: same box, new rotation/filter...
+               ...for repick: one or more new boxes, possibly nested... ],
+  "because": "..." }
+```
+
+| action | meaning | next |
+|---|---|---|
+| `retransform` | box was right, rendering was wrong | turn 2 again, new render, budget spent |
+| `repick` | box was wrong | turn 2 on the new boxes — nested transforms allowed |
+| `keep` | the child was mistaken; the reading stands | placeholder filled, region flagged for a human |
+| `abandon` | nothing here can be read | placeholder keeps the parent's fallback, flagged |
+
+*Termination.* Turn 3 is bounded three ways, and all three already exist: the
+image-SHA set refuses a re-pick that lands on pixels already read;
+`MaxTransforms` bounds re-renders per region; `MaxCalls` bounds the document. An
+escalation that produces neither new pixels nor a cleared flag ends the region as
+a flagged leaf, which is the honest outcome.
+
+*Cost.* Turn 3 is a call at the PARENT's resolution — on an E-size sheet the
+most expensive call in the walk, and the one that buys the least per token. It
+should be rare. If it is not rare, the sheet's region proposals are bad and
+tiling is the cheaper answer.
+
+---
+
+### Sessions: append, never rewrite
+
+Measured on this box, and it decides which turns may share a conversation.
+
+**Reuse pays exactly when the IMAGE is unchanged.** Appending a turn to a
+conversation reuses the image prefix — 25.7s to 1.1s, 14,730 of 14,755 tokens
+served from cache. REWRITING the last message does not: the same image with a
+different trailing question came back `cached=0` and paid the full 24.4s. So the
+rule is literal — append a new turn, never edit the one before it.
+
+| turn | same image? | session |
+|---|---|---|
+| 1, the sheet | — | opens it |
+| 3, re-orient | YES, the same page | **resumes turn 1** |
+| 2, a region | no, a different crop | **fresh, stateless** |
+
+Turn 2 gains nothing from resuming: the child is looking at a crop, so there is
+no shared prefix to exploit, and resuming would carry 14.6k tokens of page the
+child does not need ON TOP of encoding the crop. A fresh session pays for the
+crop alone. The efficiency argument and the contamination argument point the same
+way for once — and batching siblings into one session fails both tests too, since
+each has its own crop and region A's bearings would sit in context while region
+B's are read.
+
+There is a third reason turn 2 stays stateless, independent of both. The record
+claims a human can be shown the image the words came from, and
+`VerifyRegionRender` checks the crop against the recorded digest. If a
+transcription came out of a session that also held the parent's page and its
+readings, the text is not a function of that crop, and re-rendering plus
+re-asking would not reproduce it. **A transcription turn must be stateless for
+the record to mean what it says.** A decision turn carries no such burden —
+nothing in the sidecar quotes it.
+
+*Operationally.* This is a llama.cpp SLOT cache under `--parallel 1`. Any
+competing request between turn 1 and turn 3 evicts it and the escalation pays
+25.7s again — observed repeatedly while running these measurements. Treat the
+saving as an optimisation, never as a budget assumption. And a retained session
+grows: a page is ~14.7k of a 180k context, so roughly ten escalations on one
+sheet before it matters, which is fine per page and needs eviction across pages.
+
+### What each turn is allowed to decide
+
+| | turn 1, sheet | turn 2, region | turn 3, re-orient |
+|---|---|---|---|
+| what is here | ✅ at its scale | ✅ at full resolution | — |
+| where to look | ✅ proposes | ✅ proposes nested | ✅ re-picks |
+| which way is up | ✅ proposes | ✅ **disputes** | ✅ decides |
+| are the pixels damaged | ❌ measured | ❌ measured | ❌ measured |
+| did a transform help | ❌ judged | ❌ judged | ❌ judged |
+| is this region finished | ✅ `exhausted` | ✅ verdict | ✅ `keep`/`abandon` |
+
+The model disputes a transform at turn 2 and decides one at turn 3, and never
+decides whether the pixels are damaged — measured, it calls recoverable blur
+"skew" at 0.9 confidence and prescribes the repair that makes it worse.
+
 ### What is deliberately not in the protocol
 
 - **The reader is never asked to confirm a measurement.** It would agree.
