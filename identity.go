@@ -112,6 +112,12 @@ var identityKinds = []string{
 	// a real corpus after the junk was removed, and a working file is not an
 	// absence of a kind — it is a kind the vocabulary did not have.
 	"notes",
+	// commercial — a record of work done or goods sold: an invoice, a work
+	// order, a receipt, a property listing. Added for the same reason as notes,
+	// from the same corpus: these are neither filed instruments nor
+	// correspondence nor anybody's analysis, and they were landing in "other"
+	// with nowhere else to go.
+	"commercial",
 	"other",
 }
 
@@ -161,6 +167,16 @@ var identityKindAliases = map[string]string{
 	"working document":   "notes",
 	"work product":       "notes",
 	"log":                "notes",
+	"invoice":            "commercial",
+	"receipt":            "commercial",
+	"bill":               "commercial",
+	"statement":          "commercial",
+	"work order":         "commercial",
+	"estimate":           "commercial",
+	"quote":              "commercial",
+	"listing":            "commercial",
+	"mls listing":        "commercial",
+	"advertisement":      "commercial",
 }
 
 // NormalizeKind maps a model's answer onto identityKinds, returning ok=false
@@ -342,8 +358,22 @@ output ONLY a JSON object:
 - "summary": a few sentences — what the instrument IS, who the parties are, the
   date, the property or matter it concerns, and what it does. Enough that someone
   reading only this can tell whether they need the document.
-- "kind": exactly one of: ` + strings.Join(identityKinds, ", ") + `.
-  Use "other" only when none of the rest fit.
+- "kind": exactly one of the following. Choose by what the document IS, not by
+  what it is about:
+    deed           — an instrument conveying or encumbering land
+    survey         — a survey, plat or map of land
+    agreement      — a contract between parties, signed or offered
+    correspondence — a letter, email, memo or notice between people
+    court filing   — anything filed in or issued by a court
+    certification  — a certificate, affidavit, permit or official attestation
+    analysis       — a report, assessment, inspection or study of something
+    notes          — a document somebody MADE about the matter rather than one
+                     filed in it: a timeline, a witness list, a call transcript,
+                     a packet assembled for counsel, a worklist
+    commercial     — a record of work done or goods sold: an invoice, a work
+                     order, a receipt, a statement, a property listing
+    other          — none of the above genuinely fits. Prefer any term above to
+                     this one; "other" is a last resort, not a default.
 
 Describe only what the document says. Do not infer a purpose it does not state,
 and do not carry over an assumption from how the document is titled.`

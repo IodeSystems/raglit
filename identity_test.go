@@ -439,6 +439,11 @@ func TestNormalizeKind_NotesCoversWorkProduct(t *testing.T) {
 			t.Errorf("NormalizeKind(%q) = %q,%v; want notes", in, got, ok)
 		}
 	}
+	for _, in := range []string{"invoice", "work order", "receipt", "mls listing", "statement"} {
+		if got, ok := NormalizeKind(in); !ok || got != "commercial" {
+			t.Errorf("NormalizeKind(%q) = %q,%v; want commercial", in, got, ok)
+		}
+	}
 	// And it did not swallow the filed kinds it sits next to.
 	for in, want := range map[string]string{"deed": "deed", "letter": "correspondence", "report": "analysis"} {
 		if got, _ := NormalizeKind(in); got != want {
