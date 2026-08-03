@@ -35,6 +35,17 @@ type DocDetail struct {
 	Title string `json:"title"`
 	Kind  string `json:"kind"`
 
+	// Asset is this document's handle IN THE ATTEST MOUNT — root-relative,
+	// because Root is attest's security boundary and every one of its operations
+	// addresses assets that way.
+	//
+	// Stated as its own field rather than left for a caller to derive. The review
+	// UI derived it by reusing the absolute path it already had, and every "open
+	// the review for this document" link answered 404 "no such asset" — a failure
+	// that looks like a broken mount rather than a wrong argument, because the
+	// path in the URL is a real document either way.
+	Asset string `json:"asset,omitempty"`
+
 	// Identity is what this document IS, as opposed to what its file is called
 	// (identity.go): a caption, a summary, a kind, and whether a machine or a
 	// person said so. Nil when nobody has established it.
@@ -238,7 +249,7 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 			abs = filepath.Join(root, in.Path)
 		}
 
-		d := DocDetail{Path: rel, Kind: detailKind(abs)}
+		d := DocDetail{Path: rel, Asset: rel, Kind: detailKind(abs)}
 		if id, ierr := st.DocumentIdentity(abs); ierr == nil && !id.Empty() {
 			d.Identity = &id
 		}
@@ -341,7 +352,10 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 				Confirmed: state.Stats.Confirmed, Corrected: state.Stats.Corrected,
 				Affirmed: state.Stats.Affirmed, Unclear: state.Stats.Unclear,
 				Untouched: state.Stats.Untouched,
-				Workbench: "/attest/" + in.Index + "?asset=" + url.QueryEscape(rel),
+				// The review route in the SPA. The standalone page is still
+				// mounted at /attest/<index>?asset=… and still serves audio,
+				// which this route does not — see plan/spa-ui.md.
+				Workbench: "/i/" + url.PathEscape(in.Index) + "/attest/a/" + url.PathEscape(rel),
 			}
 			if rows, rerr := st.Attestations(rel); rerr == nil {
 				sum.Verdicts = len(rows)
