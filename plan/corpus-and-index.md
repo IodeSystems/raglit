@@ -1,6 +1,6 @@
 # raglit: a corpus of embeddings, and indexes as membership over it
 
-Status: PROPOSED 2026-08-03 (USER). Prerequisite for `plan/answered-questions.md`
+Status: MOSTLY ALREADY BUILT — corrected 2026-08-03 after reading pool.go. Prerequisite for `plan/answered-questions.md`
 and for dun's durable memory (`~/inflight/shelf.md`).
 
 ## Goal (from user)
@@ -9,61 +9,64 @@ and for dun's durable memory (`~/inflight/shelf.md`).
 > cache) index provides membership of corpus cache (to prevent re-work) —
 > corpus needs some sort of gc for orphaned objects"
 
-## Why — the same text is embedded again and again
+## It exists. It is `pool.sqlite`.
 
-`fragment_vectors` is keyed by `fragment_id` with `ON DELETE CASCADE`, so a
-vector belongs to one fragment of one document of one index and dies with it.
-Three consequences, all paid in embedding calls:
+Almost all of this was proposed without reading `pool.go`, which had already
+built it. Its own comment is the design:
 
-- **Re-ingest re-embeds.** `Ingest` is idempotent by DROPPING a document's
-  fragments and replacing them, which cascades the vectors away. A document
-  whose text did not change is embedded again anyway.
-- **Two indexes never share.** The same vendored file, licence, or README in
-  five projects is five identical vectors under five fragment ids.
-- **dun pays this every session.** It ingests its whole workspace at startup;
-  today into a temp home that is deleted on exit, so every session embeds the
-  same repository from scratch.
+> Shared document pool — cross-index dedup of INDEXING work. The expensive part
+> of ingest (extract/OCR/segment/embed) is a pure function of the source bytes
+> and the "recipe" (the models + config that shape the output). The pool caches
+> that output keyed by (recipe_hash, file_hash), SHARED across every index in a
+> daemon.
 
-## The shape
+    pool(recipe_hash, file_hash, payload, created_at, last_used_at)
+    PRIMARY KEY (recipe_hash, file_hash)
 
-**Corpus** — content-addressed embeddings, one row per distinct (text, embedder).
-**Index** — what it already is, plus a membership link into the corpus instead of
-a private vector.
+**And the key is better than the one proposed.** This document worried about
+fragment-grain keying: two indexes of one file fragmenting differently would
+share nothing. Document grain sidesteps it — a changed model or config is a new
+RECIPE and reprocesses; the same recipe on the same bytes replays cached
+fragments, vectors and page images with no LLM call at all. `last_used_at` is
+already the LRU basis.
 
-    corpus(key PRIMARY KEY, model, dim, vec, bytes, created_at)
-    fragment_vectors(fragment_id PRIMARY KEY, corpus_key REFERENCES corpus(key))
+**GC exists too**: `Pool.GC(GCPolicy{MaxBytes, MaxEntries, MaxAgeUnused})`,
+oldest-accessed first, and it already handles the subtlety that a file's
+`pool-pages/` images are shared across its recipe entries and free only when its
+LAST entry is evicted. Wired into the daemon on a timer and via HTTP.
 
-Ingest becomes: hash the text, look for (hash, model); on a hit link to it and
-embed nothing; on a miss embed once and insert. A re-ingest of unchanged text is
-then a membership rewrite with no LLM call at all.
+So the corpus work is DONE. What follows is what reading it actually turned up.
 
-## The trap that must not be got wrong
+## What is NOT built: indexes have no lifecycle
 
-**The key is (content hash, MODEL), never the hash alone.** A vector is only
-meaningful in the space that produced it, and a cache that returns a
-`nomic-embed` vector for a `text-embedding-3` index does not fail — it silently
-returns plausible neighbours that are wrong. Dimension is not enough of a
-discriminator either: two different models at the same dim collide. Model
-identity belongs IN the key, not beside it.
+The pool is GC'd. The INDEXES are not, and nothing evicts them from memory
+either:
 
-## GC
+- `Registry.getLocked` opens a store once and caches it forever
+  (`r.stores[name] = s`). The only removal is `DeleteBranch`, an explicit drop.
+  There is no LRU and no idle close, so every index touched in a daemon's
+  lifetime stays open at `MaxOpenConns(1)` — measured: 24 sqlite fds for 5
+  indexes, ~4.8 each. The fd ceiling here is 1,048,575, so fds are not the
+  binding constraint; memory per open store is.
+- **On disk an index is a directory**, not a file:
+  `indexes/<project>__<index>/` holding `index.sqlite` (+wal +shm), `originals/`
+  and `pages/`. `dun__dun-main` is 3.1 MB after ONE ingest of one repo.
+  Nothing ever deletes one.
 
-Orphans appear whenever a document is re-ingested, deleted, or withdrawn, so the
-corpus only grows without a sweep:
+**This is newly urgent because of dun.** dun now names its index
+`<directory>-<branch>`, so every worktree on every branch mints a directory that
+is never reclaimed — and dun's own shelf records ~13 worktrees a day in this
+repo, 1.1 GB of them swept on 2026-08-03. Per-worktree indexes reproduce that
+accumulation somewhere new unless the index dies with the worktree.
 
-    DELETE FROM corpus WHERE key NOT IN (SELECT corpus_key FROM fragment_vectors)
+**next:** the owner of a worktree is the one that knows when it dies, so dun
+should drop the index in the same place it removes the worktree (`/close` and
+the startup prune both already have the hook). raglit's half is a way to ask —
+a delete-index call that is not `DeleteBranch`.
 
-Mark-and-sweep rather than refcounting, deliberately: a refcount is a second
-source of truth that drifts the first time a write path forgets to decrement,
-and the sweep is a single query over a column that is already indexed. Run it on
-demand (`raglit gc`) and report what it reclaimed — a GC that runs silently is
-one nobody can tell is working.
-
-**Open:** whether the sweep is safe to run concurrently with an ingest on the
-shared daemon. A key inserted-but-not-yet-linked would look orphaned. Either GC
-takes the write lock, or corpus rows carry a `created_at` and the sweep ignores
-anything younger than a few minutes. The second is cheaper and racier; the first
-is correct and blocks a writer briefly.
+**risk:** deleting an index must NOT touch the pool. The pool is the expensive
+part (it cost LLM calls) and is shared; an index is cheap to rebuild FROM it.
+Getting that backwards turns a cleanup into a re-embedding bill.
 
 ## Scope: project IS the corpus, directory+branch IS the index (USER, 2026-08-03)
 
