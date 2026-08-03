@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,6 +171,27 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	// of what the cached result means, so the decision has to exist before the
 	// key that stores it — see poolRecipe.
 	kind := w.route(job, f)
+
+	// Refuse what has no representation to index — BEFORE the caches.
+	//
+	// KindUnknown means two different things and the reader cannot tell them
+	// apart: "text whose extension I do not recognise" and "a compiled binary".
+	// The fall-through reads both as text, and reading bytes as text never
+	// fails, so a 27 MB executable indexed cleanly into 4,657 fragments and
+	// reported `done`.
+	//
+	// It sits above the pool on purpose. The first version of this guard was
+	// inside extractAndIngest and never fired: the pooled entry from the earlier
+	// bad ingest matched (same recipe, same kind, same bytes) and replayed the
+	// cached garbage — precisely the permanence poolRecipe's own comment
+	// describes for a misrouted read. Whether a file can be indexed at all is a
+	// property of its bytes, so it must not depend on cache state.
+	if kind == KindUnknown && IsOpaque(f.Data) {
+		sl.Skip("extract", "no text/image/audio representation — "+http.DetectContentType(f.Data))
+		return 0, "", fmt.Errorf("raglit: %s has no text, image or audio representation to index "+
+			"(sniffed %s) — refusing rather than indexing its bytes as text",
+			filepath.Base(job.URL), http.DetectContentType(f.Data))
+	}
 
 	// Fast path — same index, identical bytes: skip entirely (nothing to do).
 	// --fresh skips it, because "nothing changed" is exactly what a caller

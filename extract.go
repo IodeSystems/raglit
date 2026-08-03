@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -194,6 +195,47 @@ func SniffBytes(head []byte) DocKind {
 		}
 	}
 	return KindUnknown
+}
+
+// IsOpaque reports whether these bytes have no representation raglit can index:
+// not text, not an image, not audio or video, not a document format.
+//
+// It exists because KindUnknown means two different things and the reader treats
+// them the same. "A text file whose extension I do not recognise" and "a
+// compiled binary" both fall through to being read as plain text, and reading
+// bytes as text never fails — so a 27 MB ELF executable indexed cleanly, filled
+// an index with mojibake, and reported `done`. Measured: dun handed its own
+// build output to an ingest and most of a pool's growth from 49 MB to 237 MB was
+// compiled binaries being segmented and embedded as though they were documents.
+//
+// http.DetectContentType is the stdlib's WHATWG sniffer: it names the common
+// text, image, audio, video and archive types and says application/octet-stream
+// for everything else. Measured on the file that prompted this — the ELF sniffs
+// as application/octet-stream, every .go/.md/.sum in the same tree as
+// text/plain. `file(1)` answers correctly too and was considered; it costs a
+// process per file and an external binary, against the pure-Go single-binary
+// property this project holds elsewhere (see embed.go).
+//
+// The NUL check is the second signal for the same reason git uses it: a byte
+// that cannot appear in text is the cheapest proof there is, and it catches
+// binaries whose first bytes happen to sniff as something benign.
+func IsOpaque(head []byte) bool {
+	if len(head) == 0 {
+		return false // nothing to judge; let the normal path decide
+	}
+	ct := http.DetectContentType(head)
+	switch {
+	case strings.HasPrefix(ct, "text/"),
+		strings.HasPrefix(ct, "image/"),
+		strings.HasPrefix(ct, "audio/"),
+		strings.HasPrefix(ct, "video/"),
+		strings.Contains(ct, "pdf"),
+		strings.Contains(ct, "zip"),      // .docx/.xlsx/.odt/.epub are zips
+		strings.Contains(ct, "ms-excel"), // OLE2 lands here on some inputs
+		strings.Contains(ct, "msword"):
+		return false
+	}
+	return true
 }
 
 // ClassifyPath is ClassifyDoc for a file that exists on disk: the extension
