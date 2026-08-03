@@ -90,15 +90,46 @@ neither.
 ```
 region(
   id, doc_id, parent_id,
+  name,                                    -- slug, unique among SIBLINGS
   page, bbox_x, bbox_y, bbox_w, bbox_h,   -- in page coordinates, not tile
-  rotation,                                -- applied before OCR
+  rotation,                                -- right angles only; applied before OCR
   scale_dpi,
-  kind,                                    -- overview | text-block | table | drawing | legend
+  kind,                                    -- content type, closed set — see below
   text,                                    -- transcription or description
   flags,                                   -- see below
   depth
 )
 ```
+
+`name` is a slug the reader assigns — `drawing-interior`, `existing-corners` —
+and the path composes across levels, so a child refines its parent's name for
+free. It exists because `id` explicitly does NOT survive a re-read: "a second
+read of the same sheet proposes different regions and renumbers." A name is what
+makes two reads of one sheet diffable. Unique among siblings, not globally;
+global uniqueness is the path's job and enforcing it directly forces ugly
+disambiguation.
+
+There is no separate `title`. A name plus a description covers it, and a third
+string invites two of them to disagree.
+
+`text` stays on EVERY node, interior ones included. That is not redundancy, it is
+the coverage guarantee: a bad region set must cost detail, not coverage, and the
+2026-08-03 MinerU descent is what that looks like when the guarantee is absent —
+its leaf never resolved the EXISTING CORNERS table out of the figure block, and
+nothing in the tree recorded that the table was in there.
+
+`kind` is a closed set, not free text: `text`, `table`, `drawing`, `diagram`,
+`chart`, `title-block`. An open string means two readers name the same thing
+differently and routing decisions get made on a coin flip.
+
+Deliberately NOT on the record:
+
+- **`skew`** — no page in the corpus has any, and 1-2° of it costs nothing when
+  introduced deliberately, including on the page at the resolution limit. What
+  the attempt to measure it DID find is that render geometry perturbs which
+  marginal glyphs survive at all; see the measurements below.
+- **`filters[]`** — no filter improved a reading and two degraded one. Where
+  filtering belongs is on the ENGINE, and tesseract is the tier that wants it.
 
 Leaves are what get embedded and searched. Interior nodes are searchable too,
 carrying their overview text. `bbox` in PAGE coordinates so any node can be
@@ -236,6 +267,202 @@ budget, and a minimum region size below which descent cannot help.
 Against that: today a large sheet costs one request and produces something worse
 than nothing, because it reads as complete.
 
+## What a transform is worth — measured 2026-08-03
+
+Everything above was reasoned from one page and one recovered clause. This is
+the same argument with numbers on it, and two of them contradict what is written
+above.
+
+Setup: `bench/probes/ocr-survey-corners/_fixture/page.png` — page 2 of the
+survey, 3400 x 4400 at 400 dpi, 15.0 MP — read by `Qwen3-6-27B-MPT` through
+corrallm, with the probe's own prompt and nothing else changed. Ground truth for
+the EXISTING CORNERS table was established by reading the crop by eye. Five facts
+discriminate, because they are the ones a reader gets wrong in a way that still
+reads correctly:
+
+| | truth |
+|---|---|
+| J's bearing | `S 31°05' E 0.4' FROM CALC` |
+| K's bearing | `S 47°44'E 2.0' FROM CORNER` |
+| L's offsets | `0.1'S AND 0.1'W OF CALC` |
+| the cap stamp | `MOWRER` (not MOWER) |
+| S's reference | `LISSER 20123169` |
+
+### Rotation is the larger lever, and the cheaper one
+
+| variant | J | K | L | MOWRER | S | output |
+|---|---|---|---|---|---|---|
+| whole sheet, sideways, 15.0 MP | `5.31'` | `5.47'` | `0.15'/0.14'` | `MOWER` | `L1SSER` | 9,316 ch |
+| whole sheet, UPRIGHT, 15.0 MP | ✓ | `S 41°44'E` | ✓ | ✓ | ✓ | 2,187 ch |
+| drawing region, sideways, 9.2 MP | ✓ | ✓ | ✓ | `MOMER` | `2012369` | 13,715 ch |
+| drawing region, UPRIGHT, 9.2 MP | ✓ | ✓ | ✓ | ✓ | ✓ | 2,087 ch |
+
+**Rotation alone fixes four of five. Cropping alone fixes three of five. Together
+they fix all five.** They are complementary — each cleans up what the other
+leaves — but rotation is a transpose and cropping is another model call, so the
+cheaper operation is also the bigger one. Rotate before descending.
+
+Note what sideways does to the OUTPUT, not just its accuracy: 4-7x the
+characters for the same content, and the 9.2 MP sideways read ran into the token
+ceiling. Sideways text is how the model loses count. That is the same mechanism
+as the repetition guard firing 23 times on `FND. R/C MOWRER (6/12/2002)`, which
+was read at the wrong orientation on a page nobody had rotated.
+
+### `transformHelped` prefers the wrong render
+
+The consequence of the line above, and a live bug. `transformHelped` accepts a
+transform that clears a flag, else one that produced MORE text. On this page the
+correct read is the SHORTER one, every time — 2,187 against 9,316 on the sheet,
+2,087 against 13,715 on the region. Unless the repetition guard fires (the
+sideways sheet's most-repeated line recurred 3 times, likely under threshold),
+the length rule rejects the rotation that recovers the bearings.
+
+The comment on that function is right that flags alone rejected every rotation.
+Length is the wrong substitute. What actually separated these four runs is
+AGREEMENT — J, K, L, MOWRER and the certificate number are identical across the
+two good renders and differ in the two bad ones — which is the `disagreement`
+signal already named under Confidence, applied between two renders of one region
+rather than between two engines.
+
+Measured on raw model output through a scratch client, not through
+`PageAsSeen`; whether the guard fires inside raglit's path on these two is
+untested.
+
+### Rotation can be MEASURED, which settles half an open question
+
+`tesseract --psm 0 --tessdata-dir <dir>` on the same images:
+
+| image | reports | confidence |
+|---|---|---|
+| the whole sheet | `Orientation 90°, Rotate: 270` | 2.28 |
+| the drawing region, sideways | `Orientation 90°, Rotate: 270` | 1.91 |
+| the corners table, already upright | `Orientation 0°, Rotate: 0` | 0.10 |
+
+Correct all three, about a second each, no model call. It needs
+`osd.traineddata` (10 MB) which is NOT installed — and this tesseract build
+ignores `TESSDATA_PREFIX`, so it wants `--tessdata-dir`. It also called the
+sheet's script Japanese at confidence 0.27, so gate on the number.
+
+The suspicion above — that OSD "says nothing useful for a drawing interior" — did
+not reproduce. It read the drawing region correctly. What it cannot report is
+anything other than a right angle, which is the next finding.
+
+### Skew does not damage a reading, and the render geometry is a lottery
+
+`rotateImage` refuses arbitrary angles because "an arbitrary angle needs
+resampling and would blur the small lettering this exists to make readable, and
+a text block on a scanned sheet is square to the page far more often than not."
+
+The second half holds for this corpus. Projection-profile estimates over all four
+bench fixtures — including the faxed permit drawing and a page of the scanned
+30-page instrument — come out at `+0.25°`, `+0.25°`, `0.00°` and `-0.50°`.
+
+The first half is wrong, and testing it properly turned up something else.
+Skewing the corners table 2° cost nothing, but that table is legible at 400 dpi
+and proves little. The page that is AT the resolution limit is
+`ocr-survey-facts` — 3.6pt lettering, 10 px of glyph height — and skewing that
+one does not degrade it either. It improves it:
+
+| `ocr-survey-facts`, Qwen3-6-27B-MPT, temp 0 | checks | missed |
+|---|---|---|
+| square | 5/7 | `202107080106`, `LISSER` |
+| square, run again | 5/7 | the same two — deterministic |
+| skewed 1.15° (2% slope) | 6/7 | `LISSER` |
+| skewed 2° | 7/7 | — |
+| rescaled 1.05x, NOT rotated | 6/7 | `20123169` |
+
+The control is the interesting row. A plain rescale with no rotation also beats
+the square baseline — and recovers a DIFFERENT fact while losing one the baseline
+had. So the lever is not skew, and not the sharpening a resample incidentally
+does. It is that a page at the resolution limit lands on the vision encoder's
+patch grid one particular way, and small glyphs fall on the wrong side of that
+grid or the right side of it depending on geometry nobody is choosing
+deliberately.
+
+Which means **there is no single correct render of a marginal page, and one render
+is a sample**. `202107080106` was recorded in plan/ocr-fixtures.md as recoverable
+only via the digit-stripped tesseract assist; it is recoverable by rotating the
+page 2°, which is not a fact about tesseract or about the assist.
+
+Consequences, in order of confidence:
+
+- **Skew correction is not urgent and skew tolerance is not the risk it was
+  assumed to be.** Right angles remain the only rotation the descent applies.
+- **Two renders of one region disagreeing about a number is now an expected
+  outcome**, not a malfunction. It is the `disagreement` signal, available from
+  one model and one page by perturbing geometry — no second engine required.
+- **Consensus over perturbed renders is the obvious next experiment** for pages
+  carrying `low-resolution`: read at 2-3 geometries, keep what agrees, flag what
+  does not. NOT built, and one run per geometry is far too thin to size the win.
+
+The caution that belongs with this: five readings, one page, one model. What is
+solid is that the baseline is deterministic and the perturbed renders differ from
+it in specific, named facts. What is not established is which perturbation to
+prefer, or that any of this generalises past this sheet.
+
+### Filters: nothing helped, and binarization hurt
+
+Same region, upright, one filter each:
+
+| filter | J | K | L | MOWRER | S | output | wall |
+|---|---|---|---|---|---|---|---|
+| none | ✓ | ✓ | ✓ | ✓ | ✓ | 2,087 ch | 21.3s |
+| unsharp mask (σ2, α1.8) | ✓ | ✓ | ✓ | ✓ | ✓ | 3,601 ch | 32.5s |
+| CLAHE (clip 2, 8x8) | ✓ | ✓ | ✓ | ✓ | ✓ | 2,048 ch | 21.9s |
+| Otsu | ✓ | ✗ | ✓ | ✓ | ✓ | 13,427 ch | 98.6s |
+| Sauvola (w25, k0.2) | ✓ | ✓ | ✓ | ✓ | ✓ | 2,671 ch | 25.2s |
+| median 3x3 + unsharp | ✓ | ✗ | ✓ | ✓ | ✓ | 3,575 ch | 33.1s |
+
+No filter recovered anything the unfiltered region did not already have. Two lost
+K's bearing. Global binarization was the worst of them: 4.6x the wall clock and
+straight into the token ceiling.
+
+Which contradicts "a faint scan genuinely reads better binarized" as written
+under Descent versus transform. The reason it is wrong is structural, not a
+tuning miss — that whole preprocessing stack was built for binarization-based
+engines, and a vision encoder reads grayscale antialiasing as signal that
+thresholding throws away.
+
+Two consequences:
+
+- **A `threshold` transform has no evidence behind it.** Do not ship one until a
+  page exists that it rescues. This region is a clean 400 dpi render, not a faint
+  scan, so the faint-scan case is genuinely untested — `ocr-scanned-exhibit` is
+  where to test it.
+- **Filters belong on the ENGINE, not the region.** Tesseract is the tier that
+  wants Sauvola and a 2x upscale, and `ocrengine.go` already computes
+  `MedianGlyphPx`, which is exactly the trigger for deciding it. The VLM wants
+  the pixels. That is a `PageEngine` concern and does not belong in the region
+  record.
+
+Upscaling deserves its own note: past `maxImageTokens` it is worse than useless,
+because the encoder downsamples it straight back and the resampling is pure loss.
+`tokensForImage` already knows this.
+
+### The 1.2B document parser these measurements came out of
+
+MinerU2.5-Pro-1.2B (`opendatalab/MinerU2.5-Pro-2605-1.2B`, a Qwen2-VL derivative)
+was evaluated as a cheaper reader and as a region proposer. It is SOTA on
+OmniDocBench v1.6 — 95.72 overall against Qwen3-VL-235B's 89.78 — and none of
+that transferred here.
+
+- **As a reader** it matched the 27B on content at equal field of view and lost on
+  structure: it renders the table's circled index letters as circled NUMERALS
+  (`B`→`⑧`, `J`→`⑦`, `S`→`⑤`) and `0.1'` as `O.I'`. Right descriptions, wrong keys.
+- **As a region proposer it cannot subdivide a drawing.** Its layout pass returns
+  the sheet's whole interior as one `image` block; one level in, another `image`
+  block of nearly the same extent; a level below that, exactly one block — itself.
+  Forced to read the leaf over its 1.6 MP input cap it degenerated into a loop,
+  386 seconds emitting `A = FROEN 1/2 BACPA 5,6491` through Z and wrapping. The
+  same failure this document exists to prevent, from a different model.
+- **It does not fit.** 2.15 GiB of weights, ~2.8-3.0 GiB resident, against 366 MiB
+  free on a box where the 27B is the resident model. Buying it means ~110-130k of
+  that model's context.
+
+Kept as a research point. The one genuinely useful thing it produced was the
+top-level figure bbox with its rotation — one box, which the 27B can propose
+itself, and which this document already specifies asking for.
+
 ## Open decisions
 
 - **Do leaves replace fragments, or feed them?** Leaves-as-fragments is honest
@@ -243,9 +470,11 @@ than nothing, because it reads as complete.
   prose keeps behaviour uniform and re-invents the reading order a drawing does
   not have. `RegionTranscript` assembles a page's text and deliberately decides
   nothing here — it is a transcription, not a fragmentation.
-- **Who decides rotation?** The model can propose it per region; tesseract OSD
-  can measure it cheaply for text-dominated regions and says nothing useful for
-  a drawing interior.
+- **Who decides rotation?** SETTLED for right angles — tesseract OSD measures it,
+  including on the drawing interior it was expected to fail on. Open: the
+  `osd.traineddata` dependency is not installed, and the confidence threshold
+  below which the model should be asked instead is unchosen (0.10 on an upright
+  page against 1.91-2.28 on sideways ones is the only spread measured).
 - **Trigger.** Physical size alone (> ~1.2 letter pages) is a crude but
   sufficient gate, and it needs no model call to evaluate. Nothing evaluates it
   yet: the descent runs only when `raglit regions` is invoked, so a large sheet
@@ -257,6 +486,20 @@ than nothing, because it reads as complete.
 
 ## Settled
 
+- **Rotation earns its budget; filters and skew do not.** Rotation alone recovers
+  four of five discriminating facts on a sideways sheet, for the cost of a
+  transpose. Six filters recovered nothing and two lost a bearing. Skew is
+  absent from every fixture and harmless when introduced. Measured 2026-08-03,
+  below.
+- **A transform is judged by agreement, not by length.** The correct render is
+  consistently the SHORTER one, because the wrong orientation makes the model run
+  on rather than stop. Fixed 2026-08-03: `transformHelped` now refuses a render
+  that mostly repeats itself, then prefers the one that accounts for what the
+  PARENT said is here, and falls back to distinct rather than raw length.
+- **A child that shares nothing with its parent's account indicts the TRANSFORM,
+  not the page.** A rotation applied the wrong way round comes back describing
+  somewhere else. Recorded as `transform-suspect`; acting on it means re-rendering
+  the parent, and that loop is deliberately not built.
 - **Is it worth building here?** Yes, and the reason turned out not to be the
   transcription quality. It is that a person cannot attest a quotation against an
   image the quotation did not come from, and without the region record there is
