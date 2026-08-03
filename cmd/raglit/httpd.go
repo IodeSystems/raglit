@@ -291,6 +291,10 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs to a budget (max_bytes / max_entries / max_age_hours), oldest-accessed first."), poolGCOp(pool, defGC))
 	}
 
+	gat.Register(api, g, op("listNotes", http.MethodGet, "/api/notes", "What people have said about a document, oldest first."), listNotesOp(reg))
+	gat.Register(api, g, op("addNote", http.MethodPost, "/api/notes", "Record what a person knows about a document, or about one of its pages."), addNoteOp(reg))
+	gat.Register(api, g, op("deleteNote", http.MethodPost, "/api/notes/delete", "Remove a note."), deleteNoteOp(reg))
+
 	gat.Register(api, g, op("docDetail", http.MethodGet, "/api/doc-detail", "Everything known about one document: pages, transcript, where else it is seen, and how far its review has got."), docDetailOp(reg))
 	gat.Register(api, g, op("attestWriteReadings", http.MethodPost, "/api/attest/readings", "Write readings across an index so its documents can be reviewed."), attestWriteReadingsOp(reg))
 
@@ -305,22 +309,20 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 		return nil, err
 	}
 
-	// Plain routes (not JSON operations): the self-contained HTML UI + the binary
-	// page image. Served directly on the router alongside the gat-mounted ops.
-	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// No caching. The page is embedded in the binary, so a copy held by a
-		// browser is a page from a PREVIOUS BUILD — which presents as a fix that
-		// did not take, and sends somebody debugging server code that is already
-		// correct. attest's own UI has said this for as long as it has existed;
-		// the daemon's had not.
-		w.Header().Set("Cache-Control", "no-store, must-revalidate")
-		w.Write(reviewHTML)
-	})
+	// Plain routes (not JSON operations): the review SPA + the binary page image.
+	// Served directly on the router alongside the gat-mounted ops.
+	//
+	// The SPA is registered as the router's NotFound rather than at "/", because
+	// its routes are real paths (/i/<index>/d/<path>/pages) and every one of them
+	// is an unknown URL as far as chi is concerned. webui.go's deny-list is what
+	// keeps that from swallowing the API — read the comment there before widening
+	// it.
+	spa, err := spaHandler()
+	if err != nil {
+		return nil, err
+	}
+	router.NotFound(spa.ServeHTTP)
+	router.Get("/", spa.ServeHTTP)
 	router.Get("/api/page-image", func(w http.ResponseWriter, r *http.Request) {
 		st, err := reg.Get(r.URL.Query().Get("index"))
 		if err != nil {
