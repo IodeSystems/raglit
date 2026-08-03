@@ -52,7 +52,7 @@ func recordedSheet(t *testing.T) (docPath string, root *raglit.Region) {
 		// Descent is opt-in; this test is about a CHILD region, so it asks.
 		MaxDepth: 3,
 		PageWIn:  27, PageHIn: 36.7, DPI: 200,
-		Ask: func(context.Context, raglit.PageImage, int) (raglit.RegionReading, error) {
+		Ask: func(context.Context, raglit.PageImage, int, []string) (raglit.RegionReading, error) {
 			r := raglit.RegionReading{}
 			if n < len(readings) {
 				r = readings[n]
@@ -191,7 +191,7 @@ func TestRegionCommandReproducesACropOutOfARasterizedPDF(t *testing.T) {
 		// Descent is opt-in; this test is about a CHILD region, so it asks.
 		MaxDepth: 3,
 		PageWIn:  wIn, PageHIn: hIn, DPI: 200,
-		Ask: func(context.Context, raglit.PageImage, int) (raglit.RegionReading, error) {
+		Ask: func(context.Context, raglit.PageImage, int, []string) (raglit.RegionReading, error) {
 			n++
 			if n == 1 {
 				return raglit.RegionReading{Description: "a deed", Kind: "text-block",

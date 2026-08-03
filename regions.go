@@ -95,14 +95,18 @@ type Region struct {
 	// position in a RECORDED tree, not a piece of paper: a second read of the
 	// same sheet proposes different regions and renumbers. SHA256 is what says
 	// whether an id still points at the pixels the text came from.
-	ID       string   `json:"id,omitempty"`
-	Page     int      `json:"page"`
-	BBox     Rect     `json:"bbox"` // page coordinates
-	Rotation int      `json:"rotation"`
-	Kind     string   `json:"kind,omitempty"` // overview|text-block|table|drawing|legend
-	Text     string   `json:"text,omitempty"`
-	Flags    []string `json:"flags,omitempty"`
-	Depth    int      `json:"depth"`
+	ID       string `json:"id,omitempty"`
+	Page     int    `json:"page"`
+	BBox     Rect   `json:"bbox"` // page coordinates
+	Rotation int    `json:"rotation"`
+	Kind     string `json:"kind,omitempty"` // overview|text-block|table|drawing|legend
+	// Filter is the repair applied to the crop BEFORE it was read, and it is part
+	// of the render: the digest covers the filtered bytes, so re-rendering
+	// without it produces a different image and VerifyRegionRender says so.
+	Filter RegionFilter `json:"filter,omitempty"`
+	Text   string       `json:"text,omitempty"`
+	Flags  []string     `json:"flags,omitempty"`
+	Depth  int          `json:"depth"`
 	// DPI is what the PAGE was rasterized at before this region was cropped out
 	// of it. Recorded per region rather than per document because a re-render
 	// that gets the crop right and the resolution wrong reproduces the geometry
@@ -162,6 +166,15 @@ const (
 	// FlagExhausted — the model proposed nothing further. The one POSITIVE
 	// signal, and the only one meaning "this is as good as it gets".
 	FlagExhausted = "exhausted"
+	// FlagBlurred — the crop's strokes are smeared, by the variance of its
+	// laplacian against the measured spread of real pages. Computed on the
+	// FULL-RESOLUTION crop before any call, because the model is shown a
+	// downsample and cannot tell blur from smallness.
+	FlagBlurred = "blurred"
+	// FlagFaded — the crop's luminance is crushed into a narrow band, the way a
+	// photocopy of a photocopy is. The damage with the most to gain from repair:
+	// a faded crop read NOTHING unfiltered and most of its facts with contrast.
+	FlagFaded = "faded"
 	// FlagTransformSuspect — this region's reading has almost nothing in common
 	// with what its PARENT said is here. Not a claim that the text is wrong: a
 	// claim that the TRANSFORM is, because a crop or a rotation applied the wrong
@@ -264,7 +277,7 @@ func isDescent(parent, child Rect) bool {
 // Rotation is per REGION, not per page: one 1300x900 cell of the survey holds
 // text at four different angles, so a page-level rotation fixes the description
 // block and does nothing for the drawing interior.
-func renderRegion(pageImg image.Image, bbox Rect, rotation int) ([]byte, error) {
+func renderRegion(pageImg image.Image, bbox Rect, rotation int, filter RegionFilter) ([]byte, error) {
 	b := pageImg.Bounds()
 	x0 := b.Min.X + int(bbox.X*float64(b.Dx()))
 	y0 := b.Min.Y + int(bbox.Y*float64(b.Dy()))
@@ -281,6 +294,9 @@ func renderRegion(pageImg image.Image, bbox Rect, rotation int) ([]byte, error) 
 	case 90, 180, 270:
 		out = rotateImage(sub, ((rotation%360)+360)%360)
 	}
+	// The filter is applied LAST, so what the digest covers is what the model was
+	// handed. Rotating after filtering would resample the repair.
+	out = ApplyRegionFilter(out, filter)
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, out); err != nil {
 		return nil, err
@@ -437,7 +453,7 @@ func (r *Region) FindByID(id string) *Region {
 // the same pixels, never different pixels. RerenderRegionAsSeen is for the other
 // question.
 func RerenderRegion(page image.Image, reg *Region) ([]byte, error) {
-	return renderRegion(page, reg.BBox, reg.Rotation)
+	return renderRegion(page, reg.BBox, reg.Rotation, reg.Filter)
 }
 
 // RerenderRegionAsSeen is the crop with the context downscales replayed: what
