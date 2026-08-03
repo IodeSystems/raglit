@@ -389,3 +389,36 @@ CREATE TABLE IF NOT EXISTS withdrawals (
   by_who     TEXT NOT NULL DEFAULT '',
   at         TEXT NOT NULL DEFAULT ''
 );
+
+-- What a PERSON knows about a document that the machine could not read off it.
+--
+-- Distinct from the three things that already exist here, and the differences
+-- are the reason it is its own table. A document's identity (documents.gen_*)
+-- says what it IS. An attestation rules on a claim the machine made. A page
+-- reading is a transcription. A note is none of those — it is context somebody
+-- carries in their head, and until there was somewhere to put it, it stayed
+-- there and left the corpus lying.
+--
+-- page is NULLABLE: NULL is a note about the whole document, a number anchors it
+-- to one page. A bundle is not one thing — "the second exhibit starts here" is
+-- about page 40, and filing it against the document loses the only part that
+-- made it useful.
+--
+-- Keyed by doc_id, which SURVIVES A RE-INGEST: ingest upserts documents by path
+-- (ON CONFLICT(path) DO UPDATE), so the row id is stable across re-reads and
+-- re-fragmentation. The cascade fires only on an explicit DELETE FROM documents
+-- — a forget — and that is correct: a note about a document nobody is keeping is
+-- a note about nothing.
+--
+-- Not a projection of an audit trail, unlike attestations and withdrawals. A
+-- note is not a ruling and nothing downstream has to replay it, so this table is
+-- the record rather than a queryable view of one.
+CREATE TABLE IF NOT EXISTS document_notes (
+  id         INTEGER PRIMARY KEY,
+  doc_id     INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page       INTEGER,                     -- NULL = the whole document
+  body       TEXT NOT NULL,
+  author     TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT ''     -- RFC3339
+);
+CREATE INDEX IF NOT EXISTS document_notes_doc ON document_notes(doc_id, page, id);
