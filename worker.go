@@ -186,11 +186,22 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	// cached garbage — precisely the permanence poolRecipe's own comment
 	// describes for a misrouted read. Whether a file can be indexed at all is a
 	// property of its bytes, so it must not depend on cache state.
-	if kind == KindUnknown && IsOpaque(f.Data) {
-		sl.Skip("extract", "no text/image/audio representation — "+http.DetectContentType(f.Data))
-		return 0, "", fmt.Errorf("raglit: %s has no text, image or audio representation to index "+
-			"(sniffed %s) — refusing rather than indexing its bytes as text",
-			filepath.Base(job.URL), http.DetectContentType(f.Data))
+	if kind == KindUnknown {
+		if IsOpaque(f.Data) {
+			sl.Skip("extract", "no text/image/audio representation — "+http.DetectContentType(f.Data))
+			return 0, "", fmt.Errorf("raglit: %s has no text, image or audio representation to index "+
+				"(sniffed %s) — refusing rather than indexing its bytes as text",
+				filepath.Base(job.URL), http.DetectContentType(f.Data))
+		}
+		// Text, but with no line structure a human put there: a minified bundle
+		// or a generated blob. It would fragment into chunks of unreadable
+		// machine output and embed every one.
+		if IsMinified(f.Data) {
+			sl.Skip("extract", "minified/generated — no line structure to fragment on")
+			return 0, "", fmt.Errorf("raglit: %s looks machine-generated (a line of %d+ characters) "+
+				"— refusing rather than embedding minified output",
+				filepath.Base(job.URL), minifiedLineBytes)
+		}
 	}
 
 	// Fast path — same index, identical bytes: skip entirely (nothing to do).
