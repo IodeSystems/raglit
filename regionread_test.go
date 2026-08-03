@@ -23,9 +23,9 @@ func blankPage(w, h int) image.Image {
 }
 
 // scriptedAsk replays readings in order and records what it was shown.
-func scriptedAsk(readings ...RegionReading) (func(context.Context, PageImage, int) (RegionReading, error), *int) {
+func scriptedAsk(readings ...RegionReading) (func(context.Context, PageImage, int, []string) (RegionReading, error), *int) {
 	n := 0
-	f := func(_ context.Context, _ PageImage, _ int) (RegionReading, error) {
+	f := func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
 		r := RegionReading{}
 		if n < len(readings) {
 			r = readings[n]
@@ -36,7 +36,7 @@ func scriptedAsk(readings ...RegionReading) (func(context.Context, PageImage, in
 	return f, &n
 }
 
-func surveyReader(ask func(context.Context, PageImage, int) (RegionReading, error)) *RegionReader {
+func surveyReader(ask func(context.Context, PageImage, int, []string) (RegionReading, error)) *RegionReader {
 	// MaxDepth is explicit here: descent is opt-in now, and these tests are ABOUT
 	// descent, so they have to ask for it like any caller would.
 	return &RegionReader{Ask: ask, PageWIn: 27.0, PageHIn: 36.7, DPI: 200, MaxDepth: 3}
@@ -160,7 +160,7 @@ func TestAFullAreaProposalAtANewRotationIsATransform(t *testing.T) {
 // already seen is refused rather than recursed into.
 func TestATransformRenderingToSeenBytesIsRefused(t *testing.T) {
 	// Every reading asks to be re-shown at 0 degrees, forever.
-	ask := func(_ context.Context, _ PageImage, _ int) (RegionReading, error) {
+	ask := func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
 		return RegionReading{Description: "same again", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 1, H: 1, Rotation: 360, Reason: "again"},
 		}}, nil
@@ -182,7 +182,7 @@ func TestATransformRenderingToSeenBytesIsRefused(t *testing.T) {
 // A model that proposes children forever must still terminate, and the record
 // must say it stopped for budget rather than because it finished.
 func TestDescentIsBoundedByDepthAndCalls(t *testing.T) {
-	ask := func(_ context.Context, _ PageImage, _ int) (RegionReading, error) {
+	ask := func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
 		return RegionReading{Description: "more", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 0.5, H: 0.5}, {X: 0.5, Y: 0, W: 0.5, H: 0.5},
 			{X: 0, Y: 0.5, W: 0.5, H: 0.5}, {X: 0.5, Y: 0.5, W: 0.5, H: 0.5},
@@ -436,7 +436,7 @@ func TestRerenderReproducesTheBytesTheRegionWasReadFrom(t *testing.T) {
 // question — could this have been read at all — has no answer.
 func TestTheContextDownscalesAreRecordedAndReplayable(t *testing.T) {
 	page := blankPage(400, 540)
-	ask := func(_ context.Context, _ PageImage, _ int) (RegionReading, error) {
+	ask := func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
 		return RegionReading{Description: "shrunk twice", Downscales: 2}, nil
 	}
 	root, err := surveyReader(ask).Read(context.Background(), page, 1)
@@ -488,7 +488,7 @@ func TestATransformCarriesItsRenderRecordOntoTheRegion(t *testing.T) {
 	if root.Rotation != 90 {
 		t.Fatalf("the transform was not adopted: %d", root.Rotation)
 	}
-	upright, err := renderRegion(page, root.BBox, 0)
+	upright, err := renderRegion(page, root.BBox, 0, FilterNone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestTheRootIsAskedADifferentQuestionThanACrop(t *testing.T) {
 	var asked []string
 	rr := &RegionReader{
 		PageWIn: 27, PageHIn: 36.7, DPI: 200, MaxDepth: 1,
-		Ask: func(_ context.Context, _ PageImage, depth int) (RegionReading, error) {
+		Ask: func(_ context.Context, _ PageImage, depth int, _ []string) (RegionReading, error) {
 			if depth == 0 {
 				asked = append(asked, "root")
 				return RegionReading{
@@ -537,7 +537,7 @@ func TestDescentIsOptIn(t *testing.T) {
 	calls := 0
 	rr := &RegionReader{
 		PageWIn: 27, PageHIn: 36.7, DPI: 200, // MaxDepth left at 0
-		Ask: func(_ context.Context, _ PageImage, _ int) (RegionReading, error) {
+		Ask: func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
 			calls++
 			return RegionReading{
 				Description: "the whole sheet",

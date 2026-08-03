@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,7 +21,12 @@ type RegionReader struct {
 	// Ask returns the model's reading of one rendered region. Separated from the
 	// walk so the descent rules — budgets, routing, cycle detection — are
 	// testable without a model, which is most of what can go wrong here.
-	Ask func(ctx context.Context, img PageImage, depth int) (RegionReading, error)
+	// damage is what the pixels were measured to be wrong with — see DamageOf.
+	// Passed IN rather than left for the model to notice, because the model is
+	// shown a downsample and cannot tell a blurred crop from a small one. It is
+	// told, and it still decides: the repair comes back as a proposal like any
+	// other, and has to earn its place like any other.
+	Ask func(ctx context.Context, img PageImage, depth int, damage []string) (RegionReading, error)
 
 	// PageWIn, PageHIn are the sheet's physical size. The whole reason this
 	// exists is that a bigger sheet buys no extra tokens, so the physical size
@@ -83,6 +89,11 @@ type RegionProposal struct {
 	Rotation int     `json:"rotation"`
 	Reason   string  `json:"reason"`
 	Kind     string  `json:"kind"`
+	// Filter is a repair the model is asking for on the SAME pixels. Named by the
+	// model rather than applied by measurement alone: the flags say what is wrong,
+	// and the model is the one looking at the region when it decides what to do
+	// about it. An unknown name is refused in route rather than ignored here.
+	Filter RegionFilter `json:"filter"`
 }
 
 func (p RegionProposal) rect() Rect { return Rect{X: p.X, Y: p.Y, W: p.W, H: p.H} }
@@ -133,9 +144,21 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		reg.addFlag(FlagLowResolution)
 	}
 
-	img, err := renderRegion(page, reg.BBox, reg.Rotation)
+	img, err := renderRegion(page, reg.BBox, reg.Rotation, reg.Filter)
 	if err != nil {
 		return err
+	}
+	// What is measurably wrong with these PIXELS, taken on the crop as rendered
+	// and BEFORE the call — the same discipline as low-resolution. Measured on the
+	// filtered image when a filter is in force, which is what makes a repair
+	// testable: a contrast transform that clears `faded` cleared it on the bytes
+	// the model was handed.
+	var damage []string
+	if m, _, derr := image.Decode(bytes.NewReader(img)); derr == nil {
+		damage = DamageOf(m)
+		for _, f := range damage {
+			reg.addFlag(f)
+		}
 	}
 	sha := imageSHA(img)
 	// What this region was rendered from, kept rather than discarded: the crop
@@ -156,7 +179,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	rr.seen[sha] = true
 	rr.calls++
 
-	reading, err := rr.Ask(ctx, PageImage{Page: reg.Page, Mime: "image/png", Data: img}, reg.Depth)
+	reading, err := rr.Ask(ctx, PageImage{Page: reg.Page, Mime: "image/png", Data: img}, reg.Depth, damage)
 	if err != nil {
 		return err
 	}
@@ -228,7 +251,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 			break
 		}
 		alt := &Region{Page: reg.Page, BBox: reg.BBox, Rotation: t.Rotation,
-			Kind: reg.Kind, Depth: reg.Depth}
+			Filter: t.Filter, Kind: reg.Kind, Depth: reg.Depth}
 		if err := rr.visit(ctx, page, alt, transformsUsed+1, expect); err != nil {
 			return err
 		}
@@ -242,7 +265,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		// came from. Keeping the text without the digest would leave the region
 		// claiming its words were read off the image it REPLACED, which is the
 		// false attestation this whole record exists to make impossible.
-		reg.Text, reg.Flags, reg.Rotation = alt.Text, alt.Flags, alt.Rotation
+		reg.Text, reg.Flags, reg.Rotation, reg.Filter = alt.Text, alt.Flags, alt.Rotation, alt.Filter
 		reg.SHA256, reg.Downscales = alt.SHA256, alt.Downscales
 		reg.Children = append(reg.Children, alt.Children...)
 	}
@@ -303,10 +326,16 @@ func (rr *RegionReader) route(parent *Region, props []RegionProposal) ([]descent
 			ds = append(ds, descent{bbox: padded, rotation: p.Rotation, kind: p.Kind})
 			continue
 		}
-		if p.Rotation != parent.Rotation {
+		if !ValidRegionFilter(p.Filter) {
+			// An invented repair. Refused rather than silently dropped to none, so
+			// that a model asking for "denoise" does not look like a model asking
+			// for nothing.
+			p.Filter = FilterNone
+		}
+		if p.Rotation != parent.Rotation || p.Filter != parent.Filter {
 			ts = append(ts, p)
 		}
-		// Same area AND same rotation: nothing new was asked for. Dropped.
+		// Same area, same rotation AND same filter: nothing new was asked for.
 	}
 	if len(ds) > rr.MaxChildren {
 		ds = ds[:rr.MaxChildren]
@@ -560,7 +589,7 @@ func ParseRegionReading(s string) RegionReading {
 // AskWithOCR builds an Ask that drives a VLM through the existing OCR client,
 // so the region walk inherits the page cache, the repetition guard and the
 // retry policy already in place.
-func (o *OCR) AskWithOCR() func(context.Context, PageImage, int) (RegionReading, error) {
+func (o *OCR) AskWithOCR() func(context.Context, PageImage, int, []string) (RegionReading, error) {
 	return o.AskWithHint("")
 }
 
@@ -570,21 +599,21 @@ func (o *OCR) AskWithOCR() func(context.Context, PageImage, int) (RegionReading,
 // Appended rather than woven in: the instruction competes with the image for the
 // model's attention, and a hint that rewrites the whole prompt would also change
 // the parts that make the answer parseable.
-func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, int) (RegionReading, error) {
+func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, int, []string) (RegionReading, error) {
 	suffix := ""
 	if h := strings.TrimSpace(hint); h != "" {
 		suffix = "\n\nWHAT THE CALLER IS LOOKING FOR: " + h +
 			"\nIf this image contains any of it, transcribe that FIRST and in full, and " +
 			"propose regions covering wherever more of it appears."
 	}
-	return func(ctx context.Context, img PageImage, depth int) (RegionReading, error) {
+	return func(ctx context.Context, img PageImage, depth int, damage []string) (RegionReading, error) {
 		prev := o.Prompt
 		// The root is asked to account for the whole sheet; a crop is asked to
 		// transcribe. Same walk, different question, decided by where we are in it.
 		if depth == 0 {
-			o.Prompt = rootPrompt + suffix
+			o.Prompt = rootPrompt + suffix + damageSuffix(damage)
 		} else {
-			o.Prompt = regionPrompt + suffix
+			o.Prompt = regionPrompt + suffix + damageSuffix(damage)
 		}
 		defer func() { o.Prompt = prev }()
 		text, _, shrinks, err := o.PageAsSeen(ctx, img)
@@ -706,4 +735,36 @@ func findRegion(root *Region, id string) *Region {
 		}
 	}
 	return nil
+}
+
+// damageSuffix tells the model what was measured about the pixels it is being
+// shown, and what it may ask for about it.
+//
+// This is the half the measurement cannot do. Measured 2026-08-03: the variance
+// of the laplacian identifies a blurred crop that the model itself diagnoses as
+// "skew" with 0.9 confidence — and the deskew it then prescribes makes a blurred
+// region WORSE. So the number is what notices, and the model is what decides,
+// because it is the one that can see whether the region is a faded fax or a
+// drawing that is mostly white space.
+func damageSuffix(damage []string) string {
+	if len(damage) == 0 {
+		return ""
+	}
+	var what []string
+	for _, d := range damage {
+		switch d {
+		case FlagBlurred:
+			what = append(what, "its strokes measure as SMEARED (low edge energy)")
+		case FlagFaded:
+			what = append(what, "its tones measure as CRUSHED into a narrow band")
+		}
+	}
+	if len(what) == 0 {
+		return ""
+	}
+	return "\n\nMEASURED ABOUT THIS IMAGE: " + strings.Join(what, ", and ") + "." +
+		"\nThese are measurements of the pixels, not a judgement about the document." +
+		"\nIf a repair would help, propose THIS SAME AREA (x:0,y:0,w:1,h:1) with a" +
+		" \"filter\" of \"contrast\" or \"sharpen\". Propose nothing if the region reads" +
+		" fine as it is — a repair that recovers nothing is discarded anyway."
 }

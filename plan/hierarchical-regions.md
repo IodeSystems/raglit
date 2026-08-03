@@ -93,6 +93,7 @@ region(
   name,                                    -- slug, unique among SIBLINGS
   page, bbox_x, bbox_y, bbox_w, bbox_h,   -- in page coordinates, not tile
   rotation,                                -- right angles only; applied before OCR
+  filter,                                  -- '' | contrast | sharpen; part of the render
   scale_dpi,
   kind,                                    -- content type, closed set — see below
   text,                                    -- transcription or description
@@ -128,8 +129,13 @@ Deliberately NOT on the record:
   introduced deliberately, including on the page at the resolution limit. What
   the attempt to measure it DID find is that render geometry perturbs which
   marginal glyphs survive at all; see the measurements below.
-- **`filters[]`** — no filter improved a reading and two degraded one. Where
-  filtering belongs is on the ENGINE, and tesseract is the tier that wants it.
+- **`filters[]`** — built 2026-08-03, but as a single `filter`, not a chain:
+  `contrast` (CLAHE clip 2.0, 8x8) or `sharpen` (unsharp σ1.0 α0.4). Those two
+  settings are the ones measured to recover a fact, and only one may apply,
+  because stacking two that each work recovers nothing. It is part of the RENDER
+  — the digest covers the filtered bytes, so a repaired region only re-renders
+  with its repair — and it is reached only through the protocol below: measured,
+  proposed, judged.
 
 Leaves are what get embedded and searched. Interior nodes are searchable too,
 carrying their overview text. `bbox` in PAGE coordinates so any node can be
@@ -138,6 +144,89 @@ re-rendered from the original without replaying the descent.
 The existing per-page image cache already keys on the SHA of the image bytes, so
 every region — being an image — is cached by construction and a re-run costs
 nothing for regions that have not changed.
+
+## The protocol — who tells who what
+
+Four parties, and the point of writing it down is that each one is barred from
+deciding things the others are better at. Every boundary below was drawn because
+a measurement said the other side gets it wrong.
+
+**The RENDERER** (pure code, no model). Crops to a bbox, rotates by a right
+angle, applies at most one filter, encodes a PNG, digests it. It decides nothing.
+It is the only party that produces an image, so the digest it takes is what makes
+any later claim about "the image the words came from" checkable.
+
+**The MEASUREMENT** (pure code, before any call). Reports what is wrong with the
+PIXELS, as flags: `low-resolution` from tokens per square inch, `blurred` from
+the variance of the laplacian, `faded` from the 1-99 percentile spread. It runs
+on the full-resolution crop.
+
+> It is NOT allowed to decide that a repair happens. It cannot tell a faded fax
+> from a drawing that is mostly bare paper, and a sparse crop of a clean sheet
+> scores low without being blurred.
+
+**The READER** (the model). Is shown the rendered image AND told what was
+measured about it. Answers with an account of the whole region, a kind, and
+proposals — sub-regions worth a closer look, each with a rotation, plus repairs
+to try on this same area.
+
+> It is NOT allowed to decide that the pixels are damaged. Measured: shown a crop
+> blurred at sigma 1.6 it answered `skew` and `noise` at 0.9 confidence and
+> prescribed a deskew — the one repair that makes a blurred region worse. Its
+> confidence reads 0.9-1.0 whether it is right or wrong, so it cannot be gated on.
+>
+> It is also NOT allowed to decide whether a proposal is a descent or a
+> transform. It routinely proposes the region it was just given as a "sub-region".
+
+**The ROUTER and the JUDGE** (pure code). The router classifies each proposal by
+GEOMETRY — materially smaller is a descent, same area at a new rotation or filter
+is a transform, same area rendered identically is refused — and neutralises a
+filter name that is not implemented. The judge decides whether a transform earned
+its place: a degenerate render never wins, then a cleared flag, then agreement
+with what the parent said is here, then distinct content.
+
+> Neither is allowed to decide what a region SAYS. They never look at meaning,
+> only at geometry, at flags, and at whether text repeats itself.
+
+### The exchange, one node
+
+```
+  renderer  →            crop(bbox, rotation, filter) → png, sha256
+  measure   →            low-resolution? blurred? faded?          [no model call yet]
+            → reader     the png
+                         + "MEASURED ABOUT THIS IMAGE: its strokes measure as
+                            SMEARED. These are measurements of the pixels, not a
+                            judgement about the document. If a repair would help,
+                            propose THIS SAME AREA with a filter of contrast or
+                            sharpen. Propose nothing if it reads fine."
+  reader    →            {description, kind, regions:[
+                            {x,y,w,h, rotation, filter, kind, reason}, ...]}
+  router    →            by geometry: descents | transforms | refused
+  ── for each transform ──
+  renderer  →            re-crop with the proposed rotation/filter
+  measure   →            did the flag that justified it clear?
+            → reader     the repaired png (same exchange, one level of budget spent)
+  judge     →            degenerate? flag cleared? agrees with the parent's
+                         account? more distinct content?  → adopt or `cycled`
+  ── for each descent ──
+            → reader     the child crop, and the PARENT's description as `expect`
+  measure   →            child shares nothing with `expect`? → `transform-suspect`
+```
+
+`expect` is the one thing threaded DOWN the tree rather than computed at the
+node, and it is what lets a child indict its parent's transform: a rotation
+applied the wrong way round does not garble a reading, it returns a reading about
+somewhere else. Recorded, not acted on — correcting it means re-rendering the
+parent, and the child cannot do that.
+
+### What is deliberately not in the protocol
+
+- **The reader is never asked to confirm a measurement.** It would agree.
+- **A repair is never applied because a flag fired.** The flag is told to the
+  reader; the reader asks or does not; the judge keeps it or throws it away. Three
+  parties have to agree before a filter survives into the record.
+- **No party may apply two repairs at once.** Measured: contrast alone recovers a
+  fact and mild sharpening alone recovers it, and the two stacked recover nothing.
 
 ## Descent versus transform — and the cycle it creates
 
@@ -400,44 +489,141 @@ solid is that the baseline is deterministic and the perturbed renders differ fro
 it in specific, named facts. What is not established is which perturbation to
 prefer, or that any of this generalises past this sheet.
 
-### Filters: nothing helped, and binarization hurt
+### Filters repair damage; they do not improve a good render
 
-Same region, upright, one filter each:
+The first pass at this concluded that no filter helped. That test ran six filters
+against a region already scoring 5/5, where the only available outcomes were "no
+change" and "worse" — it could not have shown a gain, and the conclusion drawn
+from it was not supported. What follows replaces it.
 
-| filter | J | K | L | MOWRER | S | output | wall |
-|---|---|---|---|---|---|---|---|
-| none | ✓ | ✓ | ✓ | ✓ | ✓ | 2,087 ch | 21.3s |
-| unsharp mask (σ2, α1.8) | ✓ | ✓ | ✓ | ✓ | ✓ | 3,601 ch | 32.5s |
-| CLAHE (clip 2, 8x8) | ✓ | ✓ | ✓ | ✓ | ✓ | 2,048 ch | 21.9s |
-| Otsu | ✓ | ✗ | ✓ | ✓ | ✓ | 13,427 ch | 98.6s |
-| Sauvola (w25, k0.2) | ✓ | ✓ | ✓ | ✓ | ✓ | 2,671 ch | 25.2s |
-| median 3x3 + unsharp | ✓ | ✗ | ✓ | ✓ | ✓ | 3,575 ch | 33.1s |
+**On a real page with headroom.** `ocr-survey-facts` sits at 2 of the 4 facts
+plan/ocr-fixtures.md records, reproducibly:
 
-No filter recovered anything the unfiltered region did not already have. Two lost
-K's bearing. Global binarization was the worst of them: 4.6x the wall clock and
-straight into the token ceiling.
+| 400 dpi, unmodified page | cert | note2 | deed | LISSER | |
+|---|---|---|---|---|---|
+| no filter | ✓ | ✗ | ✓ | ✗ | 2/4 |
+| **CLAHE clip 2.0, 8x8** | ✓ | **✓** | ✓ | ✗ | **3/4** |
+| CLAHE clip 4.0, 16x16 | ✓ | ✗ | ✓ | ✗ | 2/4 |
+| autocontrast (min-max) | ✓ | ✗ | ✓ | ✗ | 2/4 |
+| **unsharp mild (σ1.0, α0.4)** | ✓ | **✓** | ✓ | ✗ | **3/4** |
+| unsharp (σ2.0, α0.8) | ✓ | ✗ | ✓ | ✗ | 2/4 |
+| Sauvola (w25, k0.2) | ✓ | ✗ | ✓ | ✗ | 2/4 |
+| **Otsu** | ✓ | **✓** | ✓ | ✗ | **3/4** |
+| median 3x3 + unsharp | ✓ | ✗ | ✓ | ✗ | 2/4 |
+| CLAHE + unsharp | ✓ | ✗ | ✓ | ✗ | 2/4 |
 
-Which contradicts "a faint scan genuinely reads better binarized" as written
-under Descent versus transform. The reason it is wrong is structural, not a
-tuning miss — that whole preprocessing stack was built for binarization-based
-engines, and a vision encoder reads grayscale antialiasing as signal that
-thresholding throws away.
+Local contrast recovers `202107080106`, which plan/ocr-fixtures.md records as
+needing the digit-stripped tesseract assist. Replicated across two runs.
 
-Two consequences:
+Three things in that table, and two of them are warnings.
 
-- **A `threshold` transform has no evidence behind it.** Do not ship one until a
-  page exists that it rescues. This region is a clean 400 dpi render, not a faint
-  scan, so the faint-scan case is genuinely untested — `ocr-scanned-exhibit` is
-  where to test it.
-- **Filters belong on the ENGINE, not the region.** Tesseract is the tier that
-  wants Sauvola and a 2x upscale, and `ocrengine.go` already computes
-  `MedianGlyphPx`, which is exactly the trigger for deciding it. The VLM wants
-  the pixels. That is a `PageEngine` concern and does not belong in the region
-  record.
+**The mild setting of a filter helps and the aggressive setting of the same
+filter does not** — CLAHE at clip 2.0 but not 4.0, unsharp at α0.4 but not α0.8,
+a global stretch not at all. A filter that helps is a TUNED filter, which is the
+argument for shipping few of them, each measured, rather than a configurable
+chain.
 
-Upscaling deserves its own note: past `maxImageTokens` it is worse than useless,
-because the encoder downsamples it straight back and the resampling is pure loss.
-`tokensForImage` already knows this.
+**Stacking two filters that each work recovers nothing.** CLAHE alone 3/4, mild
+unsharp alone 3/4, CLAHE+unsharp 2/4. Whatever each one is doing, the composition
+undoes it. One repair at a time.
+
+**Otsu reached 3/4 here** — and on the corners region the same filter was the
+worst thing tried, losing a bearing and running 4.6x long into the token ceiling.
+Both are clean 400 dpi renders of the same document. So global binarization is
+not "bad for a VLM" as an earlier version of this section claimed; it is
+UNPREDICTABLE, which is worse for a pipeline and is why it is not implemented.
+
+Nothing recovers the surveyor's name. Only geometry has ever moved that one.
+
+**On known damage.** The corners table reads 5/5 clean; degrading it
+deliberately gives every correction something real to undo:
+
+| damage | none | deskew | deconv | CLAHE | deskew+deconv | deskew+CLAHE+deconv |
+|---|---|---|---|---|---|---|
+| 4°, blur σ1.6 | 4/5 | **5/5** | **5/5** | **5/5** | **5/5** | **5/5** |
+| 4°, blur σ2.6 | 3/5 | **1/5** | 3/5 | 3/5 | 3/5 | 3/5 |
+| 6°, blur σ3.4 | 0/5 | 1/5 | 1/5 | 0/5 | 1/5 | — |
+| 4°, σ2.6, faded | 0/5 | 1/5 | **3/5** | **3/5** | 1/5 | **3/5** |
+
+Three things fall out of that grid.
+
+**The recoverable window is narrow.** At mild blur every correction restores the
+page completely. One step further and nothing restores the two lost facts — the
+information is gone, and no amount of sharpening invents it back. A filter is
+worth trying and is not worth trusting.
+
+**Deskew ALONE is harmful in the blur band** — 3/5 down to 1/5, worse than
+leaving the damage alone, because rotating already-blurred pixels resamples them
+a second time. That is precisely `rotateImage`'s stated reason for refusing
+arbitrary angles, which the skew section above reports as unsupported. Both are
+right: on a SHARP image the resampling costs nothing, on a blurred one it
+compounds. The comment describes a real regime; it just is not this corpus's.
+
+**Fade is the case with the most to gain.** A faded scan reads NOTHING unfiltered
+and three of five with contrast or sharpening. This is the one damage mode where
+a filter is the difference between a page and no page.
+
+Binarization is the one that refused to generalise: worst-of-all on one clean
+render, joint-best on another. Not implemented for that reason — see the table
+above.
+
+Upscaling remains pointless past `maxImageTokens` — the encoder downsamples it
+straight back and the resampling is pure loss. `tokensForImage` already knows.
+
+### Who asks for the transform
+
+The region prompt already asks the model for a `rotation` per proposal, so
+extending it to filters costs nothing structurally. Whether it SHOULD is a
+question about what the model can see, and it splits:
+
+| shown | model said | model's fix | its confidence | measured lapvar |
+|---|---|---|---|---|
+| clean crop | nothing | none | 1.0 | 6593 |
+| blur σ1.6 | skew, noise | deskew, denoise | 0.9 | 53 |
+| blur σ3.4 | blur, low contrast | sharpen, contrast, rescan | 0.95 | 2.0 |
+| skew 4° | skew | deskew | 0.95 | 4601 |
+| skew 4° + blur σ2.6 | blur, skew | deskew, sharpen | 0.9 | 5.6 |
+| sideways | skew | **rotate270** | 1.0 | 6593 |
+| whole sheet at root scale | skew, low contrast | **rotate270**, contrast | 0.95 | 4283 |
+| root scale + blur σ3 | blur, skew, contrast, too small | rotate, sharpen, rescan | 0.95 | 1.5 |
+
+**Rotation: let the model ask.** It named `rotate270` correctly on the sideways
+crop AND on the whole sheet seen at root scale. The worry that a root at 4 tokens
+per square inch cannot judge its own image did not reproduce — it read the root
+view correctly and did not falsely report blur.
+
+**Blur and contrast: measure, do not ask.** At σ1.6 — the ONLY damage level where
+a filter fully recovers the page — the model diagnosed `skew` and `noise` and
+prescribed `deskew`, which is the one correction measured to make a blurred
+region worse. It was 0.9 confident. Confidence sits at 0.9-1.0 whether it is
+right or wrong, so it cannot be used to gate the decision.
+
+The variance of the Laplacian catches every case the model missed, on the
+FULL-RESOLUTION crop — pixels the model never receives, because the encoder
+downsampled them before it ever saw the region:
+
+| image | lapvar | dynamic range |
+|---|---|---|
+| clean crop | 6593 | 255 |
+| damaged 4°/σ1.6 | 51 | 118 |
+| fixture ocr-survey-facts | 5135 | 255 |
+| fixture ocr-survey-corners | 2967 | 255 |
+| fixture ocr-scanned-exhibit | 2562 | 243 |
+| fixture ocr-drawing-dimensions (a fax) | 844 | 232 |
+
+Two orders of magnitude between damaged and clean, every real fixture well clear
+of any threshold in between, and the faxed sheet correctly the lowest of them.
+Milliseconds, no model call — the same shape as `TokensPerSqIn`, which is already
+computed before the model is asked anything.
+
+So: **the model proposes rotation, a measurement proposes filters**, and both
+arrive as transforms that `transformHelped` judges the same way. That is not an
+architectural preference; it is where each one was measured to be reliable.
+
+Not built. What it needs is a `blurred`/`faded` flag computed alongside
+`low-resolution`, a filter on the transform record for the descent to apply, and
+the discipline that a filter transform must clear the flag that justified it —
+which the existing machinery already enforces.
 
 ### The 1.2B document parser these measurements came out of
 
@@ -486,11 +672,19 @@ itself, and which this document already specifies asking for.
 
 ## Settled
 
-- **Rotation earns its budget; filters and skew do not.** Rotation alone recovers
-  four of five discriminating facts on a sideways sheet, for the cost of a
-  transpose. Six filters recovered nothing and two lost a bearing. Skew is
-  absent from every fixture and harmless when introduced. Measured 2026-08-03,
+- **Rotation earns its budget.** It alone recovers four of five discriminating
+  facts on a sideways sheet, for the cost of a transpose. Measured 2026-08-03,
   below.
+- **Filters repair damage; they do not improve a good render.** Local contrast
+  recovers a fact on a real page and rescues a faded scan from reading nothing.
+  On an undamaged render the same filters are neutral and binarization hurts, and
+  past a blur threshold nothing recovers anything. Gate them on measured damage.
+  An earlier entry here claimed filters were worthless; that was concluded from a
+  region already scoring full marks, where no gain was possible.
+- **The model asks for rotation; a measurement asks for filters.** It names
+  `rotate270` correctly even at root scale, and misdiagnoses recoverable blur as
+  skew at 0.9 confidence — prescribing the one correction that makes a blurred
+  region worse.
 - **A transform is judged by agreement, not by length.** The correct render is
   consistently the SHORTER one, because the wrong orientation makes the model run
   on rather than stop. Fixed 2026-08-03: `transformHelped` now refuses a render
