@@ -112,7 +112,7 @@ func (rr *RegionReader) defaults() {
 func (rr *RegionReader) Read(ctx context.Context, page image.Image, pageNo int) (*Region, error) {
 	rr.defaults()
 	root := &Region{Page: pageNo, BBox: Rect{0, 0, 1, 1}, Depth: 0}
-	err := rr.visit(ctx, page, root, 0)
+	err := rr.visit(ctx, page, root, 0, "")
 	// Number even a partial tree. A descent that failed half way still produced
 	// regions whose text somebody may have to attest, and an unaddressable region
 	// is one nobody can be shown.
@@ -121,7 +121,11 @@ func (rr *RegionReader) Read(ctx context.Context, page image.Image, pageNo int) 
 }
 
 // visit reads one region and descends into what it proposes.
-func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region, transformsUsed int) error {
+// expect is what the PARENT said is in this region, read at the parent's
+// resolution. Threaded down rather than looked up because it is the only
+// account of the region not produced by the render being judged — see
+// transformHelped, which is the one thing that uses it.
+func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region, transformsUsed int, expect string) error {
 	reg.TokensPerSqIn = resolutionOf(reg.BBox, rr.PageWIn, rr.PageHIn, rr.DPI)
 	if reg.TokensPerSqIn < letterTokensPerSqIn*lowResolutionRatio {
 		// Known BEFORE the model is called, and on its own enough to distrust
@@ -163,6 +167,13 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	}
 	if reading.Repeated {
 		reg.addFlag(FlagRepetition)
+	}
+	// The parent described this region before anything was cropped or rotated out
+	// of it. A reading that shares nothing with that account is evidence against
+	// the TRANSFORM, not against the page — see FlagTransformSuspect.
+	if strings.TrimSpace(expect) != "" && strings.TrimSpace(reg.Text) != "" &&
+		expectationOverlap(reg.Text, expect) < expectationFloor {
+		reg.addFlag(FlagTransformSuspect)
 	}
 
 	if reg.Depth >= rr.MaxDepth {
@@ -218,10 +229,10 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		}
 		alt := &Region{Page: reg.Page, BBox: reg.BBox, Rotation: t.Rotation,
 			Kind: reg.Kind, Depth: reg.Depth}
-		if err := rr.visit(ctx, page, alt, transformsUsed+1); err != nil {
+		if err := rr.visit(ctx, page, alt, transformsUsed+1, expect); err != nil {
 			return err
 		}
-		if alt.hasFlag(FlagCycled) || !transformHelped(reg, alt) {
+		if alt.hasFlag(FlagCycled) || !transformHelped(reg, alt, expect) {
 			// Bought nothing. Two of these in a row end the region as a flagged
 			// leaf, which is the honest outcome for six-point text on a scan.
 			reg.addFlag(FlagCycled)
@@ -243,7 +254,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		}
 		child := &Region{Page: reg.Page, BBox: d.bbox, Rotation: d.rotation,
 			Kind: d.kind, Depth: reg.Depth + 1}
-		if err := rr.visit(ctx, page, child, 0); err != nil {
+		if err := rr.visit(ctx, page, child, 0, reading.Description); err != nil {
 			return err
 		}
 		reg.Children = append(reg.Children, child)
@@ -305,21 +316,134 @@ func (rr *RegionReader) route(parent *Region, props []RegionProposal) ([]descent
 
 // transformHelped decides whether a re-render earned its place.
 //
-// Two signals, because one is not enough. Clearing a flag is the strong one —
-// a narrower field breaking a repetition loop, a threshold resolving a
-// disagreement.
+// Clearing a flag is the strong signal — a narrower field breaking a repetition
+// loop, a threshold resolving a disagreement. But a ROTATION cannot clear
+// `low-resolution`: the area is unchanged, so the arithmetic is identical, and
+// judging rotation on flags alone rejected every rotation including the one that
+// recovered the survey's legal description from a sideways text block.
 //
-// But a ROTATION cannot clear `low-resolution`: the area is unchanged, so the
-// arithmetic is identical. Judging rotation on flags alone rejected every
-// rotation, including the one that recovered the survey's legal description
-// from a sideways text block. So more TEXT also counts: an upright read of the
-// same pixels yields more legible content than a sideways one, and that is
-// measurable without pretending to score quality.
-func transformHelped(orig, alt *Region) bool {
+// The substitute used to be "more text wins", and MEASURED, that rule is
+// backwards. Reading page 2 of the survey four ways (2026-08-03, see
+// plan/hierarchical-regions.md), the correct render was the shorter one every
+// time:
+//
+//	whole sheet sideways  9,316 chars   89% of lines duplicated   2 bearings wrong
+//	whole sheet upright   2,187 chars    2% duplicated            correct
+//	drawing sideways     13,715 chars   94% duplicated            2 facts wrong
+//	drawing upright       2,087 chars    3% duplicated            correct
+//
+// The wrong orientation does not lose text. It makes the model run on, so LENGTH
+// rewards exactly the render that failed. What separates them without overlap is
+// how much of the output repeats itself, and — where a parent said what is in
+// here — whether the reading is about the thing the parent described at all.
+func transformHelped(orig, alt *Region, expect string) bool {
+	// A render that mostly repeats itself never wins, whatever else it scores.
+	// This is the one signal measured with no overlap between the good and bad
+	// renders, so it is applied before anything else.
+	od, ad := degenerateRatio(orig.Text), degenerateRatio(alt.Text)
+	if ad >= degenerateLineRatio && od < degenerateLineRatio {
+		return false
+	}
+	if od >= degenerateLineRatio && ad < degenerateLineRatio {
+		return true
+	}
 	if clearsAny(orig.Flags, alt.Flags) {
 		return true
 	}
-	return len(strings.TrimSpace(alt.Text)) > len(strings.TrimSpace(orig.Text))
+	// What the PARENT said is in here is the only description of this region not
+	// produced by the render under judgement, which makes it the one thing a
+	// wrong rotation cannot also corrupt. A sideways or upside-down read does not
+	// merely garble — it comes back about something else.
+	if strings.TrimSpace(expect) != "" {
+		if o, a := expectationOverlap(orig.Text, expect), expectationOverlap(alt.Text, expect); o != a {
+			return a > o
+		}
+	}
+	// Nothing else to go on: more DISTINCT content, which is the old rule with
+	// the repetition that broke it taken out.
+	return distinctLen(alt.Text) > distinctLen(orig.Text)
+}
+
+// degenerateLineRatio is where a reading stops being a transcription and starts
+// being a loop. Measured: correct renders of the survey duplicated 2-3% of their
+// lines, the mis-rotated ones 89-94%. Nothing observed between, so the threshold
+// is set in the empty middle rather than tuned against either end.
+const degenerateLineRatio = 0.5
+
+// expectationFloor is how little a reading may have in common with what its
+// parent said is here before the TRANSFORM, not the content, becomes the
+// suspect. Deliberately low: a parent describes a region at a resolution where
+// it can read the block capitals and not the six-point text, so a correct child
+// legitimately shares little with it. What this catches is the child that shares
+// NOTHING, which is what a rotation applied the wrong way round produces.
+const expectationFloor = 0.05
+
+// normalizedLines splits a reading into comparable lines: trimmed, folded to
+// upper case, and dropping the very short ones, which are table rules and stray
+// glyphs rather than content.
+func normalizedLines(text string) []string {
+	var out []string
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.ToUpper(strings.Join(strings.Fields(ln), " "))
+		if len(ln) > 3 {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
+
+// degenerateRatio is the fraction of a reading's lines that repeat one already
+// seen. A page with a genuinely repeated call ("FND. R/C MOWRER") scores a few
+// percent; a loop scores most of the way to 1.
+func degenerateRatio(text string) float64 {
+	lines := normalizedLines(text)
+	if len(lines) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(lines))
+	for _, ln := range lines {
+		seen[ln] = struct{}{}
+	}
+	return 1 - float64(len(seen))/float64(len(lines))
+}
+
+// distinctLen is the length of a reading counting each distinct line once.
+func distinctLen(text string) int {
+	seen := map[string]struct{}{}
+	n := 0
+	for _, ln := range normalizedLines(text) {
+		if _, ok := seen[ln]; ok {
+			continue
+		}
+		seen[ln] = struct{}{}
+		n += len(ln)
+	}
+	return n
+}
+
+// expectationOverlap is the fraction of what the parent said is here that turns
+// up in the reading, by the same shingles the corpus-similarity path uses.
+//
+// Asymmetric on purpose: a child SHOULD say more than its parent did — that is
+// the entire point of descending — so what matters is how much of the parent's
+// account the child accounts for, not how much of the child the parent predicted.
+func expectationOverlap(text, expect string) float64 {
+	const w = 5
+	want := Shingles(strings.ToUpper(expect), w)
+	if len(want) == 0 {
+		return 0
+	}
+	got := map[uint64]struct{}{}
+	for _, h := range Shingles(strings.ToUpper(text), w) {
+		got[h] = struct{}{}
+	}
+	hit := 0
+	for _, h := range want {
+		if _, ok := got[h]; ok {
+			hit++
+		}
+	}
+	return float64(hit) / float64(len(want))
 }
 
 // indexOfOverlap finds an existing descent covering substantially the same
@@ -566,7 +690,7 @@ func (rr *RegionReader) ReadInto(ctx context.Context, page image.Image, pageNo i
 
 	fresh := &Region{Page: pageNo, BBox: target.BBox, Rotation: target.Rotation,
 		Kind: target.Kind, Depth: target.Depth}
-	if err := rr.visit(ctx, page, fresh, 0); err != nil {
+	if err := rr.visit(ctx, page, fresh, 0, ""); err != nil {
 		return nil, err
 	}
 	*target = *fresh

@@ -64,9 +64,15 @@ the facts we know", not "is this transcription good".
       FAIL  202107080106     note 2's auditor file number
       PASS  200808180120     the deed's auditor file number
       PASS  202205230090     the recording number
-      FAIL  HALVOR           read as HALVR
+      FAIL  LISSER           read as LISER
       PASS  not 2008081020   the misreading a person corrected by hand
       PASS  not 201364       what this model returned at 200 DPI
+
+That surveyor-name row was recorded as `HALVOR` / read as `HALVR`, and both were
+the repository's pseudonym rather than anything on the page or in the response.
+The check could not pass at any configuration; corrected 2026-08-03. The score
+is unchanged — the model did miss the name — but it missed it by normalising
+`LISSER` to `LISER`, which is the failure the check is for.
 
 Which is the manual measurement, reproduced: at 400 DPI with the raised token
 ceiling the model recovers the certificate and the deed's file number on its

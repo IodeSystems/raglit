@@ -19,8 +19,8 @@ render() { # <probe> <pdf> <page> <dpi>
   echo "  $1  ← $(basename "$2") p$3 @${4}dpi"
 }
 echo "rendering bench fixtures from $CORPUS"
-render ocr-survey-facts      "$CORPUS/records/202205230090-2022-halvor-ROS-disputed.pdf" 1 400
-render ocr-survey-corners    "$CORPUS/records/202205230090-2022-halvor-ROS-disputed.pdf" 2 400
+render ocr-survey-facts      "$CORPUS/records/202205230090-2022-lisser-ROS-disputed.pdf" 1 400
+render ocr-survey-corners    "$CORPUS/records/202205230090-2022-lisser-ROS-disputed.pdf" 2 400
 # The site plan, in the permit packet. The SAME drawing is also filed at
 # records/2021-06-02-havern-access-permit-AC21-0044-with-1993-qcd.pdf p4 — two
 # scans of one page, which is what makes an agreement check possible here

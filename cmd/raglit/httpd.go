@@ -281,6 +281,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
+	gat.Register(api, g, op("deleteIndex", http.MethodDelete, "/indexes", "Delete an index (its storage); the shared pool is untouched."), deleteIndexOp(reg))
 	if watch != nil {
 		gat.Register(api, g, op("listWatches", http.MethodGet, "/api/watch", "List project homes watched for auto re-ingest."), listWatchesOp(watch))
 		gat.Register(api, g, op("addWatch", http.MethodPost, "/api/watch", "Register a project home for auto re-ingest on change."), addWatchOp(watch))
@@ -991,6 +992,25 @@ func forkBranchOp(reg *raglit.Registry) func(context.Context, *forkBranchIn) (*f
 
 type deleteBranchIn struct {
 	Name string `query:"name"`
+}
+
+type deleteIndexIn struct {
+	Name string `query:"name" required:"true" doc:"index to delete"`
+}
+
+// deleteIndexOp drops an index's storage. The POOL survives: it holds the
+// expensive half (extract/OCR/segment/embed, keyed by recipe+file and shared by
+// every index) and this index is rebuildable from it with no model calls. What
+// governs pool lifetime is Pool.GC, not this.
+func deleteIndexOp(reg *raglit.Registry) func(context.Context, *deleteIndexIn) (*okOut, error) {
+	return func(_ context.Context, in *deleteIndexIn) (*okOut, error) {
+		if err := reg.DeleteIndex(in.Name); err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		out := &okOut{}
+		out.Body.OK = true
+		return out, nil
+	}
 }
 
 func deleteBranchOp(reg *raglit.Registry) func(context.Context, *deleteBranchIn) (*okOut, error) {

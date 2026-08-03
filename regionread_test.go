@@ -562,3 +562,110 @@ func TestDescentIsOptIn(t *testing.T) {
 		t.Error("the root must still carry its account of the sheet")
 	}
 }
+
+// Measured 2026-08-03 on page 2 of the survey: read sideways the model does not
+// lose text, it runs on — 9,316 characters with 89% of its lines duplicated,
+// against 2,187 characters and 2% for the same region read upright. The rule
+// this replaces was "more text wins", which prefers exactly the render that got
+// two bearings wrong.
+func TestALongerTransformThatIsMostlyRepetitionIsRefused(t *testing.T) {
+	looped := "FOUND 1/2 RB/CAP SUMMIT 0.2 N OF CALC\n" +
+		strings.Repeat("FOUND 5/8 RB/CAP MOWRER 0.4 S OF CALC\n", 40)
+	upright := "EXISTING CORNERS\nA = FOUND 1/2 RB/CP SUMMIT\n" +
+		"B = FOUND 1/2 RB/CAP SUMMIT 0.1 N AND 0.1 W OF CALCD POSITION\n" +
+		"J = FOUND 1/2 RB/CAP SUMMIT NOT ACCEPTED S 31 05 E 0.4 FROM CALC\n"
+	if len(looped) <= len(upright) {
+		t.Fatalf("fixture is not the case under test: %d vs %d", len(looped), len(upright))
+	}
+	orig := &Region{Text: upright}
+	alt := &Region{Text: looped}
+	if transformHelped(orig, alt, "") {
+		t.Errorf("a %d-char loop beat a %d-char reading (degenerate ratio %.2f vs %.2f)",
+			len(looped), len(upright), degenerateRatio(looped), degenerateRatio(upright))
+	}
+	// And the other way round: escaping a loop is exactly what a transform is for.
+	if !transformHelped(&Region{Text: looped}, &Region{Text: upright}, "") {
+		t.Error("a transform that broke the loop was refused")
+	}
+}
+
+// With nothing else to separate them the old rule still applies, corrected: more
+// DISTINCT content, so a re-render that only repeats itself more cannot win.
+func TestATransformWinsOnDistinctContentWhenNothingElseSeparatesThem(t *testing.T) {
+	orig := &Region{Text: "sideways"}
+	alt := &Region{Text: "PARCEL A: THE EASTERLY 25 FEET OF LOT 1\nBLOCK 10, MONTBORNE"}
+	if !transformHelped(orig, alt, "") {
+		t.Error("the legible re-render was refused")
+	}
+	padded := &Region{Text: "sideways\n" + strings.Repeat("sideways\n", 20)}
+	if transformHelped(orig, padded, "") {
+		t.Error("repeating the same line counted as more content")
+	}
+}
+
+// The parent's account is the only description of a region not produced by the
+// render under judgement, which is what makes it usable as a tiebreak.
+func TestATransformIsJudgedAgainstWhatTheParentSaidIsThere(t *testing.T) {
+	expect := "a monument table listing found rebar and caps with offsets from calculated position"
+	about := &Region{Text: "FOUND 5/8 RB/CAP MOWRER 0.4 S OF CALCULATED POSITION\n" +
+		"FOUND REBAR AND CAP LISSER PER PREVIOUS SURVEY\n"}
+	elsewhere := &Region{Text: "NORTHERN PACIFIC RAILROAD RIGHT OF WAY\n" +
+		"VACATED SHERMAN STREET\nAERIAL UTILITY CROSSING\nGRAVEL PARKING AREA\n"}
+	if !transformHelped(elsewhere, about, expect) {
+		t.Error("the render matching the parent's account lost")
+	}
+	if transformHelped(about, elsewhere, expect) {
+		t.Error("a render about something else won")
+	}
+}
+
+// A rotation applied the wrong way round does not garble the text — it returns a
+// reading about a different part of the sheet. That is a claim about the
+// TRANSFORM, and the region says so rather than adopting it silently.
+func TestAChildThatSharesNothingWithItsParentFlagsTheTransform(t *testing.T) {
+	page := blankPage(400, 540)
+	ask, _ := scriptedAsk(
+		RegionReading{
+			Description: "a monument table listing found rebar and caps with offsets from calculated position",
+			Regions: []RegionProposal{
+				{X: 0.1, Y: 0.1, W: 0.3, H: 0.3, Rotation: 90, Reason: "the table"},
+			}},
+		RegionReading{Description: "NORTHERN PACIFIC RAILROAD RIGHT OF WAY VACATED SHERMAN STREET"},
+	)
+	root, err := surveyReader(ask).Read(context.Background(), page, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("expected one child, got %d", len(root.Children))
+	}
+	if !root.Children[0].hasFlag(FlagTransformSuspect) {
+		t.Errorf("a child about something else was accepted unflagged: %v", root.Children[0].Flags)
+	}
+	if root.hasFlag(FlagTransformSuspect) {
+		t.Error("the root has no parent to disagree with and must not be flagged")
+	}
+}
+
+// The flag is about disagreement, not about a child saying MORE than its parent
+// could see — which is the entire point of descending.
+func TestAChildThatElaboratesOnItsParentIsNotFlagged(t *testing.T) {
+	page := blankPage(400, 540)
+	ask, _ := scriptedAsk(
+		RegionReading{
+			Description: "a monument table listing found rebar and caps with offsets from calculated position",
+			Regions: []RegionProposal{
+				{X: 0.1, Y: 0.1, W: 0.3, H: 0.3, Reason: "the table"},
+			}},
+		RegionReading{Description: "EXISTING CORNERS\n" +
+			"A = a monument table listing found rebar and caps with offsets from calculated position\n" +
+			"B = FOUND 1/2 RB/CAP SUMMIT 0.1 N AND 0.1 W OF CALCD POSITION\n"},
+	)
+	root, err := surveyReader(ask).Read(context.Background(), page, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Children[0].hasFlag(FlagTransformSuspect) {
+		t.Errorf("a child that covered its parent's account was flagged: %v", root.Children[0].Flags)
+	}
+}
