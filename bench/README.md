@@ -24,6 +24,11 @@ bench reproducible by someone who does not have the corpus.
 
 NOT COMMITTED, generated locally:
 
+- `ocr-esize-survey` — the 27 x 36.7 inch record of survey under 200808180120.
+  A recorded land record like the two above, so the same reasoning would allow
+  committing it; it is left out for SIZE (4.3 MB rendered) rather than for
+  privacy. Say so and it can be added.
+
 - `ocr-drawing-dimensions` — a county access permit application. Arguably a
   public record, but the sheet carries a third party's HOME ADDRESS, and that
   party is an opposing party in live litigation. County file, yes; GitHub, no.
@@ -41,7 +46,14 @@ still run the two survey probes, which are the ones that carry ground truth.
 
 ## What each probe is for
 
-See `plan/ocr-fixtures.md` for why these four pages and what is known to be true
+`ocr-esize-survey` is the only probe here that is not 8.5 x 11, and that is its
+whole point. The region reader tiles a region only when it is flagged
+`low-resolution`, which works out to `area > ~205 sq in` — so every other fixture
+in this set is structurally incapable of reaching the tiling path, the escalation
+path, or anything else the descent exists for. Measured over the corpus, 14 of
+998 pages (1.4%) clear that bar, in 11 of 154 documents.
+
+See `plan/ocr-fixtures.md` for why these pages and what is known to be true
 about them. In short: text-and-drawing on one sheet, a number-dense monument
 table, a hand-drawn plan whose dimensions ARE the content, and one page of a
 thirty-page scanned instrument.

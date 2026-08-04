@@ -27,4 +27,9 @@ render ocr-survey-corners    "$CORPUS/records/202205230090-2022-lisser-ROS-dispu
 # without ground truth.
 render ocr-drawing-dimensions "$CORPUS/correspondence/attachments/Re__24053_North_Northlea_Rd_Access_permit_-_Paul_Farley__1636_001.pdf" 4 200
 render ocr-scanned-exhibit   "$CORPUS/evidence/icloud-2026-07-25/decoded/attachments/2021-05-24-PSA-OFFER-buyer-signed-30pg-MISNAMED-as-form22J__32945157.pdf" 28 200
+# The 27x36.7in sheet the region descent exists for. 200 dpi, not 400: the
+# encoder caps at 4000 tokens for an image, so above ~205 sq in the dpi buys
+# nothing and only the crop does. This is the ONLY fixture that reaches the
+# tiling path — a letter page is never flagged low-resolution.
+render ocr-esize-survey      "$CORPUS/records/200808180120-2008-summit-record-of-survey-OPERATIVE.pdf" 1 200
 echo "done"

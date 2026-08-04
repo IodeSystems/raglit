@@ -362,9 +362,25 @@ func rotateImage(src image.Image, deg int) image.Image {
 // The clipped reads it was meant to prevent were still arriving as "ERTI",
 // "OR'S", "NGTON", "B", and FlagClipped had already been removed in favour of it.
 //
-// A length, not a fraction. 0.15in is about two lines at the text sizes these
-// sheets carry, and it does not care how small the region is.
-const descentPadIn = 0.15
+// A length, not a fraction, and it does not care how small the region is.
+//
+// 0.5in, not the 0.15in it started at. The old figure reasoned from line HEIGHT
+// — "about two lines at the text sizes these sheets carry" — against a problem
+// that is about WIDTH. Measured on the 27x36.7in survey, 602 words read:
+//
+//	median word width          0.155in
+//	p90 / p99 / max            0.225 / 0.510 / 0.635in
+//	words wider than 0.15in    306 of 602 — HALF of them
+//
+// Against that sheet's 4x4 grid, 47 words straddle a seam. The 0.15in pad left
+// 22 of them still cut; 0.5in leaves 3.
+//
+// It is free, which is why 0.5 rather than a compromise. A padded tile costs
+// 50.7 tokens per square inch against 51.9 at the old pad — both far above the
+// 39 a letter page gets — because tokensForImage caps at maxImageTokens and 0.5
+// is the largest pad that lands ON the cap rather than past it. At 0.75in the
+// tile drops to 45.4 and the pad starts being paid for in resolution.
+const descentPadIn = 0.5
 
 // paddedIn grows r by pad inches on every side, clamped to the unit square.
 //
