@@ -176,6 +176,48 @@ property of the document.
 
 `transform-suspect` and `faded` both fired on real pages on first contact.
 
+### The E-size sheet: 6 of 6, and tiling is what did it
+
+`ocr-esize-survey` — 27 x 36.7in, 991 sq in, the sheet
+plan/hierarchical-regions.md was opened for and which nothing had ever measured.
+Same model, same 200 dpi, same checks; the only variable is what reads it.
+
+| | facts | chars | dup ratio | what happened |
+|---|---|---|---|---|
+| raw endpoint, guards bypassed | 2/4 | 13,344 | **0.89** | looped 328x, hit the token cap |
+| raglit, untiled | 1/4 | 3,716 | 0.00 | safe and thin |
+| **raglit, tiled 4x4** | **4/4 + both refusals** | **9,910** | 0.12 | complete |
+
+`9308270057` is the number this page is KNOWN for confabulating as
+`A#200308270057` — a real number with 200 prepended and a digit dropped. The
+tiled read returns it correctly and does not produce the invention. `MOWRER`
+comes back correct, where every whole-sheet read normalises it to `MOWER`.
+
+Three things this separates that were previously tangled together.
+
+**The guards are not optional and were never off.** The 0.89 row is what the
+model does with raglit's protections REMOVED — a non-streaming client cannot run
+agentkit's RepetitionGuard, which lives in the transport because only the party
+watching the bytes arrive can see a loop. Measured against the guard's defaults
+the loop is a 29-byte block repeated 328 times: it clears MinPeriod 24, MinReps 3
+and MinSpan 512 comfortably, and would have been cut after 18 copies — 522 bytes
+in, about a third of the way through — abandoning ~9,000 bytes that were paid for
+here. Through raglit the same sheet duplicates 0.00.
+
+**Tiling is what recovers the facts, not the guards.** The untiled control has
+the same guards, model and dpi and scores 1/4. The only difference is field of
+view.
+
+**0.12 duplication is the 45% rule working, not failing.** Tiles overlap by
+descentPadIn, so an item at a seam legitimately lands in two cells. Twelve
+percent against a loop's eighty-nine is the trade the threshold was chosen for:
+duplicates accepted, drops not.
+
+Unspent in that run: every one of the 16 tiles is flagged `budget` at MaxDepth 1,
+`transform-suspect` fired on two adjacent tiles with nothing yet consuming it,
+and no tile asked for a `margin`. One page, one run — the first time the tiling
+path has ever executed.
+
 ## Open
 
 - **Types 2, 3 and 4 cannot currently BE measured.** They are saturated: `plain`

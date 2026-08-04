@@ -1,8 +1,11 @@
 # Hierarchical regions — reading an image that does not fit in one look
 
-Status: **built** (`regions.go`, `regionread.go`, `regiondoc.go`, `raglit
-regions`, `raglit region`). Not yet wired into ingest — the descent runs only
-when asked for. Opened 2026-07-29 after a recorded land survey produced a
+Status: **built** (`regions.go`, `regionread.go`, `regionfilter.go`,
+`regiondoc.go`, `raglit regions`, `raglit region`). Not yet wired into ingest —
+the descent runs only when asked for. The 2026-08-03 measurements that shaped
+what is here are archived in `plan/done/2026-08-03-what-a-transform-is-worth.md`;
+what remains OPEN below is the turn-3 escalation loop, placeholder assembly, and
+the ingest trigger. Opened 2026-07-29 after a recorded land survey produced a
 confident, complete-looking transcription that had silently dropped the clause
 the matter turns on.
 
