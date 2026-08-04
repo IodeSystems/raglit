@@ -206,23 +206,29 @@ func (rr *RegionReader) Read(ctx context.Context, page image.Image, pageNo int) 
 // resolution. Threaded down rather than looked up because it is the only
 // account of the region not produced by the render being judged — see
 // transformHelped, which is the one thing that uses it.
-func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region, transformsUsed int, expect string) error {
+// readRegion renders a region, measures it, and asks about it — and does NOTHING
+// else. No routing, no tiling, no descent.
+//
+// Split out because a TRANSFORM candidate needs exactly this and nothing more.
+// It used to go through the whole of visit, which meant an alt of a tileable
+// region was itself low-resolution, tiled, and spent sixteen calls proving a
+// speculative rotation was worse. Measured over the corpus: three sheets ran
+// their real descent out of budget after four tiles of sixteen, and those three
+// are the only pages in the sweep where tiling did WORSE than not tiling
+// (-32%, -28%, -63%) while every sheet that finished its grid gained.
+//
+// ok is false when the region was not read at all — a cycle or a spent budget —
+// and the caller must not treat what it holds as a reading.
+func (rr *RegionReader) readRegion(ctx context.Context, page image.Image, reg *Region,
+	expect string) (RegionReading, bool, error) {
 	reg.TokensPerSqIn = resolutionOf(reg.BBox, rr.PageWIn, rr.PageHIn, rr.DPI)
 	if reg.TokensPerSqIn < letterTokensPerSqIn*lowResolutionRatio {
-		// Known BEFORE the model is called, and on its own enough to distrust
-		// whatever comes back.
 		reg.addFlag(FlagLowResolution)
 	}
-
 	img, err := renderRegion(page, reg.BBox, reg.Rotation, reg.Filter)
 	if err != nil {
-		return err
+		return RegionReading{}, false, err
 	}
-	// What is measurably wrong with these PIXELS, taken on the crop as rendered
-	// and BEFORE the call — the same discipline as low-resolution. Measured on the
-	// filtered image when a filter is in force, which is what makes a repair
-	// testable: a contrast transform that clears `faded` cleared it on the bytes
-	// the model was handed.
 	var damage []string
 	if m, _, derr := image.Decode(bytes.NewReader(img)); derr == nil {
 		damage = DamageOf(m)
@@ -231,20 +237,14 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		}
 	}
 	sha := imageSHA(img)
-	// What this region was rendered from, kept rather than discarded: the crop
-	// geometry alone does not identify an image, and a human attesting a quote
-	// has to be shown the image, not something with the same coordinates.
 	reg.DPI, reg.SHA256 = rr.DPI, sha
 	if rr.seen[sha] {
-		// This exact rendering has been read already. Refusing here is what stops
-		// the model's "re-rotate/filter the same section" proposal from
-		// recursing forever on the same pixels.
 		reg.addFlag(FlagCycled)
-		return nil
+		return RegionReading{}, false, nil
 	}
 	if rr.calls >= rr.MaxCalls {
 		reg.addFlag(FlagBudget)
-		return nil
+		return RegionReading{}, false, nil
 	}
 	rr.seen[sha] = true
 	rr.calls++
@@ -252,7 +252,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	reading, err := rr.Ask(ctx, PageImage{Page: reg.Page, Mime: "image/png", Data: img},
 		RegionAbout{Depth: reg.Depth, Damage: damage, Grid: reg.Grid})
 	if err != nil {
-		return err
+		return RegionReading{}, false, err
 	}
 	reg.Text = reading.Description
 	reg.Downscales = reading.Downscales
@@ -261,31 +261,30 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	}
 	reg.Verdict, reg.Because = normalizeVerdict(reading.Verdict), reading.Because
 	if reg.Verdict == VerdictUnknown {
-		// A verdict this package does not define. Recorded rather than silently
-		// read as "fine": an unimplemented filter is refused visibly for the same
-		// reason, and a model inventing vocabulary should not look like a model
-		// with nothing to report. Measured — asked for read/escalate/illegible, it
-		// also returned "pass" and "accepted".
 		reg.addFlag(FlagUnknownVerdict)
 		reg.Because = strings.TrimSpace(reading.Verdict + " " + reading.Because)
 	}
 	if reading.Repeated {
 		reg.addFlag(FlagRepetition)
 	}
-	// The parent described this region before anything was cropped or rotated out
-	// of it. A reading that shares nothing with that account is evidence against
-	// the TRANSFORM, not against the page — see FlagTransformSuspect.
-	//
-	// comparable() first, because "nothing to compare" and "nothing matched" are
-	// different facts that overlap alone reports as the same 0.0. A parent that
-	// said "a sheet" has not disagreed with its child about anything; treating
-	// that as disagreement flags every region under a terse account and — once
-	// the flag drives escalation — spends the parent's turn on it.
 	if comparableExpectation(expect) && strings.TrimSpace(reg.Text) != "" &&
 		expectationOverlap(reg.Text, expect) < expectationFloor {
 		reg.addFlag(FlagTransformSuspect)
 	}
+	return reading, true, nil
+}
 
+// visit reads one region and descends into what it proposes.
+// expect is what the PARENT said is in this region, read at the parent's
+// resolution. Threaded down rather than looked up because it is the only
+// account of the region not produced by the render being judged — see
+// transformHelped, which is the one thing that uses it.
+func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region,
+	transformsUsed int, expect string) error {
+	reading, ok, err := rr.readRegion(ctx, page, reg, expect)
+	if err != nil || !ok {
+		return err
+	}
 	if reg.Depth >= rr.MaxDepth {
 		// Told to stop, not out of budget. See FlagDepthReached.
 		reg.addFlag(FlagDepthReached)
@@ -324,18 +323,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	// is a compliant answer from the prompt's own list. A sheet that large and
 	// that under-resolved needs cutting whatever the model decides to call it, so
 	// the half that is measured decides alone.
-	if rr.Tile && reg.hasFlag(FlagLowResolution) {
-		if tiles := rr.tileRegion(reg); len(tiles) > 0 {
-			descents = append(tiles, descents...)
-			if len(descents) > rr.MaxChildren {
-				// The cap exists to stop a model naming forty overlapping
-				// blocks. Tiles are a partition and are not that, so they raise
-				// it rather than being truncated by it — cutting them would
-				// leave part of the drawing unread while reporting success.
-				descents = descents[:len(tiles)]
-			}
-		}
-	}
+	descents = rr.withTiles(reg, descents)
 
 	if len(descents) == 0 && len(transforms) == 0 {
 		reg.addFlag(FlagExhausted)
@@ -359,23 +347,35 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 			box = box.paddedIn(t.Margin, rr.PageWIn, rr.PageHIn)
 		}
 		alt := &Region{Page: reg.Page, BBox: box, Rotation: t.Rotation,
-			Filter: t.Filter, Kind: reg.Kind, Depth: reg.Depth}
-		if err := rr.visit(ctx, page, alt, transformsUsed+1, expect); err != nil {
-			return err
+			Filter: t.Filter, Kind: reg.Kind, Grid: reg.Grid, Depth: reg.Depth}
+		// READ ONLY. A candidate is judged on its own reading; descending into one
+		// spends the region's budget proving something that may be discarded.
+		altReading, ok, rerr := rr.readRegion(ctx, page, alt, expect)
+		if rerr != nil {
+			return rerr
 		}
-		if alt.hasFlag(FlagCycled) || !transformHelped(reg, alt, expect) {
+		transformsUsed++
+		if !ok || !transformHelped(reg, alt, expect) {
 			// Bought nothing. Two of these in a row end the region as a flagged
 			// leaf, which is the honest outcome for six-point text on a scan.
 			reg.addFlag(FlagCycled)
 			break
 		}
 		// It helped: keep the better reading and its flags — and the render it
-		// came from. Keeping the text without the digest would leave the region
-		// claiming its words were read off the image it REPLACED, which is the
-		// false attestation this whole record exists to make impossible.
+		// came from, GEOMETRY INCLUDED. Keeping the text and the digest without
+		// the bbox left the region claiming words read off an image its own
+		// coordinates do not produce: RerenderRegion rebuilt the old crop and
+		// VerifyRegionRender refused it. A refinement that grows the frame is
+		// exactly the case, and it silently broke the attestation this whole
+		// record exists for.
 		reg.Text, reg.Flags, reg.Rotation, reg.Filter = alt.Text, alt.Flags, alt.Rotation, alt.Filter
-		reg.SHA256, reg.Downscales = alt.SHA256, alt.Downscales
-		reg.Children = append(reg.Children, alt.Children...)
+		reg.BBox, reg.SHA256, reg.Downscales = alt.BBox, alt.SHA256, alt.Downscales
+		reg.Verdict, reg.Because = alt.Verdict, alt.Because
+		// The region now says something different, so what it proposes to do next
+		// is different too. Re-route from the adopted reading rather than acting
+		// on proposals made about an image that was replaced.
+		descents, _ = rr.route(reg, altReading.Regions)
+		descents = rr.withTiles(reg, descents)
 	}
 
 	for _, d := range descents {
@@ -1152,4 +1152,26 @@ func normalizeVerdict(v string) string {
 	default:
 		return VerdictUnknown
 	}
+}
+
+// withTiles prepends the computed grid to a region's descents when the region is
+// under-resolved. See the commentary at its call site for why the gate is
+// arithmetic alone.
+func (rr *RegionReader) withTiles(reg *Region, descents []descent) []descent {
+	if !rr.Tile || !reg.hasFlag(FlagLowResolution) {
+		return descents
+	}
+	tiles := rr.tileRegion(reg)
+	if len(tiles) == 0 {
+		return descents
+	}
+	descents = append(tiles, descents...)
+	if len(descents) > rr.MaxChildren {
+		// The cap exists to stop a model naming forty overlapping blocks. Tiles
+		// are a partition and are not that, so they raise it rather than being
+		// truncated by it — cutting them would leave part of the drawing unread
+		// while reporting success.
+		descents = descents[:len(tiles)]
+	}
+	return descents
 }

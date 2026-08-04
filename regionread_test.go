@@ -731,10 +731,23 @@ func TestARegionRefinesItsOwnFrameWithoutItsParent(t *testing.T) {
 	if *calls != 3 {
 		t.Errorf("the refinement was not read: %d calls", *calls)
 	}
-	// It GREW. Before this, a margin request rendered to the identical bbox, hit
-	// the cycle detector, and looked like the model asking for nothing.
-	if child.BBox.area() <= 0.09 {
-		t.Errorf("the region did not grow: area %.4f", child.BBox.area())
+	// It GREW — measured against the box the descent actually created, not
+	// against the raw proposal. An earlier version of this test compared to 0.09
+	// and passed on descentPadIn alone, while the margin changed nothing at all.
+	want := Rect{X: 0.2, Y: 0.2, W: 0.3, H: 0.3}.paddedIn(descentPadIn, 27, 36.7)
+	if child.BBox.area() <= want.area()*1.05 {
+		t.Errorf("the region did not grow: area %.4f, descent alone gives %.4f",
+			child.BBox.area(), want.area())
+	}
+	// And the record still reproduces. Adopting the alt's text and digest without
+	// its BBOX left the region claiming words read off an image its own
+	// coordinates do not produce.
+	img, rerr := RerenderRegion(page, child)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if verr := VerifyRegionRender(child, img); verr != nil {
+		t.Errorf("an adopted refinement does not reproduce: %v", verr)
 	}
 	if !strings.Contains(child.Text, "BLOCK 40") {
 		t.Errorf("the refined reading was not adopted: %q", child.Text)
@@ -784,9 +797,17 @@ func TestAnOversizedMarginIsCappedRatherThanRefused(t *testing.T) {
 		t.Fatalf("the capped refinement was refused outright: %d calls", *calls)
 	}
 	child := root.Children[0]
-	// 0.2 of a 27in sheet is 5.4in; +2in a side caps it at 9.4in, not the sheet.
-	if wIn := child.BBox.W * 27.0; wIn > 5.4+2*maxProposedMarginIn+0.01 {
-		t.Errorf("margin was not capped: grew to %.2fin", wIn)
+	// Measured from the box the DESCENT made, which is already padded by
+	// descentPadIn — the same omission that let the growth test pass on the pad
+	// alone. 0.2 of a 27in sheet is 5.4in, +0.5in a side from the descent, then
+	// at most +2in a side from the capped margin.
+	descended := Rect{X: 0.4, Y: 0.4, W: 0.2, H: 0.2}.paddedIn(descentPadIn, 27, 36.7)
+	cap := descended.W*27.0 + 2*maxProposedMarginIn
+	if wIn := child.BBox.W * 27.0; wIn > cap+0.01 {
+		t.Errorf("margin was not capped: grew to %.2fin, cap is %.2fin", wIn, cap)
+	}
+	if wIn := child.BBox.W * 27.0; wIn <= descended.W*27.0 {
+		t.Errorf("the capped margin was refused outright rather than clamped: %.2fin", wIn)
 	}
 }
 
@@ -1169,5 +1190,46 @@ func TestAnInventedVerdictIsRecordedNotSwallowed(t *testing.T) {
 		if got := normalizeVerdict(in); got != want {
 			t.Errorf("normalizeVerdict(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A transform candidate is judged on its own reading and must not descend.
+//
+// It used to go through the whole of visit, so an alt of a tileable region was
+// itself low-resolution, tiled, and spent sixteen calls proving a speculative
+// rotation was worse. Measured over the corpus: three sheets ran their real
+// descent out of budget after four tiles of sixteen, and those three are the
+// only pages where tiling did worse than not tiling.
+func TestATransformCandidateDoesNotDescend(t *testing.T) {
+	var reads int
+	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+		reads++
+		if a.Depth == 0 && reads == 1 {
+			// The root asks for a rotation of ITSELF: a transform, on a sheet big
+			// enough that the candidate would tile if it were allowed to.
+			return RegionReading{Description: "an oversize sheet, sideways", Kind: "drawing",
+				Regions: []RegionProposal{{X: 0, Y: 0, W: 1, H: 1, Rotation: 90}}}, nil
+		}
+		return RegionReading{Description: "a cell of it"}, nil
+	}
+	rr := &RegionReader{Ask: ask, PageWIn: 27, PageHIn: 36.7, DPI: 200,
+		MaxDepth: 1, MaxCalls: 100, Tile: true, MaxTransforms: 2}
+	root, err := rr.Read(context.Background(), speckledPage(5401, 7345), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tiles := 0
+	for _, c := range root.Children {
+		if c.Grid != "" {
+			tiles++
+		}
+	}
+	if tiles < 16 {
+		t.Errorf("the real descent was starved by the candidate: %d tiles", tiles)
+	}
+	// root + one candidate + the grid. A candidate that descended would add a
+	// whole second grid on top of that.
+	if reads > 2+tiles {
+		t.Errorf("a transform candidate descended: %d reads for %d tiles", reads, tiles)
 	}
 }
