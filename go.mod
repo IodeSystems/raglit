@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.0
 	github.com/go-chi/chi/v5 v5.3.1
-	github.com/iodesystems/agentkit v0.3.0
+	github.com/iodesystems/agentkit v0.4.0
 	github.com/iodesystems/gwag v0.0.0-00010101000000-000000000000
 	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
 	github.com/mark3labs/mcp-go v0.55.1
