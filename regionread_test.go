@@ -224,14 +224,29 @@ func TestDescentIsBoundedByDepthAndCalls(t *testing.T) {
 	if deepest > 2 {
 		t.Errorf("depth %d exceeds MaxDepth 2", deepest)
 	}
-	var sawBudget bool
+	// Stopping must be RECORDED, and which kind of stop it was must be
+	// distinguishable: told-to-stop and ran-out are different facts, and
+	// conflating them made 58 of 70 flags on the corpus's oversize pages read as
+	// exhaustion when they were normal termination.
+	var sawDepth, sawBudget bool
 	for _, n := range root.Flatten() {
+		if n.hasFlag(FlagDepthReached) {
+			sawDepth = true
+		}
 		if n.hasFlag(FlagBudget) {
 			sawBudget = true
 		}
 	}
-	if !sawBudget {
-		t.Error("stopping for budget must be recorded, not left to look like completion")
+	if !sawDepth && !sawBudget {
+		t.Error("stopping must be recorded, not left to look like completion")
+	}
+	if sawDepth && sawBudget {
+		return // both bounds bit; nothing more to check
+	}
+	if sawBudget {
+		t.Log("bounded by calls")
+	} else {
+		t.Log("bounded by depth")
 	}
 }
 
@@ -1087,5 +1102,72 @@ func TestAbandonKeepsTheParentsAccount(t *testing.T) {
 	}
 	if !strings.Contains(root.Text, "smudge") {
 		t.Error("the parent's account of the abandoned ground was lost")
+	}
+}
+
+// A tile that stops because MaxDepth said so has not run out of anything.
+//
+// Measured over the corpus's oversize pages: 58 of 70 budget flags were exactly
+// this. A flag that is always on trains people to ignore flags — the reason
+// FlagClipped was removed — and it made a truncated read indistinguishable from
+// a complete one on the sheets where the difference matters most.
+func TestStoppingAtMaxDepthIsNotABudgetFailure(t *testing.T) {
+	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+		if a.Depth == 0 {
+			return RegionReading{Description: "an oversize sheet"}, nil
+		}
+		return RegionReading{Description: "a cell of it"}, nil
+	}
+	rr := &RegionReader{Ask: ask, PageWIn: 27, PageHIn: 36.7, DPI: 200,
+		MaxDepth: 1, MaxCalls: 100, Tile: true}
+	root, err := rr.Read(context.Background(), speckledPage(5401, 7345), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Children) == 0 {
+		t.Fatal("nothing tiled")
+	}
+	for _, c := range root.Children {
+		if c.hasFlag(FlagBudget) {
+			t.Errorf("a tile stopped by MaxDepth was flagged out-of-budget: %v", c.Flags)
+		}
+		if !c.hasFlag(FlagDepthReached) {
+			t.Errorf("normal termination was not recorded: %v", c.Flags)
+		}
+	}
+	if root.hasFlag(FlagBudget) {
+		t.Errorf("the root had calls to spare and was flagged out-of-budget: %v", root.Flags)
+	}
+}
+
+// A model that invents a verdict must not read as a model with nothing to say.
+// Measured: asked for read/escalate/illegible, it also returned "pass" and
+// "accepted".
+func TestAnInventedVerdictIsRecordedNotSwallowed(t *testing.T) {
+	for _, v := range []string{"pass", "accepted", "looks-fine"} {
+		ask, _ := scriptedAsk(
+			RegionReading{Description: "a sheet full of small print that a closer look would help with",
+				Regions: []RegionProposal{{X: 0.2, Y: 0.2, W: 0.3, H: 0.3}}},
+			RegionReading{Description: "some text", Verdict: v},
+		)
+		root, err := surveyReader(ask).Read(context.Background(), speckledPage(1700, 2200), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := root.Children[0]
+		if !c.hasFlag(FlagUnknownVerdict) {
+			t.Errorf("verdict %q was swallowed: flags=%v verdict=%q", v, c.Flags, c.Verdict)
+		}
+		if !strings.Contains(c.Because, v) {
+			t.Errorf("verdict %q was discarded rather than kept for a reader: %q", v, c.Because)
+		}
+	}
+	// The defined ones still pass through untouched.
+	for in, want := range map[string]string{
+		"": "", "read": "", "READ": "", " escalate ": VerdictEscalate, "Illegible": VerdictIllegible,
+	} {
+		if got := normalizeVerdict(in); got != want {
+			t.Errorf("normalizeVerdict(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

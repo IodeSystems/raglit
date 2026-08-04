@@ -126,6 +126,7 @@ const (
 	VerdictRead      = "read"      // or empty
 	VerdictEscalate  = "escalate"  // the frame is wrong and I cannot fix it from here
 	VerdictIllegible = "illegible" // right frame, the pixels are not there
+	VerdictUnknown   = "unknown"   // the model returned a word this package does not define
 
 	ActionRetransform = "retransform" // box was right, rendering was wrong
 	ActionRepick      = "repick"      // box was wrong
@@ -258,7 +259,16 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	if reg.Kind == "" {
 		reg.Kind = reading.Kind
 	}
-	reg.Verdict, reg.Because = reading.Verdict, reading.Because
+	reg.Verdict, reg.Because = normalizeVerdict(reading.Verdict), reading.Because
+	if reg.Verdict == VerdictUnknown {
+		// A verdict this package does not define. Recorded rather than silently
+		// read as "fine": an unimplemented filter is refused visibly for the same
+		// reason, and a model inventing vocabulary should not look like a model
+		// with nothing to report. Measured — asked for read/escalate/illegible, it
+		// also returned "pass" and "accepted".
+		reg.addFlag(FlagUnknownVerdict)
+		reg.Because = strings.TrimSpace(reading.Verdict + " " + reading.Because)
+	}
 	if reading.Repeated {
 		reg.addFlag(FlagRepetition)
 	}
@@ -277,7 +287,8 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	}
 
 	if reg.Depth >= rr.MaxDepth {
-		reg.addFlag(FlagBudget)
+		// Told to stop, not out of budget. See FlagDepthReached.
+		reg.addFlag(FlagDepthReached)
 		return nil
 	}
 
@@ -996,7 +1007,17 @@ func (rr *RegionReader) escalate(ctx context.Context, page image.Image,
 	if err != nil {
 		return err
 	}
-	child.Because = reading.Because
+	// Append, never overwrite. The child's reason for escalating and the parent's
+	// reason for its answer are two different facts, and the child said its one
+	// first — clobbering it leaves a record of a decision with no account of what
+	// prompted it.
+	if b := strings.TrimSpace(reading.Because); b != "" {
+		if child.Because != "" {
+			child.Because += " / parent: " + b
+		} else {
+			child.Because = "parent: " + b
+		}
+	}
 
 	switch reading.Action {
 	case ActionRetransform, ActionRepick:
@@ -1112,4 +1133,23 @@ func escalationSuffix(q string) string {
 		"\nregions: exactly one area, in fractions of THIS image (0..1), for retransform or repick. Empty otherwise." +
 		"\nDO NOT TRANSCRIBE ANYTHING. You are looking at this area at a scale that cannot resolve its small text —" +
 		" that is why a closer look was taken. Decide where to look and how; the closer look does the reading."
+}
+
+// normalizeVerdict maps what came back onto what this package acts on.
+//
+// Empty and "read" both mean nothing to report. Anything else it does not define
+// becomes VerdictUnknown, which is recorded rather than treated as agreement —
+// the caller cannot tell a model that said "fine" from one that said a word
+// nobody implemented unless the difference is kept.
+func normalizeVerdict(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", VerdictRead:
+		return ""
+	case VerdictEscalate:
+		return VerdictEscalate
+	case VerdictIllegible:
+		return VerdictIllegible
+	default:
+		return VerdictUnknown
+	}
 }

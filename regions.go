@@ -205,10 +205,24 @@ const (
 	// treatment. The region keeps whatever its parent said was here: a region
 	// nobody could read is not a region nobody described.
 	FlagAbandoned = "abandoned"
-	// FlagBudget — descent stopped because the budget ran out, not because the
-	// region was finished. Recorded so a thin read is never mistaken for a
+	// FlagUnknownVerdict — the region answered with a verdict this package does
+	// not define. Kept visible so invented vocabulary does not read as silence.
+	FlagUnknownVerdict = "unknown-verdict"
+	// FlagBudget — descent stopped because the CALL budget ran out, not because
+	// the region was finished. Recorded so a thin read is never mistaken for a
 	// complete one.
+	//
+	// Not to be confused with FlagDepthReached. Measured 2026-08-04 over the
+	// corpus's oversize pages: of 70 budget flags, 58 were tiles that stopped
+	// because MaxDepth said to — normal termination reported as exhaustion. A
+	// flag that is always on trains people to ignore flags, which is the same
+	// reason FlagClipped was removed.
 	FlagBudget = "budget"
+	// FlagDepthReached — this region stopped descending because MaxDepth said to.
+	// Normal termination, not a shortfall: at MaxDepth 1 every tile ends this way
+	// by construction, and calling that a spent budget makes the budget flag
+	// meaningless on exactly the sheets it matters for.
+	FlagDepthReached = "depth-reached"
 )
 
 // AddFlag records a condition on this region, once. Exported because a pass that
