@@ -8,6 +8,7 @@ import (
 	"image"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -43,7 +44,15 @@ type RegionReader struct {
 	MaxChildren   int // per node, 0 → 8
 	MaxTransforms int // per region, 0 → 2
 	MaxCalls      int // whole document, 0 → 40
-	MinRegionIn   float64
+	// MaxEscalations bounds turn 3 for the whole document (0 → 4).
+	//
+	// Separate from MaxCalls because an escalation is the most expensive call in
+	// the walk — it is asked at the PARENT's resolution, which on an E-size sheet
+	// is four tokens per square inch, the worst per-token value anywhere in the
+	// descent. It should be rare; if it is not, the region proposals are bad and
+	// tiling is the cheaper answer.
+	MaxEscalations int
+	MinRegionIn    float64
 
 	// Hint is what the caller is looking for, threaded into every prompt.
 	//
@@ -59,8 +68,9 @@ type RegionReader struct {
 	// instead of asking where to look. See tileRegion.
 	Tile bool
 
-	calls int
-	seen  map[string]bool // image SHA → already read; this IS the cycle detector
+	calls       int
+	escalations int
+	seen        map[string]bool // image SHA → already read; this IS the cycle detector
 }
 
 // RegionAbout is what a region is told about itself before it is read.
@@ -74,6 +84,10 @@ type RegionAbout struct {
 	// cannot see and overlaps them, which changes what it should transcribe — see
 	// gridSuffix.
 	Grid string
+	// Escalation is set only on TURN 3: a parent being asked what to do about a
+	// child that reported its frame was broken. Present means "answer with an
+	// action, not a transcription" — see escalationSuffix.
+	Escalation string
 }
 
 // RegionReading is what the model returns for one region.
@@ -91,7 +105,33 @@ type RegionReading struct {
 	// could read it. Reported back so the region can record what was actually
 	// looked at rather than what was handed over.
 	Downscales int `json:"-"`
+	// Verdict is a region's claim about its OWN frame, when it has one. Empty
+	// means "read" — nothing to report.
+	//
+	// The line it draws: escalate when the transform is fundamentally broken,
+	// refine when the fix needs no knowledge of the larger document. A refinement
+	// is expressed as a proposal and handled here; an escalation is the one thing
+	// a region cannot do for itself, because the box and the rotation came from
+	// its parent.
+	Verdict string `json:"verdict"`
+	// Action is a PARENT's answer when it is asked what to do about a child that
+	// escalated. See escalationPrompt.
+	Action string `json:"action"`
+	// Because is one line for a human reading the record, on either.
+	Because string `json:"because"`
 }
+
+// What a region may claim about its own frame, and what a parent may answer.
+const (
+	VerdictRead      = "read"      // or empty
+	VerdictEscalate  = "escalate"  // the frame is wrong and I cannot fix it from here
+	VerdictIllegible = "illegible" // right frame, the pixels are not there
+
+	ActionRetransform = "retransform" // box was right, rendering was wrong
+	ActionRepick      = "repick"      // box was wrong
+	ActionKeep        = "keep"        // the child was mistaken; its reading stands
+	ActionAbandon     = "abandon"     // nothing here can be read
+)
 
 // RegionProposal is one sub-region the model thinks is worth a closer look.
 type RegionProposal struct {
@@ -133,6 +173,9 @@ func (rr *RegionReader) defaults() {
 	}
 	if rr.MaxCalls == 0 {
 		rr.MaxCalls = 40
+	}
+	if rr.MaxEscalations == 0 {
+		rr.MaxEscalations = 4
 	}
 	if rr.MinRegionIn == 0 {
 		rr.MinRegionIn = 1.0 // an inch square; below this another descent buys nothing
@@ -215,13 +258,20 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	if reg.Kind == "" {
 		reg.Kind = reading.Kind
 	}
+	reg.Verdict, reg.Because = reading.Verdict, reading.Because
 	if reading.Repeated {
 		reg.addFlag(FlagRepetition)
 	}
 	// The parent described this region before anything was cropped or rotated out
 	// of it. A reading that shares nothing with that account is evidence against
 	// the TRANSFORM, not against the page — see FlagTransformSuspect.
-	if strings.TrimSpace(expect) != "" && strings.TrimSpace(reg.Text) != "" &&
+	//
+	// comparable() first, because "nothing to compare" and "nothing matched" are
+	// different facts that overlap alone reports as the same 0.0. A parent that
+	// said "a sheet" has not disagreed with its child about anything; treating
+	// that as disagreement flags every region under a terse account and — once
+	// the flag drives escalation — spends the parent's turn on it.
+	if comparableExpectation(expect) && strings.TrimSpace(reg.Text) != "" &&
 		expectationOverlap(reg.Text, expect) < expectationFloor {
 		reg.addFlag(FlagTransformSuspect)
 	}
@@ -327,6 +377,14 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		if err := rr.visit(ctx, page, child, 0, reading.Description); err != nil {
 			return err
 		}
+		// The child cannot fix a frame it did not choose. If it says so — or if
+		// its reading has nothing to do with what THIS region said is here — the
+		// question comes back up to whoever owns the box.
+		if rr.wantsEscalation(child) {
+			if err := rr.escalate(ctx, page, reg, child, reading.Description); err != nil {
+				return err
+			}
+		}
 		reg.Children = append(reg.Children, child)
 	}
 	sortRegions(reg.Children)
@@ -337,6 +395,7 @@ type descent struct {
 	bbox     Rect
 	rotation int
 	kind     string
+	filter   RegionFilter
 	grid     string // set only for computed tiles; see tileRegion
 }
 
@@ -504,6 +563,27 @@ func distinctLen(text string) int {
 	return n
 }
 
+// comparableExpectation reports whether a parent's account is substantial enough
+// for disagreement with it to mean anything.
+//
+// The overlap measure is built on 5-word shingles, so an account shorter than
+// that produces none and scores 0.0 against every child — indistinguishable from
+// a child that genuinely came back about somewhere else. A description that
+// short is not evidence either way.
+func comparableExpectation(expect string) bool {
+	return len(strings.Join(strings.Fields(expect), " ")) >= minExpectationChars
+}
+
+// minExpectationChars is how much of an account is needed before its absence
+// from a child's reading is a fact rather than an artifact.
+//
+// A LENGTH, because Shingles is character-based — `folded[i:i+w]` — so "a sheet"
+// yields three 5-character shingles and a shingle count cannot tell a real
+// description from a stub. Sixty characters is about a sentence: the survey's
+// own region accounts run to paragraphs, and the parent descriptions that carry
+// no information ("a sheet", "a drawing") fall far below it.
+const minExpectationChars = 60
+
 // expectationOverlap is the fraction of what the parent said is here that turns
 // up in the reading, by the same shingles the corpus-similarity path uses.
 //
@@ -604,7 +684,7 @@ regions: areas a closer look WOULD help with — dense annotation, small print, 
 // image is the point.
 const regionPrompt = `Look at this image and answer with ONE JSON object, nothing else:
 
-{"description": "...", "kind": "...", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"margin":0,"kind":"...","reason":"..."}]}
+{"description": "...", "kind": "...", "verdict": "", "because": "", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"margin":0,"kind":"...","reason":"..."}]}
 
 description: transcribe ALL text you can read, verbatim. Where you cannot read
   text, say what is there instead. Never guess at characters you cannot see.
@@ -616,6 +696,13 @@ regions: areas worth examining MORE CLOSELY than this view allows — dense
   if the whole image is already legible.
 Do not propose an area that covers most of this image unless it needs a
 different rotation.
+
+If this image cannot be read AS FRAMED and more paper would not fix it — it is
+upside down or mirrored, or it plainly shows something other than what you were
+told is here — answer with "verdict":"escalate" and say why in "because". Do not
+guess at it and do not propose regions: the area and the rotation were chosen
+outside this view, and correcting them is not yours to do. If it is framed fine
+but simply too coarse to resolve at any treatment, answer "verdict":"illegible".
 
 IF TEXT IS CUT OFF AT THE EDGE OF THIS IMAGE — a word ending mid-letters against
 the border, a line running off the side — say so by proposing THIS WHOLE IMAGE
@@ -673,9 +760,14 @@ func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, RegionAb
 		prev := o.Prompt
 		// The root is asked to account for the whole sheet; a crop is asked to
 		// transcribe. Same walk, different question, decided by where we are in it.
-		if about.Depth == 0 {
+		switch {
+		case about.Escalation != "":
+			// Turn 3 asks for a decision, not a reading — a different question
+			// entirely, so it replaces the prompt rather than appending to it.
+			o.Prompt = escalationSuffix(about.Escalation)
+		case about.Depth == 0:
 			o.Prompt = rootPrompt + suffix + damageSuffix(about.Damage) + gridSuffix(about.Grid)
-		} else {
+		default:
 			o.Prompt = regionPrompt + suffix + damageSuffix(about.Damage) + gridSuffix(about.Grid)
 		}
 		defer func() { o.Prompt = prev }()
@@ -775,6 +867,9 @@ func (rr *RegionReader) ReadInto(ctx context.Context, page image.Image, pageNo i
 	if rr.MaxTransforms == 0 {
 		rr.MaxTransforms = 2
 	}
+	if rr.MaxEscalations == 0 {
+		rr.MaxEscalations = 4
+	}
 	if rr.MinRegionIn == 0 {
 		rr.MinRegionIn = 1.0
 	}
@@ -858,4 +953,163 @@ func gridSuffix(grid string) string {
 		" holds the rest and will transcribe it whole." +
 		"\nThis will occasionally put the same item in two cells. That is intended and" +
 		" harmless. Inventing the hidden half of one is not."
+}
+
+// Turn 3 — the parent decides what to do about a child that cannot fix itself.
+//
+// Escalate when the transform is fundamentally broken; refine when the fix needs
+// no knowledge of the larger document. A refinement never reaches here: it is a
+// proposal the child makes about its own frame and route handles it as a
+// transform. What reaches here is the other kind — a box in the wrong place, a
+// frame the child cannot tell is upside down — where the remedy needs something
+// the child structurally does not have, namely where its box came from.
+//
+// It is the PARENT's turn, at the parent's resolution, and the parent adds no
+// information about the child's characters: on an E-size sheet it is looking at
+// four tokens per square inch. So the actions it may take are all about
+// GEOMETRY, and `keep` means the child's reading stands — never "here is a
+// better one", because anything it transcribed would be the low-resolution kind
+// this whole package exists to distrust.
+
+// wantsEscalation reports whether a child is asking for its parent, either by
+// saying so or by coming back about somewhere else entirely.
+func (rr *RegionReader) wantsEscalation(child *Region) bool {
+	if rr.escalations >= rr.MaxEscalations || rr.calls >= rr.MaxCalls {
+		return false
+	}
+	return child.Verdict == VerdictEscalate || child.hasFlag(FlagTransformSuspect)
+}
+
+// escalate asks the parent what to do, and applies the answer.
+func (rr *RegionReader) escalate(ctx context.Context, page image.Image,
+	parent, child *Region, expect string) error {
+	rr.escalations++
+
+	img, err := renderRegion(page, parent.BBox, parent.Rotation, parent.Filter)
+	if err != nil {
+		return err
+	}
+	rr.calls++
+	reading, err := rr.Ask(ctx, PageImage{Page: parent.Page, Mime: "image/png", Data: img},
+		RegionAbout{Depth: parent.Depth, Grid: parent.Grid,
+			Escalation: escalationQuestion(parent, child)})
+	if err != nil {
+		return err
+	}
+	child.Because = reading.Because
+
+	switch reading.Action {
+	case ActionRetransform, ActionRepick:
+		props := rr.route1(parent, child, reading.Regions)
+		if len(props) == 0 {
+			// It chose an action and gave nothing to act on.
+			child.addFlag(FlagEscalated)
+			return nil
+		}
+		// Replace the subtree rather than merging: a re-pick is a new reading of
+		// different ground, and keeping both would leave two accounts with
+		// nothing to say which is current.
+		fresh := &Region{Page: parent.Page, BBox: props[0].bbox, Rotation: props[0].rotation,
+			Filter: props[0].filter, Kind: child.Kind, Grid: child.Grid, Depth: child.Depth}
+		if err := rr.visit(ctx, page, fresh, 0, expect); err != nil {
+			return err
+		}
+		// It only earns the replacement if it did better by the same rule a
+		// transform is held to.
+		if !fresh.hasFlag(FlagCycled) && transformHelped(child, fresh, expect) {
+			*child = *fresh
+			child.addFlag(FlagEscalated)
+			return nil
+		}
+		child.addFlag(FlagEscalated)
+		child.addFlag(FlagCycled)
+	case ActionAbandon:
+		child.addFlag(FlagAbandoned)
+	default: // ActionKeep, or anything unrecognised
+		child.addFlag(FlagEscalated)
+	}
+	return nil
+}
+
+// route1 turns the parent's answer into at most one re-render of the child's
+// ground, in PAGE coordinates. The parent answers in ITS own 0..1 frame, which
+// is why this cannot reuse the child's routing.
+func (rr *RegionReader) route1(parent, child *Region, props []RegionProposal) []descent {
+	var out []descent
+	for _, p := range props {
+		r := p.rect().clampToUnit()
+		if !r.valid() {
+			continue
+		}
+		box := parent.BBox.within(r)
+		if p.Margin > 0 {
+			if p.Margin > maxProposedMarginIn {
+				p.Margin = maxProposedMarginIn
+			}
+			box = box.paddedIn(p.Margin, rr.PageWIn, rr.PageHIn)
+		}
+		if wIn, hIn := box.W*rr.PageWIn, box.H*rr.PageHIn; wIn < rr.MinRegionIn && hIn < rr.MinRegionIn {
+			continue
+		}
+		if !ValidRegionFilter(p.Filter) {
+			p.Filter = FilterNone
+		}
+		out = append(out, descent{bbox: box, rotation: p.Rotation, kind: p.Kind, filter: p.Filter})
+		break // one re-render per escalation; the budget is the point
+	}
+	return out
+}
+
+// escalationQuestion states the case: what was tried, and what came back.
+func escalationQuestion(parent, child *Region) string {
+	tried := fmt.Sprintf("rotation %d", child.Rotation)
+	if child.Filter != FilterNone {
+		tried += ", filter " + string(child.Filter)
+	}
+	// The child's box in the PARENT's frame, which is the frame it will answer in.
+	var rel Rect
+	if parent.BBox.W > 0 && parent.BBox.H > 0 {
+		rel = Rect{
+			X: (child.BBox.X - parent.BBox.X) / parent.BBox.W,
+			Y: (child.BBox.Y - parent.BBox.Y) / parent.BBox.H,
+			W: child.BBox.W / parent.BBox.W,
+			H: child.BBox.H / parent.BBox.H,
+		}
+	}
+	q := fmt.Sprintf("A closer look at x:%.2f y:%.2f w:%.2f h:%.2f of this image, %s, "+
+		"came back reporting that it could not be read as framed.", rel.X, rel.Y, rel.W, rel.H, tried)
+	if b := strings.TrimSpace(child.Because); b != "" {
+		q += " It said: " + strconv.Quote(b) + "."
+	}
+	if t := strings.TrimSpace(child.Text); t != "" {
+		if len(t) > 300 {
+			t = t[:300] + "…"
+		}
+		q += " What it did read was: " + strconv.Quote(t) + "."
+	}
+	return q
+}
+
+// escalationSuffix asks for a decision about GEOMETRY, and forbids a
+// transcription.
+//
+// The parent is looking at its own region, which on an oversize sheet is the
+// view that cannot resolve six-point text — so anything it transcribed here
+// would be exactly the low-resolution invention this package exists to prevent.
+// `keep` means the child's reading stands, never "here is a better one".
+func escalationSuffix(q string) string {
+	if strings.TrimSpace(q) == "" {
+		return ""
+	}
+	return "\n\nSOMETHING WENT WRONG WITH A CLOSER LOOK AT PART OF THIS IMAGE.\n" + q +
+		"\n\nAnswer with ONE JSON object, nothing else:\n" +
+		`{"action": "...", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"margin":0,"filter":"","kind":"..."}], "because": "..."}` +
+		"\naction is one of:" +
+		"\n  retransform — the area was right but rendered wrong; give the SAME area with a different rotation, filter or margin." +
+		"\n  repick      — the area was wrong; give the area that should have been looked at instead." +
+		"\n  keep        — the closer look was mistaken and what it read stands." +
+		"\n  abandon     — there is nothing readable there at any treatment." +
+		"\nregions: exactly one area, in fractions of THIS image (0..1), for retransform or repick. Empty otherwise." +
+		"\nDO NOT TRANSCRIBE ANYTHING. You are looking at this area at a scale that cannot resolve its small text —" +
+		" that is why a closer look was taken. Decide where to look and how; the closer look does the reading."
 }

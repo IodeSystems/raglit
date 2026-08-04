@@ -938,3 +938,154 @@ func TestALetterPageStillDoesNotTile(t *testing.T) {
 		}
 	}
 }
+
+// A child that says its frame is broken gets its parent asked — the one thing it
+// cannot do for itself, because the box and the rotation came from up there.
+func TestAnEscalatingChildGetsItsParentAsked(t *testing.T) {
+	var asked []RegionAbout
+	n := 0
+	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+		asked = append(asked, a)
+		n++
+		switch {
+		case a.Escalation != "": // turn 3
+			return RegionReading{Action: ActionRepick, Because: "it is further left",
+				Regions: []RegionProposal{{X: 0.05, Y: 0.2, W: 0.25, H: 0.25}}}, nil
+		case n == 1: // the sheet
+			return RegionReading{Description: "a sheet", Regions: []RegionProposal{
+				{X: 0.6, Y: 0.2, W: 0.25, H: 0.25, Reason: "a block"}}}, nil
+		case n == 2: // the child: wrong ground
+			return RegionReading{Description: "this is the north arrow, not a text block",
+				Verdict: VerdictEscalate, Because: "shows something else"}, nil
+		default: // the re-picked child
+			return RegionReading{Description: "PARCEL A: THE EASTERLY 25 FEET OF LOT 1, BLOCK 10"}, nil
+		}
+	}
+	root, err := surveyReader(ask).Read(context.Background(), speckledPage(1700, 2200), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawTurn3 := false
+	for _, a := range asked {
+		if a.Escalation != "" {
+			sawTurn3 = true
+			if !strings.Contains(a.Escalation, "could not be read as framed") {
+				t.Errorf("the parent was not told what happened: %q", a.Escalation)
+			}
+			if !strings.Contains(escalationSuffix(a.Escalation), "DO NOT TRANSCRIBE") {
+				t.Error("turn 3 did not forbid transcribing at the parent's resolution")
+			}
+		}
+	}
+	if !sawTurn3 {
+		t.Fatal("the child escalated and its parent was never asked")
+	}
+	c := root.Children[0]
+	if !c.hasFlag(FlagEscalated) {
+		t.Errorf("the escalation was not recorded: %v", c.Flags)
+	}
+	if !strings.Contains(c.Text, "PARCEL A") {
+		t.Errorf("the re-pick was not adopted: %q", c.Text)
+	}
+}
+
+// transform-suspect is the silent case: a child that confidently reads the wrong
+// thing and reports nothing. It must escalate too, or the flag means nothing.
+func TestASilentlyWrongChildEscalatesOnTheFlagAlone(t *testing.T) {
+	n := 0
+	sawTurn3 := false
+	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+		n++
+		if a.Escalation != "" {
+			sawTurn3 = true
+			return RegionReading{Action: ActionKeep, Because: "it is right, the parent was vague"}, nil
+		}
+		if n == 1 {
+			return RegionReading{
+				Description: "a monument table listing found rebar and caps with offsets from calculated position",
+				Regions:     []RegionProposal{{X: 0.2, Y: 0.2, W: 0.3, H: 0.3, Reason: "the table"}}}, nil
+		}
+		// No verdict at all — it just reads something unrelated, confidently.
+		return RegionReading{Description: "NORTHERN PACIFIC RAILROAD RIGHT OF WAY VACATED SHERMAN STREET"}, nil
+	}
+	root, err := surveyReader(ask).Read(context.Background(), speckledPage(1700, 2200), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := root.Children[0]
+	if !c.hasFlag(FlagTransformSuspect) {
+		t.Fatalf("the silent case was not detected: %v", c.Flags)
+	}
+	if !sawTurn3 {
+		t.Error("transform-suspect fired and nothing consumed it — the flag is decorative")
+	}
+	if !c.hasFlag(FlagEscalated) {
+		t.Errorf("the parent answered and it was not recorded: %v", c.Flags)
+	}
+}
+
+// Turn 3 is the most expensive call in the walk — asked at the parent's
+// resolution, the worst per-token value anywhere in the descent. It has its own
+// budget so a page of unhappy children cannot spend the document.
+func TestEscalationHasItsOwnBudget(t *testing.T) {
+	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+		if a.Escalation != "" {
+			return RegionReading{Action: ActionKeep}, nil
+		}
+		if a.Depth == 0 {
+			var ps []RegionProposal
+			for i := 0; i < 8; i++ {
+				ps = append(ps, RegionProposal{X: float64(i) * 0.1, Y: 0.1, W: 0.08, H: 0.3})
+			}
+			return RegionReading{Description: "a sheet", Regions: ps}, nil
+		}
+		return RegionReading{Description: "cannot read this", Verdict: VerdictEscalate}, nil
+	}
+	rr := surveyReader(ask)
+	rr.MaxEscalations = 2
+	rr.MaxCalls = 60
+	root, err := rr.Read(context.Background(), speckledPage(1700, 2200), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range root.Children {
+		if c.hasFlag(FlagEscalated) {
+			n++
+		}
+	}
+	if n > 2 {
+		t.Errorf("escalation ran past its budget: %d of %d children", n, len(root.Children))
+	}
+	if n == 0 {
+		t.Error("the budget swallowed escalation entirely")
+	}
+}
+
+// A parent may decide nothing is there. The region keeps what its PARENT said
+// was in it — a region nobody could read is not a region nobody described.
+func TestAbandonKeepsTheParentsAccount(t *testing.T) {
+	n := 0
+	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+		n++
+		if a.Escalation != "" {
+			return RegionReading{Action: ActionAbandon, Because: "it is a coffee stain"}, nil
+		}
+		if n == 1 {
+			return RegionReading{Description: "a sheet with a smudge lower left",
+				Regions: []RegionProposal{{X: 0.1, Y: 0.6, W: 0.2, H: 0.2, Reason: "the smudge"}}}, nil
+		}
+		return RegionReading{Description: "", Verdict: VerdictEscalate, Because: "nothing here"}, nil
+	}
+	root, err := surveyReader(ask).Read(context.Background(), speckledPage(1700, 2200), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := root.Children[0]
+	if !c.hasFlag(FlagAbandoned) {
+		t.Errorf("abandon was not recorded: %v", c.Flags)
+	}
+	if !strings.Contains(root.Text, "smudge") {
+		t.Error("the parent's account of the abandoned ground was lost")
+	}
+}

@@ -100,6 +100,12 @@ type Region struct {
 	BBox     Rect   `json:"bbox"` // page coordinates
 	Rotation int    `json:"rotation"`
 	Kind     string `json:"kind,omitempty"` // overview|text-block|table|drawing|legend
+	// Verdict is this region's own claim about its frame — empty when it simply
+	// read. Kept on the record because "this could not be read as framed" is a
+	// fact about the READ, and a later reader deserves to know a region said so.
+	Verdict string `json:"verdict,omitempty"`
+	// Because is one line explaining a verdict or the parent's answer to it.
+	Because string `json:"because,omitempty"`
 	// Grid names this region's cell when it came from tileRegion rather than from
 	// something the model named — "row 2 of 4, column 3 of 4". Recorded because a
 	// cell's reading has to be read knowing it was one: a cell deliberately does
@@ -190,6 +196,15 @@ const (
 	// — the child cannot fix a rotation it did not choose — and that loop is not
 	// built.
 	FlagTransformSuspect = "transform-suspect"
+	// FlagEscalated — this region's frame was referred back to its parent, and
+	// the parent answered. Recorded whatever the answer was, because "a human
+	// looked at why this looks wrong" is worth knowing even when the verdict was
+	// that nothing was wrong.
+	FlagEscalated = "escalated"
+	// FlagAbandoned — the parent judged that nothing here can be read at any
+	// treatment. The region keeps whatever its parent said was here: a region
+	// nobody could read is not a region nobody described.
+	FlagAbandoned = "abandoned"
 	// FlagBudget — descent stopped because the budget ran out, not because the
 	// region was finished. Recorded so a thin read is never mistaken for a
 	// complete one.
