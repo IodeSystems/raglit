@@ -86,9 +86,102 @@ instruction to prefer the image does not stop that. And the difference between
 masking a number and deleting it is nothing — the marker is not load-bearing,
 which was tested because the opposite had been assumed.
 
+## 2026-08-03 — all four fixtures, one harness
+
+Everything above compares numbers taken by different scripts at different times.
+This is the four fixtures, six configurations, one client, one prompt, one set of
+checks. `Qwen3-6-27B-MPT` at temperature 0. `assist` is `spellingAssist`
+reproduced exactly — tesseract's words with every digit run masked.
+
+| config | drawing | exhibit | corners | facts | total |
+|---|---|---|---|---|---|
+| plain | 4/4 | 1/1 | 4/4 | 3/5 | 12 |
+| **assist** | 4/4 | 1/1 | 4/4 | **5/5** | **14** |
+| rot +2° (fixed canvas) | 4/4 | 1/1 | 4/4 | 3/5 | 12 |
+| zoom 1.05x | 4/4 | 1/1 | 4/4 | 4/5 | 13 |
+| CLAHE clip 2.0 | 4/4 | 1/1 | 4/4 | 4/5 | 13 |
+| assist + rot +2° | 4/4 | 1/1 | 4/4 | **5/5** | **14** |
+
+**Assist wins, and nothing geometric reaches it.** The best single facet recovers
+one of the two facts `plain` misses; assist recovers both. Stacking rotation on
+assist adds nothing.
+
+### THREE OF THE FOUR FIXTURES ARE SATURATED
+
+`plain` already scores full marks on the drawing, the corners table and the
+exhibit. Every configuration ties on them, so the entire table separates on ONE
+page, and so does every conclusion drawn from it.
+
+Worse, the checks pass while the reading is wrong. Reading the EXISTING CORNERS
+crop by eye against `corners`' 4/4:
+
+| printed | 27B returned |
+|---|---|
+| `S 31°05' E 0.4' FROM CALC` | `5.31' 0.5' E 0.4' FROM CALC` |
+| `S 47°44'E 2.0' FROM CORNER` | `5.47' 0.44' E 2.0' FROM CORNER` |
+| `0.1'S AND 0.1'W OF CALC` | `0.15' AND 0.14' W OF CALC` |
+| `MOWRER` (x5) | `MOWER` |
+
+Two bearings turned into distances and an offset gained a decimal place that is
+not on the page, and `EXISTING CORNERS`, `REBAR`, `CALC`, `202205230090` all
+still matched. **A substring check cannot measure a transcription.** The fixture
+set needs facts read by a person, the way type 1's were — which is the only
+reason type 1 can measure anything at all.
+
+### The geometry lever is RESAMPLING, not rotation
+
+An earlier pass concluded that ±2° of skew recovered note 2's auditor file
+number. It did not. That rotation used `expand=True`, which grows the canvas, and
+the growth was doing the work:
+
+| variant | size | facts |
+|---|---|---|
+| original | 3400x4400 | 3/5 |
+| rot +2°, canvas expands | 3552x4516 | **5/5** |
+| rot +2°, canvas fixed | 3400x4400 | 3/5 |
+| **resize to 3552x4516, NO rotation** | 3552x4516 | **5/5** |
+| rot +2°, PIL, no expand | 3400x4400 | 4/5 |
+
+Both 5/5 rows are the ones at 3552x4516 and neither depends on the angle. **A
+4.5% bicubic upscale matches assist on this page for nothing** — no second
+engine, no added prompt.
+
+It is dimension-SPECIFIC and not monotonic: 3570x4620 scores 4/5 while 3552x4516
+scores 5/5. Which is consistent with a page at the resolution limit landing on
+the encoder's patch grid one way or another, and is not explained.
+
+### The region toolkit, run as a system
+
+Not one facet at a time — `raglit regions --depth 2`: descent, per-region
+rotation, tiling, and the transform judge.
+
+| | facts | chars | distinct chars | regions | rotated |
+|---|---|---|---|---|---|
+| assist, one pass | 5/5 | 7,593 | 7,392 | 1 | — |
+| **toolkit, depth 2** | **5/5** | **11,652** | **11,225** | 15 | 8 |
+| toolkit, drawing | 4/4 | 2,130 | — | 4 | 0 |
+
+**It ties assist on the facts and reads about 50% more of the sheet** — 1%
+duplicate lines in both, so the extra is coverage, not repetition. Eight of
+fifteen regions took a rotation, which one pass structurally cannot do.
+
+It cost 15 model calls against assist's one call plus a ten-second tesseract run,
+and seven regions hit the call ceiling still wanting more. Per KNOWN FACT
+recovered, assist is roughly 15x cheaper. What the toolkit buys is the ~3,800
+characters of drawing interior that assist never transcribes at all.
+
+So the two are not competitors. Assist gets the known facts off a page cheaply;
+the descent gets the whole sheet expensively, and which one a document wants is a
+property of the document.
+
+`transform-suspect` and `faded` both fired on real pages on first contact.
+
 ## Open
 
-- **Types 2, 3 and 4 are unmeasured.** Everything above is one page.
+- **Types 2, 3 and 4 cannot currently BE measured.** They are saturated: `plain`
+  scores full marks on all three, so no configuration can be distinguished on
+  them. Their checks also pass on demonstrably wrong readings — see 2026-08-03.
+  Fixing this means facts read by a person, as type 1 has.
 - **Ground truth exists only for type 1.** For the rest, the available signal is
   agreement between independent readings — two engines, two resolutions, or the
   two copies of the type 4 drawing — which says where to look, not what is true.

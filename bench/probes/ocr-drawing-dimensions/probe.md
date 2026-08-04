@@ -31,7 +31,7 @@ Transcribe all text and every dimension visible in this drawing exactly as it ap
 
 ## Checks
 
-- response_contains: 196
-- response_contains: 224
-- response_contains: 203
-- response_contains: Brannock
+- response_contains: 196.53
+- response_contains: 224.6
+- response_contains: 203.1
+- response_contains: 196.23
