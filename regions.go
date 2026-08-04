@@ -100,6 +100,11 @@ type Region struct {
 	BBox     Rect   `json:"bbox"` // page coordinates
 	Rotation int    `json:"rotation"`
 	Kind     string `json:"kind,omitempty"` // overview|text-block|table|drawing|legend
+	// Grid names this region's cell when it came from tileRegion rather than from
+	// something the model named — "row 2 of 4, column 3 of 4". Recorded because a
+	// cell's reading has to be read knowing it was one: a cell deliberately does
+	// NOT transcribe an item its neighbour holds more of.
+	Grid string `json:"grid,omitempty"`
 	// Filter is the repair applied to the crop BEFORE it was read, and it is part
 	// of the render: the digest covers the filtered bytes, so re-rendering
 	// without it produces a different image and VerifyRegionRender says so.

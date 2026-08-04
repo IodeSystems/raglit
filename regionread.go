@@ -21,12 +21,12 @@ type RegionReader struct {
 	// Ask returns the model's reading of one rendered region. Separated from the
 	// walk so the descent rules — budgets, routing, cycle detection — are
 	// testable without a model, which is most of what can go wrong here.
-	// damage is what the pixels were measured to be wrong with — see DamageOf.
-	// Passed IN rather than left for the model to notice, because the model is
-	// shown a downsample and cannot tell a blurred crop from a small one. It is
-	// told, and it still decides: the repair comes back as a proposal like any
-	// other, and has to earn its place like any other.
-	Ask func(ctx context.Context, img PageImage, depth int, damage []string) (RegionReading, error)
+	// About carries what this region knows about ITSELF and cannot see: what its
+	// pixels measured as, and whether it is one cell of a grid. Bundled rather
+	// than passed as more parameters, because everything here exists for the same
+	// reason — the model is looking at a crop and some of what governs its answer
+	// is not in the crop.
+	Ask func(ctx context.Context, img PageImage, about RegionAbout) (RegionReading, error)
 
 	// PageWIn, PageHIn are the sheet's physical size. The whole reason this
 	// exists is that a bigger sheet buys no extra tokens, so the physical size
@@ -61,6 +61,19 @@ type RegionReader struct {
 
 	calls int
 	seen  map[string]bool // image SHA → already read; this IS the cycle detector
+}
+
+// RegionAbout is what a region is told about itself before it is read.
+type RegionAbout struct {
+	Depth int
+	// Damage is what DamageOf measured on these pixels — see damageSuffix. The
+	// model is shown a downsample and cannot tell a blurred crop from a small one.
+	Damage []string
+	// Grid is set when this region is one CELL of a computed grid rather than a
+	// block somebody named: "row 2 of 4, column 3 of 4". A cell has neighbours it
+	// cannot see and overlaps them, which changes what it should transcribe — see
+	// gridSuffix.
+	Grid string
 }
 
 // RegionReading is what the model returns for one region.
@@ -192,7 +205,8 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	rr.seen[sha] = true
 	rr.calls++
 
-	reading, err := rr.Ask(ctx, PageImage{Page: reg.Page, Mime: "image/png", Data: img}, reg.Depth, damage)
+	reading, err := rr.Ask(ctx, PageImage{Page: reg.Page, Mime: "image/png", Data: img},
+		RegionAbout{Depth: reg.Depth, Damage: damage, Grid: reg.Grid})
 	if err != nil {
 		return err
 	}
@@ -297,7 +311,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 			break
 		}
 		child := &Region{Page: reg.Page, BBox: d.bbox, Rotation: d.rotation,
-			Kind: d.kind, Depth: reg.Depth + 1}
+			Kind: d.kind, Grid: d.grid, Depth: reg.Depth + 1}
 		if err := rr.visit(ctx, page, child, 0, reading.Description); err != nil {
 			return err
 		}
@@ -311,6 +325,7 @@ type descent struct {
 	bbox     Rect
 	rotation int
 	kind     string
+	grid     string // set only for computed tiles; see tileRegion
 }
 
 // route splits the model's proposals into descents and transforms BY GEOMETRY.
@@ -625,7 +640,7 @@ func ParseRegionReading(s string) RegionReading {
 // AskWithOCR builds an Ask that drives a VLM through the existing OCR client,
 // so the region walk inherits the page cache, the repetition guard and the
 // retry policy already in place.
-func (o *OCR) AskWithOCR() func(context.Context, PageImage, int, []string) (RegionReading, error) {
+func (o *OCR) AskWithOCR() func(context.Context, PageImage, RegionAbout) (RegionReading, error) {
 	return o.AskWithHint("")
 }
 
@@ -635,21 +650,21 @@ func (o *OCR) AskWithOCR() func(context.Context, PageImage, int, []string) (Regi
 // Appended rather than woven in: the instruction competes with the image for the
 // model's attention, and a hint that rewrites the whole prompt would also change
 // the parts that make the answer parseable.
-func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, int, []string) (RegionReading, error) {
+func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, RegionAbout) (RegionReading, error) {
 	suffix := ""
 	if h := strings.TrimSpace(hint); h != "" {
 		suffix = "\n\nWHAT THE CALLER IS LOOKING FOR: " + h +
 			"\nIf this image contains any of it, transcribe that FIRST and in full, and " +
 			"propose regions covering wherever more of it appears."
 	}
-	return func(ctx context.Context, img PageImage, depth int, damage []string) (RegionReading, error) {
+	return func(ctx context.Context, img PageImage, about RegionAbout) (RegionReading, error) {
 		prev := o.Prompt
 		// The root is asked to account for the whole sheet; a crop is asked to
 		// transcribe. Same walk, different question, decided by where we are in it.
-		if depth == 0 {
-			o.Prompt = rootPrompt + suffix + damageSuffix(damage)
+		if about.Depth == 0 {
+			o.Prompt = rootPrompt + suffix + damageSuffix(about.Damage) + gridSuffix(about.Grid)
 		} else {
-			o.Prompt = regionPrompt + suffix + damageSuffix(damage)
+			o.Prompt = regionPrompt + suffix + damageSuffix(about.Damage) + gridSuffix(about.Grid)
 		}
 		defer func() { o.Prompt = prev }()
 		text, _, shrinks, err := o.PageAsSeen(ctx, img)
@@ -704,7 +719,8 @@ func (rr *RegionReader) tileRegion(reg *Region) []descent {
 				Y: reg.BBox.Y + float64(row)*th,
 				W: tw, H: th,
 			}.paddedIn(descentPadIn, rr.PageWIn, rr.PageHIn)
-			out = append(out, descent{bbox: t, rotation: reg.Rotation, kind: "drawing"})
+			out = append(out, descent{bbox: t, rotation: reg.Rotation, kind: "drawing",
+				grid: fmt.Sprintf("row %d of %d, column %d of %d", row+1, n, col+1, n)})
 		}
 	}
 	return out
@@ -803,4 +819,31 @@ func damageSuffix(damage []string) string {
 		"\nIf a repair would help, propose THIS SAME AREA (x:0,y:0,w:1,h:1) with a" +
 		" \"filter\" of \"contrast\" or \"sharpen\". Propose nothing if the region reads" +
 		" fine as it is — a repair that recovers nothing is discarded anyway."
+}
+
+// gridSuffix tells a computed tile that it is one, and what that obliges it to
+// leave alone.
+//
+// A cell cannot see its neighbours and OVERLAPS them by descentPadIn, so an item
+// near a seam is visible — often partly — from both sides. Without a rule, both
+// cells guess, and the two failure modes are not equal: a duplicated monument
+// call is recoverable by anyone reading the transcript, a dropped one is
+// invisible and this whole package exists because a dropped clause read as a
+// complete document.
+//
+// So the rule is asymmetric on purpose. At the 45% threshold NOTHING can be
+// dropped by geometry: if this cell holds under 45% of an item, the neighbour
+// necessarily holds over 55% and takes it. Duplicates are confined to the narrow
+// band where both sides hold 45-55%, and are accepted as the cost.
+func gridSuffix(grid string) string {
+	if strings.TrimSpace(grid) == "" {
+		return ""
+	}
+	return "\n\nTHIS IMAGE IS ONE CELL OF A GRID over a larger sheet — " + grid + "." +
+		"\nThe neighbouring cells overlap this one, so text at your edges also appears in them." +
+		"\nTranscribe an item only if you can see AT LEAST 45% of it. If less than that is" +
+		" visible, leave it out entirely rather than guessing at it: the neighbouring cell" +
+		" holds the rest and will transcribe it whole." +
+		"\nThis will occasionally put the same item in two cells. That is intended and" +
+		" harmless. Inventing the hidden half of one is not."
 }

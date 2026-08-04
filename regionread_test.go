@@ -12,6 +12,23 @@ import (
 
 func nearly(a, b float64) bool { return a-b < 0.002 && b-a < 0.002 }
 
+// speckledPage varies with position, so two different crops of it are two
+// different images. A blank page makes every tile byte-identical and the
+// descent's cycle detector — correctly — refuses all but the first.
+func speckledPage(w, h int) image.Image {
+	im := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			v := uint8(255)
+			if (x/37+y/41)%3 == 0 {
+				v = uint8((x*7 + y*13) % 256)
+			}
+			im.Set(x, y, color.RGBA{v, v, v, 255})
+		}
+	}
+	return im
+}
+
 // blankPage is a white sheet; renderRegion only needs something to crop.
 func blankPage(w, h int) image.Image {
 	im := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -24,9 +41,9 @@ func blankPage(w, h int) image.Image {
 }
 
 // scriptedAsk replays readings in order and records what it was shown.
-func scriptedAsk(readings ...RegionReading) (func(context.Context, PageImage, int, []string) (RegionReading, error), *int) {
+func scriptedAsk(readings ...RegionReading) (func(context.Context, PageImage, RegionAbout) (RegionReading, error), *int) {
 	n := 0
-	f := func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
+	f := func(_ context.Context, _ PageImage, _ RegionAbout) (RegionReading, error) {
 		r := RegionReading{}
 		if n < len(readings) {
 			r = readings[n]
@@ -37,7 +54,7 @@ func scriptedAsk(readings ...RegionReading) (func(context.Context, PageImage, in
 	return f, &n
 }
 
-func surveyReader(ask func(context.Context, PageImage, int, []string) (RegionReading, error)) *RegionReader {
+func surveyReader(ask func(context.Context, PageImage, RegionAbout) (RegionReading, error)) *RegionReader {
 	// MaxDepth is explicit here: descent is opt-in now, and these tests are ABOUT
 	// descent, so they have to ask for it like any caller would.
 	return &RegionReader{Ask: ask, PageWIn: 27.0, PageHIn: 36.7, DPI: 200, MaxDepth: 3}
@@ -161,7 +178,7 @@ func TestAFullAreaProposalAtANewRotationIsATransform(t *testing.T) {
 // already seen is refused rather than recursed into.
 func TestATransformRenderingToSeenBytesIsRefused(t *testing.T) {
 	// Every reading asks to be re-shown at 0 degrees, forever.
-	ask := func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
+	ask := func(_ context.Context, _ PageImage, _ RegionAbout) (RegionReading, error) {
 		return RegionReading{Description: "same again", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 1, H: 1, Rotation: 360, Reason: "again"},
 		}}, nil
@@ -183,7 +200,7 @@ func TestATransformRenderingToSeenBytesIsRefused(t *testing.T) {
 // A model that proposes children forever must still terminate, and the record
 // must say it stopped for budget rather than because it finished.
 func TestDescentIsBoundedByDepthAndCalls(t *testing.T) {
-	ask := func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
+	ask := func(_ context.Context, _ PageImage, _ RegionAbout) (RegionReading, error) {
 		return RegionReading{Description: "more", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 0.5, H: 0.5}, {X: 0.5, Y: 0, W: 0.5, H: 0.5},
 			{X: 0, Y: 0.5, W: 0.5, H: 0.5}, {X: 0.5, Y: 0.5, W: 0.5, H: 0.5},
@@ -437,7 +454,7 @@ func TestRerenderReproducesTheBytesTheRegionWasReadFrom(t *testing.T) {
 // question — could this have been read at all — has no answer.
 func TestTheContextDownscalesAreRecordedAndReplayable(t *testing.T) {
 	page := blankPage(400, 540)
-	ask := func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
+	ask := func(_ context.Context, _ PageImage, _ RegionAbout) (RegionReading, error) {
 		return RegionReading{Description: "shrunk twice", Downscales: 2}, nil
 	}
 	root, err := surveyReader(ask).Read(context.Background(), page, 1)
@@ -512,8 +529,8 @@ func TestTheRootIsAskedADifferentQuestionThanACrop(t *testing.T) {
 	var asked []string
 	rr := &RegionReader{
 		PageWIn: 27, PageHIn: 36.7, DPI: 200, MaxDepth: 1,
-		Ask: func(_ context.Context, _ PageImage, depth int, _ []string) (RegionReading, error) {
-			if depth == 0 {
+		Ask: func(_ context.Context, _ PageImage, about RegionAbout) (RegionReading, error) {
+			if about.Depth == 0 {
 				asked = append(asked, "root")
 				return RegionReading{
 					Description: "the whole sheet",
@@ -538,7 +555,7 @@ func TestDescentIsOptIn(t *testing.T) {
 	calls := 0
 	rr := &RegionReader{
 		PageWIn: 27, PageHIn: 36.7, DPI: 200, // MaxDepth left at 0
-		Ask: func(_ context.Context, _ PageImage, _ int, _ []string) (RegionReading, error) {
+		Ask: func(_ context.Context, _ PageImage, _ RegionAbout) (RegionReading, error) {
 			calls++
 			return RegionReading{
 				Description: "the whole sheet",
@@ -783,5 +800,82 @@ func TestRefinementIsBoundedByTheTransformBudget(t *testing.T) {
 	}
 	if !root.Children[0].hasFlag(FlagCycled) {
 		t.Errorf("the budget stop was not recorded: %v", root.Children[0].Flags)
+	}
+}
+
+// A tile cannot see its neighbours and overlaps them, so it has to be told it is
+// one — otherwise both sides of a seam guess at the same half-visible item.
+func TestATileIsToldItIsOneAndAnOrdinaryRegionIsNot(t *testing.T) {
+	var about []RegionAbout
+	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+		about = append(about, a)
+		if a.Depth == 0 {
+			// A big low-resolution drawing: the shape tileRegion exists for.
+			return RegionReading{Description: "a survey sheet", Kind: "drawing"}, nil
+		}
+		return RegionReading{Description: "monument calls"}, nil
+	}
+	rr := &RegionReader{Ask: ask, PageWIn: 27, PageHIn: 36.7, DPI: 200,
+		MaxDepth: 1, MaxCalls: 40, Tile: true}
+	// Not a blank page: every tile of one renders to identical bytes, and the
+	// cycle detector then suppresses fifteen of the sixteen before they are read.
+	root, err := rr.Read(context.Background(), speckledPage(5401, 7345), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Children) == 0 {
+		t.Fatal("the sheet was not tiled")
+	}
+	if root.Grid != "" {
+		t.Errorf("the root is not a cell but was told it was: %q", root.Grid)
+	}
+	for _, c := range root.Children {
+		if c.Grid == "" {
+			t.Fatalf("a tile was not told its position: %+v", c.BBox)
+		}
+	}
+	// The instruction has to reach the model, not just the record.
+	withGrid := 0
+	for _, a := range about {
+		if a.Grid != "" && gridSuffix(a.Grid) != "" {
+			withGrid++
+		}
+	}
+	if withGrid != len(root.Children) {
+		t.Errorf("%d tiles but %d were told so", len(root.Children), withGrid)
+	}
+	if gridSuffix("") != "" {
+		t.Error("a region that is not a cell must carry no grid instruction")
+	}
+}
+
+// The threshold is asymmetric on purpose, and the arithmetic is the reason: at
+// 45% nothing can be dropped by geometry, because a cell holding less than 45%
+// of an item implies its neighbour holds more than 55%.
+func TestTheGridThresholdCannotDropAnItem(t *testing.T) {
+	const thresh = 0.45
+	dropped, duped := 0, 0
+	for i := 0; i <= 1000; i++ {
+		f := float64(i) / 1000 // fraction of an item visible in this cell
+		mine, theirs := f >= thresh, (1-f) >= thresh
+		if !mine && !theirs {
+			dropped++
+		}
+		if mine && theirs {
+			duped++
+		}
+	}
+	if dropped != 0 {
+		t.Errorf("the threshold drops items at %d split points; it must never", dropped)
+	}
+	if duped == 0 {
+		t.Error("no overlap band at all means the threshold is 50% and ties are coin flips")
+	}
+	// The duplicate band is 45-55%, about a tenth of the splits: the accepted cost.
+	if got := float64(duped) / 1001; got > 0.15 {
+		t.Errorf("duplicate band is %.0f%% of splits, wider than intended", got*100)
+	}
+	if !strings.Contains(gridSuffix("row 1 of 4, column 1 of 4"), "45%") {
+		t.Error("the threshold in the instruction drifted from the one reasoned about here")
 	}
 }

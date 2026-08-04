@@ -204,8 +204,8 @@ func TestAnInventedFilterIsRefusedRatherThanApplied(t *testing.T) {
 // that can see whether this is a faded fax or a drawing that is mostly paper.
 func TestTheMeasuredDamageIsPutToTheModel(t *testing.T) {
 	var sawDamage [][]string
-	ask := func(_ context.Context, _ PageImage, _ int, damage []string) (RegionReading, error) {
-		sawDamage = append(sawDamage, damage)
+	ask := func(_ context.Context, _ PageImage, about RegionAbout) (RegionReading, error) {
+		sawDamage = append(sawDamage, about.Damage)
 		return RegionReading{Description: "read"}, nil
 	}
 	// A uniform grey page: no edges, no range — damaged on both counts.
