@@ -247,11 +247,23 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	// blind view. Measured: 40 calls gave 23 regions and zero geometry; 200 gave
 	// 28 regions and zero geometry.
 	//
-	// So for this one shape — kind `drawing`, flagged low-resolution, large
-	// enough to be worth cutting — the tiles are computed rather than requested.
-	// Deterministic, no salience judgement, and every part of the drawing is
+	// So for an under-resolved region the tiles are computed rather than
+	// requested. Deterministic, no salience judgement, and every part of it is
 	// covered exactly once instead of by whatever a blind view happened to name.
-	if rr.Tile && reg.Kind == "drawing" && reg.hasFlag(FlagLowResolution) {
+	//
+	// It used to also require kind == "drawing", and that gate did not survive
+	// contact with the corpus. Measured 2026-08-03 over every oversize page in it:
+	// all 13 were flagged low-resolution — arithmetic, no model call, right every
+	// time — and exactly ONE was called a drawing. Eleven came back `overview` and
+	// two `text-block`, including four 27x36in recorded surveys that are drawings
+	// by any description. Only the one that said `drawing` ever tiled.
+	//
+	// The gate was asking the blind root what it was looking at. That is the same
+	// view this whole branch exists because it cannot be trusted, and `overview`
+	// is a compliant answer from the prompt's own list. A sheet that large and
+	// that under-resolved needs cutting whatever the model decides to call it, so
+	// the half that is measured decides alone.
+	if rr.Tile && reg.hasFlag(FlagLowResolution) {
 		if tiles := rr.tileRegion(reg); len(tiles) > 0 {
 			descents = append(tiles, descents...)
 			if len(descents) > rr.MaxChildren {

@@ -879,3 +879,62 @@ func TestTheGridThresholdCannotDropAnItem(t *testing.T) {
 		t.Error("the threshold in the instruction drifted from the one reasoned about here")
 	}
 }
+
+// The tiling gate must not ask the blind root what it is looking at.
+//
+// Measured over every oversize page in the corpus: all 13 were flagged
+// low-resolution — arithmetic, right every time — and exactly one was called a
+// "drawing". Four 27x36in recorded surveys came back "overview", which is a
+// compliant answer from the prompt's own list, and none of them ever tiled.
+func TestTilingIsGatedOnArithmeticNotOnWhatTheModelCallsIt(t *testing.T) {
+	for _, kind := range []string{"drawing", "overview", "text-block", "table", ""} {
+		var tiles int
+		ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+			if a.Depth == 0 {
+				return RegionReading{Description: "an oversize sheet", Kind: kind}, nil
+			}
+			return RegionReading{Description: "a cell"}, nil
+		}
+		rr := &RegionReader{Ask: ask, PageWIn: 27, PageHIn: 36.7, DPI: 200,
+			MaxDepth: 1, MaxCalls: 40, Tile: true}
+		root, err := rr.Read(context.Background(), speckledPage(5401, 7345), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range root.Children {
+			if c.Grid != "" {
+				tiles++
+			}
+		}
+		if !root.hasFlag(FlagLowResolution) {
+			t.Fatalf("kind=%q: a 991 sq in sheet was not flagged low-resolution", kind)
+		}
+		if tiles == 0 {
+			t.Errorf("kind=%q: an under-resolved sheet did not tile — the gate is "+
+				"asking the model again", kind)
+		}
+	}
+}
+
+// And it still refuses where tiling buys nothing, so dropping the kind check did
+// not turn tiling on for every page in the corpus.
+func TestALetterPageStillDoesNotTile(t *testing.T) {
+	ask, _ := scriptedAsk(
+		RegionReading{Description: "an ordinary page", Kind: "text-block"},
+		RegionReading{Description: "unused"},
+	)
+	rr := &RegionReader{Ask: ask, PageWIn: 8.5, PageHIn: 11, DPI: 200,
+		MaxDepth: 1, MaxCalls: 40, Tile: true}
+	root, err := rr.Read(context.Background(), speckledPage(1700, 2200), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.hasFlag(FlagLowResolution) {
+		t.Fatal("a letter page was flagged low-resolution")
+	}
+	for _, c := range root.Children {
+		if c.Grid != "" {
+			t.Errorf("a letter page was tiled: %v", c.BBox)
+		}
+	}
+}
