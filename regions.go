@@ -382,6 +382,13 @@ func rotateImage(src image.Image, deg int) image.Image {
 // tile drops to 45.4 and the pad starts being paid for in resolution.
 const descentPadIn = 0.5
 
+// maxProposedMarginIn bounds what a region may ask for when it REFINES its own
+// frame. Two inches is four times the pad a descent already gets, which covers
+// the widest word measured on the survey (0.635in) many times over. Past that a
+// region is not fixing its edge, it is asking to be somewhere else — and that is
+// an escalation, which its parent decides.
+const maxProposedMarginIn = 2.0
+
 // paddedIn grows r by pad inches on every side, clamped to the unit square.
 //
 // Page dimensions are required rather than assumed: the same fraction is a

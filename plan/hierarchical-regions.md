@@ -297,13 +297,55 @@ measured identically, so the marker is not load-bearing.
 |---|---|---|
 | `read` | this is the region, here are its characters | fills its placeholder; judged as now |
 | `needs-descent` | legible, but finer detail is nested inside | recurse — its own rotation and filter per child |
-| `transform-invalid` | the RENDERING is wrong: upside down, mirrored, a repair that destroyed it | **TURN 3** |
-| `wrong-region` | legible, but this is not what the sheet said is here — the BOX is wrong | **TURN 3** |
-| `illegible` | right box, right orientation, the pixels are not there | no turn 3 — re-render at higher dpi, or a human |
+| `refine` | the transform is wrong AND I can fix it from here | **self-transform, no parent** |
+| `escalate` | the transform is fundamentally broken and I cannot fix it from in here | **TURN 3** |
+| `illegible` | right box, right orientation, the pixels are not there | neither — re-render at higher dpi, or a human |
 
-`transform-invalid` and `wrong-region` are separated because the remedies are
-different: one is a rotation or a filter, the other is a bounding box. A child
-that cannot tell them apart says `transform-invalid` and turn 3 decides.
+### REFINE versus ESCALATE — one question
+
+**Escalate when the transform is fundamentally broken. Refine when you can fix it
+without knowledge of the larger document.**
+
+That is the whole test, and it is a question the child asks about ITSELF: *can I
+specify the fix from what I can see?* Not "what kind of adjustment is this" — a
+rotation can be either, depending on whether the child can tell which way is up
+from its own crop or is guessing about the sheet.
+
+| the child sees | can it specify the fix alone? | |
+|---|---|---|
+| a word truncated at its own edge | yes — ask for margin | **refine** |
+| its own text is sideways | yes — rotate itself | **refine** |
+| faint strokes, low contrast | yes — ask for a filter | **refine** |
+| a reading about somewhere else entirely | no — the BOX came from outside | **escalate** |
+| the whole frame is upside down, and it cannot tell from inside | no | **escalate** |
+| nothing legible at any treatment | no fix exists | `illegible` |
+
+Refine costs one call and no coordination. Escalate costs the parent's turn plus
+a re-render — cheap now that turn 3 resumes turn 1's session, but it is still a
+round trip, and it buys nothing when the parent has no information the child
+lacks. "Give me half an inch more" is not a question about the document.
+
+The corollary that matters for tiling: a seam cut is a REFINE, not an escalate.
+Both neighbours see the same truncation from opposite sides and either can fix
+it locally, and tiles ALREADY overlap by construction — so a tile widening its
+own pad produces more of the duplication the design accepts, not a new problem.
+
+### What this needs that does not exist
+
+A child cannot currently ask to grow. Proposals are in the region's own 0..1
+coordinates and `route` calls `clampToUnit`, so `{x:-0.05, w:1.1}` is trimmed to
+exactly the region, `isDescent` then sees no shrink and routes it as a transform,
+and the transform is built with `BBox: reg.BBox` — which discards the geometry a
+second time. Growth is impossible to express and would be ignored if it were not.
+
+The fix is not to loosen `clampToUnit`. Normalized coordinates are the wrong unit
+here for the same reason `descentPadIn` is a length: half an inch has to mean the
+same thing at every depth. It is a `margin` in INCHES on the proposal, applied
+through the existing `paddedIn` helper, and a transform that takes the proposal's
+rect instead of its parent's.
+
+`transformHelped` already scores the result correctly with no change:
+recovering `REPLAT OF BLOCK 40` from `REPLAT OF BLO` is more distinct content.
 
 The computed `transform-suspect` flag stays alongside these. It catches the case
 no verdict will: a child that confidently transcribes the wrong thing and

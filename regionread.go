@@ -94,6 +94,19 @@ type RegionProposal struct {
 	// and the model is the one looking at the region when it decides what to do
 	// about it. An unknown name is refused in route rather than ignored here.
 	Filter RegionFilter `json:"filter"`
+	// Margin is INCHES of extra paper the region wants on every side — a region
+	// REFINING its own frame rather than escalating.
+	//
+	// Escalate when the transform is fundamentally broken; refine when the fix
+	// needs no knowledge of the larger document. A word truncated at the region's
+	// own edge is the second kind: the region can see the cut, "half an inch more"
+	// is a complete statement of the remedy, and asking a parent that cannot see
+	// the region's six-point text to adjudicate it buys nothing.
+	//
+	// Inches, not a fraction, for the reason descentPadIn is a length: half an
+	// inch has to mean the same thing at every depth, and a fraction of a small
+	// region vanishes exactly where cuts are worst.
+	Margin float64 `json:"margin"`
 }
 
 func (p RegionProposal) rect() Rect { return Rect{X: p.X, Y: p.Y, W: p.W, H: p.H} }
@@ -250,7 +263,15 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 			reg.addFlag(FlagCycled)
 			break
 		}
-		alt := &Region{Page: reg.Page, BBox: reg.BBox, Rotation: t.Rotation,
+		// The proposal's own geometry, not the parent's box. A refinement that
+		// asks for margin and is then rendered at the unchanged bbox would come
+		// back identical, be caught by the cycle detector, and read as the model
+		// asking for nothing — which is how growth was impossible before.
+		box := reg.BBox
+		if t.Margin > 0 {
+			box = box.paddedIn(t.Margin, rr.PageWIn, rr.PageHIn)
+		}
+		alt := &Region{Page: reg.Page, BBox: box, Rotation: t.Rotation,
 			Filter: t.Filter, Kind: reg.Kind, Depth: reg.Depth}
 		if err := rr.visit(ctx, page, alt, transformsUsed+1, expect); err != nil {
 			return err
@@ -332,10 +353,16 @@ func (rr *RegionReader) route(parent *Region, props []RegionProposal) ([]descent
 			// for nothing.
 			p.Filter = FilterNone
 		}
-		if p.Rotation != parent.Rotation || p.Filter != parent.Filter {
+		if p.Margin > maxProposedMarginIn {
+			// A region asking for the whole sheet back is escalating in a
+			// refinement's clothes. Capped rather than refused: the ask is
+			// legitimate, the size is not.
+			p.Margin = maxProposedMarginIn
+		}
+		if p.Rotation != parent.Rotation || p.Filter != parent.Filter || p.Margin > 0 {
 			ts = append(ts, p)
 		}
-		// Same area, same rotation AND same filter: nothing new was asked for.
+		// Same area, same rotation, same filter AND no margin: nothing was asked.
 	}
 	if len(ds) > rr.MaxChildren {
 		ds = ds[:rr.MaxChildren]
@@ -550,7 +577,7 @@ regions: areas a closer look WOULD help with — dense annotation, small print, 
 // image is the point.
 const regionPrompt = `Look at this image and answer with ONE JSON object, nothing else:
 
-{"description": "...", "kind": "...", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"kind":"...","reason":"..."}]}
+{"description": "...", "kind": "...", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"margin":0,"kind":"...","reason":"..."}]}
 
 description: transcribe ALL text you can read, verbatim. Where you cannot read
   text, say what is there instead. Never guess at characters you cannot see.
@@ -561,7 +588,16 @@ regions: areas worth examining MORE CLOSELY than this view allows — dense
   turned by to read upright. Return [] if nothing here needs a closer look, or
   if the whole image is already legible.
 Do not propose an area that covers most of this image unless it needs a
-different rotation.`
+different rotation.
+
+IF TEXT IS CUT OFF AT THE EDGE OF THIS IMAGE — a word ending mid-letters against
+the border, a line running off the side — say so by proposing THIS WHOLE IMAGE
+(x:0,y:0,w:1,h:1) with "margin" set to the inches of extra paper you need, up to
+2. That is not a request to look somewhere else; it is this same view with more
+of the page around it. Use it only when you can see the cut. If instead the image
+looks wrong in a way MORE PAPER WOULD NOT FIX — upside down, or showing something
+other than what you were told is here — propose nothing and say so in
+description, because that is not yours to correct.`
 
 var jsonObjRe = regexp.MustCompile(`(?s)\{.*\}`)
 

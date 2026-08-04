@@ -5,6 +5,7 @@ import (
 	"context"
 	"image"
 	"image/color"
+	"math"
 	"strings"
 	"testing"
 )
@@ -667,5 +668,120 @@ func TestAChildThatElaboratesOnItsParentIsNotFlagged(t *testing.T) {
 	}
 	if root.Children[0].hasFlag(FlagTransformSuspect) {
 		t.Errorf("a child that covered its parent's account was flagged: %v", root.Children[0].Flags)
+	}
+}
+
+// Escalate when the transform is fundamentally broken; REFINE when the fix needs
+// no knowledge of the larger document. A word cut at the region's own edge is the
+// second kind — the region can see the cut, and "half an inch more" is the whole
+// remedy — so it fixes itself instead of asking a parent that cannot see its
+// six-point text to adjudicate.
+func TestARegionRefinesItsOwnFrameWithoutItsParent(t *testing.T) {
+	page := blankPage(1700, 2200) // 8.5x11 at 200dpi
+	ask, calls := scriptedAsk(
+		// The root names a block; the child then finds its own edge cut.
+		RegionReading{Description: "a sheet", Regions: []RegionProposal{
+			{X: 0.2, Y: 0.2, W: 0.3, H: 0.3, Reason: "a text block"},
+		}},
+		RegionReading{Description: "REPLAT OF BLO", Regions: []RegionProposal{
+			{X: 0, Y: 0, W: 1, H: 1, Margin: 0.5, Reason: "the word runs off the right edge"},
+		}},
+		RegionReading{Description: "REPLAT OF BLOCK 40, MONTBORNE, VOL 4 PG 5"},
+	)
+	root, err := surveyReader(ask).Read(context.Background(), page, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("expected one child, got %d", len(root.Children))
+	}
+	child := root.Children[0]
+	if *calls != 3 {
+		t.Errorf("the refinement was not read: %d calls", *calls)
+	}
+	// It GREW. Before this, a margin request rendered to the identical bbox, hit
+	// the cycle detector, and looked like the model asking for nothing.
+	if child.BBox.area() <= 0.09 {
+		t.Errorf("the region did not grow: area %.4f", child.BBox.area())
+	}
+	if !strings.Contains(child.Text, "BLOCK 40") {
+		t.Errorf("the refined reading was not adopted: %q", child.Text)
+	}
+	if child.hasFlag(FlagCycled) {
+		t.Errorf("a refinement that recovered the word was rejected: %v", child.Flags)
+	}
+}
+
+// The margin is INCHES, so it means the same thing at every depth — the reason
+// descentPadIn is a length and not a fraction.
+func TestMarginIsInchesOfPaperNotAFractionOfTheRegion(t *testing.T) {
+	small := Rect{X: 0.4, Y: 0.4, W: 0.02, H: 0.02}
+	big := Rect{X: 0.1, Y: 0.1, W: 0.8, H: 0.8}
+	const wIn, hIn = 27.0, 36.7
+	gs := small.paddedIn(0.5, wIn, hIn)
+	gb := big.paddedIn(0.5, wIn, hIn)
+	grewSmall := (gs.W - small.W) * wIn
+	grewBig := (gb.W - big.W) * wIn
+	if math.Abs(grewSmall-grewBig) > 0.01 {
+		t.Errorf("margin scaled with the region: small grew %.3fin, big grew %.3fin",
+			grewSmall, grewBig)
+	}
+	if math.Abs(grewSmall-1.0) > 0.01 { // 0.5in on each side
+		t.Errorf("0.5in margin grew the width by %.3fin, want 1.0", grewSmall)
+	}
+}
+
+// A region asking for the whole sheet back is escalating in a refinement's
+// clothes. The ask is legitimate; the size is not.
+func TestAnOversizedMarginIsCappedRatherThanRefused(t *testing.T) {
+	page := blankPage(1700, 2200)
+	ask, calls := scriptedAsk(
+		RegionReading{Description: "a sheet", Regions: []RegionProposal{
+			{X: 0.4, Y: 0.4, W: 0.2, H: 0.2, Reason: "a block"},
+		}},
+		RegionReading{Description: "cut", Regions: []RegionProposal{
+			{X: 0, Y: 0, W: 1, H: 1, Margin: 500, Reason: "give me everything"},
+		}},
+		RegionReading{Description: "still cut"},
+	)
+	root, err := surveyReader(ask).Read(context.Background(), page, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *calls < 3 {
+		t.Fatalf("the capped refinement was refused outright: %d calls", *calls)
+	}
+	child := root.Children[0]
+	// 0.2 of a 27in sheet is 5.4in; +2in a side caps it at 9.4in, not the sheet.
+	if wIn := child.BBox.W * 27.0; wIn > 5.4+2*maxProposedMarginIn+0.01 {
+		t.Errorf("margin was not capped: grew to %.2fin", wIn)
+	}
+}
+
+// Refinement must not become a way to spend the whole budget on one region.
+func TestRefinementIsBoundedByTheTransformBudget(t *testing.T) {
+	page := blankPage(1700, 2200)
+	readings := []RegionReading{
+		{Description: "a sheet", Regions: []RegionProposal{
+			{X: 0.3, Y: 0.3, W: 0.2, H: 0.2, Reason: "a block"}}},
+	}
+	// A region that asks for more paper forever.
+	for i := 0; i < 8; i++ {
+		readings = append(readings, RegionReading{
+			Description: "cut", Regions: []RegionProposal{
+				{X: 0, Y: 0, W: 1, H: 1, Margin: 0.25, Reason: "still cut"}}})
+	}
+	ask, calls := scriptedAsk(readings...)
+	rr := surveyReader(ask)
+	rr.MaxTransforms = 2
+	root, err := rr.Read(context.Background(), page, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *calls > 6 {
+		t.Errorf("an endlessly-refining region was not bounded: %d calls", *calls)
+	}
+	if !root.Children[0].hasFlag(FlagCycled) {
+		t.Errorf("the budget stop was not recorded: %v", root.Children[0].Flags)
 	}
 }
