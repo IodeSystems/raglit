@@ -32,6 +32,10 @@ const regionDocVersion = 1
 // transcription.
 func RegionsPath(docPath string) string { return docPath + regionsSuffix }
 
+// RegionsSuffix is what a region sidecar's name ends in, for a caller walking a
+// tree and mapping sidecars back to the documents they describe.
+func RegionsSuffix() string { return regionsSuffix }
+
 // IsRegionsSidecar reports whether a path is raglit's own region output.
 func IsRegionsSidecar(path string) bool { return strings.HasSuffix(path, regionsSuffix) }
 

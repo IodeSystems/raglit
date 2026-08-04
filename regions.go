@@ -191,6 +191,11 @@ const (
 	FlagBudget = "budget"
 )
 
+// AddFlag records a condition on this region, once. Exported because a pass that
+// MEASURES a recorded read — rather than producing one — belongs outside this
+// package; see `raglit regions --backfill-damage`.
+func (r *Region) AddFlag(f string) { r.addFlag(f) }
+
 func (r *Region) addFlag(f string) {
 	for _, x := range r.Flags {
 		if x == f {
@@ -391,6 +396,11 @@ func (r Rect) overlaps(o Rect) float64 {
 // bytes already seen IS the cycle: rotating 90 degrees four times returns the
 // original SHA, and re-asking for the same bbox at the same dpi and rotation
 // returns the original SHA.
+// RegionSHA digests rendered image bytes the way a region's record does.
+// Exported so a caller outside this package can construct or check a region
+// record against an image it rendered itself.
+func RegionSHA(data []byte) string { return imageSHA(data) }
+
 func imageSHA(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

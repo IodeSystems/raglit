@@ -34,7 +34,21 @@ func runRegions(args []string) error {
 	tile := fs.Bool("tile", true, "subdivide a large low-resolution drawing geometrically instead of asking it where to look")
 	asJSON := fs.Bool("json", false, "emit the region tree as JSON")
 	write := fs.Bool("write", false, "record the read in <doc>.raglit-regions.json beside the document")
+	backfill := fs.Bool("backfill-damage", false, "measure the pixels of ALREADY-RECORDED regions and flag blurred/faded; no model calls")
+	apply := fs.Bool("apply", false, "with --backfill-damage, write the flags back (default is to report only)")
+	quiet := fs.Bool("quiet", false, "with --backfill-damage, only the summary")
 	fs.Parse(args)
+
+	// Backfill measures reads that already happened. It takes no model, needs no
+	// vision endpoint, and accepts many documents or a directory — so it returns
+	// before every check below, all of which are about producing a NEW read.
+	if *backfill {
+		docs, derr := collectRegionDocs(fs.Args())
+		if derr != nil {
+			return derr
+		}
+		return runBackfillDamage(docs, *apply, *quiet)
+	}
 	if fs.NArg() < 1 || fs.NArg() > 2 {
 		return fmt.Errorf("usage: raglit regions [flags] FILE [REGION-ID]\n" +
 			"  with a REGION-ID, re-read that recorded region and graft the result back")

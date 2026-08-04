@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"math"
@@ -170,6 +171,17 @@ func DamageOf(img image.Image) []string {
 		flags = append(flags, FlagFaded)
 	}
 	return flags
+}
+
+// DamageOfPNG measures encoded image bytes — the form a region's crop is
+// recorded and reproduced in, so a pass that re-renders a recorded read can
+// measure exactly what was read without decoding it itself.
+func DamageOfPNG(data []byte) []string {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+	return DamageOf(img)
 }
 
 // ApplyRegionFilter runs one repair over a crop. An unknown filter returns the
