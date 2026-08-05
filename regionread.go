@@ -282,8 +282,24 @@ func (rr *RegionReader) readRegion(ctx context.Context, page image.Image, reg *R
 func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region,
 	transformsUsed int, expect string) error {
 	reading, ok, err := rr.readRegion(ctx, page, reg, expect)
-	if err != nil || !ok {
-		return err
+	if err != nil {
+		// A region that could not be read is not a region that cannot be CUT.
+		//
+		// Measured on olmOCR-bench: a 66 x 55 inch sheet is refused by the
+		// transport, and because the descent read the whole region before tiling
+		// it, the one mechanism built for sheets too big to read in one look died
+		// on the request that being too big causes. The read is where the account
+		// comes from, so losing it costs coverage — but losing the tiles as well
+		// costs everything.
+		if !rr.canTile(reg) {
+			return err
+		}
+		reg.addFlag(FlagUnread)
+		reading = RegionReading{}
+		ok = true
+	}
+	if !ok {
+		return nil
 	}
 	if reg.Depth >= rr.MaxDepth {
 		// Told to stop, not out of budget. See FlagDepthReached.
@@ -817,28 +833,66 @@ func (rr *RegionReader) tileRegion(reg *Region) []descent {
 	if want <= 1 {
 		return nil
 	}
-	n := int(math.Ceil(math.Sqrt(want)))
-	n = min(max(n, 2), 6)
-
 	wIn, hIn := reg.BBox.W*rr.PageWIn, reg.BBox.H*rr.PageHIn
-	if wIn/float64(n) < rr.MinRegionIn || hIn/float64(n) < rr.MinRegionIn {
+	cols, rows := gridFor(want, wIn, hIn)
+	if wIn/float64(cols) < rr.MinRegionIn || hIn/float64(rows) < rr.MinRegionIn {
 		return nil // already small enough that another cut buys no resolution
 	}
 
 	var out []descent
-	tw, th := reg.BBox.W/float64(n), reg.BBox.H/float64(n)
-	for row := range n {
-		for col := range n {
+	tw, th := reg.BBox.W/float64(cols), reg.BBox.H/float64(rows)
+	for row := range rows {
+		for col := range cols {
 			t := Rect{
 				X: reg.BBox.X + float64(col)*tw,
 				Y: reg.BBox.Y + float64(row)*th,
 				W: tw, H: th,
 			}.paddedIn(descentPadIn, rr.PageWIn, rr.PageHIn)
 			out = append(out, descent{bbox: t, rotation: reg.Rotation, kind: "drawing",
-				grid: fmt.Sprintf("row %d of %d, column %d of %d", row+1, n, col+1, n)})
+				grid: fmt.Sprintf("row %d of %d, column %d of %d", row+1, rows, col+1, cols)})
 		}
 	}
 	return out
+}
+
+// gridFor picks columns and rows so each TILE comes out roughly square, rather
+// than cutting every sheet into an n x n grid whatever its shape.
+//
+// A square grid is only right for a square page. The shapes that actually turn
+// up are not: a 66 x 36 inch map wants columns, a single tall column of
+// newsprint wants rows, and a two-page spread is wider than it is tall by
+// construction. Cutting a 2:1 sheet 4x4 makes sixteen tiles that are each 2:1 —
+// every one of them still the wrong shape, and each seam falling wherever the
+// arithmetic put it.
+//
+// So: spend the tile budget along the LONG axis first. want is the resolution
+// deficit, i.e. how many letter-page-equivalents of detail are missing, and the
+// area of the grid has to cover it; distributing that by aspect gives tiles that
+// are square-ish whatever the sheet is.
+//
+// Capped at 6 per axis for the same reason the count was capped before: the
+// point is to make the sheet legible, not to spend the budget. 6x6 is 36 calls.
+func gridFor(want, wIn, hIn float64) (cols, rows int) {
+	if wIn <= 0 || hIn <= 0 {
+		n := min(max(int(math.Ceil(math.Sqrt(want))), 2), 6)
+		return n, n
+	}
+	aspect := wIn / hIn
+	// cols*rows >= want, with cols/rows == aspect makes each tile square.
+	c := math.Sqrt(want * aspect)
+	r := math.Sqrt(want / aspect)
+	cols = min(max(int(math.Ceil(c)), 1), 6)
+	rows = min(max(int(math.Ceil(r)), 1), 6)
+	// Never a 1x1 "grid": that is the region itself and the cycle detector would
+	// refuse it after a wasted render.
+	if cols*rows < 2 {
+		if aspect >= 1 {
+			cols = 2
+		} else {
+			rows = 2
+		}
+	}
+	return cols, rows
 }
 
 // ReadInto re-reads ONE recorded region and grafts the result back into the tree.
@@ -1152,6 +1206,12 @@ func normalizeVerdict(v string) string {
 	default:
 		return VerdictUnknown
 	}
+}
+
+// canTile reports whether this region would be cut if it were read — used to
+// decide whether a failed read is recoverable.
+func (rr *RegionReader) canTile(reg *Region) bool {
+	return rr.Tile && reg.hasFlag(FlagLowResolution) && len(rr.tileRegion(reg)) > 0
 }
 
 // withTiles prepends the computed grid to a region's descents when the region is

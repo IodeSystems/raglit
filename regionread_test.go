@@ -3,6 +3,7 @@ package raglit
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -1224,12 +1225,134 @@ func TestATransformCandidateDoesNotDescend(t *testing.T) {
 			tiles++
 		}
 	}
-	if tiles < 16 {
-		t.Errorf("the real descent was starved by the candidate: %d tiles", tiles)
+	// Derived, not hardcoded: the grid takes its shape from the page, so a fixed
+	// count here would break every time gridFor is tuned and would say nothing
+	// about the thing under test.
+	cols, rows := gridFor(letterTokensPerSqIn/root.TokensPerSqIn, 27, 36.7)
+	if tiles < cols*rows {
+		t.Errorf("the real descent was starved by the candidate: %d tiles, grid is %dx%d",
+			tiles, cols, rows)
 	}
 	// root + one candidate + the grid. A candidate that descended would add a
 	// whole second grid on top of that.
 	if reads > 2+tiles {
 		t.Errorf("a transform candidate descended: %d reads for %d tiles", reads, tiles)
+	}
+}
+
+// A grid is only square when the page is. Measured shapes: a 66x36in map wants
+// columns, a tall column of newsprint wants rows, and a two-page spread is wider
+// than tall by construction. Cutting a 2:1 sheet into n x n leaves every tile
+// still 2:1 — the wrong shape sixteen times over.
+func TestTheGridTakesItsShapeFromThePage(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		want   float64
+		w, h   float64
+		wantSq bool
+	}{
+		{"wide map 66x36", 24.4, 66, 36, true},
+		{"tall column 12x40", 4.9, 12, 40, true},
+		{"two-page spread 34x22", 7.4, 34, 22, true},
+		{"square-ish 66x55", 36.1, 66.4, 55.5, true},
+	} {
+		cols, rows := gridFor(c.want, c.w, c.h)
+		if cols*rows < int(math.Ceil(c.want)) && cols < 6 && rows < 6 {
+			t.Errorf("%s: %dx%d=%d tiles does not cover a deficit of %.1f",
+				c.name, cols, rows, cols*rows, c.want)
+		}
+		// Each tile should be closer to square than the page is.
+		pageAsp := c.w / c.h
+		tileAsp := (c.w / float64(cols)) / (c.h / float64(rows))
+		off := func(a float64) float64 {
+			if a < 1 {
+				return 1 / a
+			}
+			return a
+		}
+		if c.wantSq && off(tileAsp) > off(pageAsp)+0.01 {
+			t.Errorf("%s: tiles (%.2f) are further from square than the page (%.2f)",
+				c.name, tileAsp, pageAsp)
+		}
+		if cols > 6 || rows > 6 {
+			t.Errorf("%s: %dx%d exceeds the per-axis cap", c.name, cols, rows)
+		}
+	}
+	// A page that needs no more detail is not tiled at all.
+	rr := &RegionReader{PageWIn: 8.5, PageHIn: 11, DPI: 200, MinRegionIn: 1}
+	reg := &Region{BBox: Rect{0, 0, 1, 1}, TokensPerSqIn: 42}
+	if got := rr.tileRegion(reg); got != nil {
+		t.Errorf("a letter page was tiled into %d", len(got))
+	}
+}
+
+// An image no encoder will look at whole must not be sent whole. A 66x55in sheet
+// renders to 147 megapixels at 200 dpi and the transport refuses the request
+// with an error naming the wrong cause.
+func TestAnOversizeRenderIsCappedNotSentWhole(t *testing.T) {
+	// 6000x5000 = 30 MP, above the cap; and 3000x2000 = 6 MP, below it.
+	for _, c := range []struct {
+		w, h   int
+		capped bool
+	}{
+		{6000, 5000, true},
+		{3000, 2000, false},
+	} {
+		src := speckledPage(c.w, c.h)
+		out := capPixels(src)
+		b := out.Bounds()
+		px := b.Dx() * b.Dy()
+		if c.capped {
+			if px > maxRenderPixels {
+				t.Errorf("%dx%d was not capped: %d px", c.w, c.h, px)
+			}
+			// aspect preserved
+			in, got := float64(c.w)/float64(c.h), float64(b.Dx())/float64(b.Dy())
+			if math.Abs(in-got) > 0.02 {
+				t.Errorf("cap changed aspect: %.3f -> %.3f", in, got)
+			}
+		} else if px != c.w*c.h {
+			t.Errorf("%dx%d was resampled when it did not need to be", c.w, c.h)
+		}
+	}
+}
+
+// The failure this whole set exists for: the descent must read a region before
+// it tiles, so a region too big to READ took the tiles down with it.
+func TestAFailedReadStillTiles(t *testing.T) {
+	calls := 0
+	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
+		calls++
+		if calls == 1 { // the root: refused, the way an oversize page is
+			return RegionReading{}, fmt.Errorf("llm: status 400: missing \"model\"")
+		}
+		return RegionReading{Description: "a legible cell of it"}, nil
+	}
+	rr := &RegionReader{Ask: ask, PageWIn: 66.4, PageHIn: 55.5, DPI: 200,
+		MaxDepth: 1, MaxCalls: 60, Tile: true, MinRegionIn: 1}
+	root, err := rr.Read(context.Background(), speckledPage(2000, 1700), 1)
+	if err != nil {
+		t.Fatalf("a failed root read aborted the whole descent: %v", err)
+	}
+	if !root.hasFlag(FlagUnread) {
+		t.Errorf("the failed read was not recorded: %v", root.Flags)
+	}
+	tiles := 0
+	for _, c := range root.Children {
+		if c.Grid != "" {
+			tiles++
+		}
+	}
+	if tiles == 0 {
+		t.Fatal("the sheet was not tiled after its root read failed")
+	}
+	read := 0
+	for _, c := range root.Children {
+		if len(c.Text) > 0 {
+			read++
+		}
+	}
+	if read == 0 {
+		t.Error("tiles were created but none was read")
 	}
 }

@@ -208,6 +208,10 @@ const (
 	// FlagUnknownVerdict — the region answered with a verdict this package does
 	// not define. Kept visible so invented vocabulary does not read as silence.
 	FlagUnknownVerdict = "unknown-verdict"
+	// FlagUnread — this region could not be read at all: the call failed rather
+	// than returning something poor. Its children may still have been read, so
+	// the tree below it is real and only this node's own account is missing.
+	FlagUnread = "unread"
 	// FlagBudget — descent stopped because the CALL budget ran out, not because
 	// the region was finished. Recorded so a thin read is never mistaken for a
 	// complete one.
@@ -328,10 +332,10 @@ func renderRegion(pageImg image.Image, bbox Rect, rotation int, filter RegionFil
 	sub := image.NewRGBA(image.Rect(0, 0, x1-x0, y1-y0))
 	xdraw.Draw(sub, sub.Bounds(), pageImg, image.Pt(x0, y0), xdraw.Src)
 
-	var out image.Image = sub
+	var out image.Image = capPixels(sub)
 	switch ((rotation % 360) + 360) % 360 {
 	case 90, 180, 270:
-		out = rotateImage(sub, ((rotation%360)+360)%360)
+		out = rotateImage(out, ((rotation%360)+360)%360)
 	}
 	// The filter is applied LAST, so what the digest covers is what the model was
 	// handed. Rotating after filtering would resample the repair.
@@ -341,6 +345,43 @@ func renderRegion(pageImg image.Image, bbox Rect, rotation int, filter RegionFil
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// maxRenderPixels bounds what is sent for ONE image.
+//
+// Measured against olmOCR-bench: a 66 x 55 inch sheet renders to 13290 x 11098
+// at 200 dpi — 147 megapixels — and every request carrying it is refused by the
+// transport with `400 missing "model"`, which names the wrong cause. Seven of
+// the benchmark's old_scans pages fail this way and they are its seven largest.
+// The descent cannot rescue them either: it must read the whole region first,
+// so it dies on the same request before it tiles.
+//
+// The pixels were never worth sending. The encoder charges a CAPPED number of
+// tokens per image — see maxImageTokens — so beyond that budget more pixels are
+// transmitted, paid for, and thrown away by the server's own resize. 24 MP is
+// comfortably above everything measured to work (a letter page at 400 dpi is
+// 15 MP, an E-size sheet at 200 dpi is 40 MP and is downsampled by the server
+// regardless) and far below what breaks.
+//
+// It is part of the RENDER, so the digest covers the capped bytes and a
+// re-render reproduces them: the cap is a constant, not a decision taken per
+// call.
+const maxRenderPixels = 24_000_000
+
+// capPixels shrinks an image that is larger than any encoder will look at,
+// preserving aspect. Below the cap it returns src untouched, so nothing that
+// works today is resampled.
+func capPixels(src image.Image) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 || w*h <= maxRenderPixels {
+		return src
+	}
+	scale := math.Sqrt(float64(maxRenderPixels) / float64(w*h))
+	nw, nh := max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, b, xdraw.Over, nil)
+	return dst
 }
 
 // rotateImage turns an image by a right angle. Only right angles: an arbitrary
