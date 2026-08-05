@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"io"
 	"math"
 	"regexp"
 	"strconv"
@@ -67,6 +68,13 @@ type RegionReader struct {
 	// Tile turns on geometric subdivision of large low-resolution DRAWINGS
 	// instead of asking where to look. See tileRegion.
 	Tile bool
+
+	// Trace, when non-nil, receives one line per TURN and per decision taken
+	// about it: what was read, at what resolution, what it proposed, what was
+	// routed to a descent and what to a transform, what escalated and what the
+	// parent said. A tree printed at the end says where the walk ARRIVED; this
+	// says what it did on the way, which is the part that explains a bad tree.
+	Trace io.Writer
 
 	calls       int
 	escalations int
@@ -281,6 +289,10 @@ func (rr *RegionReader) readRegion(ctx context.Context, page image.Image, reg *R
 // transformHelped, which is the one thing that uses it.
 func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region,
 	transformsUsed int, expect string) error {
+	rr.tracef(reg.Depth, "read %s bbox=%.2f,%.2f %.2fx%.2f rot=%d filter=%q %.1f tok/in²%s",
+		regionLabel(reg.ID), reg.BBox.X, reg.BBox.Y, reg.BBox.W, reg.BBox.H,
+		reg.Rotation, string(reg.Filter), reg.TokensPerSqIn,
+		map[bool]string{true: " [tile " + reg.Grid + "]"}[reg.Grid != ""])
 	reading, ok, err := rr.readRegion(ctx, page, reg, expect)
 	if err != nil {
 		// A region that could not be read is not a region that cannot be CUT.
@@ -308,6 +320,8 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	}
 
 	descents, transforms := rr.route(reg, reading.Regions)
+	rr.tracef(reg.Depth, "  -> %d chars, flags=%v verdict=%q; %d proposal(s) -> %d descent(s), %d transform(s)",
+		len(reg.Text), reg.Flags, reg.Verdict, len(reading.Regions), len(descents), len(transforms))
 
 	// A big low-resolution DRAWING is tiled rather than asked about.
 	//
@@ -339,7 +353,12 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 	// is a compliant answer from the prompt's own list. A sheet that large and
 	// that under-resolved needs cutting whatever the model decides to call it, so
 	// the half that is measured decides alone.
-	descents = rr.withTiles(reg, descents)
+	if before := len(descents); true {
+		descents = rr.withTiles(reg, descents)
+		if n := len(descents) - before; n > 0 {
+			rr.tracef(reg.Depth, "  -> tiled: %d computed tiles prepended (blind view, no salience asked)", n)
+		}
+	}
 
 	if len(descents) == 0 && len(transforms) == 0 {
 		reg.addFlag(FlagExhausted)
@@ -391,7 +410,12 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		// is different too. Re-route from the adopted reading rather than acting
 		// on proposals made about an image that was replaced.
 		descents, _ = rr.route(reg, altReading.Regions)
-		descents = rr.withTiles(reg, descents)
+		if before := len(descents); true {
+			descents = rr.withTiles(reg, descents)
+			if n := len(descents) - before; n > 0 {
+				rr.tracef(reg.Depth, "  -> tiled: %d computed tiles prepended (blind view, no salience asked)", n)
+			}
+		}
 	}
 
 	for _, d := range descents {
@@ -408,6 +432,9 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		// its reading has nothing to do with what THIS region said is here — the
 		// question comes back up to whoever owns the box.
 		if rr.wantsEscalation(child) {
+			rr.tracef(reg.Depth, "  -> escalating %s (verdict=%q suspect=%v), budget %d/%d",
+				regionLabel(child.ID), child.Verdict, child.hasFlag(FlagTransformSuspect),
+				rr.escalations, rr.MaxEscalations)
 			if err := rr.escalate(ctx, page, reg, child, reading.Description); err != nil {
 				return err
 			}
@@ -1234,4 +1261,20 @@ func (rr *RegionReader) withTiles(reg *Region, descents []descent) []descent {
 		descents = descents[:len(tiles)]
 	}
 	return descents
+}
+
+// tracef writes one indented trace line per turn when tracing is on.
+func (rr *RegionReader) tracef(depth int, format string, a ...any) {
+	if rr.Trace == nil {
+		return
+	}
+	fmt.Fprintf(rr.Trace, "  regions | %s%s\n",
+		strings.Repeat("  ", depth), fmt.Sprintf(format, a...))
+}
+
+func regionLabel(s string) string {
+	if s == "" {
+		return "(unnumbered)"
+	}
+	return s
 }

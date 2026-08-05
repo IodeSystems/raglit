@@ -37,6 +37,9 @@ func runRegions(args []string) error {
 	backfill := fs.Bool("backfill-damage", false, "measure the pixels of ALREADY-RECORDED regions and flag blurred/faded; no model calls")
 	apply := fs.Bool("apply", false, "with --backfill-damage, write the flags back (default is to report only)")
 	quiet := fs.Bool("quiet", false, "with --backfill-damage, only the summary")
+	verbose := fs.Bool("verbose", false,
+		"report every TURN on stderr: what was read, what it proposed, what was routed to a descent "+
+			"or a transform, what tiled, what escalated and what the parent answered")
 	fs.Parse(args)
 
 	// Backfill measures reads that already happened. It takes no model, needs no
@@ -77,9 +80,15 @@ func runRegions(args []string) error {
 
 	ocr := raglit.NewOCR(lf.visionClient())
 	ocr.Model = *lf.visionModel
+	if *verbose {
+		ocr.Trace = os.Stderr
+	}
 	rr := &raglit.RegionReader{
 		Ask: ocr.AskWithHint(*hint), PageWIn: wIn, PageHIn: hIn, DPI: *dpi,
 		MaxDepth: *depth, MaxCalls: *calls, Hint: *hint, Tile: *tile,
+	}
+	if *verbose {
+		rr.Trace = os.Stderr
 	}
 	// With a REGION-ID, re-enter at that recorded region rather than at the whole
 	// page.

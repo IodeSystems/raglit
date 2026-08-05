@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/iodesystems/agentkit/llm"
+	"io"
+	"time"
 )
 
 // defaultOCRPrompt asks for a faithful transcription and nothing else — no
@@ -33,9 +35,19 @@ type OCR struct {
 	// cannot be told from one a different model produced, and a corpus outlives
 	// several models.
 	Model  string
-	Prompt string          // transcription instruction; "" → defaultOCRPrompt
-	Cheap  PageEngine      // optional cheap first pass; nil → VLM-only
-	Gate   GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
+	Prompt string // transcription instruction; "" → defaultOCRPrompt
+	// Trace, when non-nil, receives one line per decision this OCR takes.
+	//
+	// It exists because nothing else reports what a call DID. `raglit doctor`
+	// says what is configured; the page cache, the cheap tier, the assist, the
+	// repetition guard and the tool list are all invisible at the call site, and
+	// a reader of the output cannot tell a cheap-engine page from a VLM page, an
+	// assisted prompt from a bare one, or a cut stream from a complete one.
+	//
+	// Written to be read by a person mid-investigation, not parsed.
+	Trace io.Writer
+	Cheap PageEngine      // optional cheap first pass; nil → VLM-only
+	Gate  GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
 	// DescribeFigures is the FIGURE gate (§3a): a born-digital PDF page carrying an
 	// embedded image is rasterized to the VLM even when its text layer is clean, so
 	// its diagrams get described. Orthogonal to the gibberish gate (which judges
@@ -95,26 +107,48 @@ func (o *OCR) PageWithEngine(ctx context.Context, img PageImage) (text, engine s
 // — it records the number per region so the crop can be re-rendered exactly, and
 // every other caller wants the text and the engine and nothing else.
 func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine string, shrinks int, err error) {
+	started := time.Now()
+	o.tracef("page %d: %d bytes of %s, model %q", img.Page, len(img.Data), img.Mime, o.Model)
 	assist := ""
+	if o.Cheap == nil {
+		o.tracef("cheap tier: none configured — every page goes to the VLM (ocr.cheap_engine)")
+	}
 	if o.Cheap != nil {
 		if po, cerr := o.Cheap.OCRPage(ctx, img); cerr == nil {
+			o.tracef("cheap tier: %s read %d chars, mean confidence %.2f, %d boxes, median glyph %dpx",
+				o.Cheap.Name(), len(po.Text), po.MeanConfidence, po.BoxCount, po.MedianGlyphPx)
 			if o.Assist {
 				assist = spellingAssist(po.Text)
+				o.tracef("assist: ON — %d chars of digit-masked words appended to the prompt", len(assist))
 			} else if gib, _ := o.Gate.IsGibberish(po); !gib {
+				o.tracef("cascade: cheap result accepted, VLM not called")
 				// Cascade mode: a non-gibberish result (including a legitimately
 				// empty page) is trusted — do not pay the VLM for clean or blank
 				// pages. The cheap engine reads the image as given; nothing was
 				// shrunk.
 				return strings.TrimSpace(po.Text), o.Cheap.Name(), 0, nil
 			}
+		} else {
+			o.tracef("cheap tier: %s errored (%v) — falling through to the VLM", o.Cheap.Name(), cerr)
 		}
 		// cheap error or gibberish → fall through to the VLM.
 	}
 	t, n, verr := o.visionPage(ctx, img, assist)
 	if verr != nil {
+		o.tracef("vision: FAILED after %s: %v", time.Since(started).Round(time.Millisecond), verr)
 		return "", "", 0, verr
 	}
+	o.tracef("vision: %d chars, %d context downscale(s), %s total",
+		len(t), n, time.Since(started).Round(time.Millisecond))
 	return t, "vision", n, nil
+}
+
+// tracef writes one trace line when tracing is on, and is a no-op otherwise.
+func (o *OCR) tracef(format string, a ...any) {
+	if o.Trace == nil {
+		return
+	}
+	fmt.Fprintf(o.Trace, "  ocr | "+format+"\n", a...)
 }
 
 // visionPage is the VLM transcription: agentkit's multimodal llm.Message — a
@@ -136,6 +170,10 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (str
 	// searchable text — no new infrastructure. A described diagram beats an
 	// invisible one; this is why a page reaches the VLM at all.
 	prompt += figureInstruction + assist
+	// The tool list is the thing nobody could see. It is nil, always: this path
+	// asks for one verbatim re-emission and offers the model nothing to call.
+	o.tracef("request: %d chars of prompt, %d image bytes, %d tools offered",
+		len(prompt), len(img.Data), 0)
 	msg := llm.Message{Role: "user", Parts: []llm.ContentPart{
 		llm.TextPart(prompt),
 		llm.ImageData(img.Mime, img.Data),

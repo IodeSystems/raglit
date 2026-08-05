@@ -189,6 +189,8 @@ func runOcr(args []string) error {
 	fs := flag.NewFlagSet("ocr", flag.ExitOnError)
 	lf := addLLMFlags(fs)
 	homeFlag := fs.String("home", "", "config home dir (for defaults)")
+	verbose := fs.Bool("verbose", false,
+		"report what the read DID on stderr: cheap tier, assist, tools offered, downscales, timing")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("ocr: no image files given")
@@ -204,6 +206,11 @@ func runOcr(args []string) error {
 	ocr := raglit.NewOCR(lf.visionClient())
 	ocr.Model = *lf.visionModel
 	attachCheapOCR(ocr, home)
+	if *verbose {
+		// stderr, so a verbose run still pipes its transcription cleanly.
+		ocr.Trace = os.Stderr
+		fmt.Fprintf(os.Stderr, "  ocr | home %s, url %s\n", home, *lf.url)
+	}
 	for _, img := range fs.Args() {
 		data, err := os.ReadFile(img)
 		if err != nil {
