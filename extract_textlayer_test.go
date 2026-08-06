@@ -40,7 +40,7 @@ func TestPDFUnits_ReadsThePageRatherThanItsTextLayer(t *testing.T) {
 		t.Fatalf("fixture has no signing overlay in its text layer: %q", texts)
 	}
 
-	units, err := pdfUnits(context.Background(), stamped, true, nil)
+	units, err := pdfUnits(context.Background(), stamped, true, nil, RenderPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestPDFUnits_FallsBackToTheTextLayerWithNoOCR(t *testing.T) {
 	}
 	dir := t.TempDir()
 	pdf := renderTextPDF(t, dir, "anything")
-	units, err := pdfUnits(context.Background(), pdf, false, nil)
+	units, err := pdfUnits(context.Background(), pdf, false, nil, RenderPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}

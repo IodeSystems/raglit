@@ -370,7 +370,7 @@ func HEICToPNG(ctx context.Context, path string) ([]byte, error) {
 	}
 	return out, nil
 }
-func pdfUnits(ctx context.Context, pdfPath string, canOCR bool, cheap PageEngine) ([]ingestUnit, error) {
+func pdfUnits(ctx context.Context, pdfPath string, canOCR bool, cheap PageEngine, rp RenderPolicy) ([]ingestUnit, error) {
 	if !HavePoppler() {
 		pages, err := Pagify(pdfPath, "")
 		if err != nil {
@@ -406,13 +406,13 @@ func pdfUnits(ctx context.Context, pdfPath string, canOCR bool, cheap PageEngine
 		if err != nil {
 			return nil, err
 		}
-		u := ingestUnit{page: page, mime: mime, data: img, dpi: baseRenderDPI}
+		u := ingestUnit{page: page, mime: mime, data: img, dpi: rp.resolved().BaseDPI}
 		// A page whose own text is too small to read at 200 is re-rendered
 		// larger, once, before any reader sees it. The measurement costs about a
 		// second and is the cheap engine's; without one the base resolution
 		// stands, because guessing at the size of text nothing has measured is
 		// how 200 became a constant in the first place.
-		if dpi := renderDPIFor(ctx, cheap, PageImage{Page: page, Mime: mime, Data: img}); dpi > baseRenderDPI {
+		if dpi := renderDPIFor(ctx, cheap, PageImage{Page: page, Mime: mime, Data: img}, rp); dpi > rp.resolved().BaseDPI {
 			if big, bmime, berr := pdftoppmPageAt(ctx, pdfPath, page, dpi); berr == nil {
 				u.mime, u.data, u.dpi = bmime, big, dpi
 			}
@@ -485,6 +485,15 @@ func cheapOf(o *OCR) PageEngine {
 	return o.Cheap
 }
 
+// renderOf is cheapOf for the resolution policy: nil-safe, so a path with no
+// OCR configured still gets the defaults rather than a zero DPI.
+func renderOf(o *OCR) RenderPolicy {
+	if o == nil {
+		return RenderPolicy{}
+	}
+	return o.Render
+}
+
 // renderDPIFor picks a page's render resolution from the size of its own text.
 //
 // The measurement is tesseract's, and costs a second: its word boxes give glyph
@@ -495,24 +504,25 @@ func cheapOf(o *OCR) PageEngine {
 // Returns baseRenderDPI when the text is ordinary, when tesseract is not
 // configured, or when it finds nothing to measure. A page with no legible text
 // at 200 is not helped by guessing.
-func renderDPIFor(ctx context.Context, eng PageEngine, img PageImage) int {
+func renderDPIFor(ctx context.Context, eng PageEngine, img PageImage, rp RenderPolicy) int {
+	p := rp.resolved()
 	if eng == nil {
-		return baseRenderDPI
+		return p.BaseDPI
 	}
 	po, err := eng.OCRPage(ctx, img)
 	if err != nil || po.BoxCount == 0 || len(po.Lines) == 0 {
-		return baseRenderDPI
+		return p.BaseDPI
 	}
 	med := po.MedianGlyphPx
-	if med <= 0 || med >= smallTextGlyphPx {
-		return baseRenderDPI
+	if med <= 0 || med >= p.SmallTextGlyphPx {
+		return p.BaseDPI
 	}
-	dpi := baseRenderDPI * targetGlyphPx / med
-	if dpi > maxRenderDPI {
-		dpi = maxRenderDPI
+	dpi := p.BaseDPI * p.TargetGlyphPx / med
+	if dpi > p.MaxDPI {
+		dpi = p.MaxDPI
 	}
-	if dpi < baseRenderDPI {
-		dpi = baseRenderDPI
+	if dpi < p.BaseDPI {
+		dpi = p.BaseDPI
 	}
 	return dpi
 }
@@ -564,7 +574,7 @@ type PageText struct {
 func ExtractPaged(ctx context.Context, path string, ocr *OCR) ([]PageText, error) {
 	switch ClassifyDoc(path, "") {
 	case KindPDF:
-		units, err := pdfUnits(ctx, path, ocr != nil, cheapOf(ocr))
+		units, err := pdfUnits(ctx, path, ocr != nil, cheapOf(ocr), renderOf(ocr))
 		if err != nil {
 			return nil, err
 		}

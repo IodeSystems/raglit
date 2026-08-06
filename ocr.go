@@ -46,8 +46,15 @@ type OCR struct {
 	//
 	// Written to be read by a person mid-investigation, not parsed.
 	Trace io.Writer
-	Cheap PageEngine      // optional cheap first pass; nil → VLM-only
-	Gate  GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
+
+	// Render is the automatic per-page resolution policy. Zero → the measured
+	// package defaults, which is what every page got when these were constants.
+	// Carried on OCR rather than passed down because OCR is already threaded to
+	// every extract path, and a policy that has to be plumbed separately is one
+	// that will be plumbed to some paths and not others.
+	Render RenderPolicy
+	Cheap  PageEngine      // optional cheap first pass; nil → VLM-only
+	Gate   GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
 	// DescribeFigures is the FIGURE gate (§3a): a born-digital PDF page carrying an
 	// embedded image is rasterized to the VLM even when its text layer is clean, so
 	// its diagrams get described. Orthogonal to the gibberish gate (which judges

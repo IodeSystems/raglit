@@ -142,6 +142,15 @@ type IndexConfig struct {
 	// they are originals that travelled inside an envelope, not derived output —
 	// so the next `sync` picks them up as ordinary files.
 	ExtractEmailAttachments bool `json:"extract_email_attachments,omitempty"`
+	// OCRStrategy names an entry in OCRConfig.Strategies. Empty → the project's
+	// OCR.Strategy, else today's behavior.
+	//
+	// Per index because that is the grain at which document KIND is already
+	// declared here: `records/` is recorded surveys and `correspondence/` is
+	// letters, and they want different amounts of work per page. Attaching the
+	// policy to the corpus rather than to the command is the whole point — a
+	// strategy retyped as a flag is one that gets forgotten.
+	OCRStrategy string `json:"ocr_strategy,omitempty"`
 }
 
 // Root is a source directory, optionally with its own include/ignore overriding
@@ -196,6 +205,119 @@ type OCRConfig struct {
 	// A corpus where a misread digit is expensive wants "assist"; a corpus where
 	// throughput matters more than a certificate number wants "cascade".
 	Mode string `json:"mode,omitempty"`
+
+	// Strategies are named bundles of read policy, selectable per index via
+	// IndexConfig.OCRStrategy. They exist because one corpus is not one kind of
+	// page: a records/ folder of recorded surveys wants descent, tiling and a
+	// hint about monument calls, while correspondence/ wants none of it and
+	// should not pay for the check. Before this the knobs lived only on
+	// `raglit regions` flags, so a policy could not be attached to a corpus at
+	// all — it had to be retyped per invocation and was forgotten by the next.
+	Strategies map[string]StrategyConfig `json:"strategies,omitempty"`
+
+	// Strategy names the default for indexes that do not choose one. Empty means
+	// the zero StrategyConfig, which is today's behavior exactly.
+	Strategy string `json:"strategy,omitempty"`
+}
+
+// StrategyConfig is how much work a page is worth.
+//
+// Every field is zero-valued to today's behavior, so adding this section changes
+// nothing until something is set. That matters more than brevity here: this
+// governs model spend, and a config format whose defaults are not the current
+// behavior turns an upgrade into a bill.
+type StrategyConfig struct {
+	// Descend is RegionReader.MaxDepth. 0 reads the sheet and stops, which is
+	// what every page does today.
+	Descend int `json:"descend,omitempty"`
+	// Tile subdivides a large low-resolution DRAWING geometrically instead of
+	// asking the model where to look — arithmetic instead of a call, and on an
+	// E-size sheet the asking is the part that does not work.
+	Tile bool `json:"tile,omitempty"`
+	// Hint is threaded into every prompt. Cheapest lever here by a distance: the
+	// model proposing regions is looking at a view where the thing you want may
+	// be physically unresolvable, so it cannot propose what it cannot see. A
+	// sentence naming the target beats any amount of extra budget.
+	Hint string `json:"hint,omitempty"`
+
+	// Budgets. Zero → RegionReader's own defaults (8 / 2 / 40 / 4).
+	MaxCalls       int     `json:"max_calls,omitempty"`
+	MaxChildren    int     `json:"max_children,omitempty"`
+	MaxTransforms  int     `json:"max_transforms,omitempty"`
+	MaxEscalations int     `json:"max_escalations,omitempty"`
+	MinRegionIn    float64 `json:"min_region_in,omitempty"`
+
+	// Render overrides the automatic per-page resolution policy.
+	Render RenderPolicy `json:"render,omitempty"`
+
+	// AutoDescend descends WITHOUT being asked, but only for a page the pixels
+	// say needs it: the same low-resolution test the descent already applies
+	// internally (below half the letter-page token density). Measured over a 998
+	// page corpus that is 14 pages in 11 documents — 1.4% — so it is affordable
+	// in a way "descend everything" is not, and it targets exactly the sheets a
+	// single-shot read fails on. Off by default; Descend still bounds it.
+	AutoDescend bool `json:"auto_descend,omitempty"`
+}
+
+// RenderPolicy is the automatic per-page resolution rule, which was four package
+// constants and therefore the one thing here that genuinely required a rebuild
+// to change.
+//
+// The rule: measure the page's own glyph height with the cheap engine, and if it
+// is below SmallTextGlyphPx re-render at whatever DPI brings it to
+// TargetGlyphPx, capped at MaxDPI. Zero fields keep the measured defaults —
+// 200/600/20/14 — which were chosen on this corpus and should not be moved
+// casually. Raising TargetGlyphPx costs tokens on every small-text page.
+type RenderPolicy struct {
+	BaseDPI          int `json:"base_dpi,omitempty"`            // 0 → 200
+	MaxDPI           int `json:"max_dpi,omitempty"`             // 0 → 600
+	TargetGlyphPx    int `json:"target_glyph_px,omitempty"`     // 0 → 20
+	SmallTextGlyphPx int `json:"small_text_glyph_px,omitempty"` // 0 → 14
+}
+
+// resolved fills a RenderPolicy's zero fields with the package defaults, so
+// callers never branch on "was this set".
+func (r RenderPolicy) resolved() RenderPolicy {
+	if r.BaseDPI <= 0 {
+		r.BaseDPI = baseRenderDPI
+	}
+	if r.MaxDPI <= 0 {
+		r.MaxDPI = maxRenderDPI
+	}
+	if r.TargetGlyphPx <= 0 {
+		r.TargetGlyphPx = targetGlyphPx
+	}
+	if r.SmallTextGlyphPx <= 0 {
+		r.SmallTextGlyphPx = smallTextGlyphPx
+	}
+	return r
+}
+
+// StrategyFor resolves the read policy for one index: the index's own choice,
+// else the project default, else the zero value (today's behavior).
+//
+// An index naming a strategy that does not exist gets the zero value rather than
+// an error, and that is deliberate — a typo'd strategy name must not stop an
+// ingest, and the alternative (silently using the default strategy) would hide
+// the typo behind plausible output. Callers that want to complain can check
+// StrategyNamed.
+func (c Config) StrategyFor(index string) StrategyConfig {
+	if ic, ok := c.Indexes[index]; ok && ic.OCRStrategy != "" {
+		s, _ := c.StrategyNamed(ic.OCRStrategy)
+		return s
+	}
+	s, _ := c.StrategyNamed(c.OCR.Strategy)
+	return s
+}
+
+// StrategyNamed looks a strategy up by name. ok=false for an empty or unknown
+// name, in which case the zero StrategyConfig is returned.
+func (c Config) StrategyNamed(name string) (StrategyConfig, bool) {
+	if name == "" {
+		return StrategyConfig{}, false
+	}
+	s, ok := c.OCR.Strategies[name]
+	return s, ok
 }
 
 // LoadConfig reads the home's config. exists is false (with nil error) when the

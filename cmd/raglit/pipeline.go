@@ -87,6 +87,15 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home) {
 		return
 	}
 	ocr.DescribeFigures = cfg.OCR.DescribeFigures
+	// The project's default strategy supplies the resolution policy. Set before
+	// the engine build and outside the eng != nil guard, because BaseDPI governs
+	// even when nothing can measure glyph height — that is the branch
+	// renderDPIFor takes with a nil engine.
+	//
+	// PROJECT default, not per-index: this is built once per command, and the
+	// index a document belongs to is not known here. Threading it is what the
+	// per-index `ocr_strategy` still needs to take effect on the ingest path.
+	ocr.Render = cfg.StrategyFor("").Render
 	eng, err := raglit.BuildPageEngine(cfg.OCR)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "raglit: %v — OCR falling back to vision-only\n", err)
