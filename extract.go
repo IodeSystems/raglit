@@ -7,10 +7,12 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -407,12 +409,27 @@ func pdfUnits(ctx context.Context, pdfPath string, canOCR bool, cheap PageEngine
 			return nil, err
 		}
 		u := ingestUnit{page: page, mime: mime, data: img, dpi: rp.resolved().BaseDPI}
+		areaSqIn := pageAreaSqIn(ctx, pdfPath, page)
 		// A page whose own text is too small to read at 200 is re-rendered
 		// larger, once, before any reader sees it. The measurement costs about a
 		// second and is the cheap engine's; without one the base resolution
 		// stands, because guessing at the size of text nothing has measured is
 		// how 200 became a constant in the first place.
-		if dpi := renderDPIFor(ctx, cheap, PageImage{Page: page, Mime: mime, Data: img}, rp); dpi > rp.resolved().BaseDPI {
+		// The glyph measurement says what the TEXT needs; ChooseDPI then applies the
+		// two bounds it cannot see. Native matters most here and is a hard stop: the
+		// whole records corpus is 200 DPI scans, so a glyph-derived 400 would have
+		// rendered a 158 megapixel interpolation of a 39 megapixel original — four
+		// times the raster cost for zero additional glyphs.
+		need := renderDPIFor(ctx, cheap, PageImage{Page: page, Mime: mime, Data: img}, rp)
+		dec := ChooseDPI(need, areaSqIn, NativeDPI(ctx, pdfPath, page), DefaultMaxImageTokens, rp)
+		if dec.Tiles > 1 {
+			// Recorded, not acted on: pdfUnits produces whole pages, and cutting one
+			// up is the region reader's job. Saying it here is what makes an
+			// unreadable page diagnosable instead of merely disappointing.
+			slog.Debug("page exceeds the encoder's whole-sheet budget",
+				"pdf", pdfPath, "page", page, "decision", dec.String())
+		}
+		if dpi := dec.DPI; dpi > rp.resolved().BaseDPI {
 			if big, bmime, berr := pdftoppmPageAt(ctx, pdfPath, page, dpi); berr == nil {
 				u.mime, u.data, u.dpi = bmime, big, dpi
 			}
@@ -980,4 +997,31 @@ func xlsxPages(path string) ([]PageText, error) {
 		})
 	}
 	return pages, nil
+}
+
+// pageAreaSqIn is the sheet's physical size, which is the input the encoder's
+// budget actually depends on — a 27x36.7in survey and a letter page cost the
+// same per square inch and differ by a factor of ten in total.
+//
+// 0 when poppler cannot say, which ChooseDPI treats as "no area bound" rather
+// than as a zero-area page.
+func pageAreaSqIn(ctx context.Context, pdfPath string, page int) float64 {
+	out, err := exec.CommandContext(ctx, "pdfinfo",
+		"-f", strconv.Itoa(page), "-l", strconv.Itoa(page), pdfPath).Output()
+	if err != nil {
+		return 0
+	}
+	m := regexp.MustCompile(`Page +\d+ size: +([0-9.]+) x ([0-9.]+) pts`).FindSubmatch(out)
+	if m == nil {
+		m = regexp.MustCompile(`Page size: +([0-9.]+) x ([0-9.]+) pts`).FindSubmatch(out)
+	}
+	if m == nil {
+		return 0
+	}
+	w, err1 := strconv.ParseFloat(string(m[1]), 64)
+	h, err2 := strconv.ParseFloat(string(m[2]), 64)
+	if err1 != nil || err2 != nil {
+		return 0
+	}
+	return (w / 72) * (h / 72)
 }
