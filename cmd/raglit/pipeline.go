@@ -215,6 +215,8 @@ func runOcr(args []string) error {
 		"report what the read DID on stderr: cheap tier, assist, tools offered, downscales, timing")
 	strategy := fs.String("strategy", "",
 		"force a named ocr.strategies entry; empty → the project default (and, once detection lands, whatever the page measures as)")
+	traceDir := fs.String("trace", "",
+		"write a machine-readable run record to DIR/log.jsonl: one JSON object per interaction, with the image sha, pixel size, estimated image tokens and the transforms applied")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("ocr: no image files given")
@@ -230,6 +232,17 @@ func runOcr(args []string) error {
 	ocr := raglit.NewOCR(lf.visionClient())
 	ocr.Model = *lf.visionModel
 	attachCheapOCR(ocr, home, *strategy)
+	// --trace is INDEPENDENT of --verbose: one is prose for a person watching,
+	// the other is a record to diff and join on later. Asking for the record
+	// should not also flood the terminal.
+	if *traceDir != "" {
+		f, err := openTraceLog(*traceDir)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		ocr.TraceJSONL = f
+	}
 	if *verbose {
 		// stderr, so a verbose run still pipes its transcription cleanly.
 		ocr.Trace = os.Stderr
@@ -433,4 +446,21 @@ func correctionsFor(js *raglit.JudgementStore, path string) map[int]raglit.PageC
 		return nil
 	}
 	return c
+}
+
+// openTraceLog creates dir and opens dir/log.jsonl for APPEND.
+//
+// Append, not truncate, so several runs into one directory accumulate instead of
+// the last one erasing the comparison — which is the whole reason to keep a
+// record. Each line already carries its own model and timestamp, so a mixed file
+// separates by filtering rather than by having been kept apart.
+func openTraceLog(dir string) (*os.File, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("trace dir: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "log.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("trace log: %w", err)
+	}
+	return f, nil
 }

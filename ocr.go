@@ -6,6 +6,9 @@ import (
 	"image/png"
 
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	xdraw "golang.org/x/image/draw"
 	"regexp"
@@ -53,8 +56,23 @@ type OCR struct {
 	// every extract path, and a policy that has to be plumbed separately is one
 	// that will be plumbed to some paths and not others.
 	Render RenderPolicy
-	Cheap  PageEngine      // optional cheap first pass; nil → VLM-only
-	Gate   GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
+
+	// TraceJSONL, when non-nil, receives ONE JSON OBJECT PER LINE describing each
+	// interaction and the transforms applied to it.
+	//
+	// Separate from Trace rather than a format flag on it, because the two answer
+	// to different readers. Trace is prose for a person mid-investigation; this is
+	// for diffing two runs, joining a failure to the exact bytes that produced it,
+	// and counting what happened across a corpus — none of which survives being
+	// parsed back out of a sentence.
+	//
+	// Every event carries img_sha (first 12 hex of the image bytes), and that is
+	// what makes a line joinable: the same crop at the same scale has the same sha
+	// across models and runs, so "these two models disagreed on THIS image" is a
+	// join rather than a reconstruction.
+	TraceJSONL io.Writer
+	Cheap      PageEngine      // optional cheap first pass; nil → VLM-only
+	Gate       GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
 	// DescribeFigures is the FIGURE gate (§3a): a born-digital PDF page carrying an
 	// embedded image is rasterized to the VLM even when its text layer is clean, so
 	// its diagrams get described. Orthogonal to the gibberish gate (which judges
@@ -115,7 +133,13 @@ func (o *OCR) PageWithEngine(ctx context.Context, img PageImage) (text, engine s
 // every other caller wants the text and the engine and nothing else.
 func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine string, shrinks int, err error) {
 	started := time.Now()
+	sha := imgSHA(img.Data)
+	w, h := imgDims(img.Data)
 	o.tracef("page %d: %d bytes of %s, model %q", img.Page, len(img.Data), img.Mime, o.Model)
+	o.event("page.start", map[string]any{
+		"page": img.Page, "bytes": len(img.Data), "mime": img.Mime, "img_sha": sha,
+		"px_w": w, "px_h": h, "tokens_est": tokensFor(w, h),
+	})
 	assist := ""
 	if o.Cheap == nil {
 		o.tracef("cheap tier: none configured — every page goes to the VLM (ocr.cheap_engine)")
@@ -124,11 +148,20 @@ func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine strin
 		if po, cerr := o.Cheap.OCRPage(ctx, img); cerr == nil {
 			o.tracef("cheap tier: %s read %d chars, mean confidence %.2f, %d boxes, median glyph %dpx",
 				o.Cheap.Name(), len(po.Text), po.MeanConfidence, po.BoxCount, po.MedianGlyphPx)
+			o.event("cheap.read", map[string]any{
+				"img_sha": sha, "engine": o.Cheap.Name(), "chars": len(po.Text),
+				"mean_confidence": po.MeanConfidence, "boxes": po.BoxCount,
+				"median_glyph_px": po.MedianGlyphPx,
+			})
 			if o.Assist {
 				assist = spellingAssist(po.Text)
 				o.tracef("assist: ON — %d chars of digit-masked words appended to the prompt", len(assist))
 			} else if gib, _ := o.Gate.IsGibberish(po); !gib {
 				o.tracef("cascade: cheap result accepted, VLM not called")
+				o.event("cascade.accept", map[string]any{
+					"img_sha": sha, "engine": o.Cheap.Name(), "chars": len(po.Text),
+					"duration_ms": time.Since(started).Milliseconds(),
+				})
 				// Cascade mode: a non-gibberish result (including a legitimately
 				// empty page) is trusted — do not pay the VLM for clean or blank
 				// pages. The cheap engine reads the image as given; nothing was
@@ -143,10 +176,21 @@ func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine strin
 	t, n, verr := o.visionPage(ctx, img, assist)
 	if verr != nil {
 		o.tracef("vision: FAILED after %s: %v", time.Since(started).Round(time.Millisecond), verr)
+		o.event("vision.error", map[string]any{
+			"img_sha": sha, "err": verr.Error(),
+			"duration_ms": time.Since(started).Milliseconds(),
+		})
 		return "", "", 0, verr
 	}
 	o.tracef("vision: %d chars, %d context downscale(s), %s total",
 		len(t), n, time.Since(started).Round(time.Millisecond))
+	// downscales is the TRANSFORM record for this path: how many times the image
+	// was halved to fit the context before the model saw it. A read that
+	// disagrees with another run usually differs here first.
+	o.event("vision.read", map[string]any{
+		"img_sha": sha, "chars": len(t), "downscales": n, "assist": assist != "",
+		"duration_ms": time.Since(started).Milliseconds(),
+	})
 	return t, "vision", n, nil
 }
 
@@ -156,6 +200,56 @@ func (o *OCR) tracef(format string, a ...any) {
 		return
 	}
 	fmt.Fprintf(o.Trace, "  ocr | "+format+"\n", a...)
+}
+
+// event writes one JSONL record. A no-op when TraceJSONL is nil, and it never
+// returns an error: a trace that can fail an ingest is worse than no trace.
+func (o *OCR) event(kind string, kv map[string]any) {
+	if o.TraceJSONL == nil {
+		return
+	}
+	if kv == nil {
+		kv = map[string]any{}
+	}
+	kv["kind"] = kind
+	kv["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
+	if _, ok := kv["model"]; !ok && o.Model != "" {
+		kv["model"] = o.Model
+	}
+	b, err := json.Marshal(kv)
+	if err != nil {
+		return
+	}
+	o.TraceJSONL.Write(append(b, '\n'))
+}
+
+// imgDims reads pixel dimensions from the image HEADER only — no full decode,
+// so it costs nothing worth measuring on a 15 MP page.
+func imgDims(b []byte) (int, int) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(b))
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
+}
+
+// tokensFor is the image cost a Qwen-VL-family encoder charges: one token per
+// 32x32 px block (patch 16, spatial merge 2). Recorded because it is the number
+// that explains most read failures — a region holding 241 of a page's 14609
+// tokens is not going to be read, and no prompt fixes that. Measured against
+// llama.cpp within 1% at both 200 and 400 DPI.
+func tokensFor(w, h int) int {
+	if w <= 0 || h <= 0 {
+		return 0
+	}
+	return (w * h) / (32 * 32)
+}
+
+// imgSHA identifies an image by its bytes. Twelve hex characters is enough to
+// join a corpus run without making a line unreadable.
+func imgSHA(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:6])
 }
 
 // visionPage is the VLM transcription: agentkit's multimodal llm.Message — a
