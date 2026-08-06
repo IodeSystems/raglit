@@ -78,7 +78,11 @@ const visionRetry5xxAttempts = 9
 // attachCheapOCR enables the cascade's cheap first-pass engine on an OCR from the
 // home's config (config.OCR). A misconfigured engine degrades to VLM-only with a
 // warning rather than failing — a bad OCR knob must not break ingestion.
-func attachCheapOCR(ocr *raglit.OCR, home raglit.Home) {
+// strategy names an ocr.strategies entry to use instead of the project default.
+// Empty → the project default. An unknown name is REPORTED and then ignored:
+// silently falling back would make a typo look like a strategy that had no
+// effect, which is indistinguishable from one that did nothing on purpose.
+func attachCheapOCR(ocr *raglit.OCR, home raglit.Home, strategy string) {
 	if ocr == nil {
 		return
 	}
@@ -95,7 +99,16 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home) {
 	// PROJECT default, not per-index: this is built once per command, and the
 	// index a document belongs to is not known here. Threading it is what the
 	// per-index `ocr_strategy` still needs to take effect on the ingest path.
-	ocr.Render = cfg.StrategyFor("").Render
+	st := cfg.StrategyFor("")
+	if strategy != "" {
+		named, ok := cfg.StrategyNamed(strategy)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "raglit: no ocr strategy named %q — using the project default\n", strategy)
+		} else {
+			st = named
+		}
+	}
+	ocr.Render = st.Render
 	eng, err := raglit.BuildPageEngine(cfg.OCR)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "raglit: %v — OCR falling back to vision-only\n", err)
@@ -200,6 +213,8 @@ func runOcr(args []string) error {
 	homeFlag := fs.String("home", "", "config home dir (for defaults)")
 	verbose := fs.Bool("verbose", false,
 		"report what the read DID on stderr: cheap tier, assist, tools offered, downscales, timing")
+	strategy := fs.String("strategy", "",
+		"force a named ocr.strategies entry; empty → the project default (and, once detection lands, whatever the page measures as)")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("ocr: no image files given")
@@ -214,7 +229,7 @@ func runOcr(args []string) error {
 	}
 	ocr := raglit.NewOCR(lf.visionClient())
 	ocr.Model = *lf.visionModel
-	attachCheapOCR(ocr, home)
+	attachCheapOCR(ocr, home, *strategy)
 	if *verbose {
 		// stderr, so a verbose run still pipes its transcription cleanly.
 		ocr.Trace = os.Stderr
@@ -301,7 +316,7 @@ func runTranscribe(args []string) error {
 	if lf.requireVision() == nil {
 		ocr = raglit.NewOCR(lf.visionClient())
 		ocr.Model = *lf.visionModel
-		attachCheapOCR(ocr, home)
+		attachCheapOCR(ocr, home, "")
 	}
 
 	// Corrections are re-issued into every render. A page a person checked stays

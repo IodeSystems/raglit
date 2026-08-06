@@ -136,7 +136,7 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		// Recorded on every page this reads, so a transcription says which model
 		// produced it (page_readings.model) rather than only "machine".
 		w.OCR.Model = *lf.visionModel
-		attachCheapOCR(w.OCR, home)
+		attachCheapOCR(w.OCR, home, "")
 		// Only used when a page escalates to the VLM (llm-seg); text never does.
 		w.Segmenter = raglit.NewSegmenter(client)
 	}

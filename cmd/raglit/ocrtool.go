@@ -94,7 +94,7 @@ func buildToolOCR(lf *llmFlags, home raglit.Home) *raglit.OCR {
 	if *lf.visionModel != "" {
 		ocr.Client = lf.visionClient()
 	}
-	attachCheapOCR(ocr, home)
+	attachCheapOCR(ocr, home, "")
 	return ocr
 }
 
