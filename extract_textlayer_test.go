@@ -69,3 +69,31 @@ func TestPDFUnits_FallsBackToTheTextLayerWithNoOCR(t *testing.T) {
 		t.Fatalf("units = %+v, want one text unit", units)
 	}
 }
+
+// A page that fails must not take the document with it. Measured 2026-08-06: a
+// looping bearing table on page 2 of a survey discarded page 1, which had
+// already read perfectly — 7/17 on the bench instead of ~12/17.
+func TestOnePageFailureDoesNotLoseTheDocument(t *testing.T) {
+	pages := []PageText{
+		{Page: 1, Text: "GOOD PAGE", Engine: "vision"},
+		{Page: 2, Engine: "failed", Err: "the model repeated a 119-character block"},
+	}
+	if allFailed(pages) {
+		t.Error("one failed page among readable ones is not a failed document")
+	}
+	// A page that failed must be distinguishable from a blank one.
+	if pages[1].Err == "" {
+		t.Error("a failed page must carry its reason")
+	}
+	if pages[1].Text != "" {
+		t.Error("a failed page must not present text it does not have")
+	}
+	// Every page failing IS a failure — otherwise an empty document reports success.
+	if !allFailed([]PageText{{Page: 1, Engine: "failed", Err: "x"}}) {
+		t.Error("a document where nothing read must fail")
+	}
+	// A legitimately blank page has no Err and must not count as failed.
+	if allFailed([]PageText{{Page: 1, Text: "", Engine: "vision"}}) {
+		t.Error("a blank page is not a failed page")
+	}
+}

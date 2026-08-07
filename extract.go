@@ -521,14 +521,18 @@ func renderOf(o *OCR) RenderPolicy {
 // Returns baseRenderDPI when the text is ordinary, when tesseract is not
 // configured, or when it finds nothing to measure. A page with no legible text
 // at 200 is not helped by guessing.
+// Returns 0 for "no measurement" so ChooseDPI can fall back to what IS known —
+// the scan's native resolution — instead of to a constant. Returning BaseDPI
+// here is what made the whole policy inert wherever no cheap engine is
+// configured.
 func renderDPIFor(ctx context.Context, eng PageEngine, img PageImage, rp RenderPolicy) int {
 	p := rp.resolved()
 	if eng == nil {
-		return p.BaseDPI
+		return 0
 	}
 	po, err := eng.OCRPage(ctx, img)
 	if err != nil || po.BoxCount == 0 || len(po.Lines) == 0 {
-		return p.BaseDPI
+		return 0
 	}
 	med := po.MedianGlyphPx
 	if med <= 0 || med >= p.SmallTextGlyphPx {
@@ -581,6 +585,12 @@ type PageText struct {
 	Page   int
 	Text   string
 	Engine string
+	// Err records why THIS page has no text, when it failed on its own.
+	//
+	// A page that fails is not a blank page, and the difference has to survive:
+	// downstream, an empty Text with no Err is a legitimately blank sheet, and an
+	// empty Text with an Err is a hole that somebody should come back to.
+	Err string
 }
 
 // ExtractPaged extracts a document to paged text — the `ocr` MCP tool's core.
@@ -649,11 +659,46 @@ func unitsToPageText(ctx context.Context, units []ingestUnit, ocr *OCR) ([]PageT
 		}
 		text, engine, err := ocr.PageWithEngine(ctx, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
 		if err != nil {
-			return nil, err
+			// SALVAGE. This used to return nil and lose the document, which on a
+			// two-page survey meant one looping bearing table discarded a page
+			// that had already read perfectly — measured 2026-08-06: chandra
+			// scored 7/17 instead of ~12/17 because page 1 went with page 2.
+			//
+			// A page failing is a fact about that page. Record it and keep going;
+			// a partial document is worth having and a hole that names itself can
+			// be re-read later. Only a document where NOTHING read is a failure.
+			out = append(out, PageText{Page: u.page, Engine: "failed", Err: err.Error()})
+			continue
 		}
 		out = append(out, PageText{Page: u.page, Text: text, Engine: engine})
 	}
+	if allFailed(out) {
+		return nil, fmt.Errorf("every page failed to read: %s", firstErr(out))
+	}
 	return out, nil
+}
+
+// allFailed reports whether no page produced any text. A document of nothing but
+// holes is a failure; one hole among readable pages is not.
+func allFailed(pages []PageText) bool {
+	if len(pages) == 0 {
+		return false
+	}
+	for _, p := range pages {
+		if p.Err == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func firstErr(pages []PageText) string {
+	for _, p := range pages {
+		if p.Err != "" {
+			return p.Err
+		}
+	}
+	return ""
 }
 
 // ExtForContentType maps a content type to a file extension for materializing

@@ -19,12 +19,6 @@ import (
 	"time"
 )
 
-// defaultOCRPrompt asks for a faithful transcription and nothing else — no
-// summary, no markdown fences — so the indexed text is the page's words, not
-// the model's commentary.
-const defaultOCRPrompt = "Transcribe all text visible in this document page image exactly as it appears, " +
-	"preserving reading order and line breaks. Output ONLY the transcription: no commentary, no headings you add yourself, no markdown code fences."
-
 // OCR transcribes page images to text. It runs a CASCADE: an optional cheap
 // first-pass engine (tesseract / paddleocr), gated by a gibberish detector, and
 // falls back to a vision-capable chat model (e.g. gemma-4-12b on bonsai, via
@@ -38,7 +32,7 @@ type OCR struct {
 	// cannot be told from one a different model produced, and a corpus outlives
 	// several models.
 	Model  string
-	Prompt string // transcription instruction; "" → defaultOCRPrompt
+	Prompt string // transcription instruction; "" → Prompt(PromptPlain)
 	// Trace, when non-nil, receives one line per decision this OCR takes.
 	//
 	// It exists because nothing else reports what a call DID. `raglit doctor`
@@ -71,8 +65,17 @@ type OCR struct {
 	// across models and runs, so "these two models disagreed on THIS image" is a
 	// join rather than a reconstruction.
 	TraceJSONL io.Writer
-	Cheap      PageEngine      // optional cheap first pass; nil → VLM-only
-	Gate       GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
+
+	// TraceCtx is merged into every event this OCR emits. The region walk sets it
+	// per call — doc, page, region, tokens/in² — so a line in the log says WHICH
+	// crop it describes rather than only which image sha.
+	//
+	// A field rather than a parameter because the walk already swaps o.Prompt per
+	// call and restores it after; carrying the context the same way keeps the two
+	// in step, and there is no path where one is set and the other is not.
+	TraceCtx map[string]any
+	Cheap    PageEngine      // optional cheap first pass; nil → VLM-only
+	Gate     GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
 	// DescribeFigures is the FIGURE gate (§3a): a born-digital PDF page carrying an
 	// embedded image is rasterized to the VLM even when its text layer is clean, so
 	// its diagrams get described. Orthogonal to the gibberish gate (which judges
@@ -211,6 +214,11 @@ func (o *OCR) event(kind string, kv map[string]any) {
 	if kv == nil {
 		kv = map[string]any{}
 	}
+	for k, v := range o.TraceCtx {
+		if _, taken := kv[k]; !taken {
+			kv[k] = v
+		}
+	}
 	kv["kind"] = kind
 	kv["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
 	if _, ok := kv["model"]; !ok && o.Model != "" {
@@ -264,7 +272,7 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (str
 	}
 	prompt := o.Prompt
 	if prompt == "" {
-		prompt = defaultOCRPrompt
+		prompt = Prompt(PromptPlain)
 	}
 	// While the VLM is transcribing, have it also DESCRIBE figures inline (§3a):
 	// the description lands in the page text, flows into fragments, and indexes as

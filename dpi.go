@@ -76,7 +76,8 @@ type DPIDecision struct {
 	CapDPI    int     // what the token budget allowed
 	NativeDPI int     // what the source holds (0 = unknown)
 	NeedDPI   int     // what the glyph measurement asked for
-	Tiles     int     // pieces required to show every pixel at DPI
+	WantDPI   int     // the resolution asked for, BEFORE the cap
+	Tiles     int     // canvases needed to deliver WantDPI
 	Density   float64 // tokens/sq in delivered at DPI
 }
 
@@ -91,28 +92,47 @@ func ChooseDPI(needDPI int, areaSqIn float64, nativeDPI, maxTokens int, p Render
 		maxTokens = DefaultMaxImageTokens
 	}
 	d := DPIDecision{NeedDPI: needDPI, NativeDPI: nativeDPI, Reason: "base", DPI: rp.BaseDPI}
-	if needDPI > 0 {
+	switch {
+	case needDPI > 0:
 		d.DPI, d.Reason = needDPI, "need"
+	case nativeDPI > 0:
+		// NO GLYPH MEASUREMENT. The old fallback was BaseDPI, which made the
+		// whole policy inert wherever no cheap engine is configured — measured
+		// on this corpus, that is everywhere, so every page rendered at 200
+		// whatever its scan held. But native and cap are known WITHOUT any OCR
+		// engine, and both are better information than a constant: a 960 DPI
+		// scan of a survey certificate read at 200 loses the certificate.
+		d.DPI, d.Reason = nativeDPI, "native-fallback"
 	}
 	if d.DPI > rp.MaxDPI {
 		d.DPI = rp.MaxDPI
 	}
+	// What the content asked for, before the encoder's ceiling is applied. Tiles
+	// are counted against THIS, not against the capped render: the cap is what
+	// one canvas can show, and tiles are how many canvases the wanted detail
+	// needs. Counting them at the capped DPI always yields 1 — that is what the
+	// cap means — which would say "no tiles needed" about the very sheet that
+	// cannot be read whole.
+	d.WantDPI = d.DPI
 	d.CapDPI = DPICapForArea(areaSqIn, maxTokens)
-	// The cap does NOT clamp the render. Tiling is the answer to an oversized
-	// sheet, and clamping here would silently hand the reader a page below the
-	// readable baseline while reporting success. Record it and let the caller
-	// decide — the root read is downscaled by the server either way, and the
-	// tiles cut from this raster are what the resolution is really for.
+	// APPLY the cap. It was recorded and not applied until 2026-08-06, on the
+	// argument that tiling is the answer to an oversized sheet and clamping
+	// would hand back a sub-baseline page. Measured, that was wrong: rendering
+	// ABOVE the cap is not merely wasteful, it is WORSE. The server halves an
+	// oversized image until it fits, and each pass costs detail — the same root
+	// read measured 9 tokens/in² rendered at 200 and 4 rendered at 400.
+	// Rendering past what the encoder accepts buys extra downscales, nothing
+	// else. Tiling is still the answer for an oversized sheet; it just is not an
+	// argument for rasterising past the ceiling first.
+	if d.CapDPI > 0 && d.DPI > d.CapDPI {
+		d.DPI, d.Reason = d.CapDPI, "cap"
+	}
 	if nativeDPI > 0 && d.DPI > nativeDPI {
-		// Past the scan's own resolution there is nothing to render. This is a
-		// hard stop, unlike the cap: interpolation costs tokens and delivers no
-		// glyphs, which is the one trade with no upside.
+		// Past the scan's own resolution there is nothing to render.
+		// Interpolation costs tokens and delivers no glyphs.
 		d.DPI, d.Reason = nativeDPI, "native"
 	}
-	if d.DPI < rp.BaseDPI && nativeDPI == 0 {
-		d.DPI = rp.BaseDPI
-	}
-	d.Tiles = TilesNeeded(areaSqIn, d.DPI, maxTokens)
+	d.Tiles = TilesNeeded(areaSqIn, d.WantDPI, maxTokens)
 	d.Density = TokensPerSqInAt(d.DPI)
 	return d
 }
@@ -152,6 +172,6 @@ func NativeDPI(ctx context.Context, pdfPath string, page int) int {
 
 // String renders a decision for a log line or a trace record.
 func (d DPIDecision) String() string {
-	return fmt.Sprintf("dpi=%d (%s; need=%d cap=%d native=%d) %.1f t/in² tiles=%d",
-		d.DPI, d.Reason, d.NeedDPI, d.CapDPI, d.NativeDPI, d.Density, d.Tiles)
+	return fmt.Sprintf("dpi=%d (%s; want=%d need=%d cap=%d native=%d) %.1f t/in² tiles=%d",
+		d.DPI, d.Reason, d.WantDPI, d.NeedDPI, d.CapDPI, d.NativeDPI, d.Density, d.Tiles)
 }

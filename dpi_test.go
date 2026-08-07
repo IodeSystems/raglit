@@ -67,21 +67,42 @@ func TestNativeResolutionIsAHardStop(t *testing.T) {
 	}
 }
 
-// The cap is RECORDED but must not clamp the render: tiling is the answer to an
-// oversized sheet. Clamping here would hand the reader a page below the readable
-// baseline while reporting success, which is the failure mode that made MOWRER
-// unreadable and looked like a model defect.
-func TestCapIsReportedNotApplied(t *testing.T) {
+// The cap IS applied. This reverses the original decision, on measurement:
+// rendering above what the encoder accepts is not merely wasteful, it is worse.
+// The server halves an oversized image until it fits, each pass costing detail —
+// the same root read measured 9 tokens/in² rendered at 200 and 4 at 400.
+// Tiling remains the answer for an oversized sheet; it is not an argument for
+// rasterising past the ceiling first.
+func TestCapIsApplied(t *testing.T) {
 	esize := 27 * 36.7
 	d := ChooseDPI(200, esize, 200, DefaultMaxImageTokens, RenderPolicy{})
-	if d.DPI != 200 {
-		t.Errorf("cap must not clamp the render, got dpi=%d", d.DPI)
-	}
-	if d.CapDPI != 130 {
-		t.Errorf("cap should be recorded as 130, got %d", d.CapDPI)
+	if d.DPI != 130 || d.Reason != "cap" {
+		t.Errorf("cap must clamp the render, got %+v", d)
 	}
 	if d.Tiles < 2 {
-		t.Errorf("an oversized sheet must ask for tiles, got %d", d.Tiles)
+		t.Errorf("an oversized sheet must still ask for tiles, got %d", d.Tiles)
+	}
+	// A page that fits is untouched by the cap.
+	if d := ChooseDPI(300, 8.5*11, 0, DefaultMaxImageTokens, RenderPolicy{}); d.DPI != 300 {
+		t.Errorf("a page under the cap must render at need, got %+v", d)
+	}
+}
+
+// No glyph measurement must fall back to what IS known — the scan's own
+// resolution — not to a constant. Returning BaseDPI here is what made the whole
+// policy inert: no cheap engine is configured on this corpus, so EVERY page
+// rendered at 200 whatever its scan held, and a 960 DPI survey certificate was
+// read at 200 and lost.
+func TestNativeFallbackWhenNothingMeasured(t *testing.T) {
+	// The ROS: 94 in² letter sheet scanned at 960, cap 423.
+	d := ChooseDPI(0, 8.5*11, 960, DefaultMaxImageTokens, RenderPolicy{})
+	if d.DPI != d.CapDPI || d.DPI < 400 {
+		t.Errorf("must rise to the cap on a high-native sheet, got %+v", d)
+	}
+	// With neither a measurement nor a native resolution there is nothing to go
+	// on, and the base is the honest answer.
+	if d := ChooseDPI(0, 8.5*11, 0, DefaultMaxImageTokens, RenderPolicy{}); d.DPI != baseRenderDPI {
+		t.Errorf("no information at all must yield the base, got %+v", d)
 	}
 }
 
