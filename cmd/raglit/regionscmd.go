@@ -37,6 +37,9 @@ func runRegions(args []string) error {
 	backfill := fs.Bool("backfill-damage", false, "measure the pixels of ALREADY-RECORDED regions and flag blurred/faded; no model calls")
 	apply := fs.Bool("apply", false, "with --backfill-damage, write the flags back (default is to report only)")
 	quiet := fs.Bool("quiet", false, "with --backfill-damage, only the summary")
+	traceDir := fs.String("trace", "",
+		"write a machine-readable record to DIR/log.jsonl: one JSON object per model call, "+
+			"tagged with the document, page, region id, depth and tokens/in² it was reading")
 	verbose := fs.Bool("verbose", false,
 		"report every TURN on stderr: what was read, what it proposed, what was routed to a descent "+
 			"or a transform, what tiled, what escalated and what the parent answered")
@@ -83,9 +86,21 @@ func runRegions(args []string) error {
 	if *verbose {
 		ocr.Trace = os.Stderr
 	}
+	// Independent of --verbose, and of --json: the tree on stdout says where the
+	// walk ARRIVED, this says what every call did on the way. A descent without
+	// it is the one arm of a comparison nobody can explain.
+	if *traceDir != "" {
+		tf, terr := openTraceLog(*traceDir)
+		if terr != nil {
+			return terr
+		}
+		defer tf.Close()
+		ocr.TraceJSONL = tf
+	}
 	rr := &raglit.RegionReader{
 		Ask: ocr.AskWithHint(*hint), PageWIn: wIn, PageHIn: hIn, DPI: *dpi,
 		MaxDepth: *depth, MaxCalls: *calls, Hint: *hint, Tile: *tile,
+		Doc: filepath.Base(path),
 	}
 	if *verbose {
 		rr.Trace = os.Stderr
