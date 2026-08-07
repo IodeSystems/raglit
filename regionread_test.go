@@ -1228,7 +1228,7 @@ func TestATransformCandidateDoesNotDescend(t *testing.T) {
 	// Derived, not hardcoded: the grid takes its shape from the page, so a fixed
 	// count here would break every time gridFor is tuned and would say nothing
 	// about the thing under test.
-	cols, rows := gridFor(letterTokensPerSqIn/root.TokensPerSqIn, 27, 36.7, root.LineSpan)
+	cols, rows := gridFor(letterTokensPerSqIn/root.TokensPerSqIn, 27, 36.7)
 	if tiles < cols*rows {
 		t.Errorf("the real descent was starved by the candidate: %d tiles, grid is %dx%d",
 			tiles, cols, rows)
@@ -1256,7 +1256,7 @@ func TestTheGridTakesItsShapeFromThePage(t *testing.T) {
 		{"two-page spread 34x22", 7.4, 34, 22, true},
 		{"square-ish 66x55", 36.1, 66.4, 55.5, true},
 	} {
-		cols, rows := gridFor(c.want, c.w, c.h, 0)
+		cols, rows := gridFor(c.want, c.w, c.h)
 		if cols*rows < int(math.Ceil(c.want)) && cols < 6 && rows < 6 {
 			t.Errorf("%s: %dx%d=%d tiles does not cover a deficit of %.1f",
 				c.name, cols, rows, cols*rows, c.want)
