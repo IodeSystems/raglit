@@ -874,14 +874,14 @@ func TestATileIsToldItIsOneAndAnOrdinaryRegionIsNot(t *testing.T) {
 	// The instruction has to reach the model, not just the record.
 	withGrid := 0
 	for _, a := range about {
-		if a.Grid != "" && gridSuffix(a.Grid) != "" {
+		if a.Grid != "" && modText(WithGrid(a.Grid)) != "" {
 			withGrid++
 		}
 	}
 	if withGrid != len(root.Children) {
 		t.Errorf("%d tiles but %d were told so", len(root.Children), withGrid)
 	}
-	if gridSuffix("") != "" {
+	if modText(WithGrid("")) != "" {
 		t.Error("a region that is not a cell must carry no grid instruction")
 	}
 }
@@ -912,7 +912,7 @@ func TestTheGridThresholdCannotDropAnItem(t *testing.T) {
 	if got := float64(duped) / 1001; got > 0.15 {
 		t.Errorf("duplicate band is %.0f%% of splits, wider than intended", got*100)
 	}
-	if !strings.Contains(gridSuffix("row 1 of 4, column 1 of 4"), "45%") {
+	if !strings.Contains(modText(WithGrid("row 1 of 4, column 1 of 4")), "45%") {
 		t.Error("the threshold in the instruction drifted from the one reasoned about here")
 	}
 }
@@ -1009,7 +1009,7 @@ func TestAnEscalatingChildGetsItsParentAsked(t *testing.T) {
 			if !strings.Contains(a.Escalation, "could not be read as framed") {
 				t.Errorf("the parent was not told what happened: %q", a.Escalation)
 			}
-			if !strings.Contains(escalationSuffix(a.Escalation), "DO NOT TRANSCRIBE") {
+			if !strings.Contains(EscalatePrompt(a.Escalation), "DO NOT TRANSCRIBE") {
 				t.Error("turn 3 did not forbid transcribing at the parent's resolution")
 			}
 		}

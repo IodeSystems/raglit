@@ -224,10 +224,10 @@ func TestTheMeasuredDamageIsPutToTheModel(t *testing.T) {
 	if len(sawDamage[0]) == 0 {
 		t.Errorf("the model was asked without being told what was measured: %v", sawDamage[0])
 	}
-	if s := damageSuffix(sawDamage[0]); s == "" {
+	if s := modText(WithDamage(sawDamage[0])); s == "" {
 		t.Error("measured damage produced no instruction to the model")
 	}
-	if damageSuffix(nil) != "" {
+	if modText(WithDamage(nil)) != "" {
 		t.Error("an undamaged region must not carry a repair instruction")
 	}
 }

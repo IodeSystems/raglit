@@ -69,6 +69,10 @@ type RegionReader struct {
 	// instead of asking where to look. See tileRegion.
 	Tile bool
 
+	// Doc is the document these regions belong to, carried only so the trace can
+	// say which one. A walk reads one document; the record may hold many.
+	Doc string
+
 	// Trace, when non-nil, receives one line per TURN and per decision taken
 	// about it: what was read, at what resolution, what it proposed, what was
 	// routed to a descent and what to a transform, what escalated and what the
@@ -96,12 +100,38 @@ type RegionAbout struct {
 	// child that reported its frame was broken. Present means "answer with an
 	// action, not a transcription" — see escalationSuffix.
 	Escalation string
+
+	// Doc, Page, RegionID and TokensPerSqIn identify WHICH crop of WHICH page of
+	// WHICH document this call is reading.
+	//
+	// They exist for the trace, and they are what makes a descent observable at
+	// all. Without them every call in a walk looks identical in the record —
+	// same model, same document, forty images — so a tree that spent its budget
+	// in the margins is indistinguishable from one that read the title block,
+	// and neither can be joined back to the region it came from. The region id
+	// is the join key to the recorded tree; tokens/in² is the number that says
+	// whether the crop could have been read at all.
+	Doc           string
+	Page          int
+	RegionID      string
+	TokensPerSqIn float64
 }
 
 // RegionReading is what the model returns for one region.
 type RegionReading struct {
-	// Description covers everything visible at this scale — a transcription for
-	// a text block, a summary for a drawing.
+	// Transcription is the characters on the page, verbatim, markdown for
+	// STRUCTURE only. It feeds the full-text index, where someone types an exact
+	// recording number and expects this document back.
+	//
+	// Split from Description on 2026-08-06 because one field could not be both.
+	// Its doc comment used to admit as much — "a transcription for a text block,
+	// a summary for a drawing" — and every tile of a survey came back
+	// kind:drawing, so every tile returned a summary. Six tiles at 43-46
+	// tokens/in², above the readable baseline, and not one transcribed a
+	// character.
+	Transcription string `json:"transcription_markdown"`
+	// Description is what this IS, for the index that answers a searcher who
+	// does not know the words on the page.
 	Description string `json:"description"`
 	Kind        string `json:"kind"`
 	// Regions are proposals in THIS region's coordinates, 0..1.
@@ -258,11 +288,13 @@ func (rr *RegionReader) readRegion(ctx context.Context, page image.Image, reg *R
 	rr.calls++
 
 	reading, err := rr.Ask(ctx, PageImage{Page: reg.Page, Mime: "image/png", Data: img},
-		RegionAbout{Depth: reg.Depth, Damage: damage, Grid: reg.Grid})
+		RegionAbout{Depth: reg.Depth, Damage: damage, Grid: reg.Grid,
+			Doc: rr.Doc, Page: reg.Page, RegionID: regionLabel(reg.ID),
+			TokensPerSqIn: reg.TokensPerSqIn})
 	if err != nil {
 		return RegionReading{}, false, err
 	}
-	reg.Text = reading.Description
+	reg.Text = reading.text()
 	reg.Downscales = reading.Downscales
 	if reg.Kind == "" {
 		reg.Kind = reading.Kind
@@ -425,17 +457,17 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 		}
 		child := &Region{Page: reg.Page, BBox: d.bbox, Rotation: d.rotation,
 			Kind: d.kind, Grid: d.grid, Depth: reg.Depth + 1}
-		if err := rr.visit(ctx, page, child, 0, reading.Description); err != nil {
+		if err := rr.visit(ctx, page, child, 0, reading.expectation()); err != nil {
 			return err
 		}
 		// The child cannot fix a frame it did not choose. If it says so — or if
 		// its reading has nothing to do with what THIS region said is here — the
 		// question comes back up to whoever owns the box.
-		if rr.wantsEscalation(child) {
+		if rr.wantsEscalation(reg, child) {
 			rr.tracef(reg.Depth, "  -> escalating %s (verdict=%q suspect=%v), budget %d/%d",
 				regionLabel(child.ID), child.Verdict, child.hasFlag(FlagTransformSuspect),
 				rr.escalations, rr.MaxEscalations)
-			if err := rr.escalate(ctx, page, reg, child, reading.Description); err != nil {
+			if err := rr.escalate(ctx, page, reg, child, reading.expectation()); err != nil {
 				return err
 			}
 		}
@@ -714,60 +746,75 @@ func clearsAny(before, after []string) bool {
 //
 // It still transcribes, because a description that drops the legal text would
 // trade one kind of incompleteness for another.
-const rootPrompt = `Look at this whole sheet and answer with ONE JSON object, nothing else:
-
-{"description": "...", "kind": "...", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"kind":"...","reason":"..."}]}
-
-description: an ACCOUNT OF THE ENTIRE SHEET. Name every distinct thing on it —
-  each drawing, map, table, legend, title block, certificate, signature block,
-  stamp and note — and say where it sits and what it shows. For a drawing say
-  what is depicted: what is bounded, what is labelled, what the lines and
-  annotations assert. Then transcribe the text you can read, verbatim. Where
-  text is too small to read, say so and say what kind of text it is. Never
-  guess at characters you cannot see. Completeness matters more than brevity:
-  a reader who sees only this description should know everything the sheet
-  contains.
-kind: one of overview, text-block, table, drawing, legend, title-block.
-regions: areas a closer look WOULD help with — dense annotation, small print, a
-  table, a title block. Coordinates are fractions of THIS image (0..1).
-  rotation is 0, 90, 180 or 270: what this area must be turned by to read
-  upright. Naming an area here does not read it; it records where detail is.`
 
 // regionPrompt asks for the two things a node needs. Kept deliberately short:
 // the instruction competes with the image for the model's attention, and the
 // image is the point.
-const regionPrompt = `Look at this image and answer with ONE JSON object, nothing else:
 
-{"description": "...", "kind": "...", "verdict": "", "because": "", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"margin":0,"kind":"...","reason":"..."}]}
+// expectation is everything the parent said about this ground, for the overlap
+// test that judges whether a re-render helped.
+//
+// BOTH halves, because before transcription and description were split this was
+// one field carrying both, and the measure is word overlap — narrowing it to
+// either half alone would quietly weaken the one signal a wrong rotation cannot
+// corrupt.
+// text is the transcription, falling back to description.
+//
+// On the TYPE rather than in ParseRegionReading because a RegionReading is also
+// constructed directly — every test's Ask does, and so may any caller wiring its
+// own reader — and a fallback that lives in one constructor silently returns
+// empty for all the others.
+func (r RegionReading) text() string {
+	if t := strings.TrimSpace(r.Transcription); t != "" {
+		return t
+	}
+	return strings.TrimSpace(r.Description)
+}
 
-description: transcribe ALL text you can read, verbatim. Where you cannot read
-  text, say what is there instead. Never guess at characters you cannot see.
-kind: one of overview, text-block, table, drawing, legend, title-block.
-regions: areas worth examining MORE CLOSELY than this view allows — dense
-  annotation, small print, a table, a title block. Coordinates are fractions of
-  THIS image (0..1). rotation is 0, 90, 180 or 270: what this area must be
-  turned by to read upright. Return [] if nothing here needs a closer look, or
-  if the whole image is already legible.
-Do not propose an area that covers most of this image unless it needs a
-different rotation.
-
-If this image cannot be read AS FRAMED and more paper would not fix it — it is
-upside down or mirrored, or it plainly shows something other than what you were
-told is here — answer with "verdict":"escalate" and say why in "because". Do not
-guess at it and do not propose regions: the area and the rotation were chosen
-outside this view, and correcting them is not yours to do. If it is framed fine
-but simply too coarse to resolve at any treatment, answer "verdict":"illegible".
-
-IF TEXT IS CUT OFF AT THE EDGE OF THIS IMAGE — a word ending mid-letters against
-the border, a line running off the side — say so by proposing THIS WHOLE IMAGE
-(x:0,y:0,w:1,h:1) with "margin" set to the inches of extra paper you need, up to
-2. That is not a request to look somewhere else; it is this same view with more
-of the page around it. Use it only when you can see the cut. If instead the image
-looks wrong in a way MORE PAPER WOULD NOT FIX — upside down, or showing something
-other than what you were told is here — propose nothing and say so in
-description, because that is not yours to correct.`
+func (r RegionReading) expectation() string {
+	return strings.TrimSpace(r.Description + " " + r.Transcription)
+}
 
 var jsonObjRe = regexp.MustCompile(`(?s)\{.*\}`)
+
+// firstJSONObject returns the first BALANCED {...} in s, or "".
+//
+// jsonObjRe is greedy from the first brace to the last, which is right for an
+// object wrapped in prose and WRONG for the array models actually return:
+// `[{...},{...}]` matches as `{...},{...}`, which is not valid JSON, so the
+// unmarshal failed and the whole raw reply — braces, escapes and all — became
+// the region's text. Observed on every region of a survey read; it is why a
+// tree of readings looked like a tree of JSON.
+//
+// Brace counting rather than a cleverer regex because strings inside the object
+// legitimately contain braces, and a transcription of a plat note may contain
+// anything at all.
+func firstJSONObject(s string) string {
+	start := strings.IndexByte(s, '{')
+	if start < 0 {
+		return ""
+	}
+	depth, inStr, esc := 0, false, false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+		case c == '\\' && inStr:
+			esc = true
+		case c == '"':
+			inStr = !inStr
+		case inStr:
+		case c == '{':
+			depth++
+		case c == '}':
+			if depth--; depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return ""
+}
 
 // ParseRegionReading pulls the JSON object out of a model reply.
 //
@@ -776,16 +823,23 @@ var jsonObjRe = regexp.MustCompile(`(?s)\{.*\}`)
 // description: losing the transcription because the JSON was malformed would
 // throw away the part that matters.
 func ParseRegionReading(s string) RegionReading {
-	m := jsonObjRe.FindString(s)
+	m := firstJSONObject(s)
 	if m == "" {
-		return RegionReading{Description: strings.TrimSpace(s)}
+		t := strings.TrimSpace(s)
+		return RegionReading{Transcription: t, Description: t}
 	}
 	var out RegionReading
 	if err := json.Unmarshal([]byte(m), &out); err != nil {
-		return RegionReading{Description: strings.TrimSpace(s)}
+		t := strings.TrimSpace(s)
+		return RegionReading{Transcription: t, Description: t}
 	}
-	if strings.TrimSpace(out.Description) == "" {
-		out.Description = strings.TrimSpace(strings.Replace(s, m, "", 1))
+	// A model that ignores the new field, or a reading recorded before it
+	// existed, still has its text in description. Falling back keeps those
+	// working rather than returning empty — degrading to the OLD behavior is
+	// always better than degrading to nothing.
+	if strings.TrimSpace(out.Transcription) == "" && strings.TrimSpace(out.Description) == "" {
+		leftover := strings.TrimSpace(strings.Replace(s, m, "", 1))
+		out.Transcription, out.Description = leftover, leftover
 	}
 	return out
 }
@@ -804,27 +858,35 @@ func (o *OCR) AskWithOCR() func(context.Context, PageImage, RegionAbout) (Region
 // model's attention, and a hint that rewrites the whole prompt would also change
 // the parts that make the answer parseable.
 func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, RegionAbout) (RegionReading, error) {
-	suffix := ""
-	if h := strings.TrimSpace(hint); h != "" {
-		suffix = "\n\nWHAT THE CALLER IS LOOKING FOR: " + h +
-			"\nIf this image contains any of it, transcribe that FIRST and in full, and " +
-			"propose regions covering wherever more of it appears."
-	}
 	return func(ctx context.Context, img PageImage, about RegionAbout) (RegionReading, error) {
-		prev := o.Prompt
+		prev, prevCtx := o.Prompt, o.TraceCtx
+		// Region identity for the trace, set alongside the prompt and restored
+		// with it, so there is no path where one is set and the other is not.
+		if about.Doc != "" || about.RegionID != "" {
+			o.TraceCtx = map[string]any{
+				"doc": about.Doc, "page": about.Page, "region": about.RegionID,
+				"depth": about.Depth, "tokens_per_sq_in": about.TokensPerSqIn,
+			}
+			if about.Grid != "" {
+				o.TraceCtx["grid"] = about.Grid
+			}
+			if about.Escalation != "" {
+				o.TraceCtx["turn"] = "escalation"
+			}
+		}
 		// The root is asked to account for the whole sheet; a crop is asked to
 		// transcribe. Same walk, different question, decided by where we are in it.
 		switch {
 		case about.Escalation != "":
 			// Turn 3 asks for a decision, not a reading — a different question
-			// entirely, so it replaces the prompt rather than appending to it.
-			o.Prompt = escalationSuffix(about.Escalation)
+			// entirely, so it REPLACES the prompt rather than appending to it.
+			o.Prompt = EscalatePrompt(about.Escalation)
 		case about.Depth == 0:
-			o.Prompt = rootPrompt + suffix + damageSuffix(about.Damage) + gridSuffix(about.Grid)
+			o.Prompt = Prompt(PromptRoot, WithHint(hint), WithDamage(about.Damage), WithGrid(about.Grid))
 		default:
-			o.Prompt = regionPrompt + suffix + damageSuffix(about.Damage) + gridSuffix(about.Grid)
+			o.Prompt = Prompt(PromptCrop, WithHint(hint), WithDamage(about.Damage), WithGrid(about.Grid))
 		}
-		defer func() { o.Prompt = prev }()
+		defer func() { o.Prompt, o.TraceCtx = prev, prevCtx }()
 		text, _, shrinks, err := o.PageAsSeen(ctx, img)
 		if err != nil {
 			// A looped region is not a failed one: the guard fired, which is
@@ -988,65 +1050,6 @@ func findRegion(root *Region, id string) *Region {
 	return nil
 }
 
-// damageSuffix tells the model what was measured about the pixels it is being
-// shown, and what it may ask for about it.
-//
-// This is the half the measurement cannot do. Measured 2026-08-03: the variance
-// of the laplacian identifies a blurred crop that the model itself diagnoses as
-// "skew" with 0.9 confidence — and the deskew it then prescribes makes a blurred
-// region WORSE. So the number is what notices, and the model is what decides,
-// because it is the one that can see whether the region is a faded fax or a
-// drawing that is mostly white space.
-func damageSuffix(damage []string) string {
-	if len(damage) == 0 {
-		return ""
-	}
-	var what []string
-	for _, d := range damage {
-		switch d {
-		case FlagBlurred:
-			what = append(what, "its strokes measure as SMEARED (low edge energy)")
-		case FlagFaded:
-			what = append(what, "its tones measure as CRUSHED into a narrow band")
-		}
-	}
-	if len(what) == 0 {
-		return ""
-	}
-	return "\n\nMEASURED ABOUT THIS IMAGE: " + strings.Join(what, ", and ") + "." +
-		"\nThese are measurements of the pixels, not a judgement about the document." +
-		"\nIf a repair would help, propose THIS SAME AREA (x:0,y:0,w:1,h:1) with a" +
-		" \"filter\" of \"contrast\" or \"sharpen\". Propose nothing if the region reads" +
-		" fine as it is — a repair that recovers nothing is discarded anyway."
-}
-
-// gridSuffix tells a computed tile that it is one, and what that obliges it to
-// leave alone.
-//
-// A cell cannot see its neighbours and OVERLAPS them by descentPadIn, so an item
-// near a seam is visible — often partly — from both sides. Without a rule, both
-// cells guess, and the two failure modes are not equal: a duplicated monument
-// call is recoverable by anyone reading the transcript, a dropped one is
-// invisible and this whole package exists because a dropped clause read as a
-// complete document.
-//
-// So the rule is asymmetric on purpose. At the 45% threshold NOTHING can be
-// dropped by geometry: if this cell holds under 45% of an item, the neighbour
-// necessarily holds over 55% and takes it. Duplicates are confined to the narrow
-// band where both sides hold 45-55%, and are accepted as the cost.
-func gridSuffix(grid string) string {
-	if strings.TrimSpace(grid) == "" {
-		return ""
-	}
-	return "\n\nTHIS IMAGE IS ONE CELL OF A GRID over a larger sheet — " + grid + "." +
-		"\nThe neighbouring cells overlap this one, so text at your edges also appears in them." +
-		"\nTranscribe an item only if you can see AT LEAST 45% of it. If less than that is" +
-		" visible, leave it out entirely rather than guessing at it: the neighbouring cell" +
-		" holds the rest and will transcribe it whole." +
-		"\nThis will occasionally put the same item in two cells. That is intended and" +
-		" harmless. Inventing the hidden half of one is not."
-}
-
 // Turn 3 — the parent decides what to do about a child that cannot fix itself.
 //
 // Escalate when the transform is fundamentally broken; refine when the fix needs
@@ -1065,8 +1068,23 @@ func gridSuffix(grid string) string {
 
 // wantsEscalation reports whether a child is asking for its parent, either by
 // saying so or by coming back about somewhere else entirely.
-func (rr *RegionReader) wantsEscalation(child *Region) bool {
+func (rr *RegionReader) wantsEscalation(parent, child *Region) bool {
 	if rr.escalations >= rr.MaxEscalations || rr.calls >= rr.MaxCalls {
+		return false
+	}
+	// A COMPUTED TILE DOES NOT ESCALATE. Its frame came from arithmetic that
+	// covers the sheet exactly once — there is no "the box was wrong" hypothesis
+	// for a parent to test, and a re-pick would punch a hole in a partition.
+	// Escalation exists for a box a MODEL proposed and may have proposed badly.
+	//
+	// Measured 2026-08-07 on olmOCR-bench old_scans/1.pdf: every escalation came
+	// from a grid cell. The root was re-read four times at 23431 tokens each, at
+	// 6 tokens/in² against a readable 39 — five of twelve calls, 42% of the
+	// budget, spent on a view that could not read anything. The walk then ran out
+	// with 7 of 9 tiles read: the bottom-right of the page was never looked at,
+	// which is most of why this descent scored WORSE than one plain read of the
+	// same page (38.9% against 54.5%).
+	if child.Grid != "" {
 		return false
 	}
 	return child.Verdict == VerdictEscalate || child.hasFlag(FlagTransformSuspect)
@@ -1084,7 +1102,9 @@ func (rr *RegionReader) escalate(ctx context.Context, page image.Image,
 	rr.calls++
 	reading, err := rr.Ask(ctx, PageImage{Page: parent.Page, Mime: "image/png", Data: img},
 		RegionAbout{Depth: parent.Depth, Grid: parent.Grid,
-			Escalation: escalationQuestion(parent, child)})
+			Escalation: escalationQuestion(parent, child),
+			Doc:        rr.Doc, Page: parent.Page, RegionID: regionLabel(parent.ID),
+			TokensPerSqIn: parent.TokensPerSqIn})
 	if err != nil {
 		return err
 	}
@@ -1190,30 +1210,6 @@ func escalationQuestion(parent, child *Region) string {
 		q += " What it did read was: " + strconv.Quote(t) + "."
 	}
 	return q
-}
-
-// escalationSuffix asks for a decision about GEOMETRY, and forbids a
-// transcription.
-//
-// The parent is looking at its own region, which on an oversize sheet is the
-// view that cannot resolve six-point text — so anything it transcribed here
-// would be exactly the low-resolution invention this package exists to prevent.
-// `keep` means the child's reading stands, never "here is a better one".
-func escalationSuffix(q string) string {
-	if strings.TrimSpace(q) == "" {
-		return ""
-	}
-	return "\n\nSOMETHING WENT WRONG WITH A CLOSER LOOK AT PART OF THIS IMAGE.\n" + q +
-		"\n\nAnswer with ONE JSON object, nothing else:\n" +
-		`{"action": "...", "regions": [{"x":0,"y":0,"w":0,"h":0,"rotation":0,"margin":0,"filter":"","kind":"..."}], "because": "..."}` +
-		"\naction is one of:" +
-		"\n  retransform — the area was right but rendered wrong; give the SAME area with a different rotation, filter or margin." +
-		"\n  repick      — the area was wrong; give the area that should have been looked at instead." +
-		"\n  keep        — the closer look was mistaken and what it read stands." +
-		"\n  abandon     — there is nothing readable there at any treatment." +
-		"\nregions: exactly one area, in fractions of THIS image (0..1), for retransform or repick. Empty otherwise." +
-		"\nDO NOT TRANSCRIBE ANYTHING. You are looking at this area at a scale that cannot resolve its small text —" +
-		" that is why a closer look was taken. Decide where to look and how; the closer look does the reading."
 }
 
 // normalizeVerdict maps what came back onto what this package acts on.
