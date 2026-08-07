@@ -147,8 +147,13 @@ type Region struct {
 	// TokensPerSqIn is what this region was actually seen at. Recorded because
 	// it is the one quality number available BEFORE any model call, and on its
 	// own it condemns a transcription taken at four.
-	TokensPerSqIn float64   `json:"tokens_per_sq_in"`
-	Children      []*Region `json:"children,omitempty"`
+	TokensPerSqIn float64 `json:"tokens_per_sq_in"`
+	// LineSpan is the median fraction of this crop's width covered by an inked
+	// row — how far its text RUNS. Recorded because it decides whether tiling may
+	// cut columns through the region, and because a tree that shredded a page
+	// should say why. 0 means unmeasured.
+	LineSpan float64   `json:"line_span,omitempty"`
+	Children []*Region `json:"children,omitempty"`
 }
 
 // Region flags. Not a score: a confidence number here would be an invented

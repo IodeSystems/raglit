@@ -269,6 +269,10 @@ func (rr *RegionReader) readRegion(ctx context.Context, page image.Image, reg *R
 	}
 	var damage []string
 	if m, _, derr := image.Decode(bytes.NewReader(img)); derr == nil {
+		// Measured on the SAME decode as the damage flags: how far this crop's
+		// ink runs across it, which is what decides whether tiling may cut
+		// columns through it. See LineSpan.
+		reg.LineSpan = LineSpan(m)
 		damage = DamageOf(m)
 		for _, f := range damage {
 			reg.addFlag(f)
@@ -923,7 +927,7 @@ func (rr *RegionReader) tileRegion(reg *Region) []descent {
 		return nil
 	}
 	wIn, hIn := reg.BBox.W*rr.PageWIn, reg.BBox.H*rr.PageHIn
-	cols, rows := gridFor(want, wIn, hIn)
+	cols, rows := gridFor(want, wIn, hIn, reg.LineSpan)
 	if wIn/float64(cols) < rr.MinRegionIn || hIn/float64(rows) < rr.MinRegionIn {
 		return nil // already small enough that another cut buys no resolution
 	}
@@ -961,7 +965,25 @@ func (rr *RegionReader) tileRegion(reg *Region) []descent {
 //
 // Capped at 6 per axis for the same reason the count was capped before: the
 // point is to make the sheet legible, not to spend the budget. 6x6 is 36 calls.
-func gridFor(want, wIn, hIn float64) (cols, rows int) {
+func gridFor(want, wIn, hIn, lineSpan float64) (cols, rows int) {
+	// RUNNING TEXT IS CUT IN ROWS ONLY. A line crossing the whole crop cannot
+	// survive a vertical seam: the 45% overlap rule governs whole ITEMS, and a
+	// model cannot tell that a half-visible word is half-visible, so it
+	// transcribes the fragment. Measured on olmOCR-bench old_scans/1.pdf, where a
+	// 3x3 grid turned "Comrade" into "rade" and "Sickles" into "ckles" — 2014
+	// characters holding 60% of the expected words, against 954 characters
+	// holding 100% from one plain read of the same page.
+	//
+	// A drawing is unaffected: its labels are islands, a seam between them severs
+	// nothing, so lineSpan stays low and the grid keeps its columns. That is the
+	// distinction resolution alone cannot make — a 707 in² letter and a 707 in²
+	// survey sheet are identical to TokensPerSqIn.
+	//
+	// lineSpan of 0 means UNMEASURED and must not be read as "no lines": an
+	// unmeasured crop keeps the existing behavior rather than being narrowed.
+	if lineSpan >= proseLineSpan {
+		return 1, min(max(int(math.Ceil(want)), 2), 6)
+	}
 	if wIn <= 0 || hIn <= 0 {
 		n := min(max(int(math.Ceil(math.Sqrt(want))), 2), 6)
 		return n, n
