@@ -989,3 +989,15 @@ itself, and which this document already specifies asking for.
   marked-up fragments — `old_scans` qwen-descent went 27.8% -> 55.6% on the
   same files. Comparing a plain read against a region tree means normalising
   both the same way, or the harness decides the winner.
+- **The descent adds no resolution; it stops a canvas from throwing resolution
+  away.** So it pays only where the SOURCE holds more than one canvas can show.
+  Measured on olmOCR-bench `old_scans`, 30 pages / 164 tests, scored correctly:
+  chandra-plain 52.4%, chandra-descent 52.4%, qwen-descent 51.2% — a three-way
+  tie for 1.3-1.8x the wall clock. Every page there is SCAN-bound (96 dpi native
+  against a 127-181 dpi cap), so subdivision hands the model the same pixels in
+  more pictures. The sheets it did pay on are the opposite case: the E-size
+  survey (991 in², native 200, cap 119) and the ROS page (94 in², native 960,
+  cap 390) are both CANVAS-bound.
+  The gate this implies — descend when `NativeDPI > DPICapForArea(area)`, skip
+  when it is not — is computable from `dpi.go` before any model call is made,
+  and nothing currently consults it. Not built: it changes `--tile` behaviour.
