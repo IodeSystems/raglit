@@ -307,6 +307,9 @@ func runTranscribe(args []string) error {
 	page := fs.Int("page", 0, "with --correct: which page the corrected text is for")
 	note := fs.String("note", "", "with --correct: how the correction was established (crop, dpi, magnification)")
 	by := fs.String("by", "", "with --correct: who checked it (default $RAGLIT_BY, else the OS user)")
+	traceDir := fs.String("trace", "",
+		"write a machine-readable record to DIR/log.jsonl: one JSON object per model call, "+
+			"with the page, image digest, downscales applied and characters returned")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("transcribe: no files given")
@@ -330,6 +333,20 @@ func runTranscribe(args []string) error {
 		ocr = raglit.NewOCR(lf.visionClient())
 		ocr.Model = *lf.visionModel
 		attachCheapOCR(ocr, home, "")
+		// The plain read is an arm of every comparison the bench runs, so it
+		// needs the same record the descent leaves. Without it a zero score
+		// cannot be told apart from a read that never happened — which is
+		// exactly what a 62-page calibration run reported before this existed.
+		if *traceDir != "" {
+			tf, terr := openTraceLog(*traceDir)
+			if terr != nil {
+				return terr
+			}
+			defer tf.Close()
+			ocr.TraceJSONL = tf
+		}
+	} else if *traceDir != "" {
+		return fmt.Errorf("transcribe --trace: no vision model configured, so there are no model calls to record")
 	}
 
 	// Corrections are re-issued into every render. A page a person checked stays
