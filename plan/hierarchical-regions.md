@@ -959,3 +959,24 @@ itself, and which this document already specifies asking for.
   image the quotation did not come from, and without the region record there is
   no way to produce that image at all. Marking a plat READ BY EYE still applies;
   it is now a check somebody can actually perform.
+- **Segmentation loses to the blind grid, on the corpus that motivated it.**
+  Run-length smoothing plus connected components finds a survey's label clusters
+  correctly — the component works and its tests hold. Wired into the descent it
+  scored 5/6 against the grid's 6/6 on the E-size sheet, from 23 crops instead of
+  12 and 107KB of text instead of 19KB. It reads MORE and finds LESS, and the
+  reason is specific to drawings: cutting along ink boundaries separates a
+  callout from the geometry it annotates, so the crop that holds `MOWRER` no
+  longer holds the rebar it is stamped on. The grid's seams are dumb, but its
+  45% overlap keeps a label and its referent in the same picture. Kept behind
+  `RegionReader.Segment` for dense label sheets with no through-lines.
+- **Two earlier cluster comparisons (12/17, 13/17) measured nothing.** Both ran
+  while the root prompt was broken and the render DPI was un-derived. A component
+  benchmarked against a confounded baseline has not been benchmarked.
+- **`capHeadroom` is a wash on this bench, not the win it was recorded as.** It
+  moved the E-size survey 5/6 → 6/6 and the ROS page 11/11 → 10/11: 16/17 either
+  way. A 17/17 reported on 2026-08-08 paired a pre-headroom ROS run with a
+  post-headroom E-size run — two binaries, one scoreboard. The letter page is
+  re-sampled by the SERVER to ~4000 tokens whatever it is rendered at (42.8
+  t/in² measured at both 423 and 390 DPI), so on that page the render setting
+  only picks which resampling artifacts you get, and a one-check difference
+  there is below what 17 binary checks can discriminate.

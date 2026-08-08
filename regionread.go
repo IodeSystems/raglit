@@ -65,6 +65,14 @@ type RegionReader struct {
 	// budget, because budget alone only re-asks the same blind view.
 	Hint string
 
+	// Segment cuts along measured ink clusters instead of the geometric grid.
+	// OFF by default: measured worse on this corpus — see withTiles.
+	Segment bool
+
+	// Layout tunes cluster finding when Segment is set. Zero value derives its
+	// distances from DPI.
+	Layout LayoutOpts
+
 	// Tile turns on geometric subdivision of large low-resolution DRAWINGS
 	// instead of asking where to look. See tileRegion.
 	Tile bool
@@ -280,6 +288,15 @@ func (rr *RegionReader) readRegion(ctx context.Context, page image.Image, reg *R
 	}
 	var damage []string
 	if m, _, derr := image.Decode(bytes.NewReader(img)); derr == nil {
+		// Same decode as the damage flags: where this crop's ink CLUSTERS, which
+		// is what a descent cuts along instead of a blind grid.
+		if rr.Segment {
+			lo := rr.Layout
+			if lo.DPI == 0 {
+				lo.DPI = rr.DPI
+			}
+			reg.Clusters = LayoutClusters(m, lo)
+		}
 		damage = DamageOf(m)
 		for _, f := range damage {
 			reg.addFlag(f)
@@ -468,7 +485,7 @@ func (rr *RegionReader) visit(ctx context.Context, page image.Image, reg *Region
 			break
 		}
 		child := &Region{Page: reg.Page, BBox: d.bbox, Rotation: d.rotation,
-			Kind: d.kind, Grid: d.grid, Depth: reg.Depth + 1}
+			Kind: d.kind, Grid: d.grid, Computed: d.computed, Depth: reg.Depth + 1}
 		if err := rr.visit(ctx, page, child, 0, reading.expectation()); err != nil {
 			return err
 		}
@@ -494,7 +511,13 @@ type descent struct {
 	rotation int
 	kind     string
 	filter   RegionFilter
-	grid     string // set only for computed tiles; see tileRegion
+	grid     string // set only for computed TILES; see tileRegion
+	// computed marks a box this package DERIVED rather than a model proposed —
+	// a grid tile or a layout cluster. Such a box does not escalate: its frame
+	// came from arithmetic over the pixels. grid alone cannot carry this now
+	// clusters exist: a cluster is computed but is NOT one cell of a grid and
+	// must not be told the 45% overlap rule.
+	computed bool
 }
 
 // route splits the model's proposals into descents and transforms BY GEOMETRY.
@@ -965,7 +988,8 @@ func (rr *RegionReader) tileRegion(reg *Region) []descent {
 				W: tw, H: th,
 			}.paddedIn(descentPadIn, rr.PageWIn, rr.PageHIn)
 			out = append(out, descent{bbox: t, rotation: reg.Rotation, kind: "drawing",
-				grid: fmt.Sprintf("row %d of %d, column %d of %d", row+1, rows, col+1, cols)})
+				computed: true,
+				grid:     fmt.Sprintf("row %d of %d, column %d of %d", row+1, rows, col+1, cols)})
 		}
 	}
 	return out
@@ -1111,7 +1135,7 @@ func (rr *RegionReader) wantsEscalation(parent, child *Region) bool {
 	// with 7 of 9 tiles read: the bottom-right of the page was never looked at,
 	// which is most of why this descent scored WORSE than one plain read of the
 	// same page (38.9% against 54.5%).
-	if child.Grid != "" {
+	if child.Computed {
 		return false
 	}
 	return child.Verdict == VerdictEscalate || child.hasFlag(FlagTransformSuspect)
@@ -1267,11 +1291,48 @@ func (rr *RegionReader) canTile(reg *Region) bool {
 // withTiles prepends the computed grid to a region's descents when the region is
 // under-resolved. See the commentary at its call site for why the gate is
 // arithmetic alone.
+// clusterRegions turns measured label clusters into descents. A cluster is
+// bounded by whitespace, so a cut between clusters cannot sever a word — which a
+// geometric grid does routinely. nil when nothing usable was found, and the
+// caller falls back to the grid.
+func (rr *RegionReader) clusterRegions(reg *Region) []descent {
+	var out []descent
+	for _, c := range reg.Clusters {
+		// A cluster covering nearly the whole region IS the region: descending
+		// re-renders the same crop and the cycle detector refuses it. Same rule
+		// gridFor keeps as "never a 1x1 grid".
+		if c.area() > 0.85 {
+			continue
+		}
+		box := reg.BBox.within(c).paddedIn(descentPadIn, rr.PageWIn, rr.PageHIn)
+		if wIn, hIn := box.W*rr.PageWIn, box.H*rr.PageHIn; wIn < rr.MinRegionIn && hIn < rr.MinRegionIn {
+			continue
+		}
+		out = append(out, descent{bbox: box, rotation: reg.Rotation,
+			kind: "cluster", computed: true})
+	}
+	return out
+}
+
 func (rr *RegionReader) withTiles(reg *Region, descents []descent) []descent {
 	if !rr.Tile || !reg.hasFlag(FlagLowResolution) {
 		return descents
 	}
+	// MEASURED: the grid wins. Segmentation was wired in and scored against the
+	// geometric grid on the bench's E-size survey three times — 12/17, 13/17, and
+	// (once the root-prompt and render-DPI confounds were gone, so this one is
+	// the honest comparison) 5/6 against the grid's 6/6, from 23 crops instead of
+	// 12 and 107KB of text instead of 19KB. It read MORE and found LESS: cutting
+	// along ink boundaries splits a survey's callouts from the geometry they
+	// annotate, and a label read without its drawing is a number without a
+	// referent. So clusters are OPT-IN, and the component and its tests stay for
+	// the corpus that does want them — dense label sheets with no through-lines.
 	tiles := rr.tileRegion(reg)
+	if rr.Segment {
+		if cs := rr.clusterRegions(reg); len(cs) >= 2 {
+			tiles = cs
+		}
+	}
 	if len(tiles) == 0 {
 		return descents
 	}

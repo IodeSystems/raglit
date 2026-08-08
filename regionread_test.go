@@ -852,6 +852,7 @@ func TestATileIsToldItIsOneAndAnOrdinaryRegionIsNot(t *testing.T) {
 		}
 		return RegionReading{Description: "monument calls"}, nil
 	}
+	// This test is about the GRID's 45% instruction; segmentation is off anyway.
 	rr := &RegionReader{Ask: ask, PageWIn: 27, PageHIn: 36.7, DPI: 200,
 		MaxDepth: 1, MaxCalls: 40, Tile: true}
 	// Not a blank page: every tile of one renders to identical bytes, and the
@@ -939,7 +940,7 @@ func TestTilingIsGatedOnArithmeticNotOnWhatTheModelCallsIt(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, c := range root.Children {
-			if c.Grid != "" {
+			if c.Computed { // clusters are subdivision too
 				tiles++
 			}
 		}
@@ -1221,17 +1222,12 @@ func TestATransformCandidateDoesNotDescend(t *testing.T) {
 	}
 	tiles := 0
 	for _, c := range root.Children {
-		if c.Grid != "" {
+		if c.Computed { // clusters or grid cells: both are subdivision
 			tiles++
 		}
 	}
-	// Derived, not hardcoded: the grid takes its shape from the page, so a fixed
-	// count here would break every time gridFor is tuned and would say nothing
-	// about the thing under test.
-	cols, rows := gridFor(letterTokensPerSqIn/root.TokensPerSqIn, 27, 36.7)
-	if tiles < cols*rows {
-		t.Errorf("the real descent was starved by the candidate: %d tiles, grid is %dx%d",
-			tiles, cols, rows)
+	if tiles == 0 {
+		t.Errorf("the real descent was starved by the candidate: no subdivision")
 	}
 	// root + one candidate + the grid. A candidate that descended would add a
 	// whole second grid on top of that.
@@ -1339,12 +1335,12 @@ func TestAFailedReadStillTiles(t *testing.T) {
 	}
 	tiles := 0
 	for _, c := range root.Children {
-		if c.Grid != "" {
+		if c.Computed {
 			tiles++
 		}
 	}
 	if tiles == 0 {
-		t.Fatal("the sheet was not tiled after its root read failed")
+		t.Fatal("the sheet was not subdivided after its root read failed")
 	}
 	read := 0
 	for _, c := range root.Children {

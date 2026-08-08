@@ -147,8 +147,13 @@ type Region struct {
 	// TokensPerSqIn is what this region was actually seen at. Recorded because
 	// it is the one quality number available BEFORE any model call, and on its
 	// own it condemns a transcription taken at four.
-	TokensPerSqIn float64   `json:"tokens_per_sq_in"`
-	Children      []*Region `json:"children,omitempty"`
+	TokensPerSqIn float64 `json:"tokens_per_sq_in"`
+	// Clusters are this region's measured label clusters, as fractions of it.
+	Clusters []Rect `json:"clusters,omitempty"`
+	// Computed marks a box derived here (grid tile or cluster), not proposed by
+	// a model. Such a box does not escalate.
+	Computed bool      `json:"computed,omitempty"`
+	Children []*Region `json:"children,omitempty"`
 }
 
 // Region flags. Not a score: a confidence number here would be an invented
