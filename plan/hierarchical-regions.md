@@ -980,3 +980,12 @@ itself, and which this document already specifies asking for.
   t/in² measured at both 423 and 390 DPI), so on that page the render setting
   only picks which resampling artifacts you get, and a one-check difference
   there is below what 17 binary checks can discriminate.
+- **Markup stripping is part of the measurement, and it is not neutral.** A
+  scorer that replaces every tag with a space inserts whitespace the page never
+  had, and exact-substring checks then fail on text that was read perfectly.
+  Block tags are a space, inline tags are nothing: on olmOCR-bench
+  `long_tiny_text` that is 86.0% / 88.7% / 89.6% for space / empty / by-kind.
+  It penalises the DESCENT hardest, since a region tree concatenates many
+  marked-up fragments — `old_scans` qwen-descent went 27.8% -> 55.6% on the
+  same files. Comparing a plain read against a region tree means normalising
+  both the same way, or the harness decides the winner.
