@@ -115,6 +115,17 @@ type RegionAbout struct {
 	Page          int
 	RegionID      string
 	TokensPerSqIn float64
+
+	// FitsWhole means this region needs no subdivision: every pixel reaches the
+	// model in ONE canvas at this resolution. The root is then asked to
+	// TRANSCRIBE rather than to account for the sheet and propose where to look.
+	//
+	// Salience is only worth paying for when something will act on it. Measured
+	// on the bench's 94 sq in record of survey: the root prompt returned 4 of 7
+	// checks where a plain read of the same pixels returned 7 of 7 — it described
+	// the sheet and proposed regions nobody descended into, because there was
+	// nothing to descend into. The three it lost were recording numbers.
+	FitsWhole bool
 }
 
 // RegionReading is what the model returns for one region.
@@ -290,7 +301,8 @@ func (rr *RegionReader) readRegion(ctx context.Context, page image.Image, reg *R
 	reading, err := rr.Ask(ctx, PageImage{Page: reg.Page, Mime: "image/png", Data: img},
 		RegionAbout{Depth: reg.Depth, Damage: damage, Grid: reg.Grid,
 			Doc: rr.Doc, Page: reg.Page, RegionID: regionLabel(reg.ID),
-			TokensPerSqIn: reg.TokensPerSqIn})
+			TokensPerSqIn: reg.TokensPerSqIn,
+			FitsWhole:     rr.fitsWhole(reg)})
 	if err != nil {
 		return RegionReading{}, false, err
 	}
@@ -881,6 +893,10 @@ func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, RegionAb
 			// Turn 3 asks for a decision, not a reading — a different question
 			// entirely, so it REPLACES the prompt rather than appending to it.
 			o.Prompt = EscalatePrompt(about.Escalation)
+		case about.Depth == 0 && about.FitsWhole:
+			// Nothing will descend, so nothing needs salience: ask for the
+			// transcription and only that.
+			o.Prompt = Prompt(PromptPlain)
 		case about.Depth == 0:
 			o.Prompt = Prompt(PromptRoot, WithHint(hint), WithDamage(about.Damage), WithGrid(about.Grid))
 		default:
@@ -913,6 +929,17 @@ func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, RegionAb
 //
 // Capped, because the point is to make the sheet legible rather than to spend
 // the budget: 6x6 is 36 calls, which is already more than most sheets deserve.
+// fitsWhole reports whether every pixel of a region reaches the model in ONE
+// canvas at this resolution — the arithmetic already in dpi.go, applied to the
+// region's own area rather than the page's.
+func (rr *RegionReader) fitsWhole(reg *Region) bool {
+	areaSqIn := reg.BBox.W * rr.PageWIn * reg.BBox.H * rr.PageHIn
+	if areaSqIn <= 0 || rr.DPI <= 0 {
+		return false // unknown: keep the existing behaviour
+	}
+	return TilesNeeded(areaSqIn, rr.DPI, DefaultMaxImageTokens) <= 1
+}
+
 func (rr *RegionReader) tileRegion(reg *Region) []descent {
 	if reg.TokensPerSqIn <= 0 {
 		return nil
