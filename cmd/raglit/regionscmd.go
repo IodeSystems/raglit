@@ -27,7 +27,9 @@ func runRegions(args []string) error {
 	lf := addLLMFlags(fs)
 	_, homeOf := addStoreFlags(fs)
 	page := fs.Int("page", 1, "page number")
-	dpi := fs.Int("dpi", 200, "render resolution")
+	dpi := fs.Int("dpi", 0,
+		"render resolution; 0 derives it from the sheet's area, its native scan and the "+
+			"encoder's token budget (see ChooseDPI)")
 	depth := fs.Int("depth", 0, "descend this many levels into the sheet (0 = read the whole sheet and stop)")
 	calls := fs.Int("max-calls", 40, "model calls allowed for the whole page")
 	hint := fs.String("hint", "", "what you are looking for; threaded into every prompt (e.g. \"every bearing, distance and monument call on the drawing\")")
@@ -72,6 +74,20 @@ func runRegions(args []string) error {
 	wIn, hIn, err := pageSizeInches(path, *page)
 	if err != nil {
 		return err
+	}
+	// DERIVE THE RESOLUTION unless told otherwise. `regions` took --dpi literally
+	// and never consulted ChooseDPI, which is why the root of an oversized sheet
+	// read at 4 tokens/in² against a readable baseline of 39: at 200 DPI a 991
+	// sq in survey is 38,740 image tokens, the server crushes it to fit 16,384,
+	// and every halving costs detail. Rendering it LOWER reads better — 130 DPI
+	// is 16,351 tokens, fits whole, and delivers 16.5 t/in².
+	if *dpi <= 0 {
+		d := raglit.ChooseDPI(0, wIn*hIn, raglit.NativeDPI(context.Background(), path, *page),
+			raglit.DefaultMaxImageTokens, raglit.RenderPolicy{})
+		*dpi = d.DPI
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "  regions | render %s\n", d.String())
+		}
 	}
 	img, err := renderPage(path, *page, *dpi)
 	if err != nil {

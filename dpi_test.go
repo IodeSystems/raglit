@@ -31,10 +31,13 @@ func TestDPICapFallsWithArea(t *testing.T) {
 		// TRUNCATED, not rounded: the cap is a ceiling, and 423.6 rounded to 424
 		// would ask for a resolution the server then downscales — quietly
 		// reintroducing the crush this bound exists to predict.
-		{"letter 8.5x11", 8.5 * 11, 423},
-		{"1984 SWD 12.6x18.4", 12.6 * 18.4, 269},
-		{"1947 replat 27.5x17.1", 27.5 * 17.1, 188},
-		{"2008 E-size 27x36.7", 27 * 36.7, 130},
+		// With capHeadroom reserved for the prompt, so these are ~8% below the
+		// naive sqrt: an image sized to the full budget goes over the moment an
+		// instruction is added, and the server halves it.
+		{"letter 8.5x11", 8.5 * 11, 390},
+		{"1984 SWD 12.6x18.4", 12.6 * 18.4, 248},
+		{"1947 replat 27.5x17.1", 27.5 * 17.1, 174},
+		{"2008 E-size 27x36.7", 27 * 36.7, 119},
 	} {
 		if got := DPICapForArea(tc.area, DefaultMaxImageTokens); got != tc.want {
 			t.Errorf("%s: cap = %d, want %d", tc.name, got, tc.want)
@@ -60,9 +63,10 @@ func TestNativeResolutionIsAHardStop(t *testing.T) {
 		t.Errorf("must clamp to the scan's own resolution, got %+v", d)
 	}
 	// Unknown native (born-digital, or no poppler) must NOT act as a bound —
-	// zero would otherwise refuse to render the page at all.
-	d = ChooseDPI(400, 8.5*11, 0, DefaultMaxImageTokens, RenderPolicy{})
-	if d.DPI != 400 || d.Reason != "need" {
+	// zero would otherwise refuse to render the page at all. Need is kept under
+	// the area cap so this isolates NATIVE; the cap clamping is its own test.
+	d = ChooseDPI(300, 8.5*11, 0, DefaultMaxImageTokens, RenderPolicy{})
+	if d.DPI != 300 || d.Reason != "need" {
 		t.Errorf("unknown native must not clamp, got %+v", d)
 	}
 }
@@ -76,7 +80,7 @@ func TestNativeResolutionIsAHardStop(t *testing.T) {
 func TestCapIsApplied(t *testing.T) {
 	esize := 27 * 36.7
 	d := ChooseDPI(200, esize, 200, DefaultMaxImageTokens, RenderPolicy{})
-	if d.DPI != 130 || d.Reason != "cap" {
+	if d.DPI != 119 || d.Reason != "cap" {
 		t.Errorf("cap must clamp the render, got %+v", d)
 	}
 	if d.Tiles < 2 {
@@ -96,7 +100,7 @@ func TestCapIsApplied(t *testing.T) {
 func TestNativeFallbackWhenNothingMeasured(t *testing.T) {
 	// The ROS: 94 in² letter sheet scanned at 960, cap 423.
 	d := ChooseDPI(0, 8.5*11, 960, DefaultMaxImageTokens, RenderPolicy{})
-	if d.DPI != d.CapDPI || d.DPI < 400 {
+	if d.DPI != d.CapDPI || d.DPI < 350 {
 		t.Errorf("must rise to the cap on a high-native sheet, got %+v", d)
 	}
 	// With neither a measurement nor a native resolution there is nothing to go

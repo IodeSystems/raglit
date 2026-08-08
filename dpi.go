@@ -42,6 +42,17 @@ func TokensPerSqInAt(dpi int) float64 {
 	return float64(dpi) * float64(dpi) / pxPerToken
 }
 
+// capHeadroom is the share of the token budget the IMAGE may claim.
+//
+// The prompt shares that budget. Sizing an image to exactly maxTokens puts the
+// request over as soon as any instruction is added, and the server then halves
+// the image — losing far more than the headroom would have cost. Measured on the
+// bench's E-size survey: at the un-reserved cap of 130 DPI the sheet came to
+// 16,351 tokens against a 16,384 limit, went over with the prompt, was halved,
+// and the root read at 4.0 tokens/in² — the same as rendering it at 200 and
+// wasting the pixels.
+const capHeadroom = 0.85
+
 // DPICapForArea is the highest resolution at which a sheet of areaSqIn can be
 // shown WITHOUT the server downscaling it — the bound that falls as the canvas
 // grows, and the reason a 27x36.7in sheet cannot be read whole at any setting.
@@ -49,7 +60,7 @@ func DPICapForArea(areaSqIn float64, maxTokens int) int {
 	if areaSqIn <= 0 || maxTokens <= 0 {
 		return 0
 	}
-	return int(math.Sqrt(pxPerToken * float64(maxTokens) / areaSqIn))
+	return int(math.Sqrt(pxPerToken * capHeadroom * float64(maxTokens) / areaSqIn))
 }
 
 // TilesNeeded is how many equal pieces a sheet must be cut into for every pixel
