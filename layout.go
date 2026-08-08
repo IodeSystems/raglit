@@ -33,33 +33,66 @@ import (
 // analysis, and measurement rather than a model call, which this package has now
 // been taught three times.
 
-// LayoutOpts tunes cluster finding. Zero values are sensible for a 200 DPI scan.
+// LayoutOpts tunes cluster finding.
+//
+// The distances are PHYSICAL — inches — and the cell grid is derived from DPI,
+// because a pixel means nothing on its own. The first version fixed GapCells at
+// 3 cells of 8px, which is 0.12 inch at 200 DPI: narrower than the line spacing
+// it was supposed to bridge. So a certificate block fragmented into many tight
+// crops, a number split across two of them was read by neither, and wiring the
+// segmenter into the descent scored 12/17 where the geometric grid scored 16/17.
 type LayoutOpts struct {
-	// CellPx is the working grid's resolution. Segmentation does not need full
-	// resolution and a 40 megapixel sheet does need to not be scanned per pixel.
-	CellPx int // 0 → 8
-	// GapCells is how far apart ink may be and still belong to one cluster,
-	// measured in cells. It is the single knob that decides whether the lines of
-	// a paragraph merge into one block (they should) or a drawing's separate
-	// labels merge into one (they should not).
-	GapCells int // 0 → 3
-	// MinCells drops specks: a cluster smaller than this is noise, not content.
-	MinCells int // 0 → 6
+	// DPI the image was rendered at. Everything below is derived from it.
+	DPI int // 0 → 200
+	// GapIn is how far apart ink may be, IN INCHES, and still belong to one
+	// cluster. The single knob that decides whether the lines of a paragraph
+	// merge into one block (they should) or a drawing's separate labels merge
+	// into one (they must not).
+	//
+	// 0.25in sits above text line pitch (~0.2in for 10pt) and below the spacing
+	// between labels on a survey (~0.5in and up), which is the whole window this
+	// has to land in.
+	GapIn float64 // 0 → 0.25
+	// MinIn is the smallest side of a cluster worth reading; below it is a speck.
+	MinIn float64 // 0 → 0.08
+	// CellPx overrides the derived working resolution. Segmentation does not need
+	// full resolution, and a 40 megapixel sheet does need to not be scanned per
+	// pixel — derived as one cell per 0.04in, so the grid means the same thing at
+	// any render resolution.
+	CellPx int // 0 → DPI/25
+	// GapCells and MinCells override the derived cell counts. Prefer GapIn/MinIn.
+	GapCells int
+	MinCells int
 	// MaxClusters caps the result. Above it the smallest are merged into their
 	// nearest neighbour rather than dropped — losing a label is worse than
 	// reading it alongside its neighbour.
 	MaxClusters int // 0 → 24
+	// Disabled falls back to the geometric grid — for a corpus where segmentation
+	// misreads the layout, and for testing the grid itself, which is otherwise
+	// unreachable once clusters are preferred.
+	Disabled bool
 }
 
 func (o LayoutOpts) resolved() LayoutOpts {
+	if o.DPI <= 0 {
+		o.DPI = baseRenderDPI
+	}
+	if o.GapIn <= 0 {
+		o.GapIn = 0.25
+	}
+	if o.MinIn <= 0 {
+		o.MinIn = 0.08
+	}
 	if o.CellPx <= 0 {
-		o.CellPx = 8
+		o.CellPx = max(4, o.DPI/25) // one cell per 0.04in
 	}
 	if o.GapCells <= 0 {
-		o.GapCells = 3
+		o.GapCells = max(2, int(o.GapIn*float64(o.DPI)/float64(o.CellPx)))
 	}
 	if o.MinCells <= 0 {
-		o.MinCells = 6
+		// area of the smallest cluster worth keeping, in cells
+		side := max(1, int(o.MinIn*float64(o.DPI)/float64(o.CellPx)))
+		o.MinCells = max(2, side*side)
 	}
 	if o.MaxClusters <= 0 {
 		o.MaxClusters = 24
@@ -72,6 +105,9 @@ func (o LayoutOpts) resolved() LayoutOpts {
 // Empty when there is nothing to find, which callers must treat as "fall back to
 // the geometric grid" rather than as "the page is blank".
 func LayoutClusters(img image.Image, o LayoutOpts) []Rect {
+	if o.Disabled {
+		return nil
+	}
 	o = o.resolved()
 	b := img.Bounds()
 	W, H := b.Dx(), b.Dy()
