@@ -143,10 +143,31 @@ func runDoctor(args []string) error {
 			if len(onlyDaemon) > 0 {
 				fmt.Printf("      PATH only the daemon has: %s\n", strings.Join(onlyDaemon, " "))
 			}
-			fmt.Println("      fix: give the daemon the PATH, e.g. a systemd drop-in")
-			fmt.Println("           ~/.config/systemd/user/raglit.service.d/path.conf")
-			fmt.Println("           [Service] / Environment=PATH=...")
-			fmt.Println("      (a drop-in, not an edit: `raglit service install` regenerates the unit)")
+			// Point the fix at whoever is ACTUALLY short. Telling an operator to
+			// widen the daemon's PATH when the daemon is the one that can see
+			// everything is the same defect this command was just fixed for:
+			// confident advice aimed at the wrong process.
+			daemonShort := false
+			for _, t := range daemonEnv.Tools {
+				if !t.Found {
+					for _, m := range shellEnv.Tools {
+						if m.Name == t.Name && m.Found {
+							daemonShort = true
+						}
+					}
+				}
+			}
+			switch {
+			case daemonShort:
+				fmt.Println("      fix: the DAEMON is short — give it the PATH via a systemd drop-in")
+				fmt.Println("           ~/.config/systemd/user/raglit.service.d/path.conf")
+				fmt.Println("           [Service] / Environment=PATH=...")
+				fmt.Println("      (a drop-in, not an edit: `raglit service install` regenerates the unit)")
+			default:
+				fmt.Println("      the daemon can see everything this shell can, so INGEST IS FINE.")
+				fmt.Println("      only this shell is short — which affects commands run here")
+				fmt.Println("      (raglit ocr, transcribe, regions), not the daemon's ingest.")
+			}
 		}
 	}
 
