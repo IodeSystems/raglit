@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -19,6 +20,8 @@ import (
 func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "config home dir (default: nearest ./.raglit, else ~/local/raglit)")
+	daemonFlag := fs.String("daemon", "", "ask this daemon what IT can see (default $RAGLIT_DAEMON, config, else the shared daemon)")
+	localOnly := fs.Bool("local", false, "report only this shell's environment; do not ask the daemon")
 	fs.Parse(args)
 	home := raglit.DiscoverHome()
 	if *homeFlag != "" {
@@ -81,41 +84,70 @@ func runDoctor(args []string) error {
 		fmt.Printf("  ✗ unknown cheap_engine %q (want none|tesseract|paddleocr)\n", cfg.OCR.CheapEngine)
 	}
 
-	// Format extractors (the router's external tools).
-	fmt.Println("\nformat extractors:")
-	if raglit.HavePoppler() {
-		fmt.Println("  ✓ poppler (pdftotext + pdftoppm) — PDF text layer + page rasterization")
-	} else {
-		fmt.Println("  ✗ poppler missing — born-digital PDFs can't extract their text layer")
-		fmt.Println("     install:  sudo apt-get install poppler-utils   (no sudo? deb-extract, see plan)")
+	// Format extractors — IN THE PROCESS THAT RUNS THEM.
+	//
+	// This used to probe the shell doctor was typed in and print a tick per tool.
+	// That is the wrong process: ingest runs in the daemon, and on 2026-08-09
+	// every .docx in a corpus failed with "pandoc not installed" while this
+	// command printed "✓ pandoc". Both were true. systemd --user does not
+	// inherit a login shell's PATH, pandoc was in ~/local/bin, and the green tick
+	// sent the search for the fault somewhere it could not be.
+	shellEnv := raglit.ProbeTools()
+	shellEnv.Who = "this shell"
+	daemonEnv, daemonWhere, daemonErr := raglit.ToolEnv{}, "", error(nil)
+	if !*localOnly {
+		daemonWhere = resolveDaemon(*daemonFlag, func() raglit.Home { return home })
+		if daemonWhere == "" {
+			daemonWhere = defaultDaemonURL
+		}
+		daemonEnv, daemonErr = fetchDaemonTools(daemonWhere)
 	}
-	if raglit.HavePandoc() {
-		fmt.Println("  ✓ pandoc — office/markup (docx, odt, epub, html, pptx) → text")
-	} else {
-		fmt.Println("  · pandoc missing — office/markup formats won't be extracted (optional)")
-		fmt.Println("     install:  sudo apt-get install pandoc")
+
+	// The daemon's answer is the one that decides whether an ingest works, so it
+	// is the one reported. The shell's is kept only to explain a difference.
+	report, authority := shellEnv, "this shell"
+	if daemonErr == nil && len(daemonEnv.Tools) > 0 {
+		report, authority = daemonEnv, daemonEnv.Who
 	}
-	if raglit.HaveLegacyDoc() {
-		fmt.Println("  ✓ antiword/catdoc — legacy binary Word (.doc) → text")
-	} else {
-		fmt.Println("  · antiword missing — legacy .doc won't be extracted (optional)")
-		fmt.Println("     install:  sudo apt-get install antiword     (~200KB; catdoc also works)")
-		fmt.Println("     note:     LibreOffice can convert .doc too, but it is ~1GB, seconds")
-		fmt.Println("               per file, and serialises on one profile lock — antiword is")
-		fmt.Println("               the right size of tool for the job.")
+	fmt.Printf("\nformat extractors — as seen by %s:\n", authority)
+	if daemonErr != nil && !*localOnly {
+		fmt.Printf("  (no daemon at %s: %v — reporting THIS SHELL, which is not what ingests)\n",
+			daemonWhere, daemonErr)
 	}
-	if raglit.HaveHEIC() {
-		fmt.Println("  ✓ magick/convert — HEIC/HEIF (iPhone photos) → PNG for OCR")
-	} else {
-		fmt.Println("  · imagemagick missing — HEIC/HEIF photos won't be extracted (optional)")
-		fmt.Println("     install:  sudo apt-get install imagemagick")
+	for _, t := range report.Tools {
+		switch {
+		case t.Found:
+			fmt.Printf("  ✓ %-10s %-34s %s\n", t.Name, t.Purpose, t.Path)
+		case t.Optional:
+			fmt.Printf("  · %-10s %s — MISSING (optional)\n", t.Name, t.Purpose)
+			fmt.Printf("     install:  %s\n", t.Install)
+		default:
+			fmt.Printf("  ✗ %-10s %s — MISSING\n", t.Name, t.Purpose)
+			fmt.Printf("     install:  %s\n", t.Install)
+		}
 	}
-	fmt.Println("  ✓ .xlsx — read natively (stdlib zip+XML, no external tool needed)")
-	if raglit.HaveXLS() {
-		fmt.Println("  ✓ xls2csv — legacy binary Excel (.xls) → text")
-	} else {
-		fmt.Println("  · xls2csv missing — legacy .xls won't be extracted (optional)")
-		fmt.Println("     install:  sudo apt-get install catdoc     (same package as antiword's fallback)")
+	fmt.Println("  ✓ .xlsx      read natively (stdlib zip+XML, no external tool needed)")
+
+	// A disagreement is the actionable finding: the tool IS installed and the
+	// process that needs it cannot see it. Printing both PATHs is the fix.
+	if daemonErr == nil && len(daemonEnv.Tools) > 0 {
+		if diffs := shellEnv.Disagreements(daemonEnv); len(diffs) > 0 {
+			fmt.Println("\n  ⚠ this shell and the daemon DISAGREE:")
+			for _, d := range diffs {
+				fmt.Printf("      %s\n", d)
+			}
+			onlyShell, onlyDaemon := shellEnv.PathDiff(daemonEnv)
+			if len(onlyShell) > 0 {
+				fmt.Printf("      PATH only the shell has:  %s\n", strings.Join(onlyShell, " "))
+			}
+			if len(onlyDaemon) > 0 {
+				fmt.Printf("      PATH only the daemon has: %s\n", strings.Join(onlyDaemon, " "))
+			}
+			fmt.Println("      fix: give the daemon the PATH, e.g. a systemd drop-in")
+			fmt.Println("           ~/.config/systemd/user/raglit.service.d/path.conf")
+			fmt.Println("           [Service] / Environment=PATH=...")
+			fmt.Println("      (a drop-in, not an edit: `raglit service install` regenerates the unit)")
+		}
 	}
 
 	// Verdict — which tiers are live.
@@ -164,4 +196,47 @@ func pingEndpoint(base string) (ok bool, detail string) {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode < 500, fmt.Sprintf("HTTP %d", resp.StatusCode)
+}
+
+// fetchDaemonTools asks a running daemon what external tools IT can see.
+//
+// Short timeout and no retry: this is a diagnostic, and "the daemon did not
+// answer" is itself a finding worth printing rather than waiting on.
+func fetchDaemonTools(base string) (raglit.ToolEnv, error) {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" {
+		return raglit.ToolEnv{}, fmt.Errorf("no daemon configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/tools", nil)
+	if err != nil {
+		return raglit.ToolEnv{}, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return raglit.ToolEnv{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// An older daemon has no /api/tools. Say so precisely: the check cannot
+		// be performed, which is different from the tools being absent.
+		return raglit.ToolEnv{}, fmt.Errorf("daemon predates this check (no /api/tools) — restart it on this build")
+	}
+	if resp.StatusCode >= 300 {
+		return raglit.ToolEnv{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Body struct {
+			Env raglit.ToolEnv `json:"env"`
+		} `json:"body"`
+		Env raglit.ToolEnv `json:"env"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return raglit.ToolEnv{}, err
+	}
+	if len(body.Env.Tools) > 0 {
+		return body.Env, nil
+	}
+	return body.Body.Env, nil
 }

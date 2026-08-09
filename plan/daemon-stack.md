@@ -121,3 +121,34 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
   want the extra surfaces.
 - Scoped-storage root + naming for `~/.raglit/indexes/<index>` and how branches
   map to files (ATTACH vs overlay-in-one-file).
+
+## A readiness check must probe the process that does the work
+
+`raglit doctor` reported on the shell it was typed in. Ingest runs in the
+daemon. On 2026-08-09 every `.docx` attachment extracted from the delano corpus
+— including the Answer and Affirmative Defenses — failed with `pandoc not
+installed`, while `doctor` in a shell printed `✓ pandoc`. Both were true.
+pandoc was in `~/local/bin`; the shell had it on PATH and `systemd --user` did
+not, because a user service does not inherit a login shell's environment.
+(tesseract escaped only because the config names it by absolute path.)
+
+A check that probes the wrong process is WORSE than no check: it turns a missing
+tool into a confident green tick and sends the search for the fault somewhere it
+cannot be.
+
+So: `raglit.ProbeTools()` is a value computed in one process and rendered in
+another, `GET /api/tools` serves the daemon's, and doctor reports the DAEMON's
+as authoritative, falling back to the shell's with a printed warning that it is
+"not what ingests". It also diffs the two and prints the PATH entries that
+differ, because that is the actual fix. Old daemons answer 404 and doctor says
+the check could not be performed — which is different from the tools being
+absent, and must not read the same.
+
+Two disagreements are reported, not one. "Present here, missing there" is the
+loud case. "Both found, DIFFERENT BINARIES" is quieter and worse: two pandocs of
+different vintages read the same .docx into different text, and nothing in an
+index records which one ran.
+
+Deployment note: the PATH belongs in a systemd DROP-IN
+(`~/.config/systemd/user/raglit.service.d/path.conf`), never in the unit —
+`raglit service install` regenerates the unit and says so in its header.

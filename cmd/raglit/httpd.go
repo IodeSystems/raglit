@@ -249,6 +249,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 		return huma.Operation{OperationID: id, Method: method, Path: path, Summary: summary}
 	}
 	gat.Register(api, g, op("health", http.MethodGet, "/api/health", "Liveness probe."), health)
+	gat.Register(api, g, op("tools", http.MethodGet, "/api/tools", "External extractors as the DAEMON sees them (PATH included)."), toolsProbe)
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
 	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
@@ -370,6 +371,28 @@ type healthOut struct {
 		// development and the case commit metadata gets wrong.
 		ExeHash string `json:"exe_hash,omitempty"`
 	}
+}
+
+// toolsOut is the daemon's OWN view of the external extractors.
+//
+// This endpoint exists because `raglit doctor` used to probe the shell it was
+// typed in, which is not the process that runs pandoc. See raglit.ProbeTools.
+type toolsOut struct {
+	Body struct {
+		Who string         `json:"who"`
+		Env raglit.ToolEnv `json:"env"`
+		PID int            `json:"pid"`
+	}
+}
+
+func toolsProbe(_ context.Context, _ *struct{}) (*toolsOut, error) {
+	out := &toolsOut{}
+	out.Body.PID = os.Getpid()
+	out.Body.Who = fmt.Sprintf("daemon (pid %d)", out.Body.PID)
+	env := raglit.ProbeTools()
+	env.Who = out.Body.Who
+	out.Body.Env = env
+	return out, nil
 }
 
 func health(_ context.Context, _ *struct{}) (*healthOut, error) {
