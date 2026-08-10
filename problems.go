@@ -75,6 +75,13 @@ const (
 	// another path. A row is a pointer, and a moved file breaks the pointer, not
 	// the document.
 	ProblemMissingFile ProblemKind = "missing-file"
+	// ProblemUnreadPage — a page the OCR could not read, in a document that was
+	// otherwise indexed. Created deliberately by the ingest salvage: one failed
+	// page used to discard the whole document, and now it is recorded as a hole
+	// so the rest can be kept. That trade is only sound if the hole is FINDABLE —
+	// a partial document nobody knows is partial is the more dangerous object,
+	// because search returns it and a reader assumes the absence is the record's.
+	ProblemUnreadPage ProblemKind = "page-unread"
 )
 
 // Problem is one thing worth a person's attention.
@@ -134,6 +141,28 @@ var problemQueries = []problemQuery{
 		         AND NOT EXISTS (SELECT 1 FROM fragments f WHERE f.doc_id = d.id)
 		       ORDER BY d.path`,
 		fix: func(p Problem) string { return "raglit ingest --fresh " + p.Subject },
+	},
+	{
+		kind: ProblemUnreadPage,
+		// Reported per DOCUMENT, not per page: five holes in one scan is one thing
+		// to go and look at, and five lines of the same path is how a report stops
+		// being read.
+		//
+		// Withdrawn paths are excluded for the same reason they are elsewhere —
+		// absent on purpose is not absent by accident.
+		sql: `SELECT d.path, 0, 'ocr',
+		             'unread page(s): ' || group_concat(o.page, ' ')
+		        FROM ocr_pages o JOIN documents d ON d.id = o.doc_id
+		       WHERE o.engine = 'failed'
+		         AND NOT EXISTS (SELECT 1 FROM withdrawals w WHERE w.path = d.path)
+		       GROUP BY d.id
+		       ORDER BY d.path`,
+		// reread re-attempts only what has no cached text, so it costs the holes
+		// and not the document. When a page fails DETERMINISTICALLY — the
+		// repetition guard on a dense table, at temp 0 — reread returns the same
+		// refusal, and the page needs `raglit regions` to be read in pieces
+		// instead. Both are one command; the cheap one is offered first.
+		fix: func(p Problem) string { return "raglit reread " + p.Subject },
 	},
 	{
 		kind: ProblemGenerated,

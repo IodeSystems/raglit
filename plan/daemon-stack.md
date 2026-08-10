@@ -152,3 +152,24 @@ index records which one ran.
 Deployment note: the PATH belongs in a systemd DROP-IN
 (`~/.config/systemd/user/raglit.service.d/path.conf`), never in the unit —
 `raglit service install` regenerates the unit and says so in its header.
+
+## A hole must be findable, and `project=` does not namespace over HTTP
+
+The ingest salvage keeps a document that lost a page. That trade is only sound if
+something SURFACES the hole — a partial document nobody knows is partial is more
+dangerous than a failed ingest, because search returns it and a reader takes the
+absence for the record's. `ProblemUnreadPage` reports one line per document
+naming which pages are unread, with `raglit reread` as the fix. When a page
+fails DETERMINISTICALLY (the repetition guard at temp 0) reread returns the same
+refusal and the page needs `raglit regions` instead.
+
+SEPARATE BUG, found while verifying the above and NOT fixed:
+
+    /api/problems?project=delano-v-mckinnon&index=default   ->   4 docs,  0 problems
+    /api/problems?index=delano-v-mckinnon__default          -> 481 docs, 64 problems
+
+The `project` query parameter does not namespace the index on these endpoints —
+it silently answers about the plain `default` index instead of the project's.
+The CLI is unaffected because it resolves the namespaced name itself. Anything
+driving the daemon over HTTP with `project=` is being told about the wrong
+corpus, and getting a confident empty answer rather than an error.

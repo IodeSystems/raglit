@@ -415,3 +415,82 @@ func TestProblemsDoesNotCallRemoteDocumentsMissing(t *testing.T) {
 		}
 	}
 }
+
+// A hole must be FINDABLE. The ingest salvage deliberately keeps a document that
+// lost a page, which is only the right trade if something says so — a partial
+// document nobody knows is partial is more dangerous than a failed ingest,
+// because search returns it and a reader takes the absence for the record's.
+func TestProblemsReportsUnreadPages(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if err := s.Ingest(ctx, Document{Path: "scan.pdf", Fragments: []Fragment{{Text: "the pages that read"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := s.db.QueryRow(`SELECT id FROM documents WHERE path='scan.pdf'`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct {
+		page   int
+		engine string
+	}{{1, "vision"}, {2, "failed"}, {3, "vision"}, {4, "failed"}} {
+		if _, err := s.db.Exec(`INSERT INTO ocr_pages(doc_id,page,engine) VALUES(?,?,?)`,
+			id, r.page, r.engine); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ps, err := s.Problems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *Problem
+	for i := range ps {
+		if ps[i].Kind == ProblemUnreadPage {
+			got = &ps[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("a document with unread pages is not reported at all")
+	}
+	if got.Subject != "scan.pdf" {
+		t.Errorf("subject = %q", got.Subject)
+	}
+	// One row per document, naming every hole — not one row per page.
+	n := 0
+	for _, p := range ps {
+		if p.Kind == ProblemUnreadPage {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("want one line for the document, got %d", n)
+	}
+	if !strings.Contains(got.Detail, "2") || !strings.Contains(got.Detail, "4") {
+		t.Errorf("the detail must name WHICH pages are missing, got %q", got.Detail)
+	}
+	if got.Fix == "" {
+		t.Error("a reported hole must come with the command that closes it")
+	}
+}
+
+// A fully-read document is not a problem. A report that fires on healthy input
+// trains people to ignore it.
+func TestProblemsSilentWhenEveryPageRead(t *testing.T) {
+	s := testStore(t)
+	if err := s.Ingest(context.Background(), Document{Path: "clean.pdf", Fragments: []Fragment{{Text: "all read"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := s.db.QueryRow(`SELECT id FROM documents WHERE path='clean.pdf'`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	for p := 1; p <= 3; p++ {
+		s.db.Exec(`INSERT INTO ocr_pages(doc_id,page,engine) VALUES(?,?,'vision')`, id, p)
+	}
+	ps, _ := s.Problems(context.Background())
+	for _, p := range ps {
+		if p.Kind == ProblemUnreadPage {
+			t.Errorf("a fully-read document was reported as holed: %+v", p)
+		}
+	}
+}
