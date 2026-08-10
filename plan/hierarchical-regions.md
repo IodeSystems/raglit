@@ -1001,3 +1001,11 @@ itself, and which this document already specifies asking for.
   The gate this implies — descend when `NativeDPI > DPICapForArea(area)`, skip
   when it is not — is computable from `dpi.go` before any model call is made,
   and nothing currently consults it. Not built: it changes `--tile` behaviour.
+- **The salvage had to be applied TWICE, in two paths.** `unitsToPageText`
+  (extract, used by `transcribe`/`regions`) was fixed 2026-08-06 so one failed
+  page stops discarding the document. `ingestUnits` — what the DAEMON runs — was
+  not, and kept doing it for four more days: measured 2026-08-09, a 5-page lot
+  certification and a 9-page billing narrative were indexed as nothing, no row
+  and no fragment, because one page each tripped the repetition guard on a dense
+  table. Fixing a defect in the path you are testing does not fix it in the path
+  that ships. Grep for the sibling.

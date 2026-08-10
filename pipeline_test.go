@@ -237,6 +237,12 @@ func imageUnits(n int) []ingestUnit {
 
 // The failure this exists for: a document that dies partway used to discard
 // every page it had already transcribed, and the retry started at page 1.
+//
+// UPDATED 2026-08-10 for the salvage contract. A single failed page no longer
+// fails the document — it is recorded as a hole and the rest is indexed — so the
+// first run now COMPLETES and reads page 6 as well. What this test is actually
+// for is unchanged and still asserted: transcribed pages stay in the cache, and
+// a re-read asks the model only for the page it never got.
 func TestIngestResumesFromTheOCRCacheAfterAFailure(t *testing.T) {
 	s, err := Open(":memory:")
 	if err != nil {
@@ -251,34 +257,40 @@ func TestIngestResumesFromTheOCRCacheAfterAFailure(t *testing.T) {
 	// one stub made the segmenter's calls look like re-read pages.
 	seg := NewSegmenter(&stubChatter{reply: `{"continues_previous":false,"fragments":[{"text":"t"}]}`})
 
-	// First run dies on page 5.
+	// First run: page 5 fails and is salvaged; the document still commits.
 	if _, _, err := s.ingestUnits(context.Background(), seg, ocr,
-		"", "doc", units, FragConfig{}, nil); err == nil {
-		t.Fatal("expected the ingest to fail on page 5")
+		"", "doc", units, FragConfig{}, nil); err != nil {
+		t.Fatalf("one bad page must not fail a 6-page document: %v", err)
 	}
-	firstRunCalls := flaky.calls
-	if firstRunCalls != 5 {
-		t.Fatalf("expected 5 model calls before the failure, got %d", firstRunCalls)
+	// It did not stop at the failure: page 6 was attempted too.
+	if flaky.calls != 6 {
+		t.Fatalf("expected 6 model calls (the walk continues past a hole), got %d", flaky.calls)
 	}
 
-	// The four pages that succeeded must be on disk.
+	// The five pages that succeeded must be on disk. THIS is the point of the
+	// test: work already paid for is not thrown away.
 	var cached int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ocr_page_cache`).Scan(&cached); err != nil {
 		t.Fatal(err)
 	}
-	if cached != 4 {
-		t.Fatalf("want 4 pages cached after failing on the 5th, got %d", cached)
+	if cached != 5 {
+		t.Fatalf("want 5 pages cached after page 5 failed, got %d", cached)
 	}
 
-	// Second run must ask the model only for the pages it never got.
+	// Second run must ask the model only for the page it never got.
 	before := flaky.calls
 	if _, _, err := s.ingestUnits(context.Background(), seg, ocr,
 		"", "doc", units, FragConfig{}, nil); err != nil {
 		t.Fatalf("the retry should succeed: %v", err)
 	}
-	// Pages 1-4 come from the cache; only 5 and 6 reach the model.
-	if reread := flaky.calls - before; reread != 2 {
-		t.Errorf("the retry made %d OCR calls; want 2 (pages 5 and 6 only)", reread)
+	if reread := flaky.calls - before; reread != 1 {
+		t.Errorf("the retry made %d OCR calls; want 1 (page 5 only)", reread)
+	}
+	// And the hole is now filled — no page left marked failed.
+	var holes int
+	s.db.QueryRow(`SELECT COUNT(*) FROM ocr_pages WHERE engine='failed'`).Scan(&holes)
+	if holes != 0 {
+		t.Errorf("the re-read should have closed the hole, %d still marked failed", holes)
 	}
 }
 

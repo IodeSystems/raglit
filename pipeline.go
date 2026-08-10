@@ -147,6 +147,44 @@ type resolvedPage struct {
 	model  string
 }
 
+// pageFailure is one page that could not be read, kept so the document can be
+// committed WITHOUT it while still saying which page is missing. A hole that
+// names itself can be re-read; a document that silently lost a third of itself
+// cannot even be noticed.
+type pageFailure struct {
+	page int
+	err  error
+}
+
+// anyPageRead reports whether at least one page produced text. The threshold for
+// committing a partial document: some content beats none, none is a failure.
+func anyPageRead(pages []resolvedPage) bool {
+	for _, p := range pages {
+		if strings.TrimSpace(p.text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// failedPageList renders the missing page numbers for a stage line, capped so a
+// wholly-unreadable scan does not print two hundred numbers.
+func failedPageList(f []pageFailure) string {
+	const max = 12
+	var b strings.Builder
+	for i, pf := range f {
+		if i == max {
+			fmt.Fprintf(&b, " +%d more", len(f)-max)
+			break
+		}
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		fmt.Fprintf(&b, "p%d", pf.page)
+	}
+	return b.String()
+}
+
 // ingestUnits runs the per-document pipeline and commits atomically. It resolves
 // every unit to text FIRST (image units run the cheap→gate→VLM OCR cascade, the
 // "ocr" task, tagged with the real engine per page), then makes ONE per-document
@@ -163,6 +201,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	// pass over the page engines, which pipeline already tallies.
 	var pages []resolvedPage
 	var provenance []stagedPage
+	var failedPages []pageFailure
 	ocrEngines := map[string]int{}
 	cachedHits := 0
 	sawVision := false
@@ -179,10 +218,29 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			}
 			t, eng, fromCache, err := s.ocrPageCached(ctx, ocr, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
 			if err != nil {
-				// Pages already transcribed on this run are in the cache, so the
-				// retry resumes here rather than starting the document again.
+				// SALVAGE. This used to return and lose the WHOLE document, the
+				// same defect unitsToPageText was fixed for on 2026-08-06 — the
+				// fix never reached the ingest path, so the daemon kept doing it.
+				// Measured 2026-08-09: a 5-page lot certification and a 9-page
+				// billing narrative were indexed as NOTHING because one page each
+				// tripped the repetition guard on a dense table.
+				//
+				// A page failing is a fact about that page. Record it, keep the
+				// rest, and let the hole name itself; only a document where
+				// nothing read at all is a failed document. The page image is
+				// still saved so the hole can be re-read without re-fetching.
+				//
+				// Pages already transcribed on this run stay in the cache, so a
+				// later re-read resumes rather than starting the document again.
 				sl.Fail("ocr", eng, fmt.Errorf("page %d: %w (%d page(s) already cached and will not be re-read)", u.page, err, cachedHits))
-				return 0, "", err
+				failedPages = append(failedPages, pageFailure{page: u.page, err: err})
+				imgPath := ""
+				if p, e := s.savePageImage(docPath, u.page, u.mime, u.data); e == nil {
+					imgPath = p
+				}
+				provenance = append(provenance, stagedPage{page: u.page, engine: "failed", model: ocr.Model, dpi: u.dpi, imgPath: imgPath})
+				pages = append(pages, resolvedPage{page: u.page, engine: "failed"})
+				continue
 			}
 			if fromCache {
 				cachedHits++
@@ -210,6 +268,18 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		}
 		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model})
 	}
+	// Every page a hole is a failed document; some holes among readable pages is a
+	// partial one, which is worth keeping. Reported either way, because an ingest
+	// that quietly drops a third of a document is the failure this guards.
+	if len(failedPages) > 0 {
+		if !anyPageRead(pages) {
+			sl.Fail("ocr", "", fmt.Errorf("every page failed to read: %w", failedPages[0].err))
+			return 0, "", fmt.Errorf("raglit: %s: every page failed to read: %w", docPath, failedPages[0].err)
+		}
+		sl.Done("ocr", "", fmt.Sprintf("SALVAGED: %d of %d page(s) unread (%s) — the rest were indexed",
+			len(failedPages), len(units), failedPageList(failedPages)))
+	}
+
 	// The transcription, if this index asked for one. Written here because `pages`
 	// is exactly the per-page text a transcription is, and after fragmentation it
 	// is gone. Best-effort: a convenience file must never fail a good ingest.
