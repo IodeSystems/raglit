@@ -520,3 +520,46 @@ func TestDegradedFixTargetsTheStageThatFailed(t *testing.T) {
 		t.Errorf("a non-segment degradation still wants a reread: %q", got)
 	}
 }
+
+// A report that only grows is not a report. A degradation fixed by a later
+// re-ingest is history: re-segmenting 29 documents once took the reported count
+// from 33 to 37, because the old stage rows survived and the clean runs added
+// nothing that could cancel them.
+func TestDegradedOnlyReportsTheLatestRun(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if err := s.Ingest(ctx, Document{Path: "/d.pdf", Fragments: []Fragment{{Text: "text"}}}); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := s.Enqueue("/d.pdf", "")
+	s.NewStageLog(old).Record("segment", "", "degraded", "would not return JSON")
+	// A later run of the SAME document that segmented cleanly.
+	newer, _ := s.Enqueue("/d.pdf", "")
+	s.NewStageLog(newer).Record("segment", "", "done", "3 fragment(s)")
+
+	ps, err := s.Problems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range ps {
+		if p.Kind == ProblemDegraded && p.JobID == old {
+			t.Errorf("a degradation fixed by a later run is still reported: %+v", p)
+		}
+	}
+	// And a document whose LATEST run degraded is still reported.
+	if err := s.Ingest(ctx, Document{Path: "/e.pdf", Fragments: []Fragment{{Text: "t"}}}); err != nil {
+		t.Fatal(err)
+	}
+	bad, _ := s.Enqueue("/e.pdf", "")
+	s.NewStageLog(bad).Record("segment", "", "degraded", "would not return JSON")
+	ps, _ = s.Problems(ctx)
+	found := false
+	for _, p := range ps {
+		if p.Kind == ProblemDegraded && p.JobID == bad {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a document whose latest run degraded must still be reported")
+	}
+}

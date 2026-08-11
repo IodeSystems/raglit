@@ -259,9 +259,27 @@ var problemQueries = []problemQuery{
 	},
 	{
 		kind: ProblemDegraded,
+		// Only the LATEST job for each document. A degradation that a later
+		// re-ingest fixed is HISTORY, and listing it is how a report stops being
+		// read — the same rule ProblemJobFailed already applies, which this query
+		// was written beside and did not copy.
+		//
+		// Caught the hard way 2026-08-11: re-segmenting 29 degraded documents
+		// took the reported count from 33 to 37, because every old stage row
+		// survived and the 29 new clean runs added nothing that could cancel
+		// them. A count that only grows is not a report.
+		// Keyed on the most recent STAGE ROW for (document, stage name), not the
+		// most recent JOB: re-ingesting sometimes reuses the job row and records
+		// both outcomes against it, so "the latest job" leaves the old
+		// degradation standing. job_stages.id is a monotonic primary key, which
+		// makes "the last thing that happened to this stage" a single lookup.
 		sql: `SELECT j.url, j.id, s.name, s.detail
 		        FROM job_stages s JOIN ingest_jobs j ON j.id = s.job_id
 		       WHERE s.state = 'degraded'
+		         AND s.id = (SELECT s2.id
+		                       FROM job_stages s2 JOIN ingest_jobs j2 ON j2.id = s2.job_id
+		                      WHERE j2.url = j.url AND s2.name = s.name
+		                      ORDER BY s2.id DESC LIMIT 1)
 		       ORDER BY s.job_id DESC`,
 		// The fix depends on WHICH STAGE degraded, and offering `reread` for all
 		// of them sends people to re-OCR a document whose OCR was fine. A
