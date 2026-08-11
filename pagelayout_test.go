@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -83,5 +84,57 @@ func TestUnlabelledBlocksSurvive(t *testing.T) {
 	}
 	if !strings.Contains(b[0].Text, "no label here") {
 		t.Errorf("text lost: %q", b[0].Text)
+	}
+}
+
+// The bug the Go tests could not see. `X0, Y0, X1, Y1 int ` + "`json:\"x0\"`" + `
+// gives all four fields the SAME tag; encoding/json suppresses the conflict and
+// every box ships with no coordinates at all. Pct() kept working, every test
+// passed, and the browser drew nothing.
+//
+// So this asserts the WIRE FORMAT, which is what the renderer consumes.
+func TestBoxCoordinatesSurviveJSON(t *testing.T) {
+	b, err := json.Marshal(LayoutBox{X0: 59, Y0: 47, X1: 550, Y1: 63, Label: "Text", Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]float64{"x0": 59, "y0": 47, "x1": 550, "y1": 63} {
+		got, ok := back[k]
+		if !ok {
+			t.Errorf("%q is missing from the JSON — the overlay has nothing to place: %s", k, b)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", k, got, want)
+		}
+	}
+	// And a round trip must reconstruct the same box.
+	var rt LayoutBox
+	if err := json.Unmarshal(b, &rt); err != nil {
+		t.Fatal(err)
+	}
+	if rt.X0 != 59 || rt.Y0 != 47 || rt.X1 != 550 || rt.Y1 != 63 {
+		t.Errorf("round trip lost coordinates: %+v", rt)
+	}
+}
+
+// A block list that shows `&amp;` and an empty box where the barcode is
+// describes the page worse than the index does — the flattener already decodes
+// entities and keeps <img alt>, and this must agree with it.
+func TestBlockTextMatchesTheFlattenersRules(t *testing.T) {
+	b := ParseLayoutBoxes(`<div data-bbox="1 2 3 4" data-label="Text"><p>Smith &amp; Jones</p></div>` +
+		`<div data-bbox="5 6 7 8" data-label="Image"><img alt="Barcode 200809090112, Skagit County Auditor"/></div>`)
+	if len(b) != 2 {
+		t.Fatalf("want 2 boxes, got %d", len(b))
+	}
+	if b[0].Text != "Smith & Jones" {
+		t.Errorf("entities not decoded: %q", b[0].Text)
+	}
+	if !strings.Contains(b[1].Text, "200809090112") {
+		t.Errorf("the figure's alt text was dropped: %q", b[1].Text)
 	}
 }

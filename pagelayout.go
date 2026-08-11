@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"regexp"
 	"strconv"
@@ -26,10 +27,19 @@ import (
 // LayoutBox is one block the model reported: where it is, what kind it thought
 // it was, and what it read there.
 type LayoutBox struct {
-	// X0..Y1 are normalised to 0-1000 per axis, as the model emits them.
-	X0, Y0, X1, Y1 int    `json:"x0"`
-	Label          string `json:"label"`
-	Text           string `json:"text"`
+	// Normalised to 0-1000 per axis, as the model emits them.
+	//
+	// One tag per field, deliberately. `X0, Y0, X1, Y1 int ` + "`" + `json:"x0"` + "`" + `` applies the
+	// SAME tag to all four, encoding/json suppresses the conflicting names, and
+	// every box goes over the wire with NO COORDINATES — the overlay draws
+	// nothing. The Go tests passed throughout, because they exercised Pct() on
+	// the struct and never the wire format.
+	X0    int    `json:"x0"`
+	Y0    int    `json:"y0"`
+	X1    int    `json:"x1"`
+	Y1    int    `json:"y1"`
+	Label string `json:"label"`
+	Text  string `json:"text"`
 }
 
 // Pct returns the box as CSS percentages (left, top, width, height), which is
@@ -97,8 +107,14 @@ func ParseLayoutBoxes(raw string) []LayoutBox {
 		if i+1 < len(locs) {
 			end = locs[i+1][0]
 		}
-		body := strings.TrimSpace(tagsOnly.ReplaceAllString(raw[m[1]:end], " "))
-		body = strings.Join(strings.Fields(body), " ")
+		// Same two rules the index flattener follows, for the same reasons: an
+		// <img alt> is the ONLY text a barcode or photograph produces, and a
+		// searcher types & not &amp;. A block list that shows `&amp;` and an
+		// empty box where the barcode is describes the page worse than the
+		// index does.
+		inner := imgTag.ReplaceAllString(raw[m[1]:end], "$1 ")
+		body := strings.TrimSpace(tagsOnly.ReplaceAllString(inner, " "))
+		body = html.UnescapeString(strings.Join(strings.Fields(body), " "))
 		out = append(out, LayoutBox{X0: v[0], Y0: v[1], X1: v[2], Y1: v[3], Label: label, Text: body})
 	}
 	return out
@@ -150,21 +166,22 @@ func (s *Store) PageLayoutFor(docPath string, page int) (*PageLayout, error) {
 			out.Boxes = ParseLayoutBoxes(raw)
 		}
 	}
-	// What the index holds for this page, in page order. Fragments are labelled
-	// by their STARTING page and can span several, so this is "fragments that
-	// begin here" — the honest answer, and the one that matches the review pane.
-	rows, err := s.db.Query(`SELECT f.text FROM fragments f JOIN documents d ON d.id = f.doc_id
-	                          WHERE d.path = ? AND f.page = ? ORDER BY f.ord`, docPath, page)
-	if err == nil {
-		defer rows.Close()
-		var parts []string
-		for rows.Next() {
-			var t string
-			if rows.Scan(&t) == nil {
-				parts = append(parts, t)
+	// What the index holds FOR THIS PAGE — via TruePages, which splits each
+	// fragment's bytes across the pages it spans using page_spans.
+	//
+	// The obvious query (`WHERE f.page = ?`) is wrong and quietly so: a fragment
+	// is labelled by the page it STARTS on, so page 27 of a bundle whose
+	// fragment began on page 26 reports zero bytes and the comparison reads as
+	// "the index holds nothing here". Measured on the Authentisign PSA, where
+	// exactly that happened — the same page-label trap that made a phantom
+	// data-loss bug earlier the same day.
+	if tp, terr := s.TruePages(docPath); terr == nil {
+		for _, t := range tp {
+			if t.Page == page {
+				out.Indexed = t.Text
+				break
 			}
 		}
-		out.Indexed = strings.Join(parts, "\n\n")
 	}
 	return out, nil
 }
