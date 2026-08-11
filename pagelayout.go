@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Showing what the model SAW, beside what the index KEPT.
@@ -168,6 +169,62 @@ func (s *Store) PageLayoutFor(docPath string, page int) (*PageLayout, error) {
 	return out, nil
 }
 
+// shaMemo remembers a page image's sha256 by path+size+mtime.
+//
+// The cache key IS the image's sha256, so answering "does this page have layout"
+// means hashing the file — and a 30-page bundle of 5 MB scans is 150 MB of
+// hashing per view of the page list. The memo makes that a once-per-file cost;
+// the size+mtime guard means a re-rendered page is re-hashed rather than
+// silently answering for the old picture.
+var shaMemo sync.Map // string(path|size|mtime) -> string(sha256)
+
+func pageImageSHAFor(imgPath string) (string, bool) {
+	fi, err := os.Stat(imgPath)
+	if err != nil {
+		return "", false
+	}
+	key := fmt.Sprintf("%s|%d|%d", imgPath, fi.Size(), fi.ModTime().UnixNano())
+	if v, ok := shaMemo.Load(key); ok {
+		return v.(string), true
+	}
+	data, err := os.ReadFile(imgPath)
+	if err != nil {
+		return "", false
+	}
+	sha := pageImageSHA(data)
+	shaMemo.Store(key, sha)
+	return sha, true
+}
+
+// PagesWithLayout reports which of a document's pages have layout blocks, so a
+// page LIST can decide whether to offer a Layout tab without fetching each
+// page's blocks. One query plus a memoised hash per page.
+func (s *Store) PagesWithLayout(docPath string) map[int]bool {
+	rows, err := s.db.Query(`SELECT o.page, o.image_path FROM ocr_pages o
+	                          JOIN documents d ON d.id = o.doc_id
+	                         WHERE d.path = ? AND o.image_path != ''`, docPath)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[int]bool{}
+	for rows.Next() {
+		var page int
+		var img string
+		if rows.Scan(&page, &img) != nil {
+			continue
+		}
+		sha, ok := pageImageSHAFor(img)
+		if !ok {
+			continue
+		}
+		if t, _, ok := s.cachedPageOCR(sha); ok && strings.Contains(t, "data-bbox") {
+			out[page] = true
+		}
+	}
+	return out
+}
+
 // cachedOCRForImageFile finds the model's original output for a saved page
 // image, by hashing the file the way the cache was keyed.
 //
@@ -176,10 +233,10 @@ func (s *Store) PageLayoutFor(docPath string, page int) (*PageLayout, error) {
 // changed (a re-render at a different DPI) simply misses, which is correct — the
 // old boxes describe a picture that no longer exists.
 func (s *Store) cachedOCRForImageFile(imgPath string) (string, bool) {
-	data, err := os.ReadFile(imgPath)
-	if err != nil {
+	sha, ok := pageImageSHAFor(imgPath)
+	if !ok {
 		return "", false
 	}
-	text, _, ok := s.cachedPageOCR(pageImageSHA(data))
+	text, _, ok := s.cachedPageOCR(sha)
 	return text, ok
 }

@@ -221,3 +221,14 @@
 .pagenav a { color:#5b9dd9; text-decoration:none; }
 .pagenav a:hover { text-decoration:underline; }
 .pagecard .n { color:#5b9dd9; text-decoration:none; }
+
+/* Text | Layout on a page card. Only rendered where the page HAS layout blocks,
+   so the strip never appears over a page it cannot explain. */
+.tabstrip { display: flex; gap: 6px; margin: 2px 0 8px; }
+.tabstrip button {
+  background: transparent; color: var(--muted, #888); cursor: pointer;
+  border: 0; border-bottom: 2px solid transparent; padding: 3px 2px; margin-right: 8px;
+  font: inherit; font-size: 12px; letter-spacing: .3px;
+}
+.tabstrip button.on { color: inherit; border-bottom-color: currentColor; }
+.linkish { background: none; border: 0; color: #7ab; cursor: pointer; font: inherit; padding: 0; }

@@ -152,8 +152,40 @@ export type DocPage = {
   read_by?: string;
   read_at?: string;
   image_url?: string;
+  has_layout?: boolean;
   figures?: DocFigure[];
 };
+
+// One block the layout-aware reader reported: where it is, what kind it thought
+// it was, and what it read there. Coordinates are normalised 0-1000 PER AXIS,
+// independently — not pixels — so they place as percentages with no image
+// dimensions and stay aligned at any rendered width.
+export type LayoutBox = {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  label?: string;
+  text?: string;
+};
+
+// A page seen three ways: what the reader saw (boxes), what it wrote (raw), and
+// what search actually matches (indexed). They have differed by 40% of their
+// bytes with nothing to show it.
+export type PageLayout = {
+  doc: string;
+  page: number;
+  engine?: string;
+  model?: string;
+  has_image: boolean;
+  boxes?: LayoutBox[];
+  raw?: string;
+  indexed?: string;
+};
+
+export function getPageLayout(index: string, path: string, page: number) {
+  return getJSON<PageLayout>("/api/page-layout", { index, path, page });
+}
 
 export type DocJob = {
   id: number;

@@ -14,7 +14,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -327,27 +326,6 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	}
 	router.NotFound(spa.ServeHTTP)
 	router.Get("/", spa.ServeHTTP)
-	// A plain HTML route, not part of the SPA: this renders server-side from the
-	// OCR cache and needs no build step, so it works on any daemon that has the
-	// binary — including one nobody has run `npm` against.
-	router.Get("/layout", func(w http.ResponseWriter, r *http.Request) {
-		st, err := reg.Get(r.URL.Query().Get("index"))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		doc := r.URL.Query().Get("path")
-		page := queryInt(r, "page", 1)
-		pl, err := st.PageLayoutFor(doc, page)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := renderLayoutPage(w, r.URL.Query().Get("index"), pl); err != nil {
-			log.Printf("raglit: layout render: %v", err)
-		}
-	})
 	router.Get("/api/page-image", func(w http.ResponseWriter, r *http.Request) {
 		st, err := reg.Get(r.URL.Query().Get("index"))
 		if err != nil {

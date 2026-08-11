@@ -64,31 +64,40 @@ escalation) is surfaced on demand via `/api/reocr` against the saved page image.
 - Docs indexed before this feature have no `ocr_pages` rows → review shows "no
   OCR-tracked pages" until re-ingested.
 
-## /layout — what the model SAW beside what the index KEPT
+## Text | Layout on the page card
 
-`GET /layout?index=…&path=…&page=N` renders one page three ways: the saved page
-image with the model's layout blocks overlaid, the per-block text, and the raw
-transcription against the indexed text. `GET /api/page-layout` is the same as
-JSON.
+The page list (`/i/<index>/d/<doc>/pages`) and the single-page screen show, per
+page: the image with the reader's layout blocks drawn on it, and two tabs —
+**Text** (what the index holds, what search matched) and **Layout** (the blocks,
+and the raw transcription behind them). The tabs appear ONLY where the page has
+layout blocks; `has_layout` rides along with the page list so a tab strip never
+appears over a tesseract page and then turns out empty.
+
+Built first as a separate server-rendered `/layout` route, which was wrong: the
+per-page screen already existed and already showed "the image, what was read
+from it, what the machine saw". A second surface for the same thing is a second
+thing to keep in step. Removed; `GET /api/page-layout` (the data) stayed.
 
 Why it exists: the flattener (indextext.go) deliberately drops `data-bbox` and
-`data-label` from the index, and until this there was NO surface for them at all
-— `bbox` appeared in the codebase only as a figure's location in a search hit. A
-page could differ from its indexed text by 40% of its bytes and nothing showed
-it.
+`data-label` before indexing, and until this there was NO surface for them —
+`bbox` appeared in the codebase only as a figure's location in a search hit. A
+page could differ from its indexed text by 40% of its bytes with nothing to show
+it. The byte counts are printed beside the tabs for exactly that reason.
 
 Three things that made it cheap:
   - The raw markup survives in `ocr_page_cache`, keyed by the page image's
-    sha256. That is independent of the flattener, of `writeback_transcription_md`
-    and of any re-ingest — the model's original output cannot be lost while the
-    image is unchanged, and a changed image correctly misses.
+    sha256 — independent of the flattener, of `writeback_transcription_md` and
+    of re-ingests. A changed image correctly misses, because the old boxes
+    describe a picture that no longer exists.
   - Coordinates are normalised 0-1000 PER AXIS, INDEPENDENTLY — not pixels, not
-    aspect-preserving. So boxes place as CSS percentages with no image
-    dimensions, and stay aligned at any width. Verified by overlay on a 2550x3300
-    scan whose boxes topped out at 924 x 934: every box landed on its line.
-  - Server-rendered, no build step, so it works on any daemon with the binary.
+    aspect-preserving. So boxes place as CSS percentages: no image dimensions,
+    correct at any width, and correct before the image has even loaded. Verified
+    by overlay on a 2550x3300 scan whose boxes topped out at 924 x 934.
+  - `PagesWithLayout` answers the whole document at once, memoised on
+    path+size+mtime. Asking per card would hash a 30-page bundle of 5 MB scans
+    on every view — 150 MB of hashing to draw a tab strip.
 
 Parser note: attributes are pulled from the whole matched `<div>` rather than
 ordered in one pattern. With `data-bbox` first and `data-label` in an optional
-group the lazy run between them matches empty and EVERY box comes back
+group, the lazy run between them matches empty and EVERY box comes back
 unlabelled — caught by a test, not by looking at it.

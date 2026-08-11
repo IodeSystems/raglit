@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { postJSON, type DocPage } from "../api";
+import { getPageLayout, postJSON, type DocPage, type PageLayout } from "../api";
 import { useDoc } from "../useDocDetail";
 import { NotesPanel } from "./Notes";
 
@@ -30,7 +30,7 @@ export function Pages() {
     <div>
       {pages.map((p) => (
         <div className="pagecard" key={p.page}>
-          <PageImage p={p} onZoom={setLightbox} />
+          <PageImageWithLayout p={p} onZoom={setLightbox} />
           <div>
             <div className="pagehead">
               <Link
@@ -42,7 +42,7 @@ export function Pages() {
               </Link>
               <PageBadges p={p} />
             </div>
-            <div className="ptext">{p.text || "(no text on this page)"}</div>
+            <PageBody p={p} index={index} doc={doc} />
           </div>
         </div>
       ))}
@@ -104,15 +104,13 @@ export function PageDetail({ page }: { page: number }) {
       </div>
 
       <div className="pagecard">
-        <PageImage p={p} onZoom={setLightbox} />
+        <PageImageWithLayout p={p} onZoom={setLightbox} />
         <div>
           <div className="pagehead">
             <span className="n">page {p.page}</span>
             <PageBadges p={p} />
           </div>
-          <div className="ptext" style={{ maxHeight: "none" }}>
-            {p.text || "(no text on this page)"}
-          </div>
+          <PageBody p={p} index={index} doc={doc} tall />
 
           {!!p.figures?.length && (
             <div style={{ marginTop: 10 }}>
@@ -232,5 +230,184 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
     <dialog ref={(el) => el?.showModal()} onClose={onClose} onClick={onClose}>
       <img src={src} alt="" />
     </dialog>
+  );
+}
+
+// ── layout blocks ──────────────────────────────────────────────────────
+//
+// What the READER saw, beside what the INDEX kept. The pipeline strips layout
+// markup before indexing (it was 40% of some pages' bytes and it truncated the
+// segmenter), which is right — but it left the boxes with no surface at all.
+// This is that surface, on the page screen that already exists rather than a
+// second one beside it.
+
+// pageLayoutCache keeps one page's layout for the life of the view, so switching
+// tabs does not refetch and the image overlay and the block list cannot disagree.
+function useLayout(index: string, doc: string, page: number) {
+  const [pl, setPl] = useState<PageLayout | null>(null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setPl(null);
+    setErr(false);
+    getPageLayout(index, doc, page)
+      .then((v) => live && setPl(v))
+      .catch(() => live && setErr(true));
+    return () => {
+      live = false;
+    };
+  }, [index, doc, page]);
+  return { pl, err };
+}
+
+// The image with the reader's blocks drawn on it.
+//
+// Boxes are placed as PERCENTAGES: the coordinates are normalised 0-1000 per
+// axis independently, so no image dimensions are needed and the overlay stays
+// aligned at any width — including when the image is still loading, which is
+// when a pixel-based overlay would be wrong.
+function PageImageWithLayout({
+  p,
+  onZoom,
+}: {
+  p: DocPage;
+  onZoom: (src: string) => void;
+}) {
+  const { index, doc } = useDoc();
+  const { pl } = useLayout(index, doc, p.page);
+  const [show, setShow] = useState(true);
+  const [broken, setBroken] = useState(false);
+  const boxes = pl?.boxes ?? [];
+
+  if (!p.image_url || broken) return <PageImage p={p} onZoom={onZoom} />;
+  return (
+    <div>
+      <div style={{ position: "relative", display: "block" }}>
+        <img
+          src={p.image_url}
+          alt={`page ${p.page}`}
+          onError={() => setBroken(true)}
+          onClick={() => onZoom(p.image_url!)}
+          style={{ display: "block", width: "100%" }}
+        />
+        {show &&
+          boxes.map((b, i) => (
+            <div
+              key={i}
+              title={`${b.label || "block"}: ${(b.text || "").slice(0, 120)}`}
+              data-box={i}
+              style={{
+                position: "absolute",
+                left: `${b.x0 / 10}%`,
+                top: `${b.y0 / 10}%`,
+                width: `${(b.x1 - b.x0) / 10}%`,
+                height: `${(b.y1 - b.y0) / 10}%`,
+                border: "1.5px solid rgba(224,0,170,.55)",
+                background: "rgba(224,0,170,.06)",
+                pointerEvents: "none",
+              }}
+            />
+          ))}
+      </div>
+      {!!boxes.length && (
+        <label className="muted" style={{ display: "block", marginTop: 6 }}>
+          <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />{" "}
+          {boxes.length} layout block{boxes.length > 1 ? "s" : ""}
+        </label>
+      )}
+      <Reocr index={index} doc={doc} page={p.page} />
+    </div>
+  );
+}
+
+// Text or Layout, on the same card.
+//
+// Two tabs ONLY where there is a layout to show — `has_layout` comes back with
+// the page list so the tab strip does not appear over a tesseract page and then
+// turn out empty. Text is the default because it is what search matched; Layout
+// is what the reader saw, which is the thing you go looking for when the text
+// is wrong and you want to know where it came from.
+function PageBody({
+  p,
+  index,
+  doc,
+  tall,
+}: {
+  p: DocPage;
+  index: string;
+  doc: string;
+  tall?: boolean;
+}) {
+  const [tab, setTab] = useState<"text" | "layout">("text");
+  const style = tall ? { maxHeight: "none" as const } : undefined;
+  if (!p.has_layout) {
+    return (
+      <div className="ptext" style={style}>
+        {p.text || "(no text on this page)"}
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="tabstrip">
+        <button className={tab === "text" ? "on" : ""} onClick={() => setTab("text")}>
+          Text
+        </button>
+        <button className={tab === "layout" ? "on" : ""} onClick={() => setTab("layout")}>
+          Layout
+        </button>
+      </div>
+      {tab === "text" ? (
+        <div className="ptext" style={style}>
+          {p.text || "(no text on this page)"}
+        </div>
+      ) : (
+        <LayoutBlocks index={index} doc={doc} page={p.page} />
+      )}
+    </div>
+  );
+}
+
+// The block list, and the raw transcription against the indexed text.
+//
+// The byte counts are shown because the difference is the point: a page whose
+// raw and indexed text differ sharply is one where the reader saw structure the
+// index does not hold, and that is worth knowing before quoting either.
+function LayoutBlocks({ index, doc, page }: { index: string; doc: string; page: number }) {
+  const { pl, err } = useLayout(index, doc, page);
+  const [tab, setTab] = useState<"blocks" | "raw">("blocks");
+  if (err || !pl) return null;
+  const boxes = pl.boxes ?? [];
+  if (!boxes.length && !pl.raw) return null;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="muted" style={{ marginBottom: 6 }}>
+        read by {pl.model || pl.engine || "?"} · {boxes.length} block
+        {boxes.length === 1 ? "" : "s"} · raw {(pl.raw || "").length} bytes vs indexed{" "}
+        {(pl.indexed || "").length} bytes{" "}
+        <button className="linkish" onClick={() => setTab(tab === "blocks" ? "raw" : "blocks")}>
+          {tab === "blocks" ? "show raw transcription" : "show blocks"}
+        </button>
+      </div>
+      {tab === "blocks" ? (
+        <div>
+          {boxes.map((b, i) => (
+            <div className="prov" style={{ marginTop: 6 }} key={i}>
+              <div className="muted">{b.label || "(unlabelled)"}</div>
+              <div>{b.text || "(no text)"}</div>
+            </div>
+          ))}
+          {!boxes.length && (
+            <div className="muted">
+              This page has no layout blocks — the engine that read it does not emit them.
+            </div>
+          )}
+        </div>
+      ) : (
+        <pre className="ptext" style={{ whiteSpace: "pre-wrap", maxHeight: "50vh", overflow: "auto" }}>
+          {pl.raw}
+        </pre>
+      )}
+    </div>
   );
 }

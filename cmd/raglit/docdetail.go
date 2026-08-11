@@ -120,6 +120,9 @@ type DocDetailPage struct {
 	ReadBy   string `json:"read_by,omitempty"`
 	ReadAt   string `json:"read_at,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
+	// HasLayout says this page's reader reported layout BLOCKS, so a viewer can
+	// offer a Layout tab only where there is one to show.
+	HasLayout bool `json:"has_layout,omitempty"`
 
 	// Figures described on this page.
 	//
@@ -284,8 +287,13 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 					pages = append(pages, raglit.DocPageText{Page: t.Page, Text: t.Text})
 				}
 			}
+			// Which pages have layout blocks, once per document rather than once
+			// per page: the answer needs the page image's hash, and a 30-page
+			// bundle of 5 MB scans is 150 MB of hashing if each card asks for
+			// itself. Memoised on path+size+mtime inside the store.
+			withLayout := st.PagesWithLayout(abs)
 			for _, p := range pages {
-				dp := DocDetailPage{Page: p.Page, Text: p.Text}
+				dp := DocDetailPage{Page: p.Page, Text: p.Text, HasLayout: withLayout[p.Page]}
 				// Only offer an image when one was actually stored. A page comes
 				// from the FRAGMENT table and a page image from ocr_pages, and
 				// they do not always agree: a born-digital PDF has pages and no
