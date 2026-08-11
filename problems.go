@@ -263,7 +263,23 @@ var problemQueries = []problemQuery{
 		        FROM job_stages s JOIN ingest_jobs j ON j.id = s.job_id
 		       WHERE s.state = 'degraded'
 		       ORDER BY s.job_id DESC`,
-		fix: func(p Problem) string { return "raglit reread " + p.Subject },
+		// The fix depends on WHICH STAGE degraded, and offering `reread` for all
+		// of them sends people to re-OCR a document whose OCR was fine. A
+		// segmenter that would not return JSON is handed the SAME text on a
+		// re-read and fails the same way at temp 0 — measured on a 1947 deed:
+		// ocr done, 3503 + 1704 chars of clean markup, segment degraded.
+		//
+		// `ingest --fresh` re-runs the pipeline with page OCR served from
+		// ocr_page_cache (keyed by image hash), so segmentation re-runs and the
+		// pixels are not read twice. `reread` does the opposite — it PURGES that
+		// cache — which is right when the READ is what went wrong and wasteful
+		// when it was not.
+		fix: func(p Problem) string {
+			if p.Stage == "segment" {
+				return "raglit ingest --fresh " + p.Subject + "   # re-segments; OCR comes from cache"
+			}
+			return "raglit reread " + p.Subject
+		},
 	},
 	{
 		kind: ProblemRetries,

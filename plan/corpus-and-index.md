@@ -203,3 +203,45 @@ the attach must move into a connect hook in the same change.
 - **A corpus row is worth more than a fragment row.** It cost an LLM call. GC
   deleting one that a slow ingest was about to link is the expensive mistake
   here, which is why the concurrency question above is not a detail.
+
+## The index and the transcription want different text
+
+A layout-aware VLM returns markup. The TRANSCRIPTION should keep it — the
+bounding boxes are how a quotation is checked against the pixels. The INDEX
+should not: measured on the delano corpus 2026-08-10, 413 of 2692 fragments
+carried `data-bbox` markup, 40% of their bytes were tags (~1.3 MB indexed,
+embedded and searched), and one 1947 deed was 49% tags.
+
+`FlattenForIndex` = `StripLayoutMarkup` + `FlattenMarkdownForIndex`, applied in
+`ingestUnits` AFTER the transcription writeback and BEFORE segmentation. The two
+halves were written weeks apart for the same reason and NEITHER was wired to
+anything; conflating "what the artifact holds" with "what the index holds" is
+what left them that way.
+
+Two rules inside the stripper, both learned by getting them wrong:
+  - BLOCK tags become a line break, INLINE tags become NOTHING. Replacing every
+    tag with a space inserts whitespace the page never had (`Afro-Shirazi ,`) and
+    breaks exact-phrase search on perfectly-read text. That cost ~4 points of
+    apparent model error on olmOCR-bench before it was found — in the scorer.
+  - `<[^>]*>` is WRONG. It matched `< 2 acres and the setback is >` and deleted
+    the sentence. Legal and survey prose is full of bare comparisons; the opener
+    must require a letter.
+  - `<img alt="...">` text is CONTENT and is kept: it is the only text a
+    photograph or a barcode ever produces.
+
+### Measured: flattening alone does not fix segmentation
+
+A 2-page 1947 deed, four arms, same cached OCR:
+
+| segmenter | input | segment |
+|---|---|---|
+| chandra | markup | degraded — no valid JSON |
+| Qwen | markup | done, dropped 1184 of 1234 chars |
+| chandra | flattened | degraded — no valid JSON |
+| **Qwen** | **flattened** | **done, clean, no fallback** |
+
+BOTH were needed. The markup hypothesis alone was wrong: chandra fails to emit
+the tool call on clean 3295-char input too. chandra is an OCR model and the
+segmenter asks for structured JSON over TEXT — a different job it was never
+chosen for. `NewSegmenter(w.OCR.Client)` ties the two together; giving the
+segmenter its own model is the remaining fix and now has evidence behind it.

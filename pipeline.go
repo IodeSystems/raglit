@@ -318,6 +318,34 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		sl.Done("ocr", engineSummary(ocrEngines), msg)
 	}
 
+	// FROM HERE ON, `pages` is INDEX text, not transcription text.
+	//
+	// Everything above needed the model's own words with its layout markup — the
+	// transcription artifact keeps the bounding boxes, because that is how a
+	// person checks a quotation against the pixels and how a region is located.
+	// Everything below is the index, which wants none of it: `data-bbox`
+	// coordinates embed as if they were words, attributes eat fragment budget,
+	// and the SEGMENTER is handed twice the text it needs.
+	//
+	// Measured on the delano corpus 2026-08-10: 413 of 2692 fragments carried this
+	// markup and 40% of their bytes were tags — one 1947 deed was 49% tags, and
+	// its segmentation failed with `unexpected end of JSON input`, the reply
+	// truncated mid-object. Both a chandra and a Qwen segmenter failed on it; the
+	// input was the fault, not either model.
+	//
+	// Deliberately AFTER the writeback and BEFORE segmentation: those two want
+	// different text, and conflating them is what left this unwired.
+	flattened := 0
+	for i := range pages {
+		if f := FlattenForIndex(pages[i].text); f != pages[i].text {
+			flattened += len(pages[i].text) - len(f)
+			pages[i].text = f
+		}
+	}
+	if flattened > 0 {
+		sl.Done("flatten", "", fmt.Sprintf("removed %d bytes of layout markup before segmenting", flattened))
+	}
+
 	// Concurrent embed pipeline (only when a store has an embedder). It embeds
 	// finalized fragments while later units segment, holding the vectors in memory
 	// (keyed by fragment index) — written in the final swap, not as produced.

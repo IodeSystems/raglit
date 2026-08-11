@@ -494,3 +494,29 @@ func TestProblemsSilentWhenEveryPageRead(t *testing.T) {
 		}
 	}
 }
+
+// The fix must address the stage that actually degraded. Offering `reread` for a
+// SEGMENT failure sends an operator to re-OCR a document whose OCR was fine, and
+// the segmenter then fails on identical text — the same defect `doctor` had when
+// it pointed its fix at the wrong process.
+func TestDegradedFixTargetsTheStageThatFailed(t *testing.T) {
+	seg := Problem{Kind: ProblemDegraded, Subject: "/a.pdf", Stage: "segment"}
+	other := Problem{Kind: ProblemDegraded, Subject: "/a.pdf", Stage: "ocr"}
+	var q problemQuery
+	for _, x := range problemQueries {
+		if x.kind == ProblemDegraded {
+			q = x
+		}
+	}
+	if q.fix == nil {
+		t.Fatal("the degraded problem offers no fix at all")
+	}
+	if got := q.fix(seg); strings.Contains(got, "reread") {
+		t.Errorf("a segment failure must not recommend reread: %q", got)
+	} else if !strings.Contains(got, "--fresh") {
+		t.Errorf("a segment failure should re-run the pipeline off cached OCR: %q", got)
+	}
+	if got := q.fix(other); !strings.Contains(got, "reread") {
+		t.Errorf("a non-segment degradation still wants a reread: %q", got)
+	}
+}
