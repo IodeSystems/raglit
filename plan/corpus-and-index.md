@@ -245,3 +245,26 @@ the tool call on clean 3295-char input too. chandra is an OCR model and the
 segmenter asks for structured JSON over TEXT — a different job it was never
 chosen for. `NewSegmenter(w.OCR.Client)` ties the two together; giving the
 segmenter its own model is the remaining fix and now has evidence behind it.
+
+### `segment_model` — reading pixels and emitting JSON are different jobs
+
+`NewSegmenter(w.OCR.Client)` tied the segmenter to whatever `vision_model` was,
+so switching the OCR model on 2026-08-05 silently switched the SEGMENTER too.
+Config `segment_model` (flag `--segment-model`) now separates them; empty falls
+back to the vision model, so an index that never sets it behaves as before.
+
+Verified end-to-end on the 1947 deed: `ocr done (chandra-ocr-2)` →
+`flatten done` → `segment done`, page provenance still chandra.
+
+The wiring bug worth remembering: THREE places built a segmenter, and the two on
+the paths that matter — `ingestPDF` (every PDF) and the image branch of
+`extractAndIngestAs` — each constructed their own from the OCR client, ignoring
+`Worker.Segmenter`. Only the email/spreadsheet path used the field. A setting
+wired into the struct but bypassed by the main path would have looked inert and
+been blamed on the model.
+
+OPEN TRADE-OFF, for the operator not the code: on this fleet Qwen sits on the
+5090 with `maxConcurrent 1`, and that slot is what interactive chat needs — the
+original reason OCR moved to chandra. Segmentation is ONE text call per page
+against OCR's image call per page, so the contention returns at a fraction of
+the volume, but it does return.

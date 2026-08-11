@@ -138,7 +138,13 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		w.OCR.Model = *lf.visionModel
 		attachCheapOCR(w.OCR, home, "")
 		// Only used when a page escalates to the VLM (llm-seg); text never does.
-		w.Segmenter = raglit.NewSegmenter(client)
+		// Its own client, because the segmenter's job is a structured tool call
+		// over TEXT and the vision model is chosen for reading PIXELS.
+		segClient := lf.segmentClient()
+		w.Segmenter = raglit.NewSegmenter(segClient)
+		if *lf.segmentModel != "" && *lf.segmentModel != *lf.visionModel {
+			log.Printf("raglit: segmenter model=%s (vision model=%s)", *lf.segmentModel, *lf.visionModel)
+		}
 	}
 	// What each ingested document IS, asked once per document (identity.go). Set
 	// on the STORE rather than the worker because the identity call happens in

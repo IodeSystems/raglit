@@ -20,6 +20,9 @@ import (
 // an OpenAI-standard fallback for the URL), so explicit flags override config.
 type llmFlags struct {
 	url, key, visionModel, embedModel *string
+	// segmentModel splits TEXT into fragments. Empty → visionModel, which is what
+	// it always was — see Config.SegmentModel for why they are separable.
+	segmentModel *string
 }
 
 func addLLMFlags(fs *flag.FlagSet) *llmFlags {
@@ -28,6 +31,8 @@ func addLLMFlags(fs *flag.FlagSet) *llmFlags {
 		key:         fs.String("llm-key", "", "API key (default: config or $RAGLIT_LLM_KEY)"),
 		visionModel: fs.String("llm-model", "", "vision model id (default: config)"),
 		embedModel:  fs.String("embed-model", "", "embedding model id (default: config)"),
+		segmentModel: fs.String("segment-model", "",
+			"model that splits transcribed text into fragments (default: config, else the vision model)"),
 	}
 }
 
@@ -38,6 +43,9 @@ func (f *llmFlags) resolve(home raglit.Home) {
 	*f.url = firstNonEmpty(*f.url, cfg.BaseURL, "https://api.openai.com/v1")
 	*f.visionModel = firstNonEmpty(*f.visionModel, cfg.VisionModel)
 	*f.embedModel = firstNonEmpty(*f.embedModel, cfg.EmbedModel)
+	// Falls back to the vision model, so an index that never heard of this keeps
+	// behaving exactly as before.
+	*f.segmentModel = firstNonEmpty(*f.segmentModel, cfg.SegmentModel, *f.visionModel)
 	*f.key = firstNonEmpty(*f.key, os.Getenv("RAGLIT_LLM_KEY"), cfg.APIKey)
 }
 
@@ -66,6 +74,20 @@ func (f *llmFlags) visionClient() *llm.Client {
 	// should bind here. Raising attempts trades a longer wait on a sick upstream
 	// for finishing the document, which for a transcription backlog is the right
 	// trade: the alternative is not "fail fast", it is "re-read 30 pages".
+	c.Retry5xxAttempts = visionRetry5xxAttempts
+	return c
+}
+
+// segmentClient is the model that turns transcribed text into fragments. Same
+// endpoint and key, possibly a different model — and the SAME retry policy,
+// because a segmentation that gives up mid-document costs the same re-read a
+// failed page does.
+func (f *llmFlags) segmentClient() *llm.Client {
+	m := *f.segmentModel
+	if m == "" {
+		m = *f.visionModel
+	}
+	c := llm.NewClient(*f.url, *f.key, m)
 	c.Retry5xxAttempts = visionRetry5xxAttempts
 	return c
 }

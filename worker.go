@@ -283,6 +283,18 @@ func (w *Worker) poolRecipe(kind DocKind) string {
 // extractAndIngest routes a fetched document by kind (extract.go) and indexes it:
 // a PDF runs the text-layer/OCR hybrid, an office/markup file goes through
 // pandoc, an image through OCR, and anything else is treated as text.
+// segmenter is the worker's configured segmenter, falling back to one built on
+// the OCR client so a caller that never set the field behaves as it always did.
+func (w *Worker) segmenter() *Segmenter {
+	if w.Segmenter != nil {
+		return w.Segmenter
+	}
+	if w.OCR == nil {
+		return nil
+	}
+	return NewSegmenter(w.OCR.Client)
+}
+
 func (w *Worker) extractAndIngest(ctx context.Context, job *Job, f Fetched, title string, sl *StageLog) (int, string, error) {
 	return w.extractAndIngestAs(ctx, job, f, w.route(job, f), title, sl)
 }
@@ -307,7 +319,7 @@ func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, ki
 		// ingestPDF records the extract + ocr + segment + embed + commit stages, and
 		// picks the fragmenter per-document (llm-seg if a page hit the VLM, else
 		// text-overlap). mode is the fragmenter it chose.
-		return w.Store.ingestPDF(ctx, w.OCR, job.URL, path, title, w.Frag, sl)
+		return w.Store.ingestPDF(ctx, w.segmenter(), w.OCR, job.URL, path, title, w.Frag, sl)
 
 	case KindImage:
 		if w.OCR == nil {
@@ -341,7 +353,11 @@ func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, ki
 		sl.Done("extract", "image", "1 page")
 		units := []ingestUnit{{page: 1, mime: mime, data: data}}
 		// ingestUnits OCRs the image → text, then fragments it (records ocr/segment/…).
-		return w.Store.ingestUnits(ctx, NewSegmenter(w.OCR.Client), w.OCR, job.URL, title, units, w.Frag, sl)
+		// w.Segmenter, NOT a fresh one off the OCR client: this path built its own
+		// and so silently ignored a configured segment model, which is most of
+		// the corpus (every PDF and image). The other ingest path already used
+		// the field; only this one did not.
+		return w.Store.ingestUnits(ctx, w.segmenter(), w.OCR, job.URL, title, units, w.Frag, sl)
 
 	case KindEmail:
 		// The extension here is raglit's, not the corpus's — an .mbox fetched by

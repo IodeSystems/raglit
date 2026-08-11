@@ -507,7 +507,7 @@ func (s *Store) storeOriginal(docPath string) error {
 // when the store has a home, else a temp dir. Returns the number of fragments
 // indexed.
 func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, error) {
-	n, _, err := s.ingestPDF(ctx, ocr, pdfPath, pdfPath, filepath.Base(pdfPath), FragConfig{}, nil)
+	n, _, err := s.ingestPDF(ctx, nil, ocr, pdfPath, pdfPath, filepath.Base(pdfPath), FragConfig{}, nil)
 	return n, err
 }
 
@@ -515,7 +515,11 @@ func (s *Store) IngestPDF(ctx context.Context, ocr *OCR, pdfPath string) (int, e
 // from the file on disk (filePath) — so a queued URL job can process a temp file
 // while keeping the URL as the stable document key. sl records the extract stage
 // (and the downstream ocr/segment/embed/commit stages via ingestUnits).
-func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, title string, fc FragConfig, sl *StageLog) (int, string, error) {
+// sg is the segmenter to use; nil means "build one on the OCR client", which is
+// what this always did. Passed in rather than derived because the segmenter's
+// model is separately configurable — deriving it here is exactly how a
+// configured segment model got silently ignored on the path every PDF takes.
+func (s *Store) ingestPDF(ctx context.Context, sg *Segmenter, ocr *OCR, docPath, filePath, title string, fc FragConfig, sl *StageLog) (int, string, error) {
 	// Per-page hybrid: text-layer pages become text units (free, exact), scanned
 	// pages become image units for the OCR path. Replaces the old Pagify-only path,
 	// which saw no text layer and failed on born-digital PDFs (ErrNoPageImages).
@@ -531,7 +535,10 @@ func (s *Store) ingestPDF(ctx context.Context, ocr *OCR, docPath, filePath, titl
 		}
 	}
 	sl.Done("extract", "pdf", fmt.Sprintf("%d page(s): %d text-layer, %d scanned", len(units), len(units)-imgPages, imgPages))
-	return s.ingestUnits(ctx, NewSegmenter(ocr.Client), ocr, docPath, title, units, fc, sl)
+	if sg == nil && ocr != nil {
+		sg = NewSegmenter(ocr.Client)
+	}
+	return s.ingestUnits(ctx, sg, ocr, docPath, title, units, fc, sl)
 }
 
 // Hit is one BM25-ranked fragment. Score is normalized so HIGHER is better

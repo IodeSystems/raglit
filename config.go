@@ -96,6 +96,22 @@ type Config struct {
 	// inside an .eml/.mbox become ordinary files the next sync indexes. A
 	// per-index setting of the same name overrides this for that index.
 	ExtractEmailAttachments bool `json:"extract_email_attachments,omitempty"`
+	// SegmentModel splits transcribed TEXT into fragments. Empty → the vision
+	// model, which is what this always used to be.
+	//
+	// They are different jobs and the best model for one is not the best for the
+	// other. The segmenter is asked for a structured tool call over text; an OCR
+	// specialist is chosen for reading pixels and need not do the first well.
+	// Measured on a 2-page 1947 deed, same cached OCR, four arms:
+	//
+	//	chandra + markup     degraded — no valid JSON
+	//	Qwen    + markup     done, dropped 1184 of 1234 chars
+	//	chandra + flattened  degraded — no valid JSON
+	//	Qwen    + flattened  done, clean
+	//
+	// Corpus-wide the same split: chandra degraded 29 of 116 documents (25%),
+	// Qwen 4 of 254 (1.6%).
+	SegmentModel string `json:"segment_model,omitempty"`
 	// DaemonURL, when set, makes this a CLIENT config: commands route to the
 	// raglit daemon at this URL (http(s)://host:port) instead of opening a local
 	// index. The daemon owns storage (scoped per index, under its own home), so
