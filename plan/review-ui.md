@@ -63,3 +63,32 @@ escalation) is surfaced on demand via `/api/reocr` against the saved page image.
 - No bulk "retry all failed" / job delete-done; no live push (polling only).
 - Docs indexed before this feature have no `ocr_pages` rows → review shows "no
   OCR-tracked pages" until re-ingested.
+
+## /layout — what the model SAW beside what the index KEPT
+
+`GET /layout?index=…&path=…&page=N` renders one page three ways: the saved page
+image with the model's layout blocks overlaid, the per-block text, and the raw
+transcription against the indexed text. `GET /api/page-layout` is the same as
+JSON.
+
+Why it exists: the flattener (indextext.go) deliberately drops `data-bbox` and
+`data-label` from the index, and until this there was NO surface for them at all
+— `bbox` appeared in the codebase only as a figure's location in a search hit. A
+page could differ from its indexed text by 40% of its bytes and nothing showed
+it.
+
+Three things that made it cheap:
+  - The raw markup survives in `ocr_page_cache`, keyed by the page image's
+    sha256. That is independent of the flattener, of `writeback_transcription_md`
+    and of any re-ingest — the model's original output cannot be lost while the
+    image is unchanged, and a changed image correctly misses.
+  - Coordinates are normalised 0-1000 PER AXIS, INDEPENDENTLY — not pixels, not
+    aspect-preserving. So boxes place as CSS percentages with no image
+    dimensions, and stay aligned at any width. Verified by overlay on a 2550x3300
+    scan whose boxes topped out at 924 x 934: every box landed on its line.
+  - Server-rendered, no build step, so it works on any daemon with the binary.
+
+Parser note: attributes are pulled from the whole matched `<div>` rather than
+ordered in one pattern. With `data-bbox` first and `data-label` in an optional
+group the lazy run between them matches empty and EVERY box comes back
+unlabelled — caught by a test, not by looking at it.

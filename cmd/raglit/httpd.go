@@ -14,6 +14,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -250,6 +251,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	}
 	gat.Register(api, g, op("health", http.MethodGet, "/api/health", "Liveness probe."), health)
 	gat.Register(api, g, op("tools", http.MethodGet, "/api/tools", "External extractors as the DAEMON sees them (PATH included)."), toolsProbe)
+	gat.Register(api, g, op("pageLayout", http.MethodGet, "/api/page-layout", "One page's layout blocks, raw transcription and indexed text."), pageLayoutOp(reg))
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
 	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
@@ -325,6 +327,27 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	}
 	router.NotFound(spa.ServeHTTP)
 	router.Get("/", spa.ServeHTTP)
+	// A plain HTML route, not part of the SPA: this renders server-side from the
+	// OCR cache and needs no build step, so it works on any daemon that has the
+	// binary — including one nobody has run `npm` against.
+	router.Get("/layout", func(w http.ResponseWriter, r *http.Request) {
+		st, err := reg.Get(r.URL.Query().Get("index"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		doc := r.URL.Query().Get("path")
+		page := queryInt(r, "page", 1)
+		pl, err := st.PageLayoutFor(doc, page)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := renderLayoutPage(w, r.URL.Query().Get("index"), pl); err != nil {
+			log.Printf("raglit: layout render: %v", err)
+		}
+	})
 	router.Get("/api/page-image", func(w http.ResponseWriter, r *http.Request) {
 		st, err := reg.Get(r.URL.Query().Get("index"))
 		if err != nil {
@@ -1134,4 +1157,36 @@ func defaultIndexName(name string) string {
 		return "default"
 	}
 	return name
+}
+
+// pageLayoutOut is one page seen three ways: the boxes the model reported, the
+// raw transcription it produced, and the text the index actually holds.
+type pageLayoutOut struct {
+	Body *raglit.PageLayout
+}
+
+func pageLayoutOp(reg *raglit.Registry) func(context.Context, *struct {
+	Index string `query:"index"`
+	Path  string `query:"path"`
+	Page  int    `query:"page"`
+}) (*pageLayoutOut, error) {
+	return func(ctx context.Context, in *struct {
+		Index string `query:"index"`
+		Path  string `query:"path"`
+		Page  int    `query:"page"`
+	}) (*pageLayoutOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error404NotFound(err.Error())
+		}
+		page := in.Page
+		if page < 1 {
+			page = 1
+		}
+		pl, err := st.PageLayoutFor(in.Path, page)
+		if err != nil {
+			return nil, huma.Error404NotFound(err.Error())
+		}
+		return &pageLayoutOut{Body: pl}, nil
+	}
 }
