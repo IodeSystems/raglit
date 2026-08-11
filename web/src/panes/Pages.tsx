@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getPageLayout, postJSON, type DocPage, type PageLayout } from "../api";
 import { useDoc } from "../useDocDetail";
@@ -368,7 +368,113 @@ function PageBody({
   );
 }
 
-// The block list, and the raw transcription against the indexed text.
+// The page, REBUILT from the reader's blocks.
+//
+// A flat list of blocks is a list of micro-fragments: it tells you what was read
+// but not how the page was laid out, which is the question the layout data
+// exists to answer. This places each block's text at its own box, sized to fit,
+// so a form reads as a form and a title block sits where the title block is.
+//
+// Sizing: the first guess comes from the box HEIGHT (one line filling its box),
+// then a fit pass shrinks any block whose text overflows. Guessing from height
+// alone is wrong for a wide box holding one short word and for a narrow box
+// holding a sentence, and both are common on a form.
+function ReconstructedPage({ pl }: { pl: PageLayout }) {
+  const boxes = pl.boxes ?? [];
+  const ref = useRef<HTMLDivElement | null>(null);
+  const ratio = pl.img_w && pl.img_h ? pl.img_w / pl.img_h : 0;
+
+  // Fit each block's text to its own box, in real pixels.
+  //
+  // The first version guessed from the box HEIGHT and then shrank by 12% a step
+  // at a time. A one-line box was fine; a paragraph in a short wide box — a legal
+  // description, which is most of a deed — overflowed immediately and shrank
+  // through twenty steps to 4% of its starting size. Unreadable, and the page
+  // looked like grey dust.
+  //
+  // So: seed from the box's AREA against the character count (how big can a
+  // glyph be if N of them must tile this rectangle), clamp to the box height for
+  // a single line, then BINARY SEARCH the largest size that does not overflow.
+  // Bounded at ~7 steps instead of an open-ended shrink, and it fills the box
+  // rather than merely fitting inside it.
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const fit = () => {
+      const W = root.clientWidth,
+        H = root.clientHeight;
+      if (!W || !H) return;
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-fit]"))) {
+        const bw = (parseFloat(el.dataset.w || "0") / 100) * W;
+        const bh = (parseFloat(el.dataset.h || "0") / 100) * H;
+        const n = Math.max(1, (el.textContent || "").length);
+        // ~0.5 aspect per glyph: n glyphs of size s tile s*0.5*s*1.2 each.
+        const seed = Math.min(bh, Math.sqrt((bw * bh) / (n * 0.6)));
+        let lo = 3,
+          hi = Math.max(4, Math.min(seed * 1.6, bh));
+        const fits = (s: number) => {
+          el.style.fontSize = `${s}px`;
+          return el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1;
+        };
+        if (fits(hi)) continue;
+        for (let i = 0; i < 7; i++) {
+          const mid = (lo + hi) / 2;
+          if (fits(mid)) lo = mid;
+          else hi = mid;
+        }
+        el.style.fontSize = `${lo}px`;
+      }
+    };
+    fit();
+    // The container is percentage-width, so its pixel size changes with the
+    // window and every fitted size goes stale with it.
+    const ro = new ResizeObserver(fit);
+    ro.observe(root);
+    return () => ro.disconnect();
+  }, [pl]);
+
+  if (!ratio) {
+    return (
+      <div className="muted">
+        The page image's size is unknown, so its shape cannot be reconstructed.
+      </div>
+    );
+  }
+  return (
+    <div
+      ref={ref}
+      className="reconstruct"
+      style={{ aspectRatio: String(ratio) }}
+      title="rebuilt from the reader's layout blocks — not the page image"
+    >
+      {boxes.map((b, i) => {
+        const h = (b.y1 - b.y0) / 10;
+        return (
+          <div
+            key={i}
+            data-fit
+            data-label={b.label}
+            data-w={(b.x1 - b.x0) / 10}
+            data-h={h}
+            style={{
+              position: "absolute",
+              left: `${b.x0 / 10}%`,
+              top: `${b.y0 / 10}%`,
+              width: `${(b.x1 - b.x0) / 10}%`,
+              height: `${h}%`,
+              overflow: "hidden",
+              lineHeight: 1.12,
+            }}
+          >
+            {b.text}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// The rebuilt page, and the raw transcription against the indexed text.
 //
 // The byte counts are shown because the difference is the point: a page whose
 // raw and indexed text differ sharply is one where the reader saw structure the
@@ -386,18 +492,14 @@ function LayoutBlocks({ index, doc, page }: { index: string; doc: string; page: 
         {boxes.length === 1 ? "" : "s"} · raw {(pl.raw || "").length} bytes vs indexed{" "}
         {(pl.indexed || "").length} bytes{" "}
         <button className="linkish" onClick={() => setTab(tab === "blocks" ? "raw" : "blocks")}>
-          {tab === "blocks" ? "show raw transcription" : "show blocks"}
+          {tab === "blocks" ? "show raw transcription" : "show rebuilt page"}
         </button>
       </div>
       {tab === "blocks" ? (
         <div>
-          {boxes.map((b, i) => (
-            <div className="prov" style={{ marginTop: 6 }} key={i}>
-              <div className="muted">{b.label || "(unlabelled)"}</div>
-              <div>{b.text || "(no text)"}</div>
-            </div>
-          ))}
-          {!boxes.length && (
+          {boxes.length ? (
+            <ReconstructedPage pl={pl} />
+          ) : (
             <div className="muted">
               This page has no layout blocks — the engine that read it does not emit them.
             </div>

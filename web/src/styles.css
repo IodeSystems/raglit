@@ -232,3 +232,14 @@
 }
 .tabstrip button.on { color: inherit; border-bottom-color: currentColor; }
 .linkish { background: none; border: 0; color: #7ab; cursor: pointer; font: inherit; padding: 0; }
+
+/* The page rebuilt from the reader's layout blocks — text at its own box, sized
+   to fit. container-type:size makes cqh mean "percent of this page's height",
+   which is what lets a block's font scale with the page at any width. */
+.reconstruct {
+  position: relative; width: 100%; container-type: size;
+  background: #fff; color: #111; border: 1px solid var(--line, #333);
+  border-radius: 5px; overflow: hidden;
+}
+.reconstruct [data-label^="Section"], .reconstruct [data-label*="Header"] { font-weight: 700; }
+.reconstruct [data-label="Image"] { color: #666; font-style: italic; }

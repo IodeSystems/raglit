@@ -3,6 +3,10 @@ package raglit
 import (
 	"fmt"
 	"html"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"regexp"
 	"strconv"
@@ -132,8 +136,16 @@ type PageLayout struct {
 	Model  string `json:"model"`
 	// HasImage is false when the page image was never saved or has been cleaned
 	// up; the text panes still work.
-	HasImage bool        `json:"has_image"`
-	Boxes    []LayoutBox `json:"boxes"`
+	HasImage bool `json:"has_image"`
+	// ImgW/ImgH are the page image's pixel size, read from its header only.
+	//
+	// The boxes are normalised and so need no dimensions to PLACE — but a
+	// reconstruction of the page from text alone needs the page's SHAPE, and a
+	// client rendering it beside the image (not over it) has nothing to infer
+	// that from. Zero when unknown; a caller then falls back to the block list.
+	ImgW  int         `json:"img_w,omitempty"`
+	ImgH  int         `json:"img_h,omitempty"`
+	Boxes []LayoutBox `json:"boxes"`
 	// Raw is the model's own output, markup and all. Indexed is what search
 	// actually matches against. Showing both side by side is the point: they
 	// have differed by 40% of their bytes and nothing surfaced it.
@@ -165,6 +177,7 @@ func (s *Store) PageLayoutFor(docPath string, page int) (*PageLayout, error) {
 			out.Raw = raw
 			out.Boxes = ParseLayoutBoxes(raw)
 		}
+		out.ImgW, out.ImgH = imageDims(imgPath)
 	}
 	// What the index holds FOR THIS PAGE — via TruePages, which splits each
 	// fragment's bytes across the pages it spans using page_spans.
@@ -256,4 +269,35 @@ func (s *Store) cachedOCRForImageFile(imgPath string) (string, bool) {
 	}
 	text, _, ok := s.cachedPageOCR(sha)
 	return text, ok
+}
+
+// imageDims reads a page image's pixel size from its HEADER.
+//
+// image.DecodeConfig reads only enough bytes to answer, so this costs a few KB
+// per page rather than decoding a 5 MB scan — which matters because it is called
+// once per page view. Memoised alongside the sha for the same reason.
+//
+// Returns 0,0 when the format is unregistered or the file is unreadable; the
+// caller renders the block list instead of a mis-shaped page.
+func imageDims(path string) (int, int) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, 0
+	}
+	key := fmt.Sprintf("dims|%s|%d|%d", path, fi.Size(), fi.ModTime().UnixNano())
+	if v, ok := shaMemo.Load(key); ok {
+		d := v.([2]int)
+		return d[0], d[1]
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return 0, 0
+	}
+	shaMemo.Store(key, [2]int{cfg.Width, cfg.Height})
+	return cfg.Width, cfg.Height
 }

@@ -101,3 +101,28 @@ Parser note: attributes are pulled from the whole matched `<div>` rather than
 ordered in one pattern. With `data-bbox` first and `data-label` in an optional
 group, the lazy run between them matches empty and EVERY box comes back
 unlabelled — caught by a test, not by looking at it.
+
+### The Layout tab rebuilds the page, it does not list fragments
+
+First version listed the blocks. That is a list of micro-fragments: it says what
+was read and not how the page was laid out, which is the only question the layout
+data can answer. Now each block's text is placed at its own box and sized to fit,
+so a form reads as a form and the initial blocks sit where the initials are.
+
+Needs the page's SHAPE, which normalised boxes do not carry — `img_w`/`img_h`
+come from `image.DecodeConfig`, a header-only read (a few KB, not a 5 MB decode),
+memoised beside the sha.
+
+SIZING, and the version that was wrong: seeding from the box HEIGHT and shrinking
+12% per step works for a one-line box and destroys a paragraph — a legal
+description in a short wide box overflowed immediately and shrank through twenty
+steps to 4% of its start. The page rendered as grey dust. Now: seed from the box
+AREA against the character count (how big can a glyph be if N of them must tile
+this rectangle), clamp to the box height, then BINARY SEARCH the largest size
+that does not overflow. Seven bounded steps, and it FILLS the box rather than
+merely fitting inside it. Re-fits on resize, because the container is
+percentage-width and every fitted pixel size goes stale with the window.
+
+Known and left: chandra's boxes sometimes overlap, so two blocks can print over
+each other. The boxes are the model's, not ours; drawing them faithfully is the
+point, and silently nudging them apart would make the view a nicer lie.

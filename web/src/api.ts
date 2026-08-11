@@ -178,6 +178,8 @@ export type PageLayout = {
   engine?: string;
   model?: string;
   has_image: boolean;
+  img_w?: number;
+  img_h?: number;
   boxes?: LayoutBox[];
   raw?: string;
   indexed?: string;
