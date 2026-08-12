@@ -1,6 +1,6 @@
 import { useParams } from "@tanstack/react-router";
 
-import { getStatus, type StatusSnapshot } from "../api";
+import { getStatus, type LaneStatus, type StatusSnapshot } from "../api";
 import { usePoll } from "../usePoll";
 
 // Index size and queue state, refreshed while you watch it.
@@ -26,13 +26,57 @@ export function Dashboard() {
   ];
 
   return (
-    <div className="cards">
-      {cards.map(([k, n]) => (
-        <div className="card" key={k}>
-          <div className="n">{n}</div>
-          <div className="k">{k}</div>
-        </div>
-      ))}
-    </div>
+    <>
+      <div className="cards">
+        {cards.map(([k, n]) => (
+          <div className="card" key={k}>
+            <div className="n">{n}</div>
+            <div className="k">{k}</div>
+          </div>
+        ))}
+      </div>
+      <Lanes lanes={data.lanes} />
+    </>
+  );
+}
+
+// The queue by lane.
+//
+// "7 pending" is not an answer: seven scans is an afternoon of vision and seven
+// markdown files is under a minute, and until the queue was split by lane there
+// was no way to tell which without reading every URL. Shown with each lane's
+// slot count, because that is what turns a depth into a wait — one slot means
+// the seventh job starts after six others finish.
+function Lanes({ lanes }: { lanes?: Record<string, LaneStatus> }) {
+  const rows = Object.entries(lanes ?? {});
+  if (!rows.length) return null;
+  // heavy first: it is the one that makes people wait.
+  rows.sort(([a], [b]) => (a === "heavy" ? -1 : b === "heavy" ? 1 : a.localeCompare(b)));
+  const busy = rows.some(([, l]) => (l.pending ?? 0) + (l.running ?? 0) > 0);
+
+  return (
+    <>
+      <h2>Ingest lanes</h2>
+      <div className="panel probgroup">
+        <p className="why">
+          Vision runs one job at a time — the model admits one — and everything
+          else runs several at once, so a slow scan no longer holds up a text
+          file behind it.
+        </p>
+        {!busy && <p className="why">Both lanes are idle.</p>}
+        {rows.map(([name, l]) => (
+          <div className="prob" key={name}>
+            <div className="subj">
+              <span className={"badge lane-" + name}>{name}</span>{" "}
+              <span className="muted">
+                {l.running ?? 0} running of {l.slots ?? 1} slot
+                {(l.slots ?? 1) === 1 ? "" : "s"}
+                {l.pending ? ` · ${l.pending} waiting` : " · nothing waiting"}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }

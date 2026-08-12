@@ -74,6 +74,16 @@ export type IndexInfo = {
   fragments?: number;
 };
 
+// One scheduling lane's share of the queue. `heavy` is vision/OCR and runs one
+// at a time (the GPU admits one); `light` is everything else and runs several.
+// Reported because "12 pending" answers nothing on its own — twelve scans is an
+// afternoon, twelve markdown files is under a minute.
+export type LaneStatus = {
+  pending?: number;
+  running?: number;
+  slots?: number;
+};
+
 export type StatusSnapshot = {
   documents?: number;
   fragments?: number;
@@ -82,6 +92,7 @@ export type StatusSnapshot = {
   done?: number;
   failed?: number;
   jobs_per_min?: number;
+  lanes?: Record<string, LaneStatus>;
 };
 
 // One stage of an ingest, as the pipeline recorded it: fetch → extract → ocr →
@@ -113,6 +124,7 @@ export type Job = {
   title?: string;
   state: string;
   mode?: string;
+  lane?: string;
   fragments?: number;
   error?: string;
   enqueued_at?: number;

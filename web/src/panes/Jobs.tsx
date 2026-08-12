@@ -45,6 +45,7 @@ function JobList({ index }: { index: string }) {
           <tr>
             <th>#</th>
             <th>State</th>
+            <th>Lane</th>
             <th>Mode</th>
             <th>Target</th>
             <th className="num">Frags</th>
@@ -64,6 +65,7 @@ function JobList({ index }: { index: string }) {
               <td>
                 <span className={"badge " + j.state}>{j.state}</span>
               </td>
+              <td>{j.lane && <span className={"badge lane-" + j.lane}>{j.lane}</span>}</td>
               <td>{j.mode}</td>
               <td className="url" title={j.url}>
                 {j.url}
@@ -118,6 +120,7 @@ function JobDetail({ index, id }: { index: string; id: number }) {
         <div className="subj">
           <span className="badge">#{j.id}</span>{" "}
           <span className={"badge " + j.state}>{j.state}</span>{" "}
+          {j.lane && <span className={"badge lane-" + j.lane}>{j.lane}</span>}{" "}
           {j.mode && <span className="badge">{j.mode}</span>}{" "}
           <Link to="/i/$index/d/$doc/pages" params={{ index, doc: j.url }}>
             {j.url}

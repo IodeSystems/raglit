@@ -103,6 +103,7 @@ type IngestJob struct {
 	StartedAt  int64  `db:"started_at" derived:"ingest_jobs.started_at" json:"started_at"`
 	FinishedAt int64  `db:"finished_at" derived:"ingest_jobs.finished_at" json:"finished_at"`
 	OwnerPid   int64  `db:"owner_pid" derived:"ingest_jobs.owner_pid" json:"owner_pid"`
+	Lane       string `db:"lane" derived:"ingest_jobs.lane" json:"lane"`
 }
 
 type JobStage struct {

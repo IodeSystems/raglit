@@ -76,6 +76,18 @@ func (w *Worker) ProcessOne(ctx context.Context) (processed bool, err error) {
 	if job == nil {
 		return false, nil
 	}
+	return true, w.ProcessJob(ctx, job)
+}
+
+// ProcessJob runs a job that has ALREADY been claimed.
+//
+// Split from ProcessOne so a scheduler can separate the two halves. Claiming is
+// a transaction; running is minutes of OCR. The lane dispatcher claims in a
+// round-robin over every index — which is what makes it fair — and hands the job
+// to whichever slot is free, so one long job occupies a slot instead of the
+// whole queue. ProcessOne stays the claim-and-run pair the CLI drain and the
+// tests use.
+func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 	sl := w.Store.NewStageLog(job.ID)
 	// Start this job's retry history empty: whatever the previous job survived is
 	// its own, and a tally that carries over blames the wrong document.
@@ -92,9 +104,9 @@ func (w *Worker) ProcessOne(ctx context.Context) (processed bool, err error) {
 		sl.Record("llm-retries", "", state, s.Detail())
 	}
 	if ierr != nil {
-		return true, w.Store.failJob(job.ID, ierr.Error())
+		return w.Store.failJob(job.ID, ierr.Error())
 	}
-	return true, w.Store.completeJob(job.ID, n, mode)
+	return w.Store.completeJob(job.ID, n, mode)
 }
 
 // Drain processes jobs until the queue is empty, returning how many it handled.
@@ -171,6 +183,20 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	// of what the cached result means, so the decision has to exist before the
 	// key that stores it — see poolRecipe.
 	kind := w.route(job, f)
+
+	// Correct the lane now that the bytes have been read.
+	//
+	// Enqueue could only guess from the URL (lane.go), and an extensionless file
+	// that sniffs to a scan was guessed light. The job is already claimed and
+	// this does not move it — it runs where it is, which is the cost of guessing
+	// — but the row now says what it actually was, so a retry is claimed by the
+	// right lane and the queue's own report stops lying about its shape.
+	if got := LaneForKind(kind); got != LaneFor(job.URL) {
+		_ = w.Store.SetJobLane(job.ID, got)
+		sl.Record("lane", string(got), "done",
+			fmt.Sprintf("reclassified from %s: the name said nothing, the bytes are %s",
+				LaneFor(job.URL), kind))
+	}
 
 	// Refuse what has no representation to index — BEFORE the caches.
 	//

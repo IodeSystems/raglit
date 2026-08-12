@@ -270,9 +270,23 @@ SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, f
 FROM ingest_jobs WHERE id = ?
 `
 
-func (q *Queries) GetJob(ctx context.Context, id int64) (IngestJob, error) {
+type GetJobRow struct {
+	ID         int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+	Url        string `db:"url" derived:"ingest_jobs.url" json:"url"`
+	Title      string `db:"title" derived:"ingest_jobs.title" json:"title"`
+	State      string `db:"state" derived:"ingest_jobs.state" json:"state"`
+	Error      string `db:"error" derived:"ingest_jobs.error" json:"error"`
+	Fragments  int64  `db:"fragments" derived:"ingest_jobs.fragments" json:"fragments"`
+	Mode       string `db:"mode" derived:"ingest_jobs.mode" json:"mode"`
+	EnqueuedAt int64  `db:"enqueued_at" derived:"ingest_jobs.enqueued_at" json:"enqueued_at"`
+	StartedAt  int64  `db:"started_at" derived:"ingest_jobs.started_at" json:"started_at"`
+	FinishedAt int64  `db:"finished_at" derived:"ingest_jobs.finished_at" json:"finished_at"`
+	OwnerPid   int64  `db:"owner_pid" derived:"ingest_jobs.owner_pid" json:"owner_pid"`
+}
+
+func (q *Queries) GetJob(ctx context.Context, id int64) (GetJobRow, error) {
 	row := q.db.QueryRowContext(ctx, getJob, id)
-	var i IngestJob
+	var i GetJobRow
 	err := row.Scan(
 		&i.ID,
 		&i.Url,
@@ -303,6 +317,30 @@ type GetOldestPendingJobRow struct {
 func (q *Queries) GetOldestPendingJob(ctx context.Context) (GetOldestPendingJobRow, error) {
 	row := q.db.QueryRowContext(ctx, getOldestPendingJob)
 	var i GetOldestPendingJobRow
+	err := row.Scan(
+		&i.ID,
+		&i.Url,
+		&i.Title,
+		&i.EnqueuedAt,
+	)
+	return i, err
+}
+
+const getOldestPendingJobInLane = `-- name: GetOldestPendingJobInLane :one
+SELECT id, url, title, enqueued_at FROM ingest_jobs
+WHERE state='pending' AND lane = ? ORDER BY id LIMIT 1
+`
+
+type GetOldestPendingJobInLaneRow struct {
+	ID         int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+	Url        string `db:"url" derived:"ingest_jobs.url" json:"url"`
+	Title      string `db:"title" derived:"ingest_jobs.title" json:"title"`
+	EnqueuedAt int64  `db:"enqueued_at" derived:"ingest_jobs.enqueued_at" json:"enqueued_at"`
+}
+
+func (q *Queries) GetOldestPendingJobInLane(ctx context.Context, lane string) (GetOldestPendingJobInLaneRow, error) {
+	row := q.db.QueryRowContext(ctx, getOldestPendingJobInLane, lane)
+	var i GetOldestPendingJobInLaneRow
 	err := row.Scan(
 		&i.ID,
 		&i.Url,
@@ -485,6 +523,40 @@ func (q *Queries) JobStateCounts(ctx context.Context) ([]JobStateCountsRow, erro
 	for rows.Next() {
 		var i JobStateCountsRow
 		if err := rows.Scan(&i.State, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const laneQueueCounts = `-- name: LaneQueueCounts :many
+SELECT lane, state, COUNT(*) AS n FROM ingest_jobs
+WHERE state IN ('pending','running') GROUP BY lane, state
+`
+
+type LaneQueueCountsRow struct {
+	Lane  string `db:"lane" derived:"ingest_jobs.lane" json:"lane"`
+	State string `db:"state" derived:"ingest_jobs.state" json:"state"`
+	N     int64  `db:"n" json:"n"`
+}
+
+func (q *Queries) LaneQueueCounts(ctx context.Context) ([]LaneQueueCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, laneQueueCounts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LaneQueueCountsRow
+	for rows.Next() {
+		var i LaneQueueCountsRow
+		if err := rows.Scan(&i.Lane, &i.State, &i.N); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -731,10 +803,15 @@ func (q *Queries) ListJobStages(ctx context.Context, jobID int64) ([]ListJobStag
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
+SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid, lane
 FROM ingest_jobs
 `
 
+// The projection must carry EVERY column of ingest_jobs. This is scanned into
+// the full-table IngestJob struct through metaquery, which validates the two
+// against each other and refuses a mismatch -- so adding a column to the table
+// and not to this list does not silently drop a field, it breaks the jobs list
+// outright with "shape mismatch: field IngestJob.Lane not in projection".
 func (q *Queries) ListJobs(ctx context.Context) ([]IngestJob, error) {
 	rows, err := q.db.QueryContext(ctx, listJobs)
 	if err != nil {
@@ -756,6 +833,7 @@ func (q *Queries) ListJobs(ctx context.Context) ([]IngestJob, error) {
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.OwnerPid,
+			&i.Lane,
 		); err != nil {
 			return nil, err
 		}
@@ -959,6 +1037,38 @@ func (q *Queries) ListTombstones(ctx context.Context) ([]string, error) {
 	return items, nil
 }
 
+const listUnlanedPendingJobs = `-- name: ListUnlanedPendingJobs :many
+SELECT id, url FROM ingest_jobs WHERE state='pending' AND lane = ''
+`
+
+type ListUnlanedPendingJobsRow struct {
+	ID  int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+	Url string `db:"url" derived:"ingest_jobs.url" json:"url"`
+}
+
+func (q *Queries) ListUnlanedPendingJobs(ctx context.Context) ([]ListUnlanedPendingJobsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUnlanedPendingJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnlanedPendingJobsRow
+	for rows.Next() {
+		var i ListUnlanedPendingJobsRow
+		if err := rows.Scan(&i.ID, &i.Url); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const matchDocumentsLike = `-- name: MatchDocumentsLike :many
 SELECT path, title FROM documents
 WHERE lower(path) LIKE ? OR lower(title) LIKE ?
@@ -1103,6 +1213,20 @@ type SetDocumentHashParams struct {
 
 func (q *Queries) SetDocumentHash(ctx context.Context, arg SetDocumentHashParams) error {
 	_, err := q.db.ExecContext(ctx, setDocumentHash, arg.ContentHash, arg.Path)
+	return err
+}
+
+const setJobLane = `-- name: SetJobLane :exec
+UPDATE ingest_jobs SET lane = ? WHERE id = ?
+`
+
+type SetJobLaneParams struct {
+	Lane string `db:"lane" derived:"ingest_jobs.lane" json:"lane"`
+	ID   int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+}
+
+func (q *Queries) SetJobLane(ctx context.Context, arg SetJobLaneParams) error {
+	_, err := q.db.ExecContext(ctx, setJobLane, arg.Lane, arg.ID)
 	return err
 }
 

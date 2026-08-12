@@ -474,6 +474,46 @@ var GetOldestPendingJobCols = struct {
 	EnqueuedAt: metaquery.NewIntCol("enqueued_at"),
 }
 
+var MetaGetOldestPendingJobInLane = metaquery.Query{
+	Name:    "GetOldestPendingJobInLane",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT id, url, title, enqueued_at FROM ingest_jobs
+WHERE state='pending' AND lane = ? ORDER BY id LIMIT 1`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "url", OriginalName: "url", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "title", OriginalName: "title", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "enqueued_at", OriginalName: "enqueued_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "lane", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WARNING: GetOldestPendingJobInLane ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapGetOldestPendingJobInLane returns a metaquery.Builder over MetaGetOldestPendingJobInLane, pre-bound with typed arguments.
+func WrapGetOldestPendingJobInLane(lane string) *metaquery.Builder {
+	return metaquery.Wrap(&MetaGetOldestPendingJobInLane, lane)
+}
+
+// GetOldestPendingJobInLaneCols gives typed, name-safe access to GetOldestPendingJobInLane's output columns.
+var GetOldestPendingJobInLaneCols = struct {
+	ID         metaquery.IntCol
+	Url        metaquery.TextCol
+	Title      metaquery.TextCol
+	EnqueuedAt metaquery.IntCol
+}{
+	ID:         metaquery.NewIntCol("id"),
+	Url:        metaquery.NewTextCol("url"),
+	Title:      metaquery.NewTextCol("title"),
+	EnqueuedAt: metaquery.NewIntCol("enqueued_at"),
+}
+
 var MetaGetPageImagePath = metaquery.Query{
 	Name:    "GetPageImagePath",
 	Cmd:     ":one",
@@ -671,6 +711,36 @@ var JobStateCountsCols = struct {
 	State metaquery.TextCol
 	N     metaquery.IntCol
 }{
+	State: metaquery.NewTextCol("state"),
+	N:     metaquery.NewIntCol("n"),
+}
+
+var MetaLaneQueueCounts = metaquery.Query{
+	Name:    "LaneQueueCounts",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT lane, state, COUNT(*) AS n FROM ingest_jobs
+WHERE state IN ('pending','running') GROUP BY lane, state`,
+	Columns: []metaquery.Column{
+		{Name: "lane", OriginalName: "lane", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "state", OriginalName: "state", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+		{Name: "n", OriginalName: "n", GoType: "int64", DBType: "integer", NotNull: true},
+	},
+}
+
+// WrapLaneQueueCounts returns a metaquery.Builder over MetaLaneQueueCounts, pre-bound with typed arguments.
+func WrapLaneQueueCounts() *metaquery.Builder {
+	return metaquery.Wrap(&MetaLaneQueueCounts)
+}
+
+// LaneQueueCountsCols gives typed, name-safe access to LaneQueueCounts's output columns.
+var LaneQueueCountsCols = struct {
+	Lane  metaquery.TextCol
+	State metaquery.TextCol
+	N     metaquery.IntCol
+}{
+	Lane:  metaquery.NewTextCol("lane"),
 	State: metaquery.NewTextCol("state"),
 	N:     metaquery.NewIntCol("n"),
 }
@@ -903,7 +973,7 @@ var MetaListJobs = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
+	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid, lane
 FROM ingest_jobs`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
@@ -917,6 +987,7 @@ FROM ingest_jobs`,
 		{Name: "started_at", OriginalName: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "finished_at", OriginalName: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "owner_pid", OriginalName: "owner_pid", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "lane", OriginalName: "lane", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
 	},
 }
 
@@ -938,6 +1009,7 @@ var ListJobsCols = struct {
 	StartedAt  metaquery.IntCol
 	FinishedAt metaquery.IntCol
 	OwnerPid   metaquery.IntCol
+	Lane       metaquery.TextCol
 }{
 	ID:         metaquery.NewIntCol("id"),
 	Url:        metaquery.NewTextCol("url"),
@@ -950,6 +1022,7 @@ var ListJobsCols = struct {
 	StartedAt:  metaquery.NewIntCol("started_at"),
 	FinishedAt: metaquery.NewIntCol("finished_at"),
 	OwnerPid:   metaquery.NewIntCol("owner_pid"),
+	Lane:       metaquery.NewTextCol("lane"),
 }
 
 var MetaListMediaByDoc = metaquery.Query{
@@ -1138,6 +1211,32 @@ var ListTombstonesCols = struct {
 	Path: metaquery.NewTextCol("path"),
 }
 
+var MetaListUnlanedPendingJobs = metaquery.Query{
+	Name:    "ListUnlanedPendingJobs",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `SELECT id, url FROM ingest_jobs WHERE state='pending' AND lane = ''`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "url", OriginalName: "url", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
+	},
+}
+
+// WrapListUnlanedPendingJobs returns a metaquery.Builder over MetaListUnlanedPendingJobs, pre-bound with typed arguments.
+func WrapListUnlanedPendingJobs() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListUnlanedPendingJobs)
+}
+
+// ListUnlanedPendingJobsCols gives typed, name-safe access to ListUnlanedPendingJobs's output columns.
+var ListUnlanedPendingJobsCols = struct {
+	ID  metaquery.IntCol
+	Url metaquery.TextCol
+}{
+	ID:  metaquery.NewIntCol("id"),
+	Url: metaquery.NewTextCol("url"),
+}
+
 var MetaMatchDocumentsLike = metaquery.Query{
 	Name:    "MatchDocumentsLike",
 	Cmd:     ":many",
@@ -1285,6 +1384,23 @@ var MetaSetDocumentHash = metaquery.Query{
 // WrapSetDocumentHash returns a metaquery.Builder over MetaSetDocumentHash, pre-bound with typed arguments.
 func WrapSetDocumentHash(arg SetDocumentHashParams) *metaquery.Builder {
 	return metaquery.Wrap(&MetaSetDocumentHash, arg.ContentHash, arg.Path)
+}
+
+var MetaSetJobLane = metaquery.Query{
+	Name:    "SetJobLane",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `UPDATE ingest_jobs SET lane = ? WHERE id = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "lane", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapSetJobLane returns a metaquery.Builder over MetaSetJobLane, pre-bound with typed arguments.
+func WrapSetJobLane(arg SetJobLaneParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaSetJobLane, arg.Lane, arg.ID)
 }
 
 var MetaSetJobRunning = metaquery.Query{

@@ -272,12 +272,18 @@ func migrate(db *sql.DB) error {
 		{"fragments", "end_off", "INTEGER NOT NULL DEFAULT 0"},
 		{"fragments", "page_spans", "TEXT NOT NULL DEFAULT ''"},
 		{"ingest_jobs", "owner_pid", "INTEGER NOT NULL DEFAULT 0"},
-		// --fresh: re-read this document even if nothing about it changed. Raw
-		// ALTER rather than a regenerated query layer, following the precedent
-		// TruePages set — `sqlc generate` with the installed toolchain corrupts
-		// the SQL text of every existing query, so a new column pays for itself
-		// in raw SQL rather than in sixty broken ones.
+		// --fresh: re-read this document even if nothing about it changed.
+		//
+		// Added as a raw ALTER with no generated query, because `sqlc generate`
+		// was corrupting the SQL text of every other query at the time. That was
+		// never a property of sqlc: it is the rune/byte offset bug our fork
+		// fixes, and it only fired because a comment held a multibyte character.
+		// Codegen works — use `make generate`, never a bare `sqlc generate`.
 		{"ingest_jobs", "fresh", "INTEGER NOT NULL DEFAULT 0"},
+		// Scheduling lane (lane.go). An index that predates it has rows with an
+		// empty lane, which no lane claims — backfilled by BackfillLanes, which
+		// the daemon runs per index at startup.
+		{"ingest_jobs", "lane", "TEXT NOT NULL DEFAULT ''"},
 		{"page_readings", "note", "TEXT NOT NULL DEFAULT ''"},
 		// Document identity (identity.go). An index that predates these reads as
 		// "no caption yet", which is what `raglit identify` looks for.
@@ -307,6 +313,21 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 		}
+	}
+	// Indexes over MIGRATED columns belong here, after the ALTERs, and never in
+	// schema.sql.
+	//
+	// schema.sql runs first on every open, and on an existing database its
+	// CREATE TABLE IF NOT EXISTS is a no-op — so a column added by migration does
+	// not exist yet when that file is applied, and an index naming one fails the
+	// entire schema apply. Put there, this index took down every daemon with an
+	// existing index: `schema: SQL logic error: no such column: lane`, on repeat,
+	// because the failure is at open and systemd restarts it.
+	//
+	// This is the exact shape of the claim each lane makes (queue.go).
+	if _, err := db.Exec(
+		`CREATE INDEX IF NOT EXISTS ingest_jobs_lane ON ingest_jobs(state, lane, id)`); err != nil {
+		return err
 	}
 	return nil
 }

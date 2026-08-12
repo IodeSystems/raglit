@@ -113,6 +113,16 @@ func (s *Store) EnqueueFresh(url, title string, fresh bool) (int64, error) {
 			return 0, fmt.Errorf("raglit: enqueue: %w", err)
 		}
 	}
+	// The lane is set HERE, in the same transaction, because a row with no lane
+	// is claimed by nobody: each lane's claim asks for its own lane by name. A
+	// job that reached the queue and was never scheduled is the worst of the
+	// failure modes available — it reports `pending` forever and nothing is
+	// wrong with it.
+	if err := gq(tx).SetJobLane(context.Background(), gen.SetJobLaneParams{
+		Lane: string(LaneFor(url)), ID: id,
+	}); err != nil {
+		return 0, fmt.Errorf("raglit: enqueue: %w", err)
+	}
 	return id, tx.Commit()
 }
 
@@ -150,7 +160,68 @@ func (s *Store) DedupeQueue() (int, error) {
 
 // claimNextJob atomically moves the oldest pending job to running and returns
 // it. Returns (nil, nil) when the queue is empty.
-func (s *Store) claimNextJob() (*Job, error) {
+func (s *Store) claimNextJob() (*Job, error) { return s.claim("") }
+
+// ClaimNextInLane claims the oldest pending job in one scheduling lane, or
+// (nil, nil) when that lane has nothing here.
+//
+// The lane belongs in the CLAIM rather than in a filter afterwards. A dispatcher
+// that claimed the oldest job and then put it back because it was the wrong kind
+// would move the row's state twice per pass and race the other lane for it; a
+// dispatcher that claimed and then held it would be the serial queue again under
+// a new name.
+func (s *Store) ClaimNextInLane(lane Lane) (*Job, error) { return s.claim(lane) }
+
+// BackfillLanes assigns a lane to pending rows that predate the column, and
+// reports how many it set.
+//
+// An index that has been running since before lanes existed has an EMPTY lane on
+// every queued row, and no lane claims those — so without this, upgrading the
+// daemon silently strands whatever was already in the queue. Pending only:
+// a running row is owned, and a terminal one is never claimed again.
+func (s *Store) BackfillLanes() (int, error) {
+	ctx := context.Background()
+	rows, err := s.q.ListUnlanedPendingJobs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		if err := s.q.SetJobLane(ctx, gen.SetJobLaneParams{
+			Lane: string(LaneFor(r.Url)), ID: r.ID,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// RequeueJob returns a claimed-but-unstarted job to the queue.
+//
+// Distinct from RetryJob, which is a person deciding to run something again:
+// this is the scheduler putting back a row it claimed and then could not hand to
+// a runner, because the daemon is shutting down. Without it the row says
+// `running` forever with no process behind it — the state reclaimOrphanedJobs
+// exists to repair, which is worth not creating on a clean exit.
+//
+// Restricted to rows that never started, so it cannot rewind a job mid-ingest.
+func (s *Store) RequeueJob(id int64) error {
+	_, err := s.db.Exec(
+		`UPDATE ingest_jobs SET state='pending', started_at=0, owner_pid=0
+		  WHERE id = ? AND state='running' AND finished_at = 0`, id)
+	return err
+}
+
+// SetJobLane records which lane a job actually belongs in. Used by the worker
+// once routing has read the bytes and disagreed with the guess from the URL.
+func (s *Store) SetJobLane(id int64, lane Lane) error {
+	return s.q.SetJobLane(context.Background(), gen.SetJobLaneParams{Lane: string(lane), ID: id})
+}
+
+// claim is the shared body: lane "" means any lane, which is what the CLI's
+// single-threaded drain wants.
+func (s *Store) claim(lane Lane) (*Job, error) {
 	ctx := context.Background()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -159,7 +230,14 @@ func (s *Store) claimNextJob() (*Job, error) {
 	defer tx.Rollback() //nolint:errcheck
 	qtx := gq(tx)
 
-	row, err := qtx.GetOldestPendingJob(ctx)
+	var row gen.GetOldestPendingJobRow
+	if lane == "" {
+		row, err = qtx.GetOldestPendingJob(ctx)
+	} else {
+		var r gen.GetOldestPendingJobInLaneRow
+		r, err = qtx.GetOldestPendingJobInLane(ctx, string(lane))
+		row = gen.GetOldestPendingJobRow(r)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -208,13 +286,16 @@ func (s *Store) failJob(id int64, msg string) error {
 
 // JobInfo is a full ingest-job row for the review UI's job table (all states).
 type JobInfo struct {
-	ID         int64  `json:"id"`
-	URL        string `json:"url"`
-	Title      string `json:"title"`
-	State      string `json:"state"`
-	Error      string `json:"error"`
-	Fragments  int    `json:"fragments"`
-	Mode       string `json:"mode"` // 'llm' | 'offline' | '' — segmentation mode
+	ID        int64  `json:"id"`
+	URL       string `json:"url"`
+	Title     string `json:"title"`
+	State     string `json:"state"`
+	Error     string `json:"error"`
+	Fragments int    `json:"fragments"`
+	Mode      string `json:"mode"` // 'llm' | 'offline' | '' — segmentation mode
+	// Lane is which scheduler ran it: 'heavy' (vision/OCR, one GPU slot) or
+	// 'light' (everything else, several at once). See lane.go.
+	Lane       string `json:"lane"`
 	EnqueuedAt int64  `json:"enqueued_at"`
 	StartedAt  int64  `json:"started_at"`
 	FinishedAt int64  `json:"finished_at"`
@@ -223,7 +304,7 @@ type JobInfo struct {
 func jobInfoFromRow(j gen.IngestJob) JobInfo {
 	return JobInfo{
 		ID: j.ID, URL: j.Url, Title: j.Title, State: j.State, Error: j.Error,
-		Fragments: int(j.Fragments), Mode: j.Mode,
+		Fragments: int(j.Fragments), Mode: j.Mode, Lane: j.Lane,
 		EnqueuedAt: j.EnqueuedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
 	}
 }
@@ -264,7 +345,14 @@ func (s *Store) Job(id int64) (JobInfo, error) {
 	if err != nil {
 		return JobInfo{}, err
 	}
-	return jobInfoFromRow(row), nil
+	// Built field by field rather than through jobInfoFromRow: GetJob names its
+	// columns, so adding `lane` to the table made its row a distinct type from
+	// the full-table one ListJobs scans into.
+	return JobInfo{
+		ID: row.ID, URL: row.Url, Title: row.Title, State: row.State, Error: row.Error,
+		Fragments: int(row.Fragments), Mode: row.Mode, EnqueuedAt: row.EnqueuedAt,
+		StartedAt: row.StartedAt, FinishedAt: row.FinishedAt,
+	}, nil
 }
 
 // RetryJob requeues an errored or done job: state → pending, error cleared,
@@ -318,12 +406,54 @@ type Status struct {
 	// still owed" is one question, and a 400-document sweep outstanding is the
 	// kind of thing that should not need a second command to notice.
 	Identity IdentityQueueStatus `json:"identity"`
+	// Lanes is the queue BY SCHEDULING LANE — heavy (vision/OCR, one GPU slot)
+	// and light (everything else, several at once). Reported because "12 pending"
+	// answers nothing on its own: twelve scans is an afternoon and twelve
+	// markdown files is under a minute, and which one it is used to be
+	// unknowable without reading every URL.
+	Lanes map[string]LaneStatus `json:"lanes"`
+}
+
+// LaneStatus is one lane's share of the queue.
+type LaneStatus struct {
+	Pending int `json:"pending"`
+	Running int `json:"running"`
+	// Slots is how many jobs this lane runs at once — the number that says
+	// whether a pending count is a queue or a moment.
+	Slots int `json:"slots"`
 }
 
 // NewStatus is a zero Status with a non-nil Items, so an idle queue marshals as
 // `"items":[]` rather than `null` — null-vs-empty-array trips naive consumers.
 // Every producer of a Status (IndexStatus, the daemon/MCP aggregators) starts here.
-func NewStatus() Status { return Status{Items: []PendingItem{}} }
+func NewStatus() Status {
+	return Status{Items: []PendingItem{}, Lanes: map[string]LaneStatus{}}
+}
+
+// laneStatus reads the per-lane queue depth, seeding every KNOWN lane so a lane
+// with nothing queued reports zero rather than vanishing. A lane that disappears
+// from the report when it is idle is one nobody can tell is idle.
+func (s *Store) laneStatus() map[string]LaneStatus {
+	out := map[string]LaneStatus{}
+	for lane, slots := range DefaultLaneSlots {
+		out[string(lane)] = LaneStatus{Slots: slots}
+	}
+	rows, err := s.q.LaneQueueCounts(context.Background())
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		st := out[r.Lane]
+		switch JobState(r.State) {
+		case JobPending:
+			st.Pending = int(r.N)
+		case JobRunning:
+			st.Running = int(r.N)
+		}
+		out[r.Lane] = st
+	}
+	return out
+}
 
 // IndexStatus reports queue progress: counts, a recent processing rate, and a
 // per-item ETA (queue position × recent average job duration). ETA/rate are 0
@@ -344,6 +474,7 @@ func (s *Store) IndexStatus() (Status, error) {
 	if iq, err := s.IdentityQueue(); err == nil {
 		st.Identity = iq
 	}
+	st.Lanes = s.laneStatus()
 
 	counts, err := s.q.JobStateCounts(ctx)
 	if err != nil {

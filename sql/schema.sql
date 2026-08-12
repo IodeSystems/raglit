@@ -112,8 +112,21 @@ CREATE TABLE IF NOT EXISTS ingest_jobs (
   -- owned it: kill the daemon mid-ingest and the row says running forever, so the
   -- queue reports work in flight that nothing is doing. Recording the owner lets
   -- a fresh daemon tell its own jobs from a dead one's and abort the orphans.
-  owner_pid   INTEGER NOT NULL DEFAULT 0
+  owner_pid   INTEGER NOT NULL DEFAULT 0,
+  -- Which scheduling lane runs this job: 'heavy' (vision/OCR, one GPU slot) or
+  -- 'light' (everything else). Guessed from the URL at enqueue and corrected by
+  -- the worker once it has routed the bytes. See lane.go.
+  --
+  -- Stored rather than recomputed so the claim is one indexed query per lane,
+  -- and so the correction survives: a file that turned out to be a scan is
+  -- claimed by the right lane on a retry.
+  lane        TEXT NOT NULL DEFAULT ''
 );
+-- NOTE: the index on (state, lane, id) is created in migrate(), NOT here.
+-- This file runs BEFORE migrate on every open, and on an existing database
+-- CREATE TABLE IF NOT EXISTS is a no-op — so the table still lacks `lane` at
+-- this point and an index naming it fails the whole schema apply. It did: every
+-- daemon with an existing index crash-looped on "no such column: lane".
 CREATE INDEX IF NOT EXISTS ingest_jobs_state ON ingest_jobs(state, id);
 CREATE TABLE IF NOT EXISTS job_stages (
   id      INTEGER PRIMARY KEY,

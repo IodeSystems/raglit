@@ -91,6 +91,10 @@
   /* A warn is a job that COMPLETED after a fight. It must not read as an error
      — that distinction is the whole content of the llm-retries report. */
   .badge.warn { color:var(--warn); }
+  /* Lanes. Heavy is the one that makes people wait, so it reads as the busy
+     colour and light as the ordinary one. */
+  .badge.lane-heavy { color:var(--vision); }
+  .badge.lane-light { color:var(--ok); }
   a.badge { text-decoration:none; }
   a.badge:hover { border:1px solid currentColor; padding:0 7px; }
   .prob .fix { font-family:ui-monospace,monospace; font-size:.75rem; opacity:.6;

@@ -52,11 +52,30 @@ SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, f
 FROM ingest_jobs WHERE id = ?;
 
 -- name: ListJobs :many
-SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
+-- The projection must carry EVERY column of ingest_jobs. This is scanned into
+-- the full-table IngestJob struct through metaquery, which validates the two
+-- against each other and refuses a mismatch -- so adding a column to the table
+-- and not to this list does not silently drop a field, it breaks the jobs list
+-- outright with "shape mismatch: field IngestJob.Lane not in projection".
+SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid, lane
 FROM ingest_jobs;
 
 -- name: GetOldestPendingJob :one
 SELECT id, url, title, enqueued_at FROM ingest_jobs WHERE state='pending' ORDER BY id LIMIT 1;
+
+-- name: GetOldestPendingJobInLane :one
+SELECT id, url, title, enqueued_at FROM ingest_jobs
+WHERE state='pending' AND lane = ? ORDER BY id LIMIT 1;
+
+-- name: SetJobLane :exec
+UPDATE ingest_jobs SET lane = ? WHERE id = ?;
+
+-- name: ListUnlanedPendingJobs :many
+SELECT id, url FROM ingest_jobs WHERE state='pending' AND lane = '';
+
+-- name: LaneQueueCounts :many
+SELECT lane, state, COUNT(*) AS n FROM ingest_jobs
+WHERE state IN ('pending','running') GROUP BY lane, state;
 
 -- name: SetJobRunning :exec
 UPDATE ingest_jobs SET state='running', started_at=?, owner_pid=? WHERE id=?;

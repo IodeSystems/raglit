@@ -108,6 +108,21 @@ func aggregateStatus(reg *raglit.Registry, names []string) raglit.Status {
 			agg.RatePerMin = s.RatePerMin
 		}
 		agg.Items = append(agg.Items, s.Items...)
+		// Lanes are summed across indexes because the LANE is the shared thing:
+		// there is one heavy slot for the whole daemon, not one per index, so
+		// "3 waiting in heavy" only means anything totalled.
+		//
+		// Every /status answer comes through here, single index included, so a
+		// field that IndexStatus fills and this does not is simply absent from
+		// the API — which is what happened: the per-lane queue was computed
+		// correctly and reported as {} everywhere.
+		for name, l := range s.Lanes {
+			cur := agg.Lanes[name]
+			cur.Pending += l.Pending
+			cur.Running += l.Running
+			cur.Slots = l.Slots // a property of the lane, not of the index
+			agg.Lanes[name] = cur
+		}
 	}
 	return agg
 }

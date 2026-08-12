@@ -122,16 +122,57 @@ scope that was searched.
   UI uses it (the SPA sends `index=` throughout), so this is now a trap for API
   clients only. Fix or remove it.
 
+### ✅ 4. The fair scheduler
+
+Two lanes, split by RESOURCE rather than by speed (`lane.go`). `heavy` is
+vision/OCR: one slot, because the GPU admits one and a second concurrent page
+does not start earlier, it blocks inside the server where nothing here can see
+it. `light` is everything else — pandoc, mail, spreadsheets, the deterministic
+fragmenter, embedding — at three. A 24 MB mail archive is not fast and is still
+light; what has to be serial is the GPU slot, not the wall clock.
+
+Each lane runs ONE claimer feeding N runners. The claim decides fairness — it is
+what walks the indexes in turn — so several claimers racing one cursor would
+hand out whatever they won rather than what is next. The cursor RESUMES between
+passes rather than restarting, or the alphabetically-first index with a full
+queue takes every turn.
+
+The lane is stored on the row, guessed from the URL at enqueue and corrected by
+the worker once it has routed the bytes (recorded as a `lane` stage). Storing it
+makes the claim one indexed query per lane and makes the correction survive a
+retry.
+
+**Measured live**, which is the whole point:
+
+    14:17:50  heavy:  1 run /  49 wait   light:  0 run / 127 wait
+    14:18:16  heavy:  1 run /  49 wait   light:  0 run /  78 wait
+
+One long OCR held the heavy lane for the whole window while light drained ~10
+jobs per 5s. Before this, all 78 were behind that one job.
+
+- **three bugs found by building it**, each pinned by a test:
+  - **The daemon crash-looped.** `CREATE INDEX ... (state, lane, id)` went into
+    `schema.sql`, which runs before `migrate()` on every open — and on an
+    existing database `CREATE TABLE IF NOT EXISTS` is a no-op, so the column did
+    not exist yet. `schema: SQL logic error: no such column: lane`, at open, so
+    systemd restarted it into the same failure. Indexes over migrated columns
+    belong in `migrate()`. Every other test builds a FRESH database, where the
+    ordering never shows, which is why nothing caught it.
+  - **The jobs list broke outright.** Adding a column to `ingest_jobs` without
+    adding it to `ListJobs`'s projection fails metaquery's shape check —
+    `field IngestJob.Lane not in projection` — so `/api/jobs` returned an error
+    for every index.
+  - **The queue reported work nobody was doing.** The claim is what writes
+    `running`, so a claimer running ahead of its runners marks rows nothing is
+    executing: the one-slot heavy lane ran one job and reported two. Claims now
+    take a slot token first, so a job stays `pending` — visible as waiting,
+    still cancellable — until something can actually run it.
+- **risk, untested**: `DefaultLaneSlots` is a package var, not config. Changing
+  light's 3 needs a rebuild.
+
 ## Active work
 
-### ◻ 4. The fair scheduler
-
-- **next**: lane classification at enqueue; a dispatcher that claims per lane
-  with per-lane concurrency; round-robin across (project, index) within a lane.
-- **risk**: `claimNextJob` is per-Store and takes the oldest pending row. Two
-  lanes claiming concurrently against one index must not both take the same row
-  — the claim is already transactional, but nothing has ever run two of them.
-- **blocking decision (USER)**: none outstanding; the four choices above are made.
+Nothing in flight. The four slices above are done and deployed.
 
 ## Found on the way
 
@@ -189,6 +230,17 @@ ingest failed at the embed stage; the `503 <!DOCTYPE html>` in the health report
 is that page. Not a raglit fault, and worth a health signal of its own: the UI
 reports it once per document when the correct statement is "the endpoint is
 down". See the optional extension below.
+
+### ◻ `work` carries 6,123 failed jobs against 0 documents
+
+Surfaced by the new overview, which is the first thing that ever totalled them:
+`work__work` 1,511 and `work__work-main` 4,612, both with an empty index. With
+`dun__dun-main`'s 235 that is essentially the daemon's entire failure count.
+
+- **next**: read the stages on a handful — the job view shows them now — and
+  find whether it is one cause repeated thousands of times.
+- **assumption to check**: nobody wants that corpus indexed and the failures are
+  a watcher pointed at something it cannot read. Not touched.
 
 ## Optional extensions (not in scope now)
 

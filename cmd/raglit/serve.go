@@ -9,6 +9,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iodesystems/raglit"
@@ -277,35 +278,149 @@ func effectiveSlots(n int) int {
 }
 
 func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home, pool *raglit.Pool) {
-	workers := map[string]*raglit.Worker{}
+	// Strand nothing on upgrade. An index that has been queueing since before
+	// lanes existed has rows with an empty lane, and no lane claims those.
+	for _, name := range reg.Names() {
+		st, err := reg.Existing(name)
+		if err != nil {
+			continue
+		}
+		if n, err := st.BackfillLanes(); err == nil && n > 0 {
+			log.Printf("raglit: queue %s: assigned a lane to %d job(s) queued before lanes existed", name, n)
+		}
+	}
+	var wg sync.WaitGroup
+	for lane, slots := range raglit.DefaultLaneSlots {
+		wg.Add(1)
+		go func(lane raglit.Lane, slots int) {
+			defer wg.Done()
+			runLane(ctx, reg, lane, slots, func(st *raglit.Store) *raglit.Worker {
+				return buildWorker(st, lf, home, pool)
+			})
+		}(lane, slots)
+	}
+	wg.Wait()
+}
+
+// runLane drains ONE lane across every index: a single claimer feeding `slots`
+// runners.
+//
+// One claimer, not one per slot. The claim decides FAIRNESS — it is the thing
+// that walks the indexes in turn — and several claimers racing the same
+// round-robin cursor would hand out whatever they happened to win rather than
+// what is next. Claiming is a transaction and takes microseconds, so one is not
+// a bottleneck; running is minutes, which is what the slots are for.
+//
+// The runners each keep their OWN worker cache. A Worker carries the retry tally
+// for the job in flight (Worker.Retries), so two goroutines sharing one would
+// attribute an endpoint's backpressure to whichever document finished second.
+// newWorker builds the worker for one index. A function rather than the flags
+// themselves so a test can supply a worker whose fetch it controls, and so
+// assert the property this whole change exists for: that a slow heavy job does
+// not hold up a light one.
+func runLane(ctx context.Context, reg *raglit.Registry, lane raglit.Lane, slots int,
+	newWorker func(*raglit.Store) *raglit.Worker) {
+	if slots < 1 {
+		slots = 1
+	}
+	type claimed struct {
+		index string
+		job   *raglit.Job
+	}
+	ch := make(chan claimed)
+
+	// A token per slot, taken BEFORE claiming and returned when the job is done.
+	//
+	// The claim is what writes `running` to the row, so claiming ahead of a free
+	// runner makes the queue report work that nothing is doing — which is the
+	// same lie owner_pid exists to expose, told by the scheduler itself. Observed
+	// before this: the heavy lane has one slot, ran one job, and reported two
+	// running, because the claimer had already taken the next one and was blocked
+	// handing it over.
+	//
+	// Gating the CLAIM rather than the hand-off also means a job stays `pending`
+	// — cancellable, visible as waiting — until something is actually free to run
+	// it.
+	free := make(chan struct{}, slots)
+	for i := 0; i < slots; i++ {
+		free <- struct{}{}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < slots; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			workers := map[string]*raglit.Worker{}
+			for c := range ch {
+				st, err := reg.Existing(c.index)
+				if err == nil {
+					w := workers[c.index]
+					if w == nil {
+						w = newWorker(st)
+						workers[c.index] = w
+					}
+					if err := w.ProcessJob(ctx, c.job); err != nil {
+						log.Printf("raglit: queue %s [%s]: job %d: %v", c.index, lane, c.job.ID, err)
+					}
+				}
+				free <- struct{}{}
+			}
+		}()
+	}
+
+	// The claimer. Round-robin across indexes, resuming where the last pass
+	// stopped rather than restarting at the first name: starting over every time
+	// would let the alphabetically-first index with a full queue take every turn
+	// while the others waited, which is the unfairness this whole change is
+	// about, merely moved from between lanes to within one.
+	cursor := 0
 	for ctx.Err() == nil {
-		did := false
-		for _, name := range reg.Names() {
-			// Existing, not Get: Get CREATES, so a name that was deleted between
-			// Names() and here comes straight back as an empty index. See
-			// Registry.Existing.
+		select {
+		case <-free:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		names := reg.Names()
+		got := false
+		for range names {
+			if ctx.Err() != nil || len(names) == 0 {
+				break
+			}
+			name := names[cursor%len(names)]
+			cursor++
 			st, err := reg.Existing(name)
 			if err != nil {
-				delete(workers, name)
 				continue
 			}
-			w := workers[name]
-			if w == nil {
-				w = buildWorker(st, lf, home, pool)
-				workers[name] = w
+			job, err := st.ClaimNextInLane(lane)
+			if err != nil || job == nil {
+				continue
 			}
-			if processed, _ := w.ProcessOne(ctx); processed {
-				did = true
+			select {
+			case ch <- claimed{index: name, job: job}:
+				got = true
+			case <-ctx.Done():
+				// Claimed and never handed off. Put it back rather than leaving a
+				// row that says running with nothing running it.
+				_ = st.RequeueJob(job.ID)
+				free <- struct{}{}
 			}
+			break
 		}
-		if !did {
+		if !got {
+			// Nothing anywhere in this lane: hand the slot back and wait.
+			free <- struct{}{}
 			select {
 			case <-ctx.Done():
-				return
 			case <-time.After(500 * time.Millisecond):
 			}
 		}
 	}
+	close(ch)
+	wg.Wait()
 }
 
 // selectIndexes resolves the `index` argument to a concrete set of names: empty
