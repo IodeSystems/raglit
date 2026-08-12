@@ -237,7 +237,7 @@ func runIdentityWorkers(ctx context.Context, reg *raglit.Registry, home raglit.H
 			if ctx.Err() != nil {
 				return
 			}
-			st, err := reg.Get(name)
+			st, err := reg.Existing(name)
 			if err != nil {
 				continue
 			}
@@ -281,8 +281,12 @@ func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, ho
 	for ctx.Err() == nil {
 		did := false
 		for _, name := range reg.Names() {
-			st, err := reg.Get(name)
+			// Existing, not Get: Get CREATES, so a name that was deleted between
+			// Names() and here comes straight back as an empty index. See
+			// Registry.Existing.
+			st, err := reg.Existing(name)
 			if err != nil {
+				delete(workers, name)
 				continue
 			}
 			w := workers[name]

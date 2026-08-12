@@ -92,6 +92,39 @@ func (r *Registry) Get(name string) (*Store, error) {
 	return r.getLocked(name)
 }
 
+// Existing opens an index only if its storage is already there, and never
+// creates one.
+//
+// Get creates on demand, which is right for ingest — POST /ingest to a new index
+// name should make it — and WRONG for anything that walks a list of names. The
+// worker loops do exactly that: they take reg.Names(), then Get each one in
+// turn. Delete a branch while that pass is in flight and the loop reaches a name
+// whose directory has just gone, Get recreates the whole index, and the thing
+// that was deleted is back — empty, listed everywhere, and impossible to remove
+// while the daemon runs.
+//
+// Observed, not theorised: a branch deleted through the UI returned ok, and its
+// index.sqlite was recreated within the same second by the round-robin.
+//
+// Single-home mode has no such race — DeleteIndex and DeleteBranch both refuse
+// without scoped storage — so there it is Get.
+func (r *Registry) Existing(name string) (*Store, error) {
+	name = normalizeIndexName(name)
+	if r.scopedRoot != "" {
+		r.mu.Lock()
+		_, cached := r.stores[name]
+		r.mu.Unlock()
+		// A cached store is live regardless: its handle is already open, and
+		// re-stat'ing would only reintroduce the race for the caller holding it.
+		if !cached {
+			if _, err := os.Stat(string(r.indexHome(name))); err != nil {
+				return nil, fmt.Errorf("raglit: no index %q", name)
+			}
+		}
+	}
+	return r.Get(name)
+}
+
 // getLocked opens (once, then caches) the named index; the caller holds r.mu. In
 // scoped mode a branch (it has a branch.json) is wired to its parent so reads
 // overlay branch-over-parent.

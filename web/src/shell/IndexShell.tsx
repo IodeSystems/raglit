@@ -14,6 +14,12 @@ export function IndexShell() {
   const { index } = useParams({ from: "/i/$index" });
   const navigate = useNavigate();
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
+  // Split the same way the daemon does (cmd/raglit/namespace.go: nsSep is "__").
+  // An index with no separator has no project — it is not "a project called
+  // default", it is one nobody namespaced — so the crumb shows only the index.
+  const sep = index.indexOf("__");
+  const project = sep > 0 ? index.slice(0, sep) : "";
+  const local = sep > 0 ? index.slice(sep + 2) : index;
 
   useEffect(() => {
     listIndexes()
@@ -31,8 +37,26 @@ export function IndexShell() {
     <>
       <header>
         <h1>
-          raglit <span>review</span>
+          <Link to="/">raglit</Link> <span>review</span>
         </h1>
+        {/* The project half of the name, as a link. `delano-v-mckinnon__default`
+            is a project and an index run together, and until now the only way to
+            reach the project's other indexes was to know they existed. */}
+        <nav className="crumbs">
+          <Link to="/">projects</Link>
+          <span className="sep">/</span>
+          {project ? (
+            <>
+              <Link to="/p/$project" params={{ project }}>
+                {project}
+              </Link>
+              <span className="sep">/</span>
+              <strong>{local}</strong>
+            </>
+          ) : (
+            <strong>{local}</strong>
+          )}
+        </nav>
         <select
           title="index"
           value={index}
@@ -73,6 +97,9 @@ export function IndexShell() {
           <Link to="/i/$index/search" params={{ index }} search={{ q: "", mode: "bm25" }}
                 activeProps={{ className: "on" }}>
             Search
+          </Link>
+          <Link to="/i/$index/branches" params={{ index }} activeProps={{ className: "on" }}>
+            Branches
           </Link>
           <Link to="/i/$index/attest" params={{ index }} activeProps={{ className: "on" }}>
             Review

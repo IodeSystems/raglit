@@ -10,10 +10,11 @@
 //   #/<tab>                             →  /i/<index>/<tab>
 //
 // This runs BEFORE the router is created, not from an effect inside it. As an
-// effect it lost a race it could not win: "/" redirects to the default index in
+// effect it lost a race it could not win: "/" redirected to the default index in
 // beforeLoad, so by the time a component mounted the hash was gone and the
-// legacy link silently became the dashboard. Rewriting the URL before anything
-// reads it has no race to lose.
+// legacy link silently became the dashboard. That redirect is gone — "/" is the
+// project overview now — but running early is still right: it is the only place
+// with no race to lose, whatever the root route later becomes.
 export function applyLegacyHashRedirect(): void {
   if (!location.hash.startsWith("#/")) return;
   const to = pathForLegacyHash(location.hash);

@@ -7,11 +7,15 @@ import {
 
 import { RootShell } from "./shell/RootShell";
 import { IndexShell } from "./shell/IndexShell";
+import { ProjectShell } from "./shell/ProjectShell";
 import { DocShell } from "./shell/DocShell";
 import { Dashboard } from "./panes/Dashboard";
+import { Overview } from "./panes/Overview";
+import { Project } from "./panes/Project";
+import { Branches } from "./panes/Branches";
 import { Health } from "./panes/Health";
 import { Jobs } from "./panes/Jobs";
-import { Search } from "./panes/Search";
+import { Search, ProjectSearch } from "./panes/Search";
 import { DocumentList } from "./panes/DocumentList";
 import { Pages, PageDetail } from "./panes/Pages";
 import { Transcript } from "./panes/Transcript";
@@ -20,7 +24,6 @@ import { History } from "./panes/History";
 import { Notes } from "./panes/Notes";
 import { Attest } from "./panes/Attest";
 import { AttestAsset } from "./panes/AttestAsset";
-import { listIndexes } from "./api";
 
 // The document path is ONE encoded segment, and the router already does that.
 //
@@ -37,23 +40,45 @@ import { listIndexes } from "./api";
 // one back.
 const rootRoute = createRootRoute({ component: RootShell });
 
-// "/" has no index to show, so it picks one rather than rendering an empty
-// chrome. First from /indexes, falling back to "default" — which is the name a
-// single-index daemon uses, so the fallback is right far more often than it is a
-// guess.
+// "/" is the whole daemon: projects, then their indexes, then an index's
+// branches. It used to REDIRECT to whichever index came back first, which made a
+// daemon serving four projects look like a single-corpus tool and left nine
+// `project__index` names as the only way in.
+//
+// The redirect is also what the legacy-hash rewrite lost its race to: it fired
+// in beforeLoad, so an old `#/documents/<index>/…` link resolved to the first
+// index before any component mounted. Removing it removes that too.
 const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  beforeLoad: async () => {
-    let name = "default";
-    try {
-      const got = await listIndexes();
-      if (got.indexes?.length && got.indexes[0]) name = got.indexes[0].name;
-    } catch {
-      // A daemon that cannot list indexes still renders; the index route says so.
-    }
-    throw redirect({ to: "/i/$index", params: { index: name } });
-  },
+  component: Overview,
+});
+
+// A project is the "<project>__" prefix on an index name and nothing else — see
+// cmd/raglit/projectsapi.go. Indexes stay addressed as /i/:index rather than
+// nesting under /p/:project/i/:index: the daemon name is already unique and
+// already what every endpoint takes, so nesting would duplicate the namespace in
+// the URL and break every link that exists.
+const projectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/p/$project",
+  component: ProjectShell,
+});
+
+const projectIndexesRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/",
+  component: Project,
+});
+
+const projectSearchRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "search",
+  component: ProjectSearch,
+  validateSearch: (s: Record<string, unknown>) => ({
+    q: typeof s.q === "string" ? s.q : "",
+    mode: typeof s.mode === "string" ? s.mode : "bm25",
+  }),
 });
 
 const indexRoute = createRoute({
@@ -161,6 +186,15 @@ const notesRoute = createRoute({
   component: Notes,
 });
 
+// An index's branches: the copy-on-write overlays forked from it. The daemon has
+// had fork/list/delete since the branch-storage work landed and nothing ever
+// showed them, so the feature was reachable only by curl.
+const branchesRoute = createRoute({
+  getParentRoute: () => indexRoute,
+  path: "branches",
+  component: Branches,
+});
+
 const attestRoute = createRoute({
   getParentRoute: () => indexRoute,
   path: "attest",
@@ -185,6 +219,7 @@ function PageRoute() {
 
 const routeTree = rootRoute.addChildren([
   homeRoute,
+  projectRoute.addChildren([projectIndexesRoute, projectSearchRoute]),
   indexRoute.addChildren([
     dashboardRoute,
     healthRoute,
@@ -201,6 +236,7 @@ const routeTree = rootRoute.addChildren([
       historyRoute,
       notesRoute,
     ]),
+    branchesRoute,
     attestRoute,
     attestAssetRoute,
   ]),

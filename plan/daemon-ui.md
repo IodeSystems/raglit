@@ -84,28 +84,45 @@ stream cancel, then it completed. `ListJobStages` selects `id` and orders by it
   restart raglit`: the badge resolves, all four attempts render, `page-unread`
   shows with its Re-read.
 
+### ✅ 2. The hierarchy — dashboard → project → index → branch
+
+`/` is the daemon: totals, then a card per project. `/p/:project` is its
+indexes, with branches nested under the index each overlays. `/i/:index` keeps
+every route it had and gains a breadcrumb (`projects / dun / dun`) and a
+Branches tab. `GET /api/projects` derives the grouping — see
+`cmd/raglit/projectsapi.go` for why there is no projects table.
+
+Indexes stay at `/i/:index` rather than nesting under `/p/:project/i/:index`:
+the daemon name is already unique and already what every endpoint takes, so
+nesting would duplicate the namespace in the URL and break every existing link.
+`/p/` is not in `apiPrefixes`, so the catch-all needed no change.
+
+Branch fork/list/delete had been built since the branch-storage work and shown
+nowhere — reachable only by curl, which is why `/api/branches` was empty.
+
+- **fixed on the way**: the fork form sent the branch name RAW, so forking
+  `uitest` off `dun__dun` created a top-level index called `uitest` — outside
+  the `dun` project, orphaned from the corpus it overlays. It inherits its
+  parent's namespace now, and the form shows the name it will get.
+- **verified live**: fork → overlay reads the parent's documents → nests under
+  the project → delete → gone.
+
+### ✅ 3. Search at project scope
+
+One `SearchPane`, two scopes. `/search?index=` already takes a comma list and a
+`prefix*` wildcard and `selectIndexes` expands it, so a project search is the
+selector `<project>__*` — the same string `nsSelector` already sends for "search
+all" within a namespace — and needed no endpoint. Hits carry their own `index`
+and link into it, so a result from `dun__dun-main` opens there and not in the
+scope that was searched.
+
+- **still open, inherited**: `daemon-stack.md` records that the `project=` query
+  parameter does NOT namespace the index on these endpoints — it answers about
+  the plain `default` index instead, confidently and empty. Nothing in the new
+  UI uses it (the SPA sends `index=` throughout), so this is now a trap for API
+  clients only. Fix or remove it.
+
 ## Active work
-
-### ◻ 2. The hierarchy — dashboard → project → index → branch
-
-- **next**: a global dashboard route; `/p/:project` listing its indexes;
-  branches under an index. Derive projects by splitting index names on `__`,
-  enriched from `/api/watch`.
-- **risk**: `spa-ui.md` records that widening the SPA catch-all's deny-list
-  wrongly 404s a real route and narrowing it makes a mistyped API path answer
-  HTML. New top-level route prefixes must stay in step with `apiPrefixes`
-  (cmd/raglit/webui.go) and `API_PREFIXES` (web/vite.config.ts).
-- **assumption**: an index name with no `__` belongs to no project. `default` is
-  the only one today.
-
-### ◻ 3. Search at project scope
-
-`/search?index=` already takes a comma list and a `prefix*` wildcard, and
-`selectIndexes` expands it — so project search is `?index=<proj>__*` and needs
-no new endpoint. **But** `daemon-stack.md` records a live bug: the `project=`
-query parameter does NOT namespace the index on these endpoints, and answers
-about the plain `default` index instead — confidently, and empty. Fix or remove
-that parameter as part of this.
 
 ### ◻ 4. The fair scheduler
 
@@ -117,6 +134,22 @@ that parameter as part of this.
 - **blocking decision (USER)**: none outstanding; the four choices above are made.
 
 ## Found on the way
+
+### ✅ Deleting an index or branch raced the worker loop, which put it back
+
+`Registry.Get` CREATES on demand — right for ingest, where POSTing to a new
+index name should make it. The worker loops walk `reg.Names()` and then `Get`
+each name in turn, so a name deleted between the listing and the open was
+recreated as an empty index. Observed while testing the branches tab: the delete
+answered `ok`, and `index.sqlite` was back within the same second, listed
+everywhere and impossible to remove while the daemon ran.
+
+`Registry.Existing` opens only what is already there; both worker loops use it.
+`TestRegistry_ExistingDoesNotResurrectADeletedIndex` pins both halves — that
+`Existing` refuses and that `Get` still creates, because ingest depends on it.
+
+**Matters for the scheduler**: a global dispatcher walks names for a living, so
+it must claim through `Existing` or reintroduce this.
 
 ### ✅ Codegen must run OUR sqlc — `make generate`, never `sqlc generate`
 

@@ -133,6 +133,11 @@ export type DocumentRow = {
 };
 
 export type Hit = {
+  // Which index the hit came from. Always present, and it MATTERS once a search
+  // can span more than one: a project search returns hits from several indexes
+  // and each result must link into the one it actually came from, not into the
+  // scope that was searched.
+  index?: string;
   doc_id: string;
   title?: string;
   path?: string;
@@ -140,6 +145,48 @@ export type Hit = {
   snippet?: string;
   page?: number;
 };
+
+// ── projects ──────────────────────────────────────────────────────────────
+// A project is not stored anywhere: it is the "<project>__" prefix a client puts
+// on every index name (cmd/raglit/namespace.go), and /api/projects derives the
+// grouping from the names. See cmd/raglit/projectsapi.go for why there is no
+// projects table.
+
+export type ProjectIndex = {
+  name: string; // the daemon name — what every endpoint takes
+  local: string; // what a person in that project calls it
+  documents?: number;
+  fragments?: number;
+  pending?: number;
+  running?: number;
+  failed?: number;
+  parent?: string; // set when this index is a branch of another
+};
+
+export type Project = {
+  name: string; // "" means the indexes carrying no namespace at all
+  indexes: ProjectIndex[];
+  documents?: number;
+  fragments?: number;
+  pending?: number;
+  running?: number;
+  failed?: number;
+  home?: string;
+  watching?: boolean;
+  files?: number;
+};
+
+export const listProjects = () => getJSON<{ projects: Project[] }>("/api/projects");
+
+export type Branch = {
+  name: string;
+  parent: string;
+  created_at?: number;
+  last_accessed_at?: number;
+  documents?: number;
+};
+
+export const listBranches = () => getJSON<{ branches: Branch[] }>("/api/branches");
 
 export const listIndexes = () => getJSON<{ indexes: IndexInfo[] }>("/indexes");
 

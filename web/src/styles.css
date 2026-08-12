@@ -69,6 +69,22 @@
          border:1px solid var(--line); background:transparent; color:inherit; cursor:pointer; }
   .act:hover:not(:disabled) { border-color:currentColor; }
   .act:disabled { opacity:.5; cursor:progress; }
+  /* hierarchy: overview → project → index → branch */
+  .crumbs { display:flex; align-items:center; gap:.4rem; font-size:.85rem; }
+  .crumbs .sep { color:var(--muted); }
+  .crumbs strong { font-weight:600; }
+  .projcard { padding:.6rem .75rem; margin-bottom:.75rem; }
+  .projhead { display:flex; align-items:baseline; gap:.6rem; }
+  .projhead h3 { margin:0; font-size:1rem; }
+  .small { font-size:.8rem; }
+  .idxlist { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.5rem; }
+  .idxchip { display:inline-flex; align-items:center; gap:.35rem; padding:.2rem .6rem;
+             border:1px solid var(--line); border-radius:999px; text-decoration:none; font-size:.85rem; }
+  .idxchip:hover { border-color:currentColor; }
+  /* A branch is marked wherever it appears. It is a real index and its name says
+     nothing, so without a mark it reads as a sibling of the index it overlays. */
+  .branchmark { color:var(--muted); margin-right:.3rem; }
+  .branchrow { padding-left:1.6rem; }
   .jobhead { padding:.6rem .75rem; }
   .jobhead .subj { font-family:ui-monospace,monospace; font-size:.85rem; word-break:break-all; }
   .jobhead .muted { font-size:.8rem; margin-top:.2rem; }

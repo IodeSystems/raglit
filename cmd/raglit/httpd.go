@@ -253,6 +253,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("pageLayout", http.MethodGet, "/api/page-layout", "One page's layout blocks, raw transcription and indexed text."), pageLayoutOp(reg))
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
+	gat.Register(api, g, op("listProjects", http.MethodGet, "/api/projects", "Indexes grouped by the project namespace they carry, with branch lineage and watch state."), listProjectsOp(reg, watch))
 	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
 	gat.Register(api, g, op("searchFigures", http.MethodGet, "/search-figures", "Semantic search over figures (MCP search_figures)."), searchFiguresOp(reg, defLimit))
 	gat.Register(api, g, op("ingest", http.MethodPost, "/ingest", "Queue targets for lazy ingestion."), ingestOp(reg))

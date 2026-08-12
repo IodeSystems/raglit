@@ -102,3 +102,60 @@ func TestBranch_OverlayCOWTombstoneAndLifecycle(t *testing.T) {
 		t.Fatalf("no branches should remain: %+v", brs)
 	}
 }
+
+// TestRegistry_ExistingDoesNotResurrectADeletedIndex pins the race that made a
+// deleted branch come back.
+//
+// The worker loops walk reg.Names() and then open each name in turn. Get CREATES
+// on demand — which is right for ingest, where POSTing to a new index name
+// should make it — so a name deleted between the listing and the open was
+// recreated as an empty index. Observed live: a branch deleted through the UI
+// answered ok and its index.sqlite was back within the same second, listed
+// everywhere and impossible to remove while the daemon ran.
+func TestRegistry_ExistingDoesNotResurrectADeletedIndex(t *testing.T) {
+	root := t.TempDir()
+	reg, err := OpenScopedRegistry(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	main, _ := reg.Get("main")
+	must(t, main.Ingest(context.Background(), Document{
+		Path: "file:///a.md", Title: "A", Fragments: []Fragment{{Text: "apple zebra"}},
+	}))
+	if err := reg.ForkBranch("feat", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// What a worker pass holds: the names as they were BEFORE the delete.
+	names := reg.Names()
+	if err := reg.DeleteBranch("feat"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, n := range names {
+		if _, err := reg.Existing(n); err != nil {
+			continue // "feat" — which is the whole point
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "indexes", "feat")); err == nil {
+		t.Fatal("Existing recreated the deleted branch's storage")
+	}
+	for _, n := range reg.Names() {
+		if n == "feat" {
+			t.Fatal("deleted branch is back in the registry listing")
+		}
+	}
+
+	// The same walk through Get is what the bug WAS — kept so the difference
+	// between the two is recorded rather than remembered.
+	for _, n := range names {
+		if _, err := reg.Get(n); err != nil {
+			t.Fatalf("Get(%q): %v", n, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "indexes", "feat")); err != nil {
+		t.Fatal("Get no longer creates on demand — ingest to a new index name depends on that")
+	}
+}
