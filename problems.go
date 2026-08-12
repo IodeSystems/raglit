@@ -82,6 +82,20 @@ const (
 	// a partial document nobody knows is partial is the more dangerous object,
 	// because search returns it and a reader assumes the absence is the record's.
 	ProblemUnreadPage ProblemKind = "page-unread"
+	// ProblemEmptySource — the file is there and it is zero bytes.
+	//
+	// Reported rather than failed, because having no content is a fact about the
+	// DOCUMENT and being unable to import it is a fact about the importer; saying
+	// the second when the first is true sends the reader to the wrong half. A
+	// 0-byte .docx failed as `pandoc .docx: exit status 63`, which names the tool
+	// and reads as a broken install.
+	//
+	// It must not be silent either. The text path did not fail at all on an empty
+	// file — it indexed a document with no fragments, which is ProblemNoFragments:
+	// a row that looks like a document from every angle except the one that
+	// matters. Usually a broken copy or a truncated export, and the document it
+	// should have carried is absent from the record.
+	ProblemEmptySource ProblemKind = "empty-source"
 )
 
 // Problem is one thing worth a person's attention.
@@ -305,6 +319,23 @@ var problemQueries = []problemQuery{
 		        FROM job_stages s JOIN ingest_jobs j ON j.id = s.job_id
 		       WHERE s.name = 'llm-retries' AND s.state = 'warn'
 		       ORDER BY s.job_id DESC`,
+	},
+	{
+		kind: ProblemEmptySource,
+		// The job is the record: an empty file leaves no document row (that is
+		// the point — a row with no fragments is the trap this avoids), so the
+		// completed job carrying mode `empty` is the only thing that knows.
+		//
+		// Latest job per url, so replacing the file and re-ingesting clears the
+		// row instead of leaving the old verdict standing beside the new one.
+		sql: `SELECT j.url, j.id, '', 'the file is 0 bytes'
+		        FROM ingest_jobs j
+		       WHERE j.mode = 'empty'
+		         AND j.id = (SELECT MAX(id) FROM ingest_jobs k WHERE k.url = j.url)
+		       ORDER BY j.url`,
+		fix: func(p Problem) string {
+			return "ls -l " + p.Subject + "   # replace the file, then: raglit ingest --fresh"
+		},
 	},
 	{
 		kind: ProblemWithdrawn,

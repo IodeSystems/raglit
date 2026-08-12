@@ -231,6 +231,34 @@ is that page. Not a raglit fault, and worth a health signal of its own: the UI
 reports it once per document when the correct statement is "the endpoint is
 down". See the optional extension below.
 
+### ✅ A 0-byte file is FLAGGED, not failed
+
+`Order on Motion to Continue.docx` in the delano evidence folder failed as
+`pandoc .docx: exit status 63` — which names the tool, reads as a broken pandoc
+install, and is not what is wrong. The file is zero bytes on disk and has been
+since Jun 23 2023. **Three copies of it** are in that tree.
+
+Checked once, after fetch and before routing, because zero bytes is a fact about
+the SOURCE and each reader discovered it separately and said something else. The
+text path did not fail at all: it indexed a document with no fragments, which is
+the `no-fragments` kind — a row that looks like a document from every angle
+except the one that matters.
+
+**Flagged rather than failed (user's call, and it is the right one):** having no
+content is a fact about the DOCUMENT; being unable to import it is a fact about
+the importer, and reporting the second when the first is true sends the reader
+to the wrong half. So the job COMPLETES with mode `empty` and the emptiness is
+reported as `ProblemEmptySource`. It stays out of the failed-jobs list, where it
+would be retried forever and re-fail identically, and it is still visible —
+absent and flagged is recoverable, absent and quiet is not.
+
+All three copies now report under "The file has no content", offering Re-ingest
+(once the file is replaced) and Withdraw (if the document is genuinely absent).
+
+- **found while verifying**: `GetJob`'s projection and `Store.Job` both predated
+  the lane column, so the by-id job view reported an empty lane. Same class as
+  the `ListJobs` shape mismatch — a new column has THREE call sites, not one.
+
 ### ◻ `work` carries 6,123 failed jobs against 0 documents
 
 Surfaced by the new overview, which is the first thing that ever totalled them:

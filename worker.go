@@ -173,6 +173,34 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	}
 	sl.Done("fetch", "", fmt.Sprintf("%d bytes", len(f.Data)))
 
+	// An empty file, named as an empty file.
+	//
+	// Checked here — before routing, before every extractor — because zero bytes
+	// is a fact about the SOURCE, and each reader discovers it separately and
+	// says something else. pandoc returned `exit status 63` on a 0-byte .docx in
+	// the delano corpus, which names the tool and not the problem and sends
+	// somebody to check whether pandoc is installed. A 0-byte PDF gets a poppler
+	// error; a 0-byte .txt gets no error at all and indexes as a document with no
+	// fragments, which is the `no-fragments` health kind — a row that looks like
+	// a document from every angle except the one that matters.
+	//
+	// SKIPPED, not failed. Having no content is a fact about the document; being
+	// unable to import it is a fact about the importer, and reporting the second
+	// when the first is true sends the reader to the wrong half. There is nothing
+	// wrong with this ingest — it read the file correctly and the file is empty.
+	//
+	// So the job completes, with mode `empty`, and the emptiness is reported as a
+	// PROBLEM instead (ProblemEmptySource). That keeps it out of the failed-jobs
+	// list, where it would be retried forever by anything that retries failures
+	// and would keep re-failing identically, while still being visible — three
+	// copies of the same empty `Order on Motion to Continue.docx` sit in that
+	// evidence folder, and the document they should carry is absent from the
+	// record. Absent and flagged is recoverable; absent and quiet is not.
+	if len(f.Data) == 0 {
+		sl.Skip("extract", "the file is empty (0 bytes) — nothing to index")
+		return 0, "empty", nil
+	}
+
 	hash := sha256hex(f.Data)
 	title := job.Title
 	if title == "" {

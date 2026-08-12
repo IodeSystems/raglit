@@ -386,7 +386,7 @@ var MetaGetJob = metaquery.Query{
 	Cmd:     ":one",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
+	SQL: `SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid, lane
 FROM ingest_jobs WHERE id = ?`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
@@ -400,6 +400,7 @@ FROM ingest_jobs WHERE id = ?`,
 		{Name: "started_at", OriginalName: "started_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "finished_at", OriginalName: "finished_at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
 		{Name: "owner_pid", OriginalName: "owner_pid", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ingest_jobs"},
+		{Name: "lane", OriginalName: "lane", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ingest_jobs"},
 	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
@@ -424,6 +425,7 @@ var GetJobCols = struct {
 	StartedAt  metaquery.IntCol
 	FinishedAt metaquery.IntCol
 	OwnerPid   metaquery.IntCol
+	Lane       metaquery.TextCol
 }{
 	ID:         metaquery.NewIntCol("id"),
 	Url:        metaquery.NewTextCol("url"),
@@ -436,6 +438,7 @@ var GetJobCols = struct {
 	StartedAt:  metaquery.NewIntCol("started_at"),
 	FinishedAt: metaquery.NewIntCol("finished_at"),
 	OwnerPid:   metaquery.NewIntCol("owner_pid"),
+	Lane:       metaquery.NewTextCol("lane"),
 }
 
 var MetaGetOldestPendingJob = metaquery.Query{

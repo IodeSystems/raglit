@@ -350,7 +350,7 @@ func (s *Store) Job(id int64) (JobInfo, error) {
 	// the full-table one ListJobs scans into.
 	return JobInfo{
 		ID: row.ID, URL: row.Url, Title: row.Title, State: row.State, Error: row.Error,
-		Fragments: int(row.Fragments), Mode: row.Mode, EnqueuedAt: row.EnqueuedAt,
+		Fragments: int(row.Fragments), Mode: row.Mode, Lane: row.Lane, EnqueuedAt: row.EnqueuedAt,
 		StartedAt: row.StartedAt, FinishedAt: row.FinishedAt,
 	}, nil
 }

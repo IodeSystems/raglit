@@ -184,3 +184,72 @@ func TestWorker_DedupSkipsUnchangedContent(t *testing.T) {
 		t.Fatalf("changed content should be searchable: %d hits", len(h))
 	}
 }
+
+// TestWorker_EmptyFileIsFlaggedNotFailed pins the diagnosis AND its shape.
+//
+// A 0-byte file reaches every extractor and each says something else about it.
+// In the delano corpus a 0-byte .docx failed as `pandoc .docx: exit status 63`,
+// which names the tool rather than the problem and reads as a broken install.
+// The text path is worse: it does not fail at all, it indexes a document with no
+// fragments — the no-fragments health kind, a row that looks like a document
+// from every angle except the one that matters.
+//
+// Having no content is a fact about the DOCUMENT, so the job COMPLETES and the
+// emptiness is reported as a problem. Failing it would park the row in the
+// failed-jobs list to be retried forever, re-failing identically every time.
+func TestWorker_EmptyFileIsFlaggedNotFailed(t *testing.T) {
+	for _, name := range []string{"empty.docx", "empty.pdf", "empty.md"} {
+		t.Run(name, func(t *testing.T) {
+			s := testStore(t)
+			url := "file:///corpus/" + name
+			if _, err := s.Enqueue(url, ""); err != nil {
+				t.Fatal(err)
+			}
+			w := &Worker{Store: s, Fetcher: func(context.Context, string) (Fetched, error) {
+				return Fetched{Data: []byte{}}, nil
+			}}
+			if _, err := w.ProcessOne(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+
+			if bad, err := s.Jobs("error", 10); err != nil {
+				t.Fatal(err)
+			} else if len(bad) != 0 {
+				t.Fatalf("an empty %s was reported as a failed import: %q", name, bad[0].Error)
+			}
+			done, err := s.Jobs("done", 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(done) != 1 || done[0].Mode != "empty" {
+				t.Fatalf("want one completed job with mode=empty, got %+v", done)
+			}
+
+			// Flagged, not silent.
+			probs, err := s.Problems(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found *Problem
+			for i := range probs {
+				if probs[i].Kind == ProblemEmptySource {
+					found = &probs[i]
+				}
+			}
+			if found == nil {
+				t.Fatalf("an empty %s produced no problem row — absent and quiet", name)
+			}
+			if found.Subject != url {
+				t.Fatalf("problem names %q, want %q", found.Subject, url)
+			}
+
+			// And it did NOT become a phantom document row, which is the
+			// no-fragments trap the text path used to fall into.
+			for _, p := range probs {
+				if p.Kind == ProblemNoFragments {
+					t.Fatalf("an empty file left an indexed-but-unsearchable row: %s", p.Subject)
+				}
+			}
+		})
+	}
+}

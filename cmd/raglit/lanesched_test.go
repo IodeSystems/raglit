@@ -69,6 +69,18 @@ func TestRunLane_LightDrainsWhileHeavyIsStuck(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go runLane(ctx, reg, raglit.LaneHeavy, 1, newWorker)
+
+	// Establish the premise BEFORE testing the conclusion: the heavy lane must
+	// actually be occupied, or "light finished" says nothing. Asserting this
+	// afterwards made the test a race it sometimes lost — the light jobs are
+	// milliseconds and could finish before the heavy fetch had even begun.
+	for start := time.Now(); heavyStarted.Load() == 0; {
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("the heavy job never started — the test cannot prove anything")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	go func() {
 		// Count completions by polling the queue rather than instrumenting the
 		// worker: what matters is that the ROWS reach done, which is what a
@@ -97,10 +109,9 @@ func TestRunLane_LightDrainsWhileHeavyIsStuck(t *testing.T) {
 		}
 	}
 
-	// And the heavy job really was in flight the whole time, so the light work
-	// did not simply win a race to an idle queue.
-	if heavyStarted.Load() == 0 {
-		t.Fatal("the heavy job never started — the test proved nothing")
+	// Still in flight: the light work drained WHILE heavy was stuck, not after.
+	if heavyStarted.Load() != 1 {
+		t.Fatalf("heavy started %d times in a one-slot lane", heavyStarted.Load())
 	}
 	close(release)
 	cancel()

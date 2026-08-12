@@ -51,6 +51,11 @@ const KINDS: [kind: string, title: string, why: string][] = [
     "The model would not segment these pages, so each came back as one undivided block. Searchable, but not retrievable at fragment grain.",
   ],
   [
+    "empty-source",
+    "The file has no content",
+    "Zero bytes on disk. The ingest read it correctly and there was nothing there, so this is not a failed import — it is a document that is missing from the record. Usually a broken copy or a truncated export.",
+  ],
+  [
     "page-unread",
     "Indexed with a hole in it",
     "The OCR could not read these pages and the ingest kept the rest rather than discarding the document. The trade is only sound if the hole is findable: search returns a partial document exactly like a whole one, and a reader takes the absence for the record's.",
@@ -206,6 +211,10 @@ function ProblemRow({
         return [["Re-read", reread], ["Withdraw…", withdraw]];
       case "segment-degraded":
         return [["Re-read", reread]];
+      // Nothing to re-read — there are no bytes. Either the file gets replaced
+      // and re-ingested, or the absence is recorded as a decision.
+      case "empty-source":
+        return [["Re-ingest", ingestFresh], ["Withdraw…", withdraw]];
       // A deterministic refusal re-reads to the same refusal — the repetition
       // guard at temp 0 returns the identical result on identical pixels — so
       // Re-read is offered and is NOT the whole answer. `raglit regions` is,

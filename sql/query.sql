@@ -48,7 +48,7 @@ INSERT INTO fragment_vectors(fragment_id, dim, vec) VALUES(?, ?, ?);
 INSERT INTO ingest_jobs(url, title, state, enqueued_at) VALUES(?, ?, 'pending', ?) RETURNING id;
 
 -- name: GetJob :one
-SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
+SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid, lane
 FROM ingest_jobs WHERE id = ?;
 
 -- name: ListJobs :many

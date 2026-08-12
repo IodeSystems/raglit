@@ -266,27 +266,13 @@ func (q *Queries) GetDocumentHash(ctx context.Context, path string) (string, err
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid
+SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid, lane
 FROM ingest_jobs WHERE id = ?
 `
 
-type GetJobRow struct {
-	ID         int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
-	Url        string `db:"url" derived:"ingest_jobs.url" json:"url"`
-	Title      string `db:"title" derived:"ingest_jobs.title" json:"title"`
-	State      string `db:"state" derived:"ingest_jobs.state" json:"state"`
-	Error      string `db:"error" derived:"ingest_jobs.error" json:"error"`
-	Fragments  int64  `db:"fragments" derived:"ingest_jobs.fragments" json:"fragments"`
-	Mode       string `db:"mode" derived:"ingest_jobs.mode" json:"mode"`
-	EnqueuedAt int64  `db:"enqueued_at" derived:"ingest_jobs.enqueued_at" json:"enqueued_at"`
-	StartedAt  int64  `db:"started_at" derived:"ingest_jobs.started_at" json:"started_at"`
-	FinishedAt int64  `db:"finished_at" derived:"ingest_jobs.finished_at" json:"finished_at"`
-	OwnerPid   int64  `db:"owner_pid" derived:"ingest_jobs.owner_pid" json:"owner_pid"`
-}
-
-func (q *Queries) GetJob(ctx context.Context, id int64) (GetJobRow, error) {
+func (q *Queries) GetJob(ctx context.Context, id int64) (IngestJob, error) {
 	row := q.db.QueryRowContext(ctx, getJob, id)
-	var i GetJobRow
+	var i IngestJob
 	err := row.Scan(
 		&i.ID,
 		&i.Url,
@@ -299,6 +285,7 @@ func (q *Queries) GetJob(ctx context.Context, id int64) (GetJobRow, error) {
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.OwnerPid,
+		&i.Lane,
 	)
 	return i, err
 }
