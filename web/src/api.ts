@@ -84,15 +84,40 @@ export type StatusSnapshot = {
   jobs_per_min?: number;
 };
 
+// One stage of an ingest, as the pipeline recorded it: fetch → extract → ocr →
+// segment → embed → commit, each with what it did and whether it survived.
+//
+// This is where a job's actual account lives — "23 page(s): 0 text-layer, 23
+// scanned", "SALVAGED: 1 of 23 page(s) unread (p9)", the endpoint's verbatim
+// 503. The daemon has always returned it and nothing rendered it, so a health
+// row could name a bad ingest and offer no way to see what went wrong.
+export type JobStage = {
+  // seq is NOT unique within a job: a retry appends a second run under the same
+  // job_id with seq restarting at 1. Key on `at`, or on position within a run.
+  seq: number;
+  name: string;
+  engine?: string;
+  state: string; // done | warn | error | skip
+  detail?: string;
+  at?: number;
+};
+
+// The field names ARE the daemon's (raglit.JobInfo). They were guessed once —
+// `target` and `detail`, neither of which the API has ever returned — and the
+// Target column rendered blank on every row for as long as the table existed.
 export type Job = {
   id: number;
+  url: string;
+  title?: string;
   state: string;
   mode?: string;
-  target?: string;
   fragments?: number;
-  eta_seconds?: number;
-  detail?: string;
   error?: string;
+  enqueued_at?: number;
+  started_at?: number;
+  finished_at?: number;
+  eta_seconds?: number;
+  stages?: JobStage[];
 };
 
 export type DocumentRow = {
@@ -120,6 +145,12 @@ export const getStatus = (index: string) => getJSON<StatusSnapshot>("/status", {
 
 export const listJobs = (index: string, limit = 200) =>
   getJSON<{ jobs: Job[] }>("/api/jobs", { index, limit });
+
+// One job by id, however old. listJobs answers "the newest N", which is the
+// wrong shape for a citation: the health report links AT job 927 while the
+// newest is 1467, so the row the link is about is not in the window at all.
+export const getJob = (index: string, id: number) =>
+  getJSON<{ jobs: Job[] }>("/api/jobs", { index, id }).then((r) => r.jobs?.[0]);
 
 export const listDocuments = (index: string) =>
   getJSON<{ documents: DocumentRow[] }>("/api/documents", { index });

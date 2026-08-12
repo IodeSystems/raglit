@@ -636,6 +636,10 @@ type jobsIn struct {
 	Index string `query:"index"`
 	State string `query:"state"`
 	Limit int    `query:"limit"`
+	// ID answers for ONE job, ignoring state and limit. A citation is a link to a
+	// specific job, and the last-N window it used to land in routinely does not
+	// contain it — see Store.Job.
+	ID int64 `query:"id"`
 }
 type jobsOut struct {
 	Body struct {
@@ -653,8 +657,14 @@ func listJobs(reg *raglit.Registry) func(context.Context, *jobsIn) (*jobsOut, er
 		if limit <= 0 {
 			limit = 100
 		}
-		jobs, err := st.Jobs(in.State, limit)
-		if err != nil {
+		var jobs []raglit.JobInfo
+		if in.ID > 0 {
+			j, err := st.Job(in.ID)
+			if err != nil {
+				return nil, huma.Error404NotFound(fmt.Sprintf("no job %d in %s", in.ID, defaultIndexName(in.Index)))
+			}
+			jobs = []raglit.JobInfo{j}
+		} else if jobs, err = st.Jobs(in.State, limit); err != nil {
 			return nil, huma.Error500InternalServerError("jobs", err)
 		}
 		snap, _ := st.IndexStatus()

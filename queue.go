@@ -251,6 +251,22 @@ func (s *Store) Jobs(state string, limit int) ([]JobInfo, error) {
 	return out, nil
 }
 
+// Job returns one job by id, whatever its state and however old it is.
+//
+// Jobs() answers "the last N", which is the wrong shape for a LINK. The health
+// report cites a job by id — an ingest that had to fight the endpoint, a failure
+// from a batch weeks ago — and a reader following that citation lands on a
+// window of the newest rows that does not contain it. Measured on the delano
+// index: the cited job was 927, the newest was 1467, and the page rendered two
+// hundred rows none of which was the one the link was about.
+func (s *Store) Job(id int64) (JobInfo, error) {
+	row, err := s.q.GetJob(context.Background(), id)
+	if err != nil {
+		return JobInfo{}, err
+	}
+	return jobInfoFromRow(row), nil
+}
+
 // RetryJob requeues an errored or done job: state → pending, error cleared,
 // timestamps reset, so the worker picks it up again. Errors if the job isn't in
 // a retryable state.

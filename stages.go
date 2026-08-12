@@ -74,7 +74,20 @@ type JobStage struct {
 	At     int64  `json:"at"`
 }
 
-// JobStages returns a job's stages in order.
+// JobStages returns a job's stages in the order they were RECORDED.
+//
+// Chronological, not by seq — because a retried job appends a whole second run
+// of stages under the same job_id, with seq restarting at 1. Ordered by seq the
+// runs interleave, and the account reads "fetch, fetch, fetch, fetch, extract,
+// extract, …" with no way to tell which failure belonged to which attempt. Job
+// 927 on the delano index is four runs, and two of its segment stages disagree
+// about what happened; by seq they sit adjacent and unattributable.
+//
+// The sort is here rather than in the query because `at` is the only
+// chronological column the generated ListJobStages selects, and re-generating
+// to add the row id is not currently possible — see plan/daemon-ui.md. Stable,
+// so rows that predate stage timestamps (at = 0) keep their insertion order
+// instead of being shuffled among themselves.
 func (s *Store) JobStages(jobID int64) ([]JobStage, error) {
 	rows, err := s.q.ListJobStages(context.Background(), jobID)
 	if err != nil {
@@ -84,6 +97,7 @@ func (s *Store) JobStages(jobID int64) ([]JobStage, error) {
 	for i, r := range rows {
 		out[i] = JobStage{Seq: int(r.Seq), Name: r.Name, Engine: r.Engine, State: r.State, Detail: r.Detail, At: r.At}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At < out[j].At })
 	return out, nil
 }
 

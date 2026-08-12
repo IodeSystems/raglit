@@ -51,6 +51,11 @@ const KINDS: [kind: string, title: string, why: string][] = [
     "The model would not segment these pages, so each came back as one undivided block. Searchable, but not retrievable at fragment grain.",
   ],
   [
+    "page-unread",
+    "Indexed with a hole in it",
+    "The OCR could not read these pages and the ingest kept the rest rather than discarding the document. The trade is only sound if the hole is findable: search returns a partial document exactly like a whole one, and a reader takes the absence for the record's.",
+  ],
+  [
     "llm-retries",
     "Jobs the endpoint made fight",
     "These completed, but only after retrying. The earliest warning that a failure is coming.",
@@ -75,9 +80,30 @@ export function Health() {
   const problems = data.problems ?? [];
   if (!problems.length) return <div className="empty">Nothing wrong with this index.</div>;
 
+  // Anything the list above does not name still gets shown.
+  //
+  // The list was a filter, so a kind it did not know about was DROPPED — and one
+  // was: `page-unread`, which reports the salvage holes, the pages an ingest
+  // failed to read in documents it kept anyway. Two of them sat in the delano
+  // index, the endpoint reported them on every poll, and the tab rendered
+  // neither. A view whose job is to surface what is wrong must not be able to
+  // silently discard a problem because nobody updated a constant.
+  const known = new Set(KINDS.map(([k]) => k));
+  const unknown = [...new Set(problems.map((p) => p.kind))].filter((k) => !known.has(k));
+  const groups: [kind: string, title: string, why: string][] = [
+    ...KINDS,
+    ...unknown.map(
+      (k): [string, string, string] => [
+        k,
+        k,
+        "This daemon reports a problem kind this page does not have wording for — it is newer than the page. The rows are shown as the endpoint sent them.",
+      ],
+    ),
+  ];
+
   return (
     <>
-      {KINDS.map(([kind, title, why]) => {
+      {groups.map(([kind, title, why]) => {
         const mine = problems.filter((p) => p.kind === kind);
         if (!mine.length) return null;
         // One set of grounds, shown once. Twenty-six rows repeating the same
@@ -163,46 +189,75 @@ function ProblemRow({
   const forget = () =>
     run(() => postJSON("/api/forget", { index, path: p.subject }));
 
-  const actions: [string, () => void][] =
-    // A missing file is offered "Forget" and NOT "Re-ingest": there is nothing
-    // at the path to ingest. Forget is second, behind nothing, because it is the
-    // destructive half — the file has usually moved, and dropping the row before
-    // indexing the copy that still exists is how a renamed document becomes
-    // unfindable rather than merely unopenable.
-    p.kind === "missing-file"
-      ? [["Forget this row", forget]]
-      : p.kind === "generated-indexed"
-        ? [["Forget", forget]]
-        : p.kind === "no-fragments"
-      ? [["Re-ingest", ingestFresh], ["Withdraw…", withdraw]]
-      : p.kind === "no-pages"
-        ? [["Re-read", reread], ["Withdraw…", withdraw]]
-        : p.kind === "segment-degraded"
-          ? [["Re-read", reread]]
-          : p.kind === "job-failed"
-            ? [["Retry", () => job("retry")], ["Forget", () => job("forget")]]
-            : p.kind === "withdrawn"
-              ? [["Restore", restore]]
-              : [];
+  const actionsFor = (): [string, () => void][] => {
+    switch (p.kind) {
+      // A missing file is offered "Forget" and NOT "Re-ingest": there is nothing
+      // at the path to ingest. Forget is second, behind nothing, because it is
+      // the destructive half — the file has usually moved, and dropping the row
+      // before indexing the copy that still exists is how a renamed document
+      // becomes unfindable rather than merely unopenable.
+      case "missing-file":
+        return [["Forget this row", forget]];
+      case "generated-indexed":
+        return [["Forget", forget]];
+      case "no-fragments":
+        return [["Re-ingest", ingestFresh], ["Withdraw…", withdraw]];
+      case "no-pages":
+        return [["Re-read", reread], ["Withdraw…", withdraw]];
+      case "segment-degraded":
+        return [["Re-read", reread]];
+      // A deterministic refusal re-reads to the same refusal — the repetition
+      // guard at temp 0 returns the identical result on identical pixels — so
+      // Re-read is offered and is NOT the whole answer. `raglit regions` is,
+      // and it is on the row as the fix text.
+      case "page-unread":
+        return [["Re-read", reread]];
+      case "job-failed":
+        return p.job_id
+          ? [["Retry", () => job("retry")], ["Forget", () => job("forget")]]
+          : [];
+      case "withdrawn":
+        return [["Restore", restore]];
+      // A retry warning is about a job that SUCCEEDED, so it offered no repair
+      // and no way to see what it was reporting: the row named an endpoint that
+      // had struggled and stopped there. Re-ingest re-runs the pipeline (page
+      // OCR still comes from the cache, so the pixels are not read twice);
+      // Dismiss drops the job record, which is what makes the warning stop. The
+      // account itself is one click away, on the job.
+      case "llm-retries":
+        return p.job_id
+          ? [["Re-ingest", () => job("retry")], ["Dismiss", () => job("forget")]]
+          : [];
+      default:
+        return [];
+    }
+  };
+  const actions = actionsFor();
 
-  // Every row goes somewhere. A document links into its own review; a failed job
-  // links AT the job, which is where its stages and its error are. A row that
-  // names a problem and cannot be opened is the complaint this view answers.
-  const linksToJob = (p.kind === "job-failed" || p.kind === "llm-retries") && !!p.job_id;
-
+  // A row offers BOTH destinations, and each one goes where its name says.
+  //
+  // The path used to link at the JOB for the two job-shaped kinds, so clicking a
+  // document opened a job table — and, since that table was the newest 200 rows
+  // and a cited job is routinely older, usually a job table without the job in
+  // it. Now the path is the document and the #id badge is the job, which is
+  // where the stages and the endpoint's own words live.
   return (
     <div className="prob">
       <div className="subj">
-        {linksToJob ? (
-          <Link to="/i/$index/jobs/$jobId" params={{ index, jobId: String(p.job_id) }}>
-            {p.subject}
-          </Link>
-        ) : (
-          <Link to="/i/$index/d/$doc/pages" params={{ index, doc: p.subject }}>
-            {p.subject}
+        <Link to="/i/$index/d/$doc/pages" params={{ index, doc: p.subject }}>
+          {p.subject}
+        </Link>
+        {p.job_id != null && p.job_id > 0 && (
+          <Link
+            className="badge"
+            style={{ marginLeft: ".4rem" }}
+            title="open this ingest job: its stages, timings, and what each one said"
+            to="/i/$index/jobs/$jobId"
+            params={{ index, jobId: String(p.job_id) }}
+          >
+            #{p.job_id}
           </Link>
         )}
-        {p.job_id != null && <span className="badge" style={{ marginLeft: ".4rem" }}>#{p.job_id}</span>}
         {p.stage && <span className="badge error" style={{ marginLeft: ".4rem" }}>{p.stage}</span>}
       </div>
       {/* Verbatim. Summarising the endpoint's own words is how "increase the

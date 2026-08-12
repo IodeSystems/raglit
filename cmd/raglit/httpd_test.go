@@ -157,6 +157,50 @@ func TestGatDaemon_JobControlPOST(t *testing.T) {
 	}
 }
 
+// TestGatDaemon_JobByID pins the citation path: a job named by a health row must
+// answer no matter how far back it is.
+//
+// The health report links AT a job id, and the jobs view fetched the newest N
+// and looked for it there. On the delano index the cited job was 927 and the
+// newest was 1467, so the link rendered two hundred rows none of which was the
+// one it was about, and read as a link that did nothing. Asking for the FIRST
+// job under a limit of 1 reproduces that exactly.
+func TestGatDaemon_JobByID(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, _ := reg.Get("default")
+	first, _ := st.Jobs("all", 10)
+	if len(first) != 1 {
+		t.Fatalf("want the seeded job, got %d", len(first))
+	}
+	oldest := first[0].ID
+	// Bury it: every later job is newer, so a window of 1 cannot contain it.
+	for _, u := range []string{"file:///a.md", "file:///b.md", "file:///c.md"} {
+		if _, err := st.Enqueue(u, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b := httpGet(t, srv.URL+"/api/jobs?index=default&limit=1"); strings.Contains(b, "queued.md") {
+		t.Fatalf("limit=1 should not reach the oldest job — test no longer reproduces the case: %s", clip(b, 300))
+	}
+	b := httpGet(t, srv.URL+"/api/jobs?index=default&limit=1&id="+strconv.FormatInt(oldest, 10))
+	if !strings.Contains(b, "queued.md") {
+		t.Fatalf("by-id did not return job %d: %s", oldest, clip(b, 400))
+	}
+	// And it is the ONLY job in the answer — a citation resolves to one row.
+	if strings.Contains(b, "a.md") || strings.Contains(b, "b.md") {
+		t.Fatalf("by-id returned more than the cited job: %s", clip(b, 400))
+	}
+
+	resp, err := http.Get(srv.URL + "/api/jobs?index=default&id=999999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown job id → HTTP %d, want 404", resp.StatusCode)
+	}
+}
+
 // TestGatDaemon_RereadRejectsRelativePath guards the shape that put two rows in
 // the ardley index for one file. A relative path resolves against the DAEMON's
 // working directory, so it named nothing; the purge failed deep in the cascade
