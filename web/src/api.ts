@@ -92,8 +92,10 @@ export type StatusSnapshot = {
 // 503. The daemon has always returned it and nothing rendered it, so a health
 // row could name a bad ingest and offer no way to see what went wrong.
 export type JobStage = {
-  // seq is NOT unique within a job: a retry appends a second run under the same
-  // job_id with seq restarting at 1. Key on `at`, or on position within a run.
+  // The row's own id — the only stable key a stage has. seq is NOT unique within
+  // a job: a retry appends a second run under the same job_id with seq
+  // restarting at 1, so seq alone names several different rows.
+  id: number;
   seq: number;
   name: string;
   engine?: string;

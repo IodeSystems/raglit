@@ -99,7 +99,14 @@ ORDER BY finished_at DESC LIMIT 10;
 INSERT INTO job_stages(job_id, seq, name, engine, state, detail, at) VALUES(?,?,?,?,?,?,?);
 
 -- name: ListJobStages :many
-SELECT seq, name, engine, state, detail, at FROM job_stages WHERE job_id = ? ORDER BY seq;
+-- ORDER BY id, not seq. A retried job appends a WHOLE SECOND RUN of stages under
+-- the same job_id, and seq restarts at 1 each time — so ordering by seq
+-- interleaves the runs and the account becomes unreadable. Job 927 on the delano
+-- index is four runs, and read as "fetch, fetch, fetch, fetch, extract, extract,
+-- …" with no way to tell which failure belonged to which attempt. id is
+-- insertion order, which is chronological, which keeps a run together — and it
+-- is the only stable key a stage has, since (job_id, seq) names up to four rows.
+SELECT id, seq, name, engine, state, detail, at FROM job_stages WHERE job_id = ? ORDER BY id;
 
 -- ===== ocr_pages =====
 -- name: UpsertOcrPage :exec

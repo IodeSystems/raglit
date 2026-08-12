@@ -18,7 +18,41 @@ ifeq ($(GOBIN),)
 GOBIN   := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: build install release test lint clean web web-dev
+.PHONY: build install release test lint clean web web-dev generate
+
+# Codegen runs OUR sqlc, never the one on PATH.
+#
+# The fork (../sqlc, fix/sqlite-rune-offsets) carries one patch: the sqlite
+# engine reported RUNE offsets where the rest of sqlc indexes BYTES, so a single
+# multibyte character anywhere in a query file shifts every rewrite after it.
+# An em-dash in a comment is enough — a statement carries its leading comments,
+# because that is how `-- name:` is found.
+#
+# Upstream v1.30.0 does not fail cleanly on this. It moved a trailing `= ?;` to
+# the FRONT of two queries here and exited zero, and the damage surfaced as ~40
+# tests failing with `SQL logic error: near "=": syntax error` — a message that
+# describes the generated Go and says nothing about the comment that caused it.
+# It also happily generates correct output for an all-ASCII file, so the trap
+# only springs once somebody writes a comment with punctuation in it.
+#
+# So this target BUILDS the fork and refuses to fall back. A `sqlc generate`
+# typed by hand picks up whatever is on PATH and will silently corrupt the tree;
+# use `make generate`.
+SQLC_SRC := $(abspath $(SRCDIR)/../sqlc)
+PLUGIN_SRC := $(abspath $(SRCDIR)/../sqlc-go-codegen-metaquery)
+
+bin/sqlc: $(SQLC_SRC)/go.mod
+	@test -d "$(SQLC_SRC)" || { echo "missing sibling checkout $(SQLC_SRC) — see plan/daemon-ui.md"; exit 1; }
+	@mkdir -p bin
+	cd $(SQLC_SRC) && go build -o $(SRCDIR)/bin/sqlc ./cmd/sqlc
+	@echo "built $(SRCDIR)/bin/sqlc ($$($(SRCDIR)/bin/sqlc version)) from $(SQLC_SRC)"
+
+$(PLUGIN_SRC)/bin/sqlc-go-codegen-metaquery:
+	$(MAKE) -C $(PLUGIN_SRC) bin/sqlc-go-codegen-metaquery
+
+generate: bin/sqlc $(PLUGIN_SRC)/bin/sqlc-go-codegen-metaquery ## regenerate internal/db (uses ../sqlc, NOT the PATH sqlc)
+	./bin/sqlc generate
+	@echo "regenerated internal/db — run 'make test' before committing"
 
 # The review UI is a React/vite app in web/, and web/dist is COMMITTED and
 # //go:embed'd (web/embed.go says why). So `web` is not part of `build`: a Go

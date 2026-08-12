@@ -8,6 +8,23 @@ import (
 	"database/sql"
 )
 
+type Attestation struct {
+	ID        int64  `db:"id" derived:"attestations.id" json:"id"`
+	Doc       string `db:"doc" derived:"attestations.doc" json:"doc"`
+	Seq       int64  `db:"seq" derived:"attestations.seq" json:"seq"`
+	Unit      string `db:"unit" derived:"attestations.unit" json:"unit"`
+	Kind      string `db:"kind" derived:"attestations.kind" json:"kind"`
+	Blanket   int64  `db:"blanket" derived:"attestations.blanket" json:"blanket"`
+	Text      string `db:"text" derived:"attestations.text" json:"text"`
+	Label     string `db:"label" derived:"attestations.label" json:"label"`
+	Note      string `db:"note" derived:"attestations.note" json:"note"`
+	Statement string `db:"statement" derived:"attestations.statement" json:"statement"`
+	Payload   string `db:"payload" derived:"attestations.payload" json:"payload"`
+	RuledBy   string `db:"ruled_by" derived:"attestations.ruled_by" json:"ruled_by"`
+	Auth      string `db:"auth" derived:"attestations.auth" json:"auth"`
+	RuledAt   string `db:"ruled_at" derived:"attestations.ruled_at" json:"ruled_at"`
+}
+
 type Document struct {
 	ID          int64  `db:"id" derived:"documents.id" json:"id"`
 	Path        string `db:"path" derived:"documents.path" json:"path"`
@@ -16,6 +33,22 @@ type Document struct {
 	ContentHash string `db:"content_hash" derived:"documents.content_hash" json:"content_hash"`
 	FragMode    string `db:"frag_mode" derived:"documents.frag_mode" json:"frag_mode"`
 	FragRecipe  string `db:"frag_recipe" derived:"documents.frag_recipe" json:"frag_recipe"`
+	GenName     string `db:"gen_name" derived:"documents.gen_name" json:"gen_name"`
+	GenSummary  string `db:"gen_summary" derived:"documents.gen_summary" json:"gen_summary"`
+	GenKind     string `db:"gen_kind" derived:"documents.gen_kind" json:"gen_kind"`
+	GenSource   string `db:"gen_source" derived:"documents.gen_source" json:"gen_source"`
+	GenModel    string `db:"gen_model" derived:"documents.gen_model" json:"gen_model"`
+	GenAt       int64  `db:"gen_at" derived:"documents.gen_at" json:"gen_at"`
+	GenTextHash string `db:"gen_text_hash" derived:"documents.gen_text_hash" json:"gen_text_hash"`
+}
+
+type DocumentNote struct {
+	ID        int64         `db:"id" derived:"document_notes.id" json:"id"`
+	DocID     int64         `db:"doc_id" derived:"document_notes.doc_id" json:"doc_id"`
+	Page      sql.NullInt64 `db:"page" derived:"document_notes.page" json:"page"`
+	Body      string        `db:"body" derived:"document_notes.body" json:"body"`
+	Author    string        `db:"author" derived:"document_notes.author" json:"author"`
+	CreatedAt string        `db:"created_at" derived:"document_notes.created_at" json:"created_at"`
 }
 
 type Fragment struct {
@@ -27,6 +60,7 @@ type Fragment struct {
 	StartOff  int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
 	EndOff    int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
 	PageSpans string `db:"page_spans" derived:"fragments.page_spans" json:"page_spans"`
+	Origin    string `db:"origin" derived:"fragments.origin" json:"origin"`
 }
 
 type FragmentVector struct {
@@ -37,6 +71,18 @@ type FragmentVector struct {
 
 type FragmentsFt struct {
 	Text string `db:"text" derived:"fragments_fts.text" json:"text"`
+}
+
+type IdentityJob struct {
+	ID         int64  `db:"id" derived:"identity_jobs.id" json:"id"`
+	Path       string `db:"path" derived:"identity_jobs.path" json:"path"`
+	State      string `db:"state" derived:"identity_jobs.state" json:"state"`
+	Force      int64  `db:"force" derived:"identity_jobs.force" json:"force"`
+	Error      string `db:"error" derived:"identity_jobs.error" json:"error"`
+	EnqueuedAt int64  `db:"enqueued_at" derived:"identity_jobs.enqueued_at" json:"enqueued_at"`
+	StartedAt  int64  `db:"started_at" derived:"identity_jobs.started_at" json:"started_at"`
+	FinishedAt int64  `db:"finished_at" derived:"identity_jobs.finished_at" json:"finished_at"`
+	OwnerPid   int64  `db:"owner_pid" derived:"identity_jobs.owner_pid" json:"owner_pid"`
 }
 
 type IndexMetum struct {
@@ -93,6 +139,8 @@ type OcrPage struct {
 	DocID     int64  `db:"doc_id" derived:"ocr_pages.doc_id" json:"doc_id"`
 	Page      int64  `db:"page" derived:"ocr_pages.page" json:"page"`
 	Engine    string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
+	Model     string `db:"model" derived:"ocr_pages.model" json:"model"`
+	Dpi       int64  `db:"dpi" derived:"ocr_pages.dpi" json:"dpi"`
 	ImagePath string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
 }
 
@@ -110,6 +158,8 @@ type PageReading struct {
 	Seq    int64  `db:"seq" derived:"page_readings.seq" json:"seq"`
 	Text   string `db:"text" derived:"page_readings.text" json:"text"`
 	Source string `db:"source" derived:"page_readings.source" json:"source"`
+	Engine string `db:"engine" derived:"page_readings.engine" json:"engine"`
+	Model  string `db:"model" derived:"page_readings.model" json:"model"`
 	Note   string `db:"note" derived:"page_readings.note" json:"note"`
 	ReadBy string `db:"read_by" derived:"page_readings.read_by" json:"read_by"`
 	ReadAt string `db:"read_at" derived:"page_readings.read_at" json:"read_at"`
@@ -133,4 +183,11 @@ type ShinglePage struct {
 
 type Tombstone struct {
 	Path string `db:"path" derived:"tombstones.path" json:"path"`
+}
+
+type Withdrawal struct {
+	Path   string `db:"path" derived:"withdrawals.path" json:"path"`
+	Reason string `db:"reason" derived:"withdrawals.reason" json:"reason"`
+	ByWho  string `db:"by_who" derived:"withdrawals.by_who" json:"by_who"`
+	At     string `db:"at" derived:"withdrawals.at" json:"at"`
 }

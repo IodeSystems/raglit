@@ -149,7 +149,7 @@ function JobDetail({ index, id }: { index: string; id: number }) {
         </div>
       ) : (
         runsOf(stages).map((run, i, all) => (
-          <div className="panel probgroup" key={i}>
+          <div className="panel probgroup" key={run[0]!.id}>
             <h3>
               {all.length > 1 ? `Attempt ${i + 1} of ${all.length}` : "Stages"}
               {run[0]?.at ? <span className="muted"> · {when(run[0].at)}</span> : null}
@@ -165,8 +165,8 @@ function JobDetail({ index, id }: { index: string; id: number }) {
                 </tr>
               </thead>
               <tbody>
-                {run.map((s, k) => (
-                  <tr key={k}>
+                {run.map((s) => (
+                  <tr key={s.id}>
                     <td>{s.seq}</td>
                     <td>{s.name}</td>
                     <td>{s.engine}</td>
@@ -198,8 +198,8 @@ function JobDetail({ index, id }: { index: string; id: number }) {
 // extract, extract, …": every fact present and no way to tell which failure
 // belonged to which attempt.
 //
-// Rows arrive chronologically (Store.JobStages sorts by the recorded time), so a
-// run ends wherever seq stops increasing.
+// Rows arrive in insertion order (ListJobStages orders by id), so a run ends
+// wherever seq stops increasing.
 function runsOf(stages: JobStage[]): JobStage[][] {
   const runs: JobStage[][] = [];
   for (const s of stages) {

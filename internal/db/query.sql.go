@@ -679,10 +679,11 @@ func (q *Queries) ListFragmentsForDoc(ctx context.Context, docID int64) ([]ListF
 }
 
 const listJobStages = `-- name: ListJobStages :many
-SELECT seq, name, engine, state, detail, at FROM job_stages WHERE job_id = ? ORDER BY seq
+SELECT id, seq, name, engine, state, detail, at FROM job_stages WHERE job_id = ? ORDER BY id
 `
 
 type ListJobStagesRow struct {
+	ID     int64  `db:"id" derived:"job_stages.id" json:"id"`
 	Seq    int64  `db:"seq" derived:"job_stages.seq" json:"seq"`
 	Name   string `db:"name" derived:"job_stages.name" json:"name"`
 	Engine string `db:"engine" derived:"job_stages.engine" json:"engine"`
@@ -691,6 +692,13 @@ type ListJobStagesRow struct {
 	At     int64  `db:"at" derived:"job_stages.at" json:"at"`
 }
 
+// ORDER BY id, not seq. A retried job appends a WHOLE SECOND RUN of stages under
+// the same job_id, and seq restarts at 1 each time — so ordering by seq
+// interleaves the runs and the account becomes unreadable. Job 927 on the delano
+// index is four runs, and read as "fetch, fetch, fetch, fetch, extract, extract,
+// …" with no way to tell which failure belonged to which attempt. id is
+// insertion order, which is chronological, which keeps a run together — and it
+// is the only stable key a stage has, since (job_id, seq) names up to four rows.
 func (q *Queries) ListJobStages(ctx context.Context, jobID int64) ([]ListJobStagesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listJobStages, jobID)
 	if err != nil {
@@ -701,6 +709,7 @@ func (q *Queries) ListJobStages(ctx context.Context, jobID int64) ([]ListJobStag
 	for rows.Next() {
 		var i ListJobStagesRow
 		if err := rows.Scan(
+			&i.ID,
 			&i.Seq,
 			&i.Name,
 			&i.Engine,

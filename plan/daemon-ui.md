@@ -77,7 +77,8 @@ run of stages under the same `job_id` with `seq` restarting at 1. Ordered by
 extract, …" — every fact present, nothing attributable. `Store.JobStages` now
 sorts by recorded time and the view groups into "Attempt N of 4". Job 927 reads
 as four attempts: embed died on input-too-large, segment on a 503, segment on a
-stream cancel, then it completed.
+stream cancel, then it completed. `ListJobStages` selects `id` and orders by it
+— see the codegen note below for why that took two passes.
 
 - Verified live on the delano index after `go install` + `systemctl --user
   restart raglit`: the badge resolves, all four attempts render, `page-unread`
@@ -117,21 +118,36 @@ that parameter as part of this.
 
 ## Found on the way
 
-### ❓ `sqlc generate` on this box produces CORRUPT output
+### ✅ Codegen must run OUR sqlc — `make generate`, never `sqlc generate`
 
-sqlc v1.30.0 with the metaquery plugin relocates a query's trailing `= ?;` to
-the front: `SELECT frag_mode, frag_recipe FROM documents WHERE id` + `= ?;`.
-Not a schema drift — the committed generated code is correct and was produced by
-a working toolchain. Regenerating breaks ~40 tests with `SQL logic error: near
-"=": syntax error`.
+I typed `sqlc generate`, got `/home/nthalk/go/bin/sqlc` (upstream v1.30.0), and
+it relocated two queries' trailing `= ?;` to the FRONT, exiting zero. ~40 tests
+then failed with `SQL logic error: near "=": syntax error` — a message about the
+generated Go that says nothing about the cause. I recorded that as "the
+toolchain is broken" and worked around it. **Wrong diagnosis** (user corrected
+it): the bug is multibyte, it is already fixed, and the fix was not wired up.
 
-Consequence, and it is not cosmetic: **no query in `sql/query.sql` can be
-changed until this is fixed.** The stage-ordering fix wanted `ORDER BY id` and
-had to be a `sort.SliceStable` in Go instead, on `at`, which is the only
-chronological column the committed query selects.
+`../sqlc`, branch `fix/sqlite-rune-offsets`: antlr's `NewInputStream` stores its
+input as `[]rune`, so every position the sqlite engine reads out of the parse
+tree is a RUNE index, while `source.Mutate` slices the same string in BYTES. One
+multibyte character earlier in a statement shifts the two apart — and a
+statement carries its leading comments, because that is how `-- name:` is found.
+So an em-dash in a comment is enough. Mine were.
 
-- **next**: find which of sqlc 1.30.0 or the metaquery plugin mangles it —
-  regenerate with the plugin disabled to bisect. Do not hand-edit `internal/db`.
+The trap: an all-ASCII file generates correctly, so nothing springs it until
+somebody writes a comment with punctuation in it.
+
+Wired up: `make generate` builds the fork into `./bin/sqlc` (gitignored) and
+runs it, and fails loudly if the sibling checkout is missing. It never falls
+back to PATH. `ListJobStages` now selects `id` and orders by it, which is what
+the stage grouping wanted; the `sort.SliceStable` workaround is gone.
+
+- **standing risk**: `sqlc generate` typed by hand still finds the PATH binary
+  and still corrupts silently. The Makefile comment says so; nothing enforces it.
+- **note**: regenerating also picks up genuine drift — `internal/db/models.go`
+  gains structs for tables added to `schema.sql` since the last regen
+  (attestations, document_notes, identity_jobs, and new documents/fragments
+  columns). Additive, suite green.
 
 ### ⏸ llm.iodesystems.com was returning 503 for everything, 2026-08-11
 

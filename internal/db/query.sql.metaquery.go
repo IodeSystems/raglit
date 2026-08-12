@@ -855,8 +855,9 @@ var MetaListJobStages = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL:     `SELECT seq, name, engine, state, detail, at FROM job_stages WHERE job_id = ? ORDER BY seq`,
+	SQL:     `SELECT id, seq, name, engine, state, detail, at FROM job_stages WHERE job_id = ? ORDER BY id`,
 	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "job_stages"},
 		{Name: "seq", OriginalName: "seq", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "job_stages"},
 		{Name: "name", OriginalName: "name", GoType: "string", DBType: "TEXT", NotNull: true, Table: "job_stages"},
 		{Name: "engine", OriginalName: "engine", GoType: "string", DBType: "TEXT", NotNull: true, Table: "job_stages"},
@@ -880,6 +881,7 @@ func WrapListJobStages(jobID int64) *metaquery.Builder {
 
 // ListJobStagesCols gives typed, name-safe access to ListJobStages's output columns.
 var ListJobStagesCols = struct {
+	ID     metaquery.IntCol
 	Seq    metaquery.IntCol
 	Name   metaquery.TextCol
 	Engine metaquery.TextCol
@@ -887,6 +889,7 @@ var ListJobStagesCols = struct {
 	Detail metaquery.TextCol
 	At     metaquery.IntCol
 }{
+	ID:     metaquery.NewIntCol("id"),
 	Seq:    metaquery.NewIntCol("seq"),
 	Name:   metaquery.NewTextCol("name"),
 	Engine: metaquery.NewTextCol("engine"),
