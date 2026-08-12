@@ -162,6 +162,18 @@ func (s *Store) DedupeQueue() (int, error) {
 // it. Returns (nil, nil) when the queue is empty.
 func (s *Store) claimNextJob() (*Job, error) { return s.claim("") }
 
+// ClaimNext claims the oldest pending job in this index, whatever it is.
+//
+// The exported claim the daemon's runners use. There was briefly a lane
+// parameter here: the scheduler sorted jobs into `heavy` and `light` and gave
+// each a slot count, to stop a slow scan holding up a text file. The problem was
+// real and the cure was in the wrong place — what serialised them was not their
+// KIND but one shared "the GPU admits one" budget covering three models on three
+// cards. Admission is per model now (modelchan.go), so a transcription and an
+// embedding take different channels and neither waits on the other. The lane
+// column is still written and still reported; nothing schedules on it.
+func (s *Store) ClaimNext() (*Job, error) { return s.claim("") }
+
 // ClaimNextInLane claims the oldest pending job in one scheduling lane, or
 // (nil, nil) when that lane has nothing here.
 //

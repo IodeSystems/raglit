@@ -23,10 +23,18 @@ type llmFlags struct {
 	// segmentModel splits TEXT into fragments. Empty → visionModel, which is what
 	// it always was — see Config.SegmentModel for why they are separable.
 	segmentModel *string
+	// chans is the per-model admission registry, shared by every client this
+	// command builds. See raglit/modelchan.go.
+	chans *raglit.Channels
 }
 
 func addLLMFlags(fs *flag.FlagSet) *llmFlags {
 	return &llmFlags{
+		// One registry for the process. Model capacity is a property of the
+		// SERVER, so it must not be per index or per worker — two indexes calling
+		// the same model are competing for the same slots, and two controllers
+		// each learning "it took one more" would between them ask for two.
+		chans: raglit.NewChannels(),
 		url:         fs.String("llm-url", "", "model base URL (default: config, else OpenAI)"),
 		key:         fs.String("llm-key", "", "API key (default: config or $RAGLIT_LLM_KEY)"),
 		visionModel: fs.String("llm-model", "", "vision model id (default: config)"),
@@ -47,6 +55,22 @@ func (f *llmFlags) resolve(home raglit.Home) {
 	// behaving exactly as before.
 	*f.segmentModel = firstNonEmpty(*f.segmentModel, cfg.SegmentModel, *f.visionModel)
 	*f.key = firstNonEmpty(*f.key, os.Getenv("RAGLIT_LLM_KEY"), cfg.APIKey)
+	if f.chans != nil {
+		f.chans.Max = cfg.ModelChannelMax
+	}
+}
+
+// gate wraps a chat client in its model's admission channel and routes the
+// client's backpressure into the controller.
+//
+// Both halves in one call on purpose. A client gated without the 429 hook can
+// only ever grow — it would widen until the server rejected it and never learn
+// why — and a hook without the gate has nothing to act on. Any tally already on
+// the client is chained, not replaced: what a job had to survive is what the
+// health report reads.
+func (f *llmFlags) gate(c *llm.Client, model string) raglit.Chatter {
+	c.OnRetry = f.chans.Observe(model, c.OnRetry)
+	return f.chans.Gate(c, model)
 }
 
 func (f *llmFlags) requireVision() error {
@@ -164,7 +188,7 @@ func (f *llmFlags) identifier(home raglit.Home) *raglit.Identifier {
 	}
 	c := llm.NewClient(*f.url, *f.key, model)
 	c.Retry5xxAttempts = visionRetry5xxAttempts
-	return raglit.NewIdentifier(c, model)
+	return raglit.NewIdentifier(f.gate(c, model), model)
 }
 
 // embedClientForProbe is the embed client with the same batch retry policy as
@@ -178,7 +202,12 @@ func (f *llmFlags) embedClientForProbe() *llm.Client {
 }
 
 func (f *llmFlags) embedder() *raglit.Embedder {
-	return raglit.NewEmbedder(f.embedClientForProbe(), *f.embedModel)
+	// Gated on the EMBED model's own channel, which is the change that lets
+	// embedding run while a transcription is in flight: they are different
+	// models, usually on different cards, and nothing about one bounds the other.
+	c := f.embedClientForProbe()
+	c.OnRetry = f.chans.Observe(*f.embedModel, c.OnRetry)
+	return raglit.NewEmbedder(f.chans.GateVector(c, *f.embedModel), *f.embedModel)
 }
 
 // buildImageEmbedder returns a figure IMAGE embedder from config (nomic-vision),

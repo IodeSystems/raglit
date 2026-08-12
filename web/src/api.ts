@@ -74,15 +74,32 @@ export type IndexInfo = {
   fragments?: number;
 };
 
-// One scheduling lane's share of the queue. `heavy` is vision/OCR and runs one
-// at a time (the GPU admits one); `light` is everything else and runs several.
-// Reported because "12 pending" answers nothing on its own — twelve scans is an
-// afternoon, twelve markdown files is under a minute.
+// One scheduling lane's share of the queue. Lanes no longer SCHEDULE anything —
+// admission is per model (see ModelChannel) — but the classification is still
+// recorded per job and still answers "is this queue scans or text files", which
+// "12 pending" cannot.
 export type LaneStatus = {
   pending?: number;
   running?: number;
   slots?: number;
 };
+
+// One model's admission channel. The width is LEARNED: a model starts at one
+// slot and widens only while calls succeed, halving whenever the server pushes
+// back. Shown because a learned number nobody can see is indistinguishable from
+// a bug — a model sitting at 1 with a high 429 count is throttled, not broken.
+export type ModelChannel = {
+  model: string;
+  width?: number;
+  in_flight?: number;
+  peak?: number;
+  calls?: number;
+  n_429?: number;
+  chilled?: boolean;
+};
+
+export const listChannels = () =>
+  getJSON<{ channels: ModelChannel[] }>("/api/channels");
 
 export type StatusSnapshot = {
   documents?: number;

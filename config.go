@@ -61,6 +61,19 @@ type Config struct {
 	// cannot see them, cannot resume them, and cannot tell them apart from an
 	// ingest job's OCR call waiting for the same slot.
 	IdentitySlots int `json:"identity_slots,omitempty"`
+
+	// ModelChannelMax caps how wide any one model's admission channel may grow
+	// (modelchan.go). 0 → the built-in ceiling.
+	//
+	// Every other number in that controller is LEARNED — a model starts at one
+	// slot and widens only while calls succeed, halving whenever the server
+	// pushes back. This is the exception, because the right ceiling depends on
+	// what kind of endpoint is behind the name and no amount of evidence
+	// distinguishes "has not said no yet" from "will take a hundred": a card
+	// serving one model locally is never going past a handful, while a hosted
+	// provider bought for throughput will, and there the ceiling would be the
+	// only thing limiting it.
+	ModelChannelMax int `json:"model_channel_max,omitempty"`
 	// NoIdentity turns document identity off. Documents then carry only the
 	// filename they arrived with — which for a scanner-named corpus is a list
 	// nobody can navigate, so this is for a corpus whose names are already good

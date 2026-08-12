@@ -120,7 +120,7 @@ func runHttpd(subcmd string, args []string) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runIndexWorkers(ctx, reg, lf, cfgHome, pool)
+	go runIngestRunners(ctx, reg, lf, cfgHome, pool)
 	// Captions, on their own queue and their own slot budget. See runIdentityWorkers.
 	go runIdentityWorkers(ctx, reg, cfgHome)
 	// Stay on the current source. Rebuilds immediately, restarts as soon as no
@@ -254,6 +254,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
 	gat.Register(api, g, op("listProjects", http.MethodGet, "/api/projects", "Indexes grouped by the project namespace they carry, with branch lineage and watch state."), listProjectsOp(reg, watch))
+	gat.Register(api, g, op("modelChannels", http.MethodGet, "/api/channels", "Per-model admission channels: the learned width, what is in flight, and how much backpressure taught it."), modelChannelsOp(lf))
 	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
 	gat.Register(api, g, op("searchFigures", http.MethodGet, "/search-figures", "Semantic search over figures (MCP search_figures)."), searchFiguresOp(reg, defLimit))
 	gat.Register(api, g, op("ingest", http.MethodPost, "/ingest", "Queue targets for lazy ingestion."), ingestOp(reg))
@@ -1177,5 +1178,30 @@ func pageLayoutOp(reg *raglit.Registry) func(context.Context, *struct {
 			return nil, huma.Error404NotFound(err.Error())
 		}
 		return &pageLayoutOut{Body: pl}, nil
+	}
+}
+
+
+type channelsOut struct {
+	Body struct {
+		Channels []raglit.ChannelStat `json:"channels"`
+	}
+}
+
+// modelChannelsOp reports the per-model admission channels.
+//
+// These widths are LEARNED — a model starts at one slot and widens only while
+// calls succeed, halving whenever the server pushes back — and a learned number
+// nobody can see is indistinguishable from a bug. When ingest is slower than
+// expected this is the first thing to read: a model sitting at width 1 with a
+// high 429 count is being throttled, not broken.
+func modelChannelsOp(lf *llmFlags) func(context.Context, *struct{}) (*channelsOut, error) {
+	return func(_ context.Context, _ *struct{}) (*channelsOut, error) {
+		out := &channelsOut{}
+		out.Body.Channels = []raglit.ChannelStat{}
+		if lf != nil && lf.chans != nil {
+			out.Body.Channels = lf.chans.Stats()
+		}
+		return out, nil
 	}
 }

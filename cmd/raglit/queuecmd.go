@@ -132,7 +132,11 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		// in the log. Without it, "5xx attempt 2/5" in a log is ambiguous between
 		// "the cap was not raised" and "this is not the client you think it is".
 		log.Printf("raglit: ocr client model=%s 5xx-attempts=%d", *lf.visionModel, client.Retry5xxAttempts)
-		w.OCR = raglit.NewOCR(client)
+		// Gated on the VISION model's own channel — and only it. This is the
+		// change: transcription used to be serialised against segmentation and
+		// embedding by one "the GPU admits one" slot in the scheduler, and those
+		// are three different models on three different cards.
+		w.OCR = raglit.NewOCR(lf.gate(client, *lf.visionModel))
 		// Recorded on every page this reads, so a transcription says which model
 		// produced it (page_readings.model) rather than only "machine".
 		w.OCR.Model = *lf.visionModel
@@ -141,7 +145,13 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		// Its own client, because the segmenter's job is a structured tool call
 		// over TEXT and the vision model is chosen for reading PIXELS.
 		segClient := lf.segmentClient()
-		w.Segmenter = raglit.NewSegmenter(segClient)
+		// The tally is chained here too. It was only ever on the vision client,
+		// so a segmentation that fought the endpoint for two minutes contributed
+		// nothing to the job's retry record — and the 429s that must narrow the
+		// segment model's channel were not being seen at all.
+		segClient.OnRetry = w.Retries.Observe
+		segModel := firstNonEmpty(*lf.segmentModel, *lf.visionModel)
+		w.Segmenter = raglit.NewSegmenter(lf.gate(segClient, segModel))
 		if *lf.segmentModel != "" && *lf.segmentModel != *lf.visionModel {
 			log.Printf("raglit: segmenter model=%s (vision model=%s)", *lf.segmentModel, *lf.visionModel)
 		}

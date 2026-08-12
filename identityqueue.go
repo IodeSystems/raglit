@@ -384,14 +384,20 @@ func (s *Store) IdentityJobs(state string, limit int) ([]IdentityJob, error) {
 	return out, rows.Err()
 }
 
-// DefaultIdentitySlots is how many captions are in the model at once when
-// nothing says otherwise.
+// DefaultIdentitySlots is how wide this worker's caption pipeline is.
 //
-// TWO, because that is what the endpoint serves concurrently. A third request
-// does not run — it waits inside the server, where raglit cannot see it, cannot
-// resume it, and cannot tell it apart from an ingest job's OCR call waiting for
-// the same slot. Matching the number is what keeps the queue's depth honest.
-const DefaultIdentitySlots = 2
+// It used to be a CAPACITY CLAIM — "two, because that is what the endpoint
+// serves concurrently" — and that was a number about a server written down in
+// raglit, which is exactly the kind that goes stale when the model layout
+// changes. It is no longer one: the identity model has its own admission channel
+// (modelchan.go), learned from the server's own backpressure, and that is what
+// bounds requests now.
+//
+// So this is just how many captions may be ASSEMBLED and in flight at once. Four
+// rather than two, because the extra callers cost a goroutine each and simply
+// wait in Acquire when the model is narrow — while a model that turns out to
+// serve several would otherwise be held to two by a constant nobody revisited.
+const DefaultIdentitySlots = 4
 
 // IdentityWorker drains the captioning queue.
 //

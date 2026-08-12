@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iodesystems/raglit"
@@ -69,7 +70,7 @@ func runServe(args []string) error {
 	// workers cached). A configured model gives PDF OCR + LLM text segmentation.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runIndexWorkers(ctx, reg, lf, homeOf(), nil) // embedded serve: single index, no shared pool
+	go runIngestRunners(ctx, reg, lf, homeOf(), nil) // embedded serve: single index, no shared pool
 	go runIdentityWorkers(ctx, reg, homeOf())
 
 	s := server.NewMCPServer("raglit", version)
@@ -216,27 +217,29 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 	)
 }
 
-// runIndexWorkers drains every index's queue, round-robin, caching one worker
-// per index. New indexes (created via ingest) are picked up on the next round.
-// runIdentityWorkers drains every index's captioning queue, ONE INDEX AT A TIME.
+// runIdentityWorkers drains every index's captioning queue.
 //
-// Serial across indexes on purpose. The slot budget belongs to the endpoint, not
-// to an index: two indexes each draining "two at a time" is four requests at a
-// server that runs two, and the extra pair waits inside it where nothing here
-// can see or resume them. So one index is drained to empty, then the next.
+// It used to run ONE INDEX AT A TIME, with a hand-set slot count, because "the
+// slot budget belongs to the endpoint, not to an index". That reasoning was
+// right about the problem and wrong about where the budget lives: it belongs to
+// the MODEL. Two indexes captioning at once are competing for the identity
+// model's channel, which now counts them — so they no longer have to be
+// serialised here to avoid over-asking, and a caption no longer waits on an
+// index it has nothing to do with.
 //
-// Separate from the ingest workers because the two are different work with the
-// same scarce resource — an ingest job is minutes of OCR over many pages, a
-// caption is one bounded call — and putting captions on the ingest queue would
-// have made a 400-document sweep block every incoming document behind it.
+// Still separate from the ingest runners because the work is different: an
+// ingest job is minutes of OCR over many pages, a caption is one bounded call,
+// and putting captions on the ingest queue would make a 400-document sweep block
+// every incoming document behind it.
 func runIdentityWorkers(ctx context.Context, reg *raglit.Registry, home raglit.Home) {
 	cfg, _, _ := raglit.LoadConfig(home)
 	slots := cfg.IdentitySlots
 	for ctx.Err() == nil {
-		did := false
+		var wg sync.WaitGroup
+		var did atomic.Bool
 		for _, name := range reg.Names() {
 			if ctx.Err() != nil {
-				return
+				break
 			}
 			st, err := reg.Existing(name)
 			if err != nil {
@@ -250,17 +253,29 @@ func runIdentityWorkers(ctx context.Context, reg *raglit.Registry, home raglit.H
 			if err != nil || q.Pending == 0 {
 				continue
 			}
-			log.Printf("raglit: identity queue %s: %d pending (%d at a time)", name, q.Pending, effectiveSlots(slots))
-			n, werr := (&raglit.IdentityWorker{Store: st, Slots: slots}).Drain(ctx)
-			if werr != nil && !errors.Is(werr, raglit.ErrNoIdentifier) {
-				log.Printf("raglit: identity queue %s: %v", name, werr)
-			}
-			if n > 0 {
-				did = true
-				log.Printf("raglit: identity queue %s: %d done", name, n)
-			}
+			log.Printf("raglit: identity queue %s: %d pending", name, q.Pending)
+			// Indexes drain CONCURRENTLY now. They used to go one at a time,
+			// because two indexes each draining "two at a time" was four requests
+			// at a server that ran two — a real problem, solved in the wrong
+			// place. The identity model's admission channel counts every caller
+			// in this process, so over-asking is bounded where the resource
+			// actually is, and a 400-document sweep on one index no longer holds
+			// every other index's captions behind it.
+			wg.Add(1)
+			go func(name string, st *raglit.Store) {
+				defer wg.Done()
+				n, werr := (&raglit.IdentityWorker{Store: st, Slots: slots}).Drain(ctx)
+				if werr != nil && !errors.Is(werr, raglit.ErrNoIdentifier) {
+					log.Printf("raglit: identity queue %s: %v", name, werr)
+				}
+				if n > 0 {
+					did.Store(true)
+					log.Printf("raglit: identity queue %s: %d done", name, n)
+				}
+			}(name, st)
 		}
-		if !did {
+		wg.Wait()
+		if !did.Load() {
 			select {
 			case <-ctx.Done():
 				return
@@ -277,91 +292,72 @@ func effectiveSlots(n int) int {
 	return n
 }
 
-func runIndexWorkers(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home, pool *raglit.Pool) {
-	// Strand nothing on upgrade. An index that has been queueing since before
-	// lanes existed has rows with an empty lane, and no lane claims those.
+// runIngestRunners drains every index's queue with a pool of runners.
+//
+// ONE pool, and deliberately generous: the thing that limits concurrency is no
+// longer here. It is the per-MODEL admission channel (raglit/modelchan.go), and
+// a runner blocked in Acquire costs a goroutine and nothing else.
+//
+// This replaces a two-lane scheduler with per-lane slot counts, which replaced a
+// single serial loop. The lanes fixed the right problem the wrong way: a slow
+// scan really must not hold up a text file, but the reason it did was never that
+// the two were the same KIND of work — it was that vision, segmentation and
+// embedding were all being counted against one "the GPU admits one" slot. They
+// are three models, usually on three cards. Gate each model and the lane
+// classification has nothing left to decide: a transcription and an embedding
+// take different channels and simply proceed.
+//
+// What survives from the lanes is the shape, not the limit: a claimer per pass
+// walking indexes in turn, resuming where it stopped so one busy index cannot
+// take every turn.
+func runIngestRunners(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home, pool *raglit.Pool) {
+	// Strand nothing on upgrade: rows queued before lanes existed carry an empty
+	// lane, which nothing now reads — but the backfill also proves the column is
+	// present, and costs one query per index at startup.
 	for _, name := range reg.Names() {
-		st, err := reg.Existing(name)
-		if err != nil {
-			continue
-		}
-		if n, err := st.BackfillLanes(); err == nil && n > 0 {
-			log.Printf("raglit: queue %s: assigned a lane to %d job(s) queued before lanes existed", name, n)
+		if st, err := reg.Existing(name); err == nil {
+			_, _ = st.BackfillLanes()
 		}
 	}
-	var wg sync.WaitGroup
-	for lane, slots := range raglit.DefaultLaneSlots {
-		wg.Add(1)
-		go func(lane raglit.Lane, slots int) {
-			defer wg.Done()
-			runLane(ctx, reg, lane, slots, func(st *raglit.Store) *raglit.Worker {
-				return buildWorker(st, lf, home, pool)
-			})
-		}(lane, slots)
-	}
-	wg.Wait()
+	runQueue(ctx, reg, ingestRunners, func(st *raglit.Store) *raglit.Worker {
+		return buildWorker(st, lf, home, pool)
+	})
 }
 
-// runLane drains ONE lane across every index: a single claimer feeding `slots`
-// runners.
-//
-// One claimer, not one per slot. The claim decides FAIRNESS — it is the thing
-// that walks the indexes in turn — and several claimers racing the same
-// round-robin cursor would hand out whatever they happened to win rather than
-// what is next. Claiming is a transaction and takes microseconds, so one is not
-// a bottleneck; running is minutes, which is what the slots are for.
-//
-// The runners each keep their OWN worker cache. A Worker carries the retry tally
-// for the job in flight (Worker.Retries), so two goroutines sharing one would
-// attribute an endpoint's backpressure to whichever document finished second.
-// newWorker builds the worker for one index. A function rather than the flags
-// themselves so a test can supply a worker whose fetch it controls, and so
-// assert the property this whole change exists for: that a slow heavy job does
-// not hold up a light one.
-func runLane(ctx context.Context, reg *raglit.Registry, lane raglit.Lane, slots int,
+// runQueue is runIngestRunners with the worker construction injected, so a test
+// can supply one whose fetch and model calls it controls — and so assert the
+// property this exists for: that a document waiting on one model does not hold
+// up a document that needs a different one.
+func runQueue(ctx context.Context, reg *raglit.Registry, runners int,
 	newWorker func(*raglit.Store) *raglit.Worker) {
-	if slots < 1 {
-		slots = 1
+	if runners < 1 {
+		runners = 1
 	}
 	type claimed struct {
 		index string
 		job   *raglit.Job
 	}
 	ch := make(chan claimed)
-
-	// A token per slot, taken BEFORE claiming and returned when the job is done.
-	//
-	// The claim is what writes `running` to the row, so claiming ahead of a free
-	// runner makes the queue report work that nothing is doing — which is the
-	// same lie owner_pid exists to expose, told by the scheduler itself. Observed
-	// before this: the heavy lane has one slot, ran one job, and reported two
-	// running, because the claimer had already taken the next one and was blocked
-	// handing it over.
-	//
-	// Gating the CLAIM rather than the hand-off also means a job stays `pending`
-	// — cancellable, visible as waiting — until something is actually free to run
-	// it.
-	free := make(chan struct{}, slots)
-	for i := 0; i < slots; i++ {
+	free := make(chan struct{}, runners)
+	for i := 0; i < runners; i++ {
 		free <- struct{}{}
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < slots; i++ {
+	for i := 0; i < runners; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			workers := map[string]*raglit.Worker{}
 			for c := range ch {
-				st, err := reg.Existing(c.index)
-				if err == nil {
+				if st, err := reg.Existing(c.index); err == nil {
 					w := workers[c.index]
 					if w == nil {
 						w = newWorker(st)
 						workers[c.index] = w
 					}
 					if err := w.ProcessJob(ctx, c.job); err != nil {
-						log.Printf("raglit: queue %s [%s]: job %d: %v", c.index, lane, c.job.ID, err)
+						log.Printf("raglit: queue %s: job %d: %v", c.index, c.job.ID, err)
 					}
 				}
 				free <- struct{}{}
@@ -369,11 +365,9 @@ func runLane(ctx context.Context, reg *raglit.Registry, lane raglit.Lane, slots 
 		}()
 	}
 
-	// The claimer. Round-robin across indexes, resuming where the last pass
-	// stopped rather than restarting at the first name: starting over every time
-	// would let the alphabetically-first index with a full queue take every turn
-	// while the others waited, which is the unfairness this whole change is
-	// about, merely moved from between lanes to within one.
+	// A slot token is taken BEFORE claiming, because the claim is what writes
+	// `running` to the row: claiming ahead of a free runner makes the queue
+	// report work that nothing is doing.
 	cursor := 0
 	for ctx.Err() == nil {
 		select {
@@ -395,7 +389,7 @@ func runLane(ctx context.Context, reg *raglit.Registry, lane raglit.Lane, slots 
 			if err != nil {
 				continue
 			}
-			job, err := st.ClaimNextInLane(lane)
+			job, err := st.ClaimNext()
 			if err != nil || job == nil {
 				continue
 			}
@@ -403,15 +397,12 @@ func runLane(ctx context.Context, reg *raglit.Registry, lane raglit.Lane, slots 
 			case ch <- claimed{index: name, job: job}:
 				got = true
 			case <-ctx.Done():
-				// Claimed and never handed off. Put it back rather than leaving a
-				// row that says running with nothing running it.
 				_ = st.RequeueJob(job.ID)
 				free <- struct{}{}
 			}
 			break
 		}
 		if !got {
-			// Nothing anywhere in this lane: hand the slot back and wait.
 			free <- struct{}{}
 			select {
 			case <-ctx.Done():
@@ -422,6 +413,15 @@ func runLane(ctx context.Context, reg *raglit.Registry, lane raglit.Lane, slots 
 	close(ch)
 	wg.Wait()
 }
+
+// ingestRunners is how many documents may be in flight at once.
+//
+// Not a capacity claim — the model channels are that. It is how many documents
+// can be PARTWAY through, and it wants to be comfortably more than the number of
+// models, so that a document waiting on the vision channel never occupies the
+// slot a document needing only embedding could use. Runners are goroutines; the
+// scarce thing is downstream.
+const ingestRunners = 8
 
 // selectIndexes resolves the `index` argument to a concrete set of names: empty
 // → all; else the comma-separated list. A member ending in "*" is a prefix

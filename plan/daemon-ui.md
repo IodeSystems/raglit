@@ -170,9 +170,63 @@ jobs per 5s. Before this, all 78 were behind that one job.
 - **risk, untested**: `DefaultLaneSlots` is a package var, not config. Changing
   light's 3 needs a rebuild.
 
+### ✅ 5. Admission is per MODEL, and the width is learned
+
+Slice 4's lanes fixed the right problem the wrong way, and the user named it:
+what serialised a transcription against an embedding was never that they were
+the same KIND of work — it was one shared "the GPU admits one" budget covering
+three models that live on three different cards. chandra, the embedder and Qwen
+are each loaded on their own card and each serves one slot, so the heavy lane
+was stopping two GPUs from working at once.
+
+`modelchan.go`: one admission channel per model name, nothing coordinating
+across them. **Lanes are gone as a scheduler** — one runner pool of 8, because
+runners are goroutines and the scarce thing is downstream. The lane is still
+written on the row and still reported ("is this queue scans or text files"),
+but nothing schedules on it.
+
+The width is LEARNED, not configured, because the layout is expected to change:
+
+- start at **1** — the only honest starting point, and exactly right today;
+- grow additively while calls succeed, harder as it widens;
+- **halve on a 429**, immediately, with a cooldown that doubles on repeats so a
+  genuinely single-slot model settles instead of probing forever.
+
+NOT pinned to `X-RateLimit-Capacity`, which was the trap: capacity is the
+server's TOTAL and raglit is not the only client. Backpressure means "you are
+asking for too much right now" whatever the nameplate says. The 429 signal comes
+from agentkit's `Client.OnRetry` — the only hook, and enough: `Kind`, `Delay`,
+`ServerAsked`, `BP`. No agentkit change was needed.
+
+Gated at the two seams every model call passes through — `Chatter` (OCR,
+segmentation, identity) and `VectorClient` (embedding) — so no call site
+changed. `ChatStream` holds its slot until the STREAM drains, not until the call
+returns, or one slot would admit twenty concurrent generations.
+
+**Measured live**, both GPUs at once, which the old scheduler made impossible:
+
+    15:40:44 | Qwen3-6-27B-MP w1/f1  chandra-ocr-2 w1/f1  nomic-embed-te w1/f0
+
+`GET /api/channels` and a dashboard panel report it, because a learned number
+nobody can see is indistinguishable from a bug.
+
+- **also folded in**: the captioning queue's `DefaultIdentitySlots = 2` was the
+  same guess ("that is what the endpoint serves"). It is now a pipeline width,
+  not a capacity claim, and indexes caption CONCURRENTLY — they were serialised
+  one-at-a-time to avoid over-asking, which the model channel now handles where
+  the resource actually is.
+- **the one knob**: `model_channel_max` caps growth. Configurable because the
+  right ceiling depends on what kind of endpoint is behind the name, and no
+  evidence separates "has not said no yet" from "will take a hundred". Named for
+  the case ahead of it — a hosted provider bought for throughput would otherwise
+  be held to the local-GPU ceiling.
+- **untested**: nothing has yet driven a real 429 through this. The control law
+  is unit-tested against a synthetic one; the live endpoint has not pushed back
+  since it shipped.
+
 ## Active work
 
-Nothing in flight. The four slices above are done and deployed.
+Nothing in flight. The five slices above are done and deployed.
 
 ## Found on the way
 
