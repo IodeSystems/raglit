@@ -2,6 +2,7 @@ import { Link, Outlet, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { DocProvider, useDocDetail } from "../useDocDetail";
+import { isMailArchive } from "../api";
 import { Retitle } from "../panes/Retitle";
 import { DocActions } from "../panes/DocActions";
 
@@ -79,6 +80,15 @@ export function DocShell() {
         <nav className="subtabs">
           {/* Counts in the labels, as the page this replaces had them: they are
               what tells you a tab is worth opening before you open it. */}
+          {/* First, and only for an archive: it is how the document is read.
+              The Pages tab stays available — it is what the index actually
+              holds, and a reader checking a citation wants exactly that. */}
+          {isMailArchive(doc) && (
+            <Link to="/i/$index/d/$doc/email" params={{ index, doc }}
+                  activeProps={{ className: "on" }}>
+              Thread{count(detail?.pages?.length ? detail.pages.length - 1 : 0)}
+            </Link>
+          )}
           <Link to="/i/$index/d/$doc/pages" params={{ index, doc }}
                 activeProps={{ className: "on" }}>
             Pages{count(detail?.pages?.length)}

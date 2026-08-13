@@ -3,7 +3,9 @@ package raglit
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"mime"
@@ -11,6 +13,7 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -50,6 +53,16 @@ type emailPart struct {
 	// attachment manifest cites a message by them, and re-parsing a formatted
 	// header line back into fields would be a second, divergent parser.
 	from, date, subject string
+	// to/cc are kept for the same reason, for a reader that wants to see who a
+	// message went to without expanding every header.
+	to, cc string
+	// all is every header the message carried, unrendered. The page text
+	// deliberately keeps only a few and COUNTS the rest (renderHeaders), which is
+	// right for a transcription and wrong for a reader who needs to check one:
+	// a Received chain or a Reply-To is exactly what somebody asks about, and
+	// "43 further headers" cannot be opened. Kept apart so the transcription is
+	// unchanged.
+	all mail.Header
 	// notes record structure this reader could not parse. They go into the page
 	// text on purpose: a transcription that drops content silently is worse than
 	// one that says it dropped it, because only the second is recoverable.
@@ -356,7 +369,10 @@ func walkMessage(msg *mail.Message, depth int, out *[]emailPart, keepBytes bool)
 	*out = append(*out, emailPart{
 		depth:   depth,
 		headers: renderHeaders(msg.Header),
+		all:     msg.Header,
 		from:    decodeWord(msg.Header.Get("From")),
+		to:      decodeWord(msg.Header.Get("To")),
+		cc:      decodeWord(msg.Header.Get("Cc")),
 		date:    msg.Header.Get("Date"),
 		subject: decodeWord(msg.Header.Get("Subject")),
 	})
@@ -552,11 +568,18 @@ func readAttachment(part *multipart.Part, pmt string, r io.Reader, keepBytes boo
 	if keepBytes {
 		sink = &buf
 	}
-	n, _ := io.Copy(sink, r)
+	// Hashed ALWAYS, streaming, which is what the comment above always claimed
+	// and the code only did when it was already holding the bytes. The hash is
+	// the only handle on an attachment nothing extracted — it is how a reader
+	// asks "is this the same PDF that came on the other three messages", and how
+	// an extracted file is matched back to the message that carried it. Costing
+	// a hash rather than 24 MB of heap is the whole point of streaming here.
+	h := sha256.New()
+	n, _ := io.Copy(io.MultiWriter(sink, h), r)
 	a.Size = n
+	a.Sum = hex.EncodeToString(h.Sum(nil))
 	if keepBytes {
 		a.inner = buf.Bytes()
-		a.Sum = HashHex(a.inner)
 	}
 	return a
 }
@@ -670,4 +693,139 @@ func htmlToText(s string) string {
 		}
 	}
 	return strings.Join(keep, "\n")
+}
+
+// ── structured reading, for a reader rather than an index ──────────────────
+//
+// EmailText renders an archive as PAGES, which is what the index wants: one
+// message per page, headers reduced to the few that matter and the rest counted.
+// That is the right transcription and the wrong thing to read.
+//
+// A 25-message thread rendered that way is 26 undifferentiated blocks of text.
+// The nesting is a line of dashes, the headers are prose, "43 further headers"
+// cannot be opened, and an attachment is a filename with nothing behind it even
+// though the file was extracted and indexed as its own document. Everything a
+// reader needs was parsed and then flattened.
+//
+// So this returns the same parse, unflattened. It re-reads the file rather than
+// parsing the stored page text: the page text is a RENDERING, and a second
+// parser that turned it back into fields would be free to disagree with the one
+// that wrote it.
+
+// EmailMessage is one message in an archive, structured for display.
+type EmailMessage struct {
+	// Page is the page number this message occupies in the indexed document, so
+	// a citation from search lands on the same message a reader is looking at.
+	Page int `json:"page"`
+	// Depth is enclosure: 0 is a top-level message in the archive, 1 is a message
+	// forwarded inside one, and so on. This is the thread structure.
+	Depth   int    `json:"depth"`
+	From    string `json:"from,omitempty"`
+	To      string `json:"to,omitempty"`
+	Cc      string `json:"cc,omitempty"`
+	Date    string `json:"date,omitempty"`
+	Subject string `json:"subject,omitempty"`
+	// Headers is EVERY header, name and value, sorted. The page text keeps four
+	// and counts the rest; this is the rest.
+	Headers []EmailHeader `json:"headers,omitempty"`
+	Body    string        `json:"body,omitempty"`
+	// Attachments are what this message carried, whether or not extraction ran.
+	// "A 4 MB PDF called survey.pdf was sent on this date" is itself evidence.
+	Attachments []EmailAttachmentRef `json:"attachments,omitempty"`
+	// Notes is structure the reader could not parse, carried rather than dropped.
+	Notes []string `json:"notes,omitempty"`
+}
+
+// EmailHeader is one header line.
+type EmailHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// EmailAttachmentRef is an attachment as a reader can act on it.
+type EmailAttachmentRef struct {
+	Name string `json:"name"`
+	Mime string `json:"mime,omitempty"`
+	Size int64  `json:"size,omitempty"`
+	Sum  string `json:"sum,omitempty"`
+	// Path is the extracted file beside the archive, when extraction ran and the
+	// bytes are on disk. Empty means the attachment was seen and not extracted —
+	// which is a different statement from "there is no attachment", and the UI
+	// must not render them the same way.
+	Path string `json:"path,omitempty"`
+}
+
+// EmailMessages reads an archive into structured messages. Pure: it reads the
+// file and writes nothing, for the reason EmailText gives.
+//
+// resolve, when non-nil, maps an attachment's sha256 to the path it was
+// extracted to. Passing nil returns attachments with no Path, which is honest
+// for an archive whose attachments were never extracted.
+func EmailMessages(path string, resolve func(sum string) string) ([]EmailMessage, error) {
+	parts, err := readArchive(path, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EmailMessage, 0, len(parts))
+	for i, p := range parts {
+		m := EmailMessage{
+			// +2: page 1 is the archive manifest, so the first message is page 2.
+			// The same arithmetic manifestPage uses — kept in step by the test.
+			Page: i + 2, Depth: p.depth,
+			From: p.from, To: p.to, Cc: p.cc, Date: p.date, Subject: p.subject,
+			Body: p.body, Notes: p.notes,
+		}
+		for name, vals := range p.all {
+			for _, v := range vals {
+				m.Headers = append(m.Headers, EmailHeader{Name: name, Value: decodeWord(v)})
+			}
+		}
+		sort.Slice(m.Headers, func(a, b int) bool { return m.Headers[a].Name < m.Headers[b].Name })
+		for _, a := range p.attach {
+			ref := EmailAttachmentRef{Name: a.Name, Mime: a.Mime, Size: a.Size, Sum: a.Sum}
+			if resolve != nil {
+				ref.Path = resolve(a.Sum)
+			}
+			m.Attachments = append(m.Attachments, ref)
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// ResolveExtractedAttachments maps sha256 → extracted file path for one archive,
+// by hashing what is in its sidecar directory.
+//
+// By CONTENT, not by name. The extractor dedups within an archive — the same PDF
+// on five messages in a thread is one file cited five times — so the filename it
+// chose encodes the FIRST message that carried it and reconstructing it per
+// message would point four of those five at a file that does not exist.
+//
+// Hashing the directory on each call is affordable because these directories
+// hold tens of files, and it cannot drift from whatever is actually on disk,
+// which reconstructing a name from the extractor's format string could.
+func ResolveExtractedAttachments(archivePath string) func(string) string {
+	dir := AttachmentDir(archivePath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return func(string) string { return "" }
+	}
+	bySum := map[string]string{}
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == manifestName {
+			continue
+		}
+		full := filepath.Join(dir, e.Name())
+		b, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		bySum[HashHex(b)] = full
+	}
+	return func(sum string) string { return bySum[sum] }
+}
+
+// IsMailArchive reports whether a path is one this reader handles.
+func IsMailArchive(path string) bool {
+	return ClassifyDoc(path, "") == KindEmail
 }

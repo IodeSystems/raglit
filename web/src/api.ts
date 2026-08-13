@@ -98,6 +98,48 @@ export type ModelChannel = {
   chilled?: boolean;
 };
 
+// ── mail archives ─────────────────────────────────────────────────────────
+// The index holds one message per page with four headers kept and the rest
+// counted, which is the right transcription and unreadable as a conversation.
+// /api/email re-reads the archive and returns the structure that was flattened.
+
+export type EmailHeader = { name: string; value: string };
+
+export type EmailAttachment = {
+  name: string;
+  mime?: string;
+  size?: number;
+  sum?: string;
+  // The extracted file beside the archive, when extraction ran. EMPTY means the
+  // attachment was seen and not extracted — a different fact from "there is no
+  // attachment", and the two must not render alike.
+  path?: string;
+};
+
+export type EmailMessage = {
+  // The page this message occupies in the indexed document, so a search
+  // citation and the thread agree about which message is which.
+  page: number;
+  // Enclosure: 0 is a message in the archive, 1 is one forwarded inside it.
+  depth: number;
+  from?: string;
+  to?: string;
+  cc?: string;
+  date?: string;
+  subject?: string;
+  headers?: EmailHeader[];
+  body?: string;
+  attachments?: EmailAttachment[];
+  notes?: string[];
+};
+
+export const getEmailThread = (index: string, path: string) =>
+  getJSON<{ path: string; messages: EmailMessage[] }>("/api/email", { index, path });
+
+// Whether a document is one /api/email can read. The daemon refuses anything
+// else, so asking first is what keeps a 400 out of the document view.
+export const isMailArchive = (path: string) => /\.(eml|mbox)$/i.test(path);
+
 export const listChannels = () =>
   getJSON<{ channels: ModelChannel[] }>("/api/channels");
 

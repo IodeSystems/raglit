@@ -22,6 +22,7 @@ import { Transcript } from "./panes/Transcript";
 import { SeenIn } from "./panes/SeenIn";
 import { History } from "./panes/History";
 import { Notes } from "./panes/Notes";
+import { Email } from "./panes/Email";
 import { Attest } from "./panes/Attest";
 import { AttestAsset } from "./panes/AttestAsset";
 
@@ -142,6 +143,12 @@ const docIndexRoute = createRoute({
   getParentRoute: () => docRoute,
   path: "/",
   beforeLoad: ({ params }) => {
+    // A mail archive opens on its thread, not on its pages. "Page 7 of 26" is
+    // the indexed shape of an email and not how anybody reads one — and the
+    // pages view was the complaint that produced this route.
+    if (/\.(eml|mbox)$/i.test(params.doc)) {
+      throw redirect({ to: "/i/$index/d/$doc/email", params });
+    }
     throw redirect({ to: "/i/$index/d/$doc/pages", params });
   },
 });
@@ -184,6 +191,15 @@ const notesRoute = createRoute({
   getParentRoute: () => docRoute,
   path: "notes",
   component: Notes,
+});
+
+// A mail archive as a thread. Only meaningful for .eml/.mbox; the tab is hidden
+// for everything else and the endpoint refuses it, so a hand-typed URL says why
+// rather than rendering an empty conversation.
+const emailRoute = createRoute({
+  getParentRoute: () => docRoute,
+  path: "email",
+  component: Email,
 });
 
 // An index's branches: the copy-on-write overlays forked from it. The daemon has
@@ -235,6 +251,7 @@ const routeTree = rootRoute.addChildren([
       seenRoute,
       historyRoute,
       notesRoute,
+      emailRoute,
     ]),
     branchesRoute,
     attestRoute,

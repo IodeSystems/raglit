@@ -98,6 +98,25 @@
      quoting a model's description as if it were the record. */
   .origin { font-size:.75rem; color:var(--warn); margin:.15rem 0 .1rem; }
   .snip.generated { border-left:2px solid var(--warn); padding-left:.5rem; opacity:.85; font-style:italic; }
+  /* mail archives, read as a conversation */
+  .msg { border-top:1px solid var(--line); padding:.6rem .75rem; }
+  .msghead { display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; }
+  .msghead strong { font-size:.95rem; }
+  .msgfrom { display:flex; flex-wrap:wrap; gap:.9rem; margin-top:.25rem; font-size:.82rem; color:var(--muted); }
+  .msgfrom .k, .hdrs .k { text-transform:uppercase; font-size:.7rem; letter-spacing:.4px; opacity:.75; margin-right:.25rem; }
+  /* A letter, not a log line: proportional, wrapped, and bounded to a readable
+     measure rather than stretched across the window. */
+  .msgbody { white-space:pre-wrap; word-break:break-word; margin-top:.5rem; max-width:78ch; }
+  .hdrs { margin-top:.35rem; }
+  .hdrs td { padding:2px 8px; border:none; font-size:.78rem; vertical-align:top; }
+  .hdrs .k { white-space:nowrap; color:var(--muted); }
+  .atts { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.45rem; }
+  .att { display:inline-flex; align-items:center; gap:.3rem; padding:.2rem .55rem; font-size:.8rem;
+         border:1px dashed var(--line); border-radius:6px; text-decoration:none; color:inherit; }
+  /* An extracted attachment is a document you can open; an unextracted one is a
+     fact about the message. Solid vs dashed says which without a sentence. */
+  .att.on { border-style:solid; }
+  .att.on:hover { border-color:var(--accent); }
   .badge.lane-heavy { color:var(--vision); }
   .badge.lane-light { color:var(--ok); }
   a.badge { text-decoration:none; }

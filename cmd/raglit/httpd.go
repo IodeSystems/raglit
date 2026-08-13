@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -254,6 +255,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
 	gat.Register(api, g, op("listProjects", http.MethodGet, "/api/projects", "Indexes grouped by the project namespace they carry, with branch lineage and watch state."), listProjectsOp(reg, watch))
+	gat.Register(api, g, op("emailThread", http.MethodGet, "/api/email", "A mail archive as a thread: messages, enclosure depth, every header, and its attachments."), emailThreadOp(reg))
 	gat.Register(api, g, op("modelChannels", http.MethodGet, "/api/channels", "Per-model admission channels: the learned width, what is in flight, and how much backpressure taught it."), modelChannelsOp(lf))
 	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
 	gat.Register(api, g, op("searchFigures", http.MethodGet, "/search-figures", "Semantic search over figures (MCP search_figures)."), searchFiguresOp(reg, defLimit))
@@ -1201,6 +1203,58 @@ func modelChannelsOp(lf *llmFlags) func(context.Context, *struct{}) (*channelsOu
 		out.Body.Channels = []raglit.ChannelStat{}
 		if lf != nil && lf.chans != nil {
 			out.Body.Channels = lf.chans.Stats()
+		}
+		return out, nil
+	}
+}
+
+
+type emailIn struct {
+	Index string `query:"index"`
+	Path  string `query:"path"`
+}
+type emailOut struct {
+	Body struct {
+		Path     string                `json:"path"`
+		Messages []raglit.EmailMessage `json:"messages"`
+	}
+}
+
+// emailThreadOp reads a mail archive into its thread structure.
+//
+// From the FILE, not from the indexed page text. The index holds a rendering —
+// one message per page, four headers kept and the rest counted — which is the
+// right transcription and unreadable as a conversation. Parsing that rendering
+// back into fields would be a second parser free to disagree with the one that
+// wrote it. The archive is on disk and is the source of both.
+//
+// A path that is not a mail archive is refused rather than answered with an
+// empty thread: "this is not an email" and "this email has no messages" are
+// different facts and a caller must be able to tell them apart.
+func emailThreadOp(reg *raglit.Registry) func(context.Context, *emailIn) (*emailOut, error) {
+	return func(_ context.Context, in *emailIn) (*emailOut, error) {
+		if in.Path == "" {
+			return nil, huma.Error400BadRequest("path is required")
+		}
+		if _, err := reg.Get(in.Index); err != nil {
+			return nil, huma.Error404NotFound(err.Error())
+		}
+		path := strings.TrimPrefix(in.Path, "file://")
+		if !raglit.IsMailArchive(path) {
+			return nil, huma.Error400BadRequest(filepath.Base(path) + " is not a mail archive (.eml/.mbox)")
+		}
+		if _, err := os.Stat(path); err != nil {
+			return nil, huma.Error404NotFound("the archive is not on disk: " + err.Error())
+		}
+		msgs, err := raglit.EmailMessages(path, raglit.ResolveExtractedAttachments(path))
+		if err != nil {
+			return nil, huma.Error500InternalServerError("read archive", err)
+		}
+		out := &emailOut{}
+		out.Body.Path = path
+		out.Body.Messages = msgs
+		if out.Body.Messages == nil {
+			out.Body.Messages = []raglit.EmailMessage{}
 		}
 		return out, nil
 	}
