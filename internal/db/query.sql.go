@@ -355,7 +355,8 @@ func (q *Queries) GetPageImagePath(ctx context.Context, arg GetPageImagePathPara
 }
 
 const insertFragment = `-- name: InsertFragment :one
-INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans) VALUES(?, ?, ?, ?, ?, ?, ?) RETURNING id
+INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans, origin)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
 `
 
 type InsertFragmentParams struct {
@@ -366,8 +367,12 @@ type InsertFragmentParams struct {
 	StartOff  int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
 	EndOff    int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
 	PageSpans string `db:"page_spans" derived:"fragments.page_spans" json:"page_spans"`
+	Origin    string `db:"origin" derived:"fragments.origin" json:"origin"`
 }
 
+// origin marks text nobody wrote: 'described' for a model's account of an image
+// (indextext.go), 'identity' for a generated caption (identity.go). Empty is
+// transcription, and the only kind that may be quoted as the record.
 func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, insertFragment,
 		arg.DocID,
@@ -377,6 +382,7 @@ func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) 
 		arg.StartOff,
 		arg.EndOff,
 		arg.PageSpans,
+		arg.Origin,
 	)
 	var id int64
 	err := row.Scan(&id)

@@ -57,6 +57,10 @@ type stagedFrag struct {
 	// pageSpans is where each page's content begins inside text, for a fragment
 	// that spans pages. Nil when it lies on one page.
 	pageSpans []PageSpan
+	// origin marks text nobody wrote: "described" for a model's account of an
+	// image. Empty for transcription, which is the overwhelming majority and the
+	// only kind that may be quoted as the record. See FragOriginDescribed.
+	origin string
 }
 
 // stagedPage is a page's provenance held in memory until the atomic swap.
@@ -336,11 +340,45 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	// Deliberately AFTER the writeback and BEFORE segmentation: those two want
 	// different text, and conflating them is what left this unwired.
 	flattened := 0
+	// Which pages the model DESCRIBED rather than transcribed, decided here
+	// because this is the last moment the evidence exists: the labels that say so
+	// are layout markup, and the next three lines delete them. See
+	// DescribedFraction.
+	describedPages := map[int]bool{}
 	for i := range pages {
+		if IsDescribedPage(pages[i].text) {
+			describedPages[pages[i].page] = true
+		}
 		if f := FlattenForIndex(pages[i].text); f != pages[i].text {
 			flattened += len(pages[i].text) - len(f)
 			pages[i].text = f
 		}
+	}
+	markDescribed := func(f *stagedFrag) {
+		if len(describedPages) == 0 {
+			return
+		}
+		// Every page the fragment touches must be described. A fragment that
+		// mixes a photograph's caption with transcribed text is mostly real, and
+		// calling the whole of it generated would misrepresent the real half —
+		// which is its own kind of lie. Under-marking there is the safer error
+		// and it is stated rather than hidden.
+		pages := []int{f.page}
+		for _, sp := range f.pageSpans {
+			pages = append(pages, sp.Page)
+		}
+		for _, p := range pages {
+			if !describedPages[p] {
+				return
+			}
+		}
+		f.origin = FragOriginDescribed
+	}
+	if len(describedPages) > 0 {
+		sl.Done("described", "", fmt.Sprintf(
+			"%d page(s) are the model's DESCRIPTION of an image, not a transcription — "+
+				"indexed so they are findable, marked so they are not quoted as the record",
+			len(describedPages)))
 	}
 	if flattened > 0 {
 		sl.Done("flatten", "", fmt.Sprintf("removed %d bytes of layout markup before segmenting", flattened))
@@ -382,6 +420,11 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			// a fragment within its page, and two pieces cannot share one.
 			piece.ord = ordByPage[piece.page]
 			ordByPage[piece.page]++
+			// Marked HERE, at the one point every fragment on every path passes
+			// through, rather than in each producer — the llm-seg and
+			// text-overlap paths both feed this, and a mark applied in one of
+			// them would silently not apply to documents that took the other.
+			markDescribed(&piece)
 			idx := len(frags)
 			frags = append(frags, piece)
 			if embedCh != nil {
@@ -872,6 +915,7 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 			DocID: docID, Page: int64(f.page), Ord: int64(f.ord), Text: f.text,
 			StartOff: int64(f.startOff), EndOff: int64(f.endOff),
 			PageSpans: encodePageSpans(f.pageSpans),
+			Origin:    f.origin,
 		})
 		if err != nil {
 			return fmt.Errorf("raglit: insert fragment: %w", err)

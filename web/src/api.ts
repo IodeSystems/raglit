@@ -173,6 +173,13 @@ export type Hit = {
   score?: number;
   snippet?: string;
   page?: number;
+  // Whose words these are. Empty = the document's own, transcribed. "identity" =
+  // a generated caption. "described" = a model's account of an IMAGE — the 700
+  // words a vision model writes about a photograph, naming a car's make and its
+  // licence plate, none of which anybody wrote down. Generated hits rank in the
+  // same list on purpose (it is the only way a photograph is findable at all),
+  // so the RENDERER is what keeps them from being read as the record.
+  origin?: string;
 };
 
 // ── projects ──────────────────────────────────────────────────────────────

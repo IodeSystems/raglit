@@ -82,7 +82,22 @@ function SearchPane({
           {/* Rendered as TEXT. A snippet is words out of the corpus, and a
               corpus can contain markup — the page this replaces said so and
               used textContent for exactly this reason. */}
-          {h.snippet && <div className="snip">{h.snippet}</div>}
+          {/* Say whose words these are, ALWAYS, before the words themselves.
+              A generated caption and a model's description of a photograph rank
+              in this list beside transcribed text and looked exactly like it —
+              same shape, same apparent quotability. In a corpus that may be
+              cited, that is the difference between "the fax says" and "the model
+              thinks the car is a Chevrolet". */}
+          {h.origin && (
+            <div className="origin">
+              {h.origin === "described"
+                ? "a model's DESCRIPTION of an image — findable by it, not quotable from it"
+                : h.origin === "identity"
+                  ? "a generated caption for this document — not its words"
+                  : `generated (${h.origin}) — not the document's words`}
+            </div>
+          )}
+          {h.snippet && <div className={"snip" + (h.origin ? " generated" : "")}>{h.snippet}</div>}
           <div className="meta">
             {[
               spansIndexes && h.index ? h.index : null,

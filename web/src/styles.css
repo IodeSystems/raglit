@@ -93,6 +93,11 @@
   .badge.warn { color:var(--warn); }
   /* Lanes. Heavy is the one that makes people wait, so it reads as the busy
      colour and light as the ordinary one. */
+  /* Machine-written text in a result list. Marked before the words, and the
+     words themselves set apart, because the failure this prevents is a reader
+     quoting a model's description as if it were the record. */
+  .origin { font-size:.75rem; color:var(--warn); margin:.15rem 0 .1rem; }
+  .snip.generated { border-left:2px solid var(--warn); padding-left:.5rem; opacity:.85; font-style:italic; }
   .badge.lane-heavy { color:var(--vision); }
   .badge.lane-light { color:var(--ok); }
   a.badge { text-decoration:none; }

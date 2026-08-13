@@ -31,7 +31,11 @@ SELECT COUNT(*) AS n FROM fragments;
 DELETE FROM fragments WHERE doc_id = ?;
 
 -- name: InsertFragment :one
-INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans) VALUES(?, ?, ?, ?, ?, ?, ?) RETURNING id;
+-- origin marks text nobody wrote: 'described' for a model's account of an image
+-- (indextext.go), 'identity' for a generated caption (identity.go). Empty is
+-- transcription, and the only kind that may be quoted as the record.
+INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans, origin)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id;
 
 -- name: ListFragmentTextByPage :many
 SELECT text FROM fragments WHERE doc_id = ? AND page = ? ORDER BY ord;

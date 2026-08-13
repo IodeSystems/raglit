@@ -573,11 +573,17 @@ type Hit struct {
 	Ord   int
 	Text  string
 	Score float64
-	// Origin is empty for the document's own words and "identity" for the
-	// generated caption/summary (identity.go). It ranks in the same list on
-	// purpose — a summary is how a document whose body never says "purchase and
-	// sale agreement" becomes findable by that query — but it is a machine's
-	// paraphrase, so every renderer says so and nothing quotes from it.
+	// Origin is empty for the document's own words, and names what a machine
+	// made otherwise: "identity" for a generated caption/summary (identity.go),
+	// "described" for a model's account of an IMAGE (indextext.go) — the 700
+	// words chandra writes about a photograph, naming a car's make and its
+	// licence plate, none of which anybody wrote down.
+	//
+	// These rank in the same list on purpose: a summary is how a document whose
+	// body never says "purchase and sale agreement" becomes findable by that
+	// query, and a description is the only way a photograph is findable at all.
+	// But they are a machine's words, so every renderer says so and nothing
+	// quotes from them.
 	Origin string
 }
 

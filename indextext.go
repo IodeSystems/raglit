@@ -95,3 +95,96 @@ func StripLayoutMarkup(s string) string {
 func FlattenForIndex(s string) string {
 	return FlattenMarkdownForIndex(StripLayoutMarkup(s))
 }
+
+// Text a model DESCRIBED, as distinct from text it transcribed.
+//
+// A layout-aware VLM handed a photograph does not fail — it writes down what it
+// saw. On a photo of a car in a driveway chandra returns 700 characters naming
+// the make, the model and the licence plate. That is genuinely useful and it is
+// how a photograph becomes searchable at all.
+//
+// It is also NOT what the record says. Nobody wrote "a red Chevrolet Malibu";
+// the model inferred it, and it can be wrong about every part of it. Indexed
+// with no mark, that sentence is a fragment exactly like a sentence transcribed
+// off a fax — same shape in search results, same appearance of being quotable.
+// In a corpus that may be cited in a filing, the difference is the whole point,
+// and the codebase already draws it for generated CAPTIONS (identity.go writes
+// origin='identity': findable by it, not quotable from it). This applies the
+// same rule to the other thing a model makes up.
+//
+// The signal comes from the model, not from a guess about the file: chandra
+// wraps what it describes in a region labelled Image and puts the description in
+// an <img alt>. A scanned page whose text it read is labelled Text, Table,
+// Page-Header and so on.
+var (
+	imageRegion = regexp.MustCompile(`(?is)<(div|figure)\b[^>]*\bdata-label\s*=\s*"(image|figure|picture|photo)"[^>]*>(.*?)</(?:div|figure)>`)
+	anyImgTag   = regexp.MustCompile(`(?i)<img\b[^>]*\balt\s*=\s*"([^"]*)"[^>]*>`)
+)
+
+// DescribedFraction is how much of a page's INDEXABLE text came from the model
+// describing an image, between 0 and 1. A page with no such regions is 0; a
+// photograph is ~1.
+func DescribedFraction(raw string) float64 {
+	total := len(FlattenForIndex(raw))
+	if total == 0 {
+		return 0
+	}
+	described := 0
+	// Region text first — it contains the <img alt> as well as any prose the
+	// model wrote around it, and both are description.
+	rest := raw
+	for _, m := range imageRegion.FindAllStringSubmatch(raw, -1) {
+		described += len(FlattenForIndex(m[3]))
+		rest = strings.Replace(rest, m[0], "", 1)
+	}
+	// Then any alt text OUTSIDE such a region: a figure inline in a real page,
+	// where the surrounding transcription is genuine.
+	for _, m := range anyImgTag.FindAllStringSubmatch(rest, -1) {
+		described += len(strings.TrimSpace(m[1]))
+	}
+	if described > total {
+		described = total
+	}
+	return float64(described) / float64(total)
+}
+
+// FragOriginDescribed marks a fragment whose text is a model's account of an
+// IMAGE rather than a transcription of writing.
+//
+// It sits beside origin='identity' (identity.go), which marks a generated
+// caption, and means the same thing in the same column: findable by it, not
+// quotable from it. A corpus that may be cited needs the difference between
+// "the fax says" and "the model thinks the car is a Chevrolet" to survive into
+// the search result, and until this existed it did not.
+const FragOriginDescribed = "described"
+
+// A note for anything that filters fragments by origin.
+//
+// There are two kinds of generated text in this column and they are not
+// interchangeable. 'identity' is a caption ABOUT a document — excluded from the
+// document's own words, because a re-run must read the document and not the last
+// caption of it. 'described' IS a document's content: a photograph has no other
+// text, and dropping it means the photograph has none.
+//
+// So the predicate for "the document's own indexed words" is
+// `origin <> 'identity'`, never `origin = ''`. Six queries were written the
+// second way before descriptions existed, and each one silently changed meaning
+// the moment they did: the document list reported photographs as empty,
+// get_document returned nothing for them, and the cross-index pool would have
+// re-imported them with their only content stripped.
+
+// describedPageThreshold is how much of a page must be description before the
+// page is called one.
+//
+// High, and deliberately. Marking is a claim that a reader should not quote this
+// as the record, so a page that is mostly transcription with a figure in it must
+// NOT be marked — the transcription is real and calling it generated would be
+// its own kind of lie. This catches the case that matters and is honest about
+// leaving the mixed one alone: see FragOriginDescribed.
+const describedPageThreshold = 0.9
+
+// IsDescribedPage reports whether a page is essentially a model's description of
+// an image rather than a transcription of text.
+func IsDescribedPage(raw string) bool {
+	return DescribedFraction(raw) >= describedPageThreshold
+}

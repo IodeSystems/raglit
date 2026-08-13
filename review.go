@@ -73,15 +73,23 @@ type DocSummary struct {
 // Documents lists indexed documents with fragment/page/engine counts, newest
 // first. Docs with no OCR-tracked pages (plain text) report Pages 0.
 // Raw SQL rather than the generated ListDocumentSummaries, for two columns it
-// does not have and one count it now gets wrong: the identity fragment is a
-// model's description of the document, so it belongs neither in the document's
-// fragment count nor invisible in its row. (Raw for the reason TruePages gives —
-// see its comment on regenerating the sqlc layer.)
+// does not have and one count it gets wrong: the identity fragment is a caption
+// ABOUT the document, so it belongs neither in the document's fragment count nor
+// invisible in its row. (Raw for the reason TruePages gives — see its comment on
+// regenerating the sqlc layer.)
+//
+// The exclusion is `origin <> 'identity'`, NOT `origin = ''`, and the difference
+// is load-bearing. A photograph's only fragment is the model's DESCRIPTION of it
+// (origin='described'), which is not a caption about the document — it IS the
+// document's indexed content, and all of it there will ever be. Written the
+// other way, every photograph in the corpus reported zero fragments while search
+// returned it perfectly well: indexed, searchable, and listed as if it were the
+// no-fragments failure. Measured on the delano photo sets, 17 of them.
 func (s *Store) documentsLocal() ([]DocSummary, error) {
 	ctx := context.Background()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.id, d.path, d.title, d.added_at, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
-		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND f.origin = '') AS fragments
+		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND f.origin <> 'identity') AS fragments
 		   FROM documents d ORDER BY d.added_at DESC`)
 	if err != nil {
 		return nil, err
