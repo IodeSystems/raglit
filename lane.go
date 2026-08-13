@@ -43,9 +43,21 @@ const (
 var DefaultLaneSlots = map[Lane]int{LaneHeavy: 1, LaneLight: 3}
 
 // LaneForKind maps a routed document to the lane that can afford it.
+//
+// KindAudio is heavy, and is the longest single job raglit has. A 44-minute
+// hearing transcribes in about twenty minutes; the light lane's three slots
+// exist for work measured in seconds, and three recordings would hold all of
+// them while every text and email ingest queued behind. That is precisely the
+// case LaneFor's comment names as the one worth naming, arrived at from the
+// other direction.
+//
+// Heavy's single slot also serialises them, which is what the far end wants:
+// oidio is one process holding one recogniser, so a second concurrent
+// transcription does not start earlier — it blocks inside the server, exactly
+// as the vision endpoint does.
 func LaneForKind(k DocKind) Lane {
 	switch k {
-	case KindPDF, KindImage:
+	case KindPDF, KindImage, KindAudio:
 		return LaneHeavy
 	}
 	return LaneLight

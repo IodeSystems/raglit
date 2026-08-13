@@ -216,3 +216,18 @@ func TestMigrate_OpensAnIndexThatPredatesTheLaneColumn(t *testing.T) {
 		t.Fatal("the pre-existing scan was never claimable after upgrade")
 	}
 }
+
+// A recording is the longest job raglit runs, so it belongs in the lane with one
+// slot. In the light lane three hearings would hold all three slots for twenty
+// minutes each and everything else would wait behind them.
+func TestLaneFor_ARecordingIsHeavy(t *testing.T) {
+	for _, name := range []string{"hearing.mp4", "hearing.opus", "call.mp3", "tape.wav"} {
+		if got := LaneFor(name); got != LaneHeavy {
+			t.Errorf("LaneFor(%q) = %q, want heavy", name, got)
+		}
+	}
+	// Unchanged for everything else.
+	if LaneFor("notes.md") != LaneLight || LaneFor("scan.pdf") != LaneHeavy {
+		t.Error("existing lane assignments must not move")
+	}
+}
