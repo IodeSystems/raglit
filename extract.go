@@ -41,6 +41,15 @@ const (
 	// takes), and even if it did, OfficeText's one-flat-string-per-document
 	// shape is the wrong output for a multi-sheet source.
 	KindSpreadsheet
+	// KindAudio is a recording — audio or a video container carrying speech.
+	// Transcribed by oidio (see stt.go) and indexed as the TRANSCRIPT, with the
+	// machine reading kept beside it for attest to review. raglit does not read
+	// audio itself and is not meant to: it consumes a reading and verifies it.
+	//
+	// Video is here rather than in a kind of its own because what raglit wants
+	// from a hearing recording is the speech, and oidio takes the container
+	// whole. A kind that split them would have two routes to the same producer.
+	KindAudio
 	KindUnknown
 )
 
@@ -66,6 +75,8 @@ func (k DocKind) String() string {
 		return "email"
 	case KindSpreadsheet:
 		return "spreadsheet"
+	case KindAudio:
+		return "audio"
 	}
 	return "unknown"
 }
@@ -127,6 +138,8 @@ func ClassifyDoc(name, contentType string) DocKind {
 		return KindOffice
 	case xlsxExts[ext] || xlsExts[ext] || strings.Contains(ct, "spreadsheetml") || strings.Contains(ct, "ms-excel"):
 		return KindSpreadsheet
+	case audioExts[ext] || strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "video/"):
+		return KindAudio
 	case ext == ".eml" || ext == ".mbox" || strings.HasPrefix(ct, "message/rfc822"):
 		return KindEmail
 	case textExts[ext] || strings.HasPrefix(ct, "text/plain") || strings.HasPrefix(ct, "text/markdown"):
@@ -224,21 +237,23 @@ func SniffBytes(head []byte) DocKind {
 //
 // audio/ and video/ are deliberately ABSENT from the pass list below, though the
 // sniffer names them and an earlier version of this function let them through.
-// This list is not "types the sniffer recognises", it is "types raglit has an
-// extractor for" — and there is none for media. DocKind has no audio or video
-// kind and ClassifyDoc has no case for .mp4/.opus/.mp3/.wav, so a recording
-// reaches here as KindUnknown and passing it on hands it to the text reader.
-// Measured: an .mp4 of a court hearing was only stopped by IsMinified, on the
-// incidental grounds that its bytes contain a 5000-character run with no
-// newline. That is a heuristic about line length agreeing with the right answer
-// by accident; a recording whose container happens to break lines more often
-// would have been segmented and embedded as mojibake.
+// This list is not "types the sniffer recognises", it is "types that may fall
+// through to the TEXT READER" — which is the only thing past this guard.
 //
-// The half of oidio that raglit took is the REVIEW half — attest verifies and
-// corrects a diarized reading that oidio already produced (see attestaudio.go).
-// Producing one is still oidio's job, so until an extractor exists the honest
-// answer for a media file is a refusal. Adding a media kind is what makes these
-// prefixes correct to restore, and the two changes belong together.
+// Media has a route of its own now (KindAudio → oidio → index the transcript),
+// and Worker.route takes it before anything reaches here: by extension, by
+// served content type, and failing both by sniffing the bytes. So a recording
+// should never arrive at this function at all, and one that does is a file
+// whose identity nothing could establish. Handing THAT to the text reader is
+// the failure this guard exists to stop, so the prefixes stay out.
+//
+// Restoring them would not re-enable audio ingest — it would only re-open the
+// fall-through. Measured before the route existed: an .mp4 of a court hearing
+// was stopped by IsMinified alone, on the incidental grounds that its bytes hold
+// a 5000-character run with no newline (208,179 in that file). The .opus beside
+// it tops out at 3,508 across 7 MB and would have gone straight through. A
+// line-length heuristic agreeing with the right answer is not the same as a
+// check that knows it.
 func IsOpaque(head []byte) bool {
 	if len(head) == 0 {
 		return false // nothing to judge; let the normal path decide

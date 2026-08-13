@@ -68,6 +68,13 @@ func expandIngestTargets(args []string) ([]string, error) {
 func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *raglit.Pool) *raglit.Worker {
 	cfg, _, _ := raglit.LoadConfig(home)
 	w := &raglit.Worker{Store: store}
+	// Audio ingest is on only when BOTH are configured. A base URL with no model
+	// cannot name what to run and a model with no endpoint has nowhere to run it;
+	// half a configuration would fail per-job at the far end of a long upload
+	// instead of here, where the absence is the whole story.
+	if cfg.AudioBaseURL != "" && cfg.AudioModel != "" {
+		w.STT = &raglit.STT{BaseURL: cfg.AudioBaseURL, APIKey: cfg.APIKey, Model: cfg.AudioModel}
+	}
 	// Deterministic text fragmenter params (config-or-default), with the fragment
 	// ceiling capped by the embed model's probed input limit.
 	// The embed model's input limit is DISCOVERED, not configured: it is a fact

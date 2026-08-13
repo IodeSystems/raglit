@@ -126,6 +126,18 @@ func (s *Store) AttachmentDirFor(archivePath string) string {
 	return s.home.AttachmentDir(archivePath)
 }
 
+// TranscriptDirFor is where this index stores the transcript and machine
+// reading of the recording at mediaPath. Empty when the store has no home, the
+// same case AttachmentDirFor cannot serve — an in-memory index has nowhere to
+// put a sidecar, and the caller records that as a skipped stage rather than a
+// failure.
+func (s *Store) TranscriptDirFor(mediaPath string) string {
+	if !s.withHome {
+		return ""
+	}
+	return s.home.TranscriptDir(mediaPath)
+}
+
 // LegacyAttachmentDirFor is the corpus sidecar an archive's attachments used to
 // be written to, for readers that must work before the migration has run.
 func (s *Store) LegacyAttachmentDirFor(archivePath string) string {

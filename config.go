@@ -15,6 +15,21 @@ type Config struct {
 	APIKey      string `json:"api_key"`
 	VisionModel string `json:"vision_model"`
 	EmbedModel  string `json:"embed_model"`
+	// AudioBaseURL + AudioModel point at oidio, which transcribes and diarizes a
+	// recording so raglit can index the transcript and review the reading. Both
+	// empty → audio ingest is unavailable and an audio job says so; a corpus of
+	// documents needs no transcriber.
+	//
+	// A base URL of its OWN, unlike IdentityModel and SegmentModel which reuse
+	// BaseURL. oidio is a separate process on a separate port (:8077 by default)
+	// serving a different model catalogue; folding it into BaseURL would assume a
+	// gateway fronts both, and where that is untrue the setup is unreachable with
+	// no field to fix it. Where a gateway DOES front both, setting this to the
+	// same URL costs one line.
+	AudioBaseURL string `json:"audio_base_url,omitempty"`
+	// AudioModel is oidio's model id — "stt-diarize" for speaker-labelled
+	// segments, "stt" for plain text. Recorded as the reading's Producer.
+	AudioModel string `json:"audio_model,omitempty"`
 	// EmbedLimitChars caps a fragment's size to what the embed model accepts as one
 	// input — probed once and stored (DiscoverEmbedLimit), so the deterministic
 	// fragmenter's ceiling is bounded by the model, not by taste. 0 = not probed

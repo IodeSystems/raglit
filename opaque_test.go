@@ -105,10 +105,34 @@ func TestIsOpaque_RefusesMediaUntilThereIsAnExtractorForIt(t *testing.T) {
 		t.Error("an .mp3 must be refused")
 	}
 
-	// The refusal is about the BYTES, not the name: nothing routes media by
-	// extension either, so a recording arrives here as KindUnknown.
-	if k := ClassifyDoc("hearing.mp4", ""); k != KindUnknown {
-		t.Errorf("media has no DocKind; adding one means revisiting IsOpaque, got %v", k)
+	// A NAMED recording does not reach IsOpaque at all — it has a route.
+	// The guard above is for a media file whose identity nothing established,
+	// which must still not fall through to the text reader.
+	for name, want := range map[string]DocKind{
+		"hearing.mp4": KindAudio, "hearing.opus": KindAudio, "call.mp3": KindAudio,
+		"tape.wav": KindAudio, "clip.mkv": KindAudio,
+		"notes.md": KindText, "report.pdf": KindPDF,
+	} {
+		if k := ClassifyDoc(name, ""); k != want {
+			t.Errorf("ClassifyDoc(%q) = %v, want %v", name, k, want)
+		}
+	}
+	// A served content type routes it too, for a fetch with no useful name.
+	if k := ClassifyDoc("download", "audio/mpeg"); k != KindAudio {
+		t.Errorf("an audio/* content type must route to KindAudio, got %v", k)
+	}
+}
+
+// The silent half of the same defect. expandIngestTargets skips anything
+// ClassifyDoc calls KindUnknown, without reporting it — correct for a directory
+// walk that should not error per generated file, and the reason a hearings
+// directory of recordings enqueued NOTHING and looked covered. Measured on the
+// corpus that found this: zero ingest jobs had ever referenced that directory.
+func TestClassifyDoc_MediaIsDiscoverableByADirectoryWalk(t *testing.T) {
+	for _, name := range []string{"hearing.mp4", "hearing.opus", "call.mp3", "tape.wav"} {
+		if ClassifyDoc(name, "") == KindUnknown {
+			t.Errorf("%s classifies as KindUnknown, so a directory ingest will skip it silently", name)
+		}
 	}
 }
 

@@ -32,6 +32,10 @@ type Worker struct {
 	// OCR ingests PDF jobs. nil → a PDF job fails with a clear message (a text
 	// corpus needs no vision model).
 	OCR *OCR
+	// STT transcribes audio jobs, by asking oidio. nil → an audio job fails with
+	// a clear message, the same way a PDF job does with no vision model: a corpus
+	// of documents needs no transcriber and should not be told to configure one.
+	STT *STT
 	// Segmenter LLM-segments a document ONLY when a page escalated to the VLM (the
 	// llm-seg path, decided per-document in ingestUnits). Text/code never escalate,
 	// so they take the deterministic overlapping-window fragmenter regardless of
@@ -322,6 +326,21 @@ func (w *Worker) route(job *Job, f Fetched) DocKind {
 		// never fails. The first eight bytes usually know.
 		kind = SniffBytes(f.Data)
 	}
+	if kind == KindUnknown {
+		// A recording with no extension, fetched from somewhere that served no
+		// content type. fileMagic does not carry media signatures — ISO-BMFF's
+		// ftyp box is at a variable offset with a brand list, which is more than a
+		// byte-prefix table can express — but the stdlib's WHATWG sniffer knows
+		// them, and it is already being called a few lines later by IsOpaque.
+		//
+		// Without this the file reaches IsOpaque, which refuses it as having no
+		// representation to index. That was the RIGHT answer while raglit had no
+		// transcriber and is the wrong one now that oidio is wired in: the bytes
+		// are readable, only the name failed to say so.
+		if ct := http.DetectContentType(f.Data); strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "video/") {
+			kind = KindAudio
+		}
+	}
 	if f.IsPDF {
 		kind = KindPDF
 	}
@@ -388,6 +407,14 @@ func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, ki
 		// picks the fragmenter per-document (llm-seg if a page hit the VLM, else
 		// text-overlap). mode is the fragmenter it chose.
 		return w.Store.ingestPDF(ctx, w.segmenter(), w.OCR, job.URL, path, title, w.Frag, sl)
+
+	case KindAudio:
+		if w.STT == nil {
+			err := fmt.Errorf("audio ingest needs a transcriber — configure audio_base_url + audio_model (oidio) and retry")
+			sl.Fail("extract", "audio", err)
+			return 0, "", err
+		}
+		return w.ingestAudio(ctx, job, f, title, sl)
 
 	case KindImage:
 		if w.OCR == nil {
