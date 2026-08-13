@@ -224,7 +224,7 @@ func (w *Worker) ingestAudio(ctx context.Context, job *Job, f Fetched, title str
 	sl.Done("extract", "stt", fmt.Sprintf("%s, %d turn(s), %d speaker(s)",
 		hms(res.Duration), len(res.Segments), len(res.Speakers)))
 
-	producer := "oidio/" + w.STT.Model
+	producer := sttProducer(w.STT.Model)
 	// Keyed by the CORPUS path, not the job URL. The two differ by a "file://"
 	// prefix, and tag() hashes whatever string it is handed — so keying on the
 	// URL would put the reading somewhere no reader looking it up by path would
@@ -263,6 +263,19 @@ func writeReadingTo(dir, mediaPath string, rd *attest.Reading) (string, error) {
 		return "", fmt.Errorf("raglit: create %s: %w", dir, err)
 	}
 	return attest.WriteReading(filepath.Join(dir, filepath.Base(mediaPath)), rd)
+}
+
+// sttProducer names what read the recording, from the model id.
+//
+// The same oidio model has two ids depending on how it is reached: "stt-diarize"
+// direct, "oidio-stt-diarize" through corrallm, which re-exports its backends
+// under a prefix. Left alone the second spells "oidio/oidio-stt-diarize", and
+// worse, the two routes produce DIFFERENT producer strings for the same reader.
+// attest's whole reason for recording a producer is that two readings of one
+// asset are meant to be comparable; a name that changes with the network path
+// between them defeats that.
+func sttProducer(model string) string {
+	return "oidio/" + strings.TrimPrefix(model, "oidio-")
 }
 
 func truncateForError(s string) string {

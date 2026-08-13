@@ -329,3 +329,18 @@ func TestHome_TranscriptStaysOutOfTheCorpus(t *testing.T) {
 		t.Error("same basename in two corpora must not collide")
 	}
 }
+
+// corrallm re-exports oidio's backends under a prefix, so the same reader is
+// "stt-diarize" direct and "oidio-stt-diarize" through the broker. Both must
+// name the same producer: attest records one so two readings of an asset can be
+// compared, and a name that changes with the route between them defeats that.
+func TestSTTProducer_IsTheSameWhicheverRouteReachedIt(t *testing.T) {
+	for _, model := range []string{"stt-diarize", "oidio-stt-diarize"} {
+		if got := sttProducer(model); got != "oidio/stt-diarize" {
+			t.Errorf("sttProducer(%q) = %q, want oidio/stt-diarize", model, got)
+		}
+	}
+	if got := sttProducer("oidio-stt"); got != "oidio/stt" {
+		t.Errorf("sttProducer(oidio-stt) = %q", got)
+	}
+}

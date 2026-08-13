@@ -68,12 +68,15 @@ func expandIngestTargets(args []string) ([]string, error) {
 func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *raglit.Pool) *raglit.Worker {
 	cfg, _, _ := raglit.LoadConfig(home)
 	w := &raglit.Worker{Store: store}
-	// Audio ingest is on only when BOTH are configured. A base URL with no model
-	// cannot name what to run and a model with no endpoint has nowhere to run it;
-	// half a configuration would fail per-job at the far end of a long upload
-	// instead of here, where the absence is the whole story.
-	if cfg.AudioBaseURL != "" && cfg.AudioModel != "" {
-		w.STT = &raglit.STT{BaseURL: cfg.AudioBaseURL, APIKey: cfg.APIKey, Model: cfg.AudioModel}
+	// Audio ingest turns on with the MODEL alone. oidio is normally behind the
+	// same broker as the vision and embed models, so the endpoint is already
+	// known; AudioBaseURL is only for the case where it is not.
+	if cfg.AudioModel != "" {
+		base := cfg.AudioBaseURL
+		if base == "" {
+			base = cfg.BaseURL
+		}
+		w.STT = &raglit.STT{BaseURL: base, APIKey: cfg.APIKey, Model: cfg.AudioModel}
 	}
 	// Deterministic text fragmenter params (config-or-default), with the fragment
 	// ceiling capped by the embed model's probed input limit.

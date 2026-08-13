@@ -15,21 +15,27 @@ type Config struct {
 	APIKey      string `json:"api_key"`
 	VisionModel string `json:"vision_model"`
 	EmbedModel  string `json:"embed_model"`
-	// AudioBaseURL + AudioModel point at oidio, which transcribes and diarizes a
-	// recording so raglit can index the transcript and review the reading. Both
-	// empty → audio ingest is unavailable and an audio job says so; a corpus of
-	// documents needs no transcriber.
+	// AudioModel names oidio's transcriber, which reads a recording so raglit can
+	// index the transcript and review the reading. Empty → audio ingest is
+	// unavailable and an audio job says so; a corpus of documents needs no
+	// transcriber.
 	//
-	// A base URL of its OWN, unlike IdentityModel and SegmentModel which reuse
-	// BaseURL. oidio is a separate process on a separate port (:8077 by default)
-	// serving a different model catalogue; folding it into BaseURL would assume a
-	// gateway fronts both, and where that is untrue the setup is unreachable with
-	// no field to fix it. Where a gateway DOES front both, setting this to the
-	// same URL costs one line.
-	AudioBaseURL string `json:"audio_base_url,omitempty"`
-	// AudioModel is oidio's model id — "stt-diarize" for speaker-labelled
-	// segments, "stt" for plain text. Recorded as the reading's Producer.
+	// Through corrallm — which is how oidio is actually deployed — the ids are
+	// "oidio-stt-diarize" (speaker-labelled segments) and "oidio-stt" (plain
+	// text), served from the SAME endpoint as the vision and embed models.
+	// Standalone, oidio calls the same two "stt-diarize" and "stt".
 	AudioModel string `json:"audio_model,omitempty"`
+	// AudioBaseURL overrides where the transcriber lives. Empty → BaseURL, which
+	// is right whenever oidio is behind the same broker as everything else.
+	//
+	// This started as a REQUIRED field of its own, on the reasoning that oidio is
+	// a separate process on :8077 and assuming one gateway fronts both would make
+	// a working setup unreachable. The :8077 in oidio's own example config is its
+	// standalone-dev address; the deployment puts it under corrallm, whose
+	// OpenAI proxy already re-exports it alongside the vision and embed models on
+	// one base URL. So the separate endpoint is the exception, not the rule, and
+	// the field earns its keep as an override rather than a second thing to set.
+	AudioBaseURL string `json:"audio_base_url,omitempty"`
 	// EmbedLimitChars caps a fragment's size to what the embed model accepts as one
 	// input — probed once and stored (DiscoverEmbedLimit), so the deterministic
 	// fragmenter's ceiling is bounded by the model, not by taste. 0 = not probed
