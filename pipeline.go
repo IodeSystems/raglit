@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -284,32 +283,24 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			len(failedPages), len(units), failedPageList(failedPages)))
 	}
 
-	// The transcription, if this index asked for one. Written here because `pages`
-	// is exactly the per-page text a transcription is, and after fragmentation it
-	// is gone. Best-effort: a convenience file must never fail a good ingest.
-	if docPath != "" && writebackForDoc(docPath, s.writebackTranscription) {
-		tp := make([]TranscribedPage, 0, len(pages))
-		for _, p := range pages {
-			if p.page >= 1 {
-				tp = append(tp, TranscribedPage{Page: p.page, Text: p.text})
-			}
-		}
-		if len(tp) > 0 {
-			// Re-issue whatever a person corrected. An ingest that wrote an
-			// uncorrected export would undo checked work exactly as the old
-			// unconditional overwrite did.
-			corr := correctionsForDoc(docPath)
-			if out, err := WriteTranscriptionCorrected(docPath, tp, corr); err != nil {
-				sl.Fail("transcribe", "", err)
-			} else {
-				detail := filepath.Base(out)
-				if len(corr) > 0 {
-					detail += fmt.Sprintf(" (%d corrected page(s) re-issued)", len(corr))
-				}
-				sl.Done("transcribe", "", detail)
-			}
-		}
-	}
+	// NO TRANSCRIPTION SIDECAR IS WRITTEN HERE, and this is deliberate.
+	//
+	// Ingest used to materialise <doc>.raglit-transcription.md beside every
+	// document it read. It put 407 files into one corpus — a legal evidence tree
+	// — and every one of them duplicated text raglit already had: the same paged
+	// reading is in `pages`, in the fragments, and served by /api/doc-detail,
+	// which is what the Transcript tab renders.
+	//
+	// The cost was not just the files. raglit then had to defend itself against
+	// them: IsGeneratedSidecar refuses to ingest one, builtinIgnore hides them
+	// from discovery, and WriteTranscriptionCorrected refuses to transcribe a
+	// transcription — four mechanisms guarding an indexer against its own
+	// output. A feature raglit owns belongs in raglit's storage, not scattered
+	// through somebody's corpus for raglit to trip over later.
+	//
+	// `raglit transcribe` still writes one, because that is a person asking for
+	// a file. The difference is who decided.
+
 	if len(ocrEngines) > 0 {
 		n := 0
 		for _, c := range ocrEngines {

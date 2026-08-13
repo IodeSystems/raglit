@@ -133,13 +133,23 @@ func TestAnIngestWritebackReissuesCorrections(t *testing.T) {
 	}
 	js.Close()
 
-	// What the ingest path loads for this document, found from its path alone.
-	got := correctionsForDoc(doc)
+	// A correction must survive into the rendered transcription. INGEST no longer
+	// writes one — see the note in pipeline.go about sidecars — so this is the
+	// `raglit transcribe` path, which is a person asking for the file.
+	js2, err := OpenJudgements(AuditPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer js2.Close()
+	got, err := js2.PageCorrections(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 {
-		t.Fatalf("ingest found %d correction(s), want 1", len(got))
+		t.Fatalf("found %d correction(s), want 1", len(got))
 	}
 	md := RenderTranscriptionCorrected(doc, []TranscribedPage{{Page: 1, Text: "AF 2008081020 HALVR"}}, got)
 	if !strings.Contains(md, "KEVIN G. HALVOR") {
-		t.Errorf("the ingest writeback dropped the correction:\n%s", md)
+		t.Errorf("the transcription dropped the correction:\n%s", md)
 	}
 }

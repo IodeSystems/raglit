@@ -54,10 +54,6 @@ type Store struct {
 	// caption, a summary and a kind (identity.go). nil → documents keep only the
 	// filename they arrived with.
 	identifier *Identifier
-	// writebackTranscription materialises <doc>.raglit-transcription.md beside each
-	// ingested document. Off unless the index config asks for it: an indexer that
-	// writes into the corpus uninvited is a surprise nobody wants.
-	writebackTranscription bool
 	// extractEmailAttachments writes a mail archive's attachments into
 	// <archive>.raglit-attachments/ beside it. Off for the same reason, and with
 	// more force — one archive can carry 69 files.
@@ -120,9 +116,6 @@ var schema string
 // Open opens (creating if needed) a raglit index at path. Use ":memory:" for a
 // throwaway index (tests). foreign_keys is ON so a document delete cascades to
 // its fragments; WAL keeps concurrent readers unblocked during ingest.
-// SetWritebackTranscription turns the per-document transcription writeback on.
-func (s *Store) SetWritebackTranscription(v bool) { s.writebackTranscription = v }
-
 // SetExtractEmailAttachments turns the mail-archive attachment sidecar on.
 func (s *Store) SetExtractEmailAttachments(v bool) { s.extractEmailAttachments = v }
 
@@ -377,16 +370,12 @@ func OpenIndex(home Home, name string) (*Store, error) {
 	// home and index it is — the flag existed and was never consulted, which is
 	// the same silent gap that made three earlier fixes no-ops.
 	if cfg, _, err := LoadConfig(home); err == nil {
-		s.writebackTranscription = cfg.WritebackTranscriptionMd
 		s.extractEmailAttachments = cfg.ExtractEmailAttachments
 		key := name
 		if key == "" {
 			key = "default"
 		}
 		if ic, ok := cfg.Indexes[key]; ok {
-			if ic.WritebackTranscriptionMd {
-				s.writebackTranscription = true
-			}
 			if ic.ExtractEmailAttachments {
 				s.extractEmailAttachments = true
 			}

@@ -158,10 +158,16 @@ type IndexConfig struct {
 	Roots   []Root   `json:"roots,omitempty"`
 	Include []string `json:"include,omitempty"` // a file must match one to be indexed
 	Ignore  []string `json:"ignore,omitempty"`  // merged with project + built-in ignore
-	// WritebackTranscriptionMd materialises <doc>.raglit-transcription.md beside
-	// each ingested document: the page-delineated text the pipeline already
-	// produced. Off by default because it writes into the corpus, which is not
-	// something an indexer should do uninvited.
+	// WritebackTranscriptionMd NO LONGER DOES ANYTHING, and is kept only so an
+	// existing config still parses.
+	//
+	// It made ingest write <doc>.raglit-transcription.md beside every document it
+	// read — 407 files into one legal evidence tree, each duplicating text raglit
+	// already held in `pages`, in the fragments, and on /api/doc-detail. raglit
+	// then needed IsGeneratedSidecar, a builtinIgnore entry and a refusal inside
+	// the writer itself to avoid tripping over its own output.
+	//
+	// `raglit transcribe` still writes one. The difference is that a person asked.
 	WritebackTranscriptionMd bool `json:"writeback_transcription_md,omitempty"`
 	// ExtractEmailAttachments writes a mail archive's attachments into
 	// <archive>.raglit-attachments/ beside it, with a MANIFEST.md recording which

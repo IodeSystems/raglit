@@ -385,8 +385,12 @@ func TestAttachmentExtractionIsOffUnlessAskedFor(t *testing.T) {
 			t.Errorf("a config with no opinion returned %v, want the fallback %v", got, fb)
 		}
 	}
-	if !writebackForDoc(doc, false) {
-		t.Error("sharing the walk broke the transcription writeback flag")
+	// The project config still carries writeback_transcription_md. It no longer
+	// does anything (ingest writes no sidecar), and it must not disturb the flag
+	// it shares a file with.
+	write(`{"project":"m","writeback_transcription_md":true,"extract_email_attachments":true}`)
+	if !extractAttachmentsForDoc(doc, false) {
+		t.Error("a dead neighbouring key broke the attachment flag")
 	}
 }
 
