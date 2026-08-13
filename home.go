@@ -145,9 +145,27 @@ func (h Home) OriginalsDir() string { return filepath.Join(string(h), "originals
 // PagesDir holds page images derived from originals (OCR input).
 func (h Home) PagesDir() string { return filepath.Join(string(h), "pages") }
 
-// Ensure creates the home layout (home + originals/ + pages/) if absent.
+// AttachmentsDir holds files extracted OUT of ingested documents — today, mail
+// attachments.
+//
+// In raglit's storage, not beside the archive. Extraction used to write
+// <archive>.raglit-attachments/ into the corpus: 204 files across 44
+// directories in one legal evidence tree, for a feature raglit owns end to end.
+// An extracted attachment is a real document — it is ingested, captioned and
+// searchable — but where its bytes LIVE is raglit's business, exactly as it
+// already is for originals/ and pages/.
+func (h Home) AttachmentsDir() string { return filepath.Join(string(h), "attachments") }
+
+// AttachmentDir is where one archive's attachments live, keyed by the archive's
+// path the same way OriginalPath and PageDir are keyed. Deterministic, so
+// nothing has to record it.
+func (h Home) AttachmentDir(archivePath string) string {
+	return filepath.Join(h.AttachmentsDir(), tag(archivePath))
+}
+
+// Ensure creates the home layout (home + originals/ + pages/ + attachments/) if absent.
 func (h Home) Ensure() error {
-	for _, d := range []string{string(h), h.OriginalsDir(), h.PagesDir()} {
+	for _, d := range []string{string(h), h.OriginalsDir(), h.PagesDir(), h.AttachmentsDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("raglit: create %s: %w", d, err)
 		}

@@ -1246,7 +1246,12 @@ func emailThreadOp(reg *raglit.Registry) func(context.Context, *emailIn) (*email
 		if _, err := os.Stat(path); err != nil {
 			return nil, huma.Error404NotFound("the archive is not on disk: " + err.Error())
 		}
-		msgs, err := raglit.EmailMessages(path, raglit.ResolveExtractedAttachments(path))
+		// Both locations: current extractions live in raglit's storage, and an
+		// archive whose attachments predate the move still has them beside it
+		// until the migration runs.
+		st, _ := reg.Get(in.Index)
+		msgs, err := raglit.EmailMessages(path, raglit.ResolveExtractedAttachments(
+			st.AttachmentDirFor(path), st.LegacyAttachmentDirFor(path)))
 		if err != nil {
 			return nil, huma.Error500InternalServerError("read archive", err)
 		}

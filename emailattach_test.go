@@ -66,7 +66,7 @@ func dirNames(t *testing.T, dir string) []string {
 // plumbing at all.
 func TestAttachmentsAreExtractedBesideTheArchive(t *testing.T) {
 	arc := writeArchive(t, archiveWithAttachments())
-	n, dir, err := ExtractEmailAttachments(arc, arc)
+	n, dir, err := ExtractEmailAttachments(arc, arc, LegacyAttachmentDir(arc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestAttachmentsAreExtractedBesideTheArchive(t *testing.T) {
 // name that does not say which message it came from is a second original.
 func TestExtractedNameCarriesItsMessage(t *testing.T) {
 	arc := writeArchive(t, archiveWithAttachments())
-	_, dir, err := ExtractEmailAttachments(arc, arc)
+	_, dir, err := ExtractEmailAttachments(arc, arc, LegacyAttachmentDir(arc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestExtractedNameCarriesItsMessage(t *testing.T) {
 // sent repeatedly fall out of the same dedup.
 func TestIdenticalAttachmentIsExtractedOnceAndCitedTwice(t *testing.T) {
 	arc := writeArchive(t, archiveWithAttachments())
-	n, dir, err := ExtractEmailAttachments(arc, arc)
+	n, dir, err := ExtractEmailAttachments(arc, arc, LegacyAttachmentDir(arc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestIdenticalAttachmentIsExtractedOnceAndCitedTwice(t *testing.T) {
 // design is arranged to avoid.
 func TestManifestRecordsTheChain(t *testing.T) {
 	arc := writeArchive(t, archiveWithAttachments())
-	_, dir, err := ExtractEmailAttachments(arc, arc)
+	_, dir, err := ExtractEmailAttachments(arc, arc, LegacyAttachmentDir(arc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestManifestRecordsTheChain(t *testing.T) {
 func TestExtractionIsDeterministic(t *testing.T) {
 	arc := writeArchive(t, archiveWithAttachments())
 	first := func() string {
-		_, dir, err := ExtractEmailAttachments(arc, arc)
+		_, dir, err := ExtractEmailAttachments(arc, arc, LegacyAttachmentDir(arc))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +214,7 @@ func TestDeclaredFilenameCannotEscapeTheDirectory(t *testing.T) {
 			"Content-Transfer-Encoding: base64\r\n\r\n" + b64("payload") + "\r\n" +
 			"--B--\r\n"
 		arc := writeArchive(t, eml)
-		_, dir, err := ExtractEmailAttachments(arc, arc)
+		_, dir, err := ExtractEmailAttachments(arc, arc, LegacyAttachmentDir(arc))
 		if err != nil {
 			t.Fatalf("%s: %v", declared, err)
 		}
@@ -268,7 +268,7 @@ func TestUnnamedAttachmentGetsAnExtensionFromItsMediaType(t *testing.T) {
 		"Content-Transfer-Encoding: base64\r\n\r\n" + b64("opaque") + "\r\n" +
 		"--B--\r\n"
 	arc := writeArchive(t, eml)
-	_, dir, err := ExtractEmailAttachments(arc, arc)
+	_, dir, err := ExtractEmailAttachments(arc, arc, LegacyAttachmentDir(arc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestUnnamedAttachmentGetsAnExtensionFromItsMediaType(t *testing.T) {
 // the corpus.
 func TestArchiveWithNoAttachmentsLeavesNoDirectory(t *testing.T) {
 	arc := writeArchive(t, "From: a@example.com\r\nSubject: X\r\n\r\nJust a note.\r\n")
-	n, dir, err := ExtractEmailAttachments(arc, arc)
+	n, dir, err := ExtractEmailAttachments(arc, arc, LegacyAttachmentDir(arc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestSidecarFollowsTheCorpusPathNotTheSourceBytes(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(corpus), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	n, dir, err := ExtractEmailAttachments(tmp, corpus)
+	n, dir, err := ExtractEmailAttachments(tmp, corpus, LegacyAttachmentDir(corpus))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,17 +454,23 @@ func TestWorkerExtractsAttachmentsOnlyWhenConfigured(t *testing.T) {
 	t.Run("off", func(t *testing.T) {
 		arc, s, _ := run(t, false)
 		defer s.Close()
-		if _, err := os.Stat(AttachmentDir(arc)); err == nil {
-			t.Error("attachments extracted into the corpus without being asked for")
+		if _, err := os.Stat(s.AttachmentDirFor(arc)); err == nil {
+			t.Error("attachments extracted without being asked for")
 		}
 	})
 
 	t.Run("on", func(t *testing.T) {
 		arc, s, url := run(t, true)
 		defer s.Close()
-		names := dirNames(t, AttachmentDir(arc))
+		// In RAGLIT's storage, never beside the archive. Extraction used to write
+		// <archive>.raglit-attachments/ into the corpus — 204 files across 44
+		// directories in one evidence tree, for a feature raglit owns end to end.
+		if _, err := os.Stat(LegacyAttachmentDir(arc)); err == nil {
+			t.Error("extraction wrote a sidecar into the corpus")
+		}
+		names := dirNames(t, s.AttachmentDirFor(arc))
 		if len(names) != 3 {
-			t.Fatalf("sidecar holds %v, want two attachments and a manifest", names)
+			t.Fatalf("attachment dir holds %v, want two attachments and a manifest", names)
 		}
 		// The archive itself still indexes, as pages, under its own URL.
 		st, _ := s.IndexStatus()
@@ -481,7 +487,7 @@ func TestWorkerExtractsAttachmentsOnlyWhenConfigured(t *testing.T) {
 			if n == manifestName {
 				continue
 			}
-			if k := ClassifyDoc(filepath.Join(AttachmentDir(arc), n), ""); k == KindUnknown {
+			if k := ClassifyDoc(filepath.Join(LegacyAttachmentDir(arc), n), ""); k == KindUnknown {
 				t.Errorf("extracted %q classifies as KindUnknown, so no sync will index it", n)
 			}
 		}

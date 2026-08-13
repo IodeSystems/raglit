@@ -479,7 +479,13 @@ func (w *Worker) extractAttachments(url, srcPath string, sl *StageLog) {
 	if corpus == "" || !extractAttachmentsForDoc(corpus, w.Store.extractEmailAttachments) {
 		return
 	}
-	n, dir, err := ExtractEmailAttachments(srcPath, corpus)
+	// Into RAGLIT's storage, not beside the archive. See Home.AttachmentDir.
+	dest := w.Store.AttachmentDirFor(corpus)
+	if dest == "" {
+		sl.Skip("attachments", "this index has no home to store attachments in")
+		return
+	}
+	n, dir, err := ExtractEmailAttachments(srcPath, corpus, dest)
 	switch {
 	case err != nil:
 		sl.Fail("attachments", "email", err)

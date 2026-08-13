@@ -90,7 +90,7 @@ func TestEmailMessages_UnextractedAttachmentHasNoPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	msgs, err := EmailMessages(path, ResolveExtractedAttachments(path))
+	msgs, err := EmailMessages(path, ResolveExtractedAttachments(LegacyAttachmentDir(path)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +124,11 @@ func TestResolveExtractedAttachments_MatchesByContentNotName(t *testing.T) {
 	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n, _, err := ExtractEmailAttachments(path, path)
+	n, _, err := ExtractEmailAttachments(path, path, LegacyAttachmentDir(path))
 	if err != nil || n != 1 {
 		t.Fatalf("extract: n=%d err=%v", n, err)
 	}
-	msgs, err := EmailMessages(path, ResolveExtractedAttachments(path))
+	msgs, err := EmailMessages(path, ResolveExtractedAttachments(LegacyAttachmentDir(path)))
 	if err != nil {
 		t.Fatal(err)
 	}

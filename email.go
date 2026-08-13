@@ -793,8 +793,8 @@ func EmailMessages(path string, resolve func(sum string) string) ([]EmailMessage
 	return out, nil
 }
 
-// ResolveExtractedAttachments maps sha256 → extracted file path for one archive,
-// by hashing what is in its sidecar directory.
+// ResolveExtractedAttachments maps sha256 → extracted file path, by hashing what
+// is in the given directories.
 //
 // By CONTENT, not by name. The extractor dedups within an archive — the same PDF
 // on five messages in a thread is one file cited five times — so the filename it
@@ -804,23 +804,35 @@ func EmailMessages(path string, resolve func(sum string) string) ([]EmailMessage
 // Hashing the directory on each call is affordable because these directories
 // hold tens of files, and it cannot drift from whatever is actually on disk,
 // which reconstructing a name from the extractor's format string could.
-func ResolveExtractedAttachments(archivePath string) func(string) string {
-	dir := AttachmentDir(archivePath)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return func(string) string { return "" }
-	}
+// Several directories because an archive may not have been migrated yet: current
+// extractions land in raglit's storage (Home.AttachmentDir) and older ones are
+// still in the corpus sidecar (LegacyAttachmentDir). Reading both means the
+// thread view works either side of the migration.
+func ResolveExtractedAttachments(dirs ...string) func(string) string {
 	bySum := map[string]string{}
-	for _, e := range entries {
-		if e.IsDir() || e.Name() == manifestName {
+	for _, dir := range dirs {
+		if dir == "" {
 			continue
 		}
-		full := filepath.Join(dir, e.Name())
-		b, err := os.ReadFile(full)
+		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
 		}
-		bySum[HashHex(b)] = full
+		for _, e := range entries {
+			if e.IsDir() || e.Name() == manifestName {
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
+			b, err := os.ReadFile(full)
+			if err != nil {
+				continue
+			}
+			// First wins, so raglit's own storage is preferred when a legacy copy
+			// still exists beside the archive.
+			if _, seen := bySum[HashHex(b)]; !seen {
+				bySum[HashHex(b)] = full
+			}
+		}
 	}
 	return func(sum string) string { return bySum[sum] }
 }

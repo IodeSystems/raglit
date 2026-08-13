@@ -116,7 +116,23 @@ var schema string
 // Open opens (creating if needed) a raglit index at path. Use ":memory:" for a
 // throwaway index (tests). foreign_keys is ON so a document delete cascades to
 // its fragments; WAL keeps concurrent readers unblocked during ingest.
-// SetExtractEmailAttachments turns the mail-archive attachment sidecar on.
+// AttachmentDirFor is where this index stores files extracted out of the archive
+// at archivePath. Empty when the store has no home (":memory:", a bare Open),
+// which is the one case extraction cannot run.
+func (s *Store) AttachmentDirFor(archivePath string) string {
+	if !s.withHome {
+		return ""
+	}
+	return s.home.AttachmentDir(archivePath)
+}
+
+// LegacyAttachmentDirFor is the corpus sidecar an archive's attachments used to
+// be written to, for readers that must work before the migration has run.
+func (s *Store) LegacyAttachmentDirFor(archivePath string) string {
+	return LegacyAttachmentDir(archivePath)
+}
+
+// SetExtractEmailAttachments turns mail-archive attachment extraction on.
 func (s *Store) SetExtractEmailAttachments(v bool) { s.extractEmailAttachments = v }
 
 func Open(path string) (*Store, error) {

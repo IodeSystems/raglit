@@ -49,8 +49,10 @@ import (
 // "attachments" next to twelve .eml files answers nothing.
 const attachmentDirSuffix = ".raglit-attachments"
 
-// AttachmentDir is where an archive's attachments are extracted to.
-func AttachmentDir(archivePath string) string { return archivePath + attachmentDirSuffix }
+// LegacyAttachmentDir is where an archive's attachments USED to be extracted to:
+// a sidecar directory in the corpus, beside the archive. Kept only so the
+// migration can find them; nothing writes here any more. See Home.AttachmentDir.
+func LegacyAttachmentDir(archivePath string) string { return archivePath + attachmentDirSuffix }
 
 // manifestName is the chain-of-custody file. Named in caps because a human
 // opening the directory should read it first.
@@ -68,12 +70,12 @@ const manifestName = "MANIFEST.md"
 // EmailText must stay pure — the `ocr` MCP tool calls it — and a second walk of
 // 24 MB costs milliseconds, which is not worth a sink parameter that one of the
 // two callers would always pass nil for.
-func ExtractEmailAttachments(srcPath, archivePath string) (int, string, error) {
+func ExtractEmailAttachments(srcPath, archivePath, destDir string) (int, string, error) {
 	parts, err := readArchive(srcPath, true)
 	if err != nil {
 		return 0, "", err
 	}
-	dir := AttachmentDir(archivePath)
+	dir := destDir
 
 	// Rows are built before anything is written, so a manifest is never left
 	// describing files that a failure half-created.
