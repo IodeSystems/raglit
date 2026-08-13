@@ -242,10 +242,24 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	// property of its bytes, so it must not depend on cache state.
 	if kind == KindUnknown {
 		if IsOpaque(f.Data) {
-			sl.Skip("extract", "no text/image/audio representation — "+http.DetectContentType(f.Data))
-			return 0, "", fmt.Errorf("raglit: %s has no text, image or audio representation to index "+
+			// Say which of the two refusals this is. Now that IsOpaque stops media
+			// as well as binaries, "has no text or image representation" is false
+			// about a recording — an .mp4 of a hearing plainly has speech in it,
+			// and raglit's inability to read it is a fact about raglit. Telling a
+			// reviewer their recording contains nothing sends them looking for a
+			// corrupt file that is fine, which is the same failure audioEvidenceFor
+			// avoids by returning nil rather than a renderer that always errors.
+			ct := http.DetectContentType(f.Data)
+			if strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "video/") {
+				sl.Skip("extract", "media — raglit has no audio/video extractor ("+ct+")")
+				return 0, "", fmt.Errorf("raglit: %s is %s — raglit cannot read audio or video; "+
+					"transcribe it first and index the transcript",
+					filepath.Base(job.URL), ct)
+			}
+			sl.Skip("extract", "no text/image representation — "+ct)
+			return 0, "", fmt.Errorf("raglit: %s has no text or image representation to index "+
 				"(sniffed %s) — refusing rather than indexing its bytes as text",
-				filepath.Base(job.URL), http.DetectContentType(f.Data))
+				filepath.Base(job.URL), ct)
 		}
 		// Text, but with no line structure a human put there: a minified bundle
 		// or a generated blob. It would fragment into chunks of unreadable

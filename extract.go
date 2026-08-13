@@ -221,6 +221,24 @@ func SniffBytes(head []byte) DocKind {
 // The NUL check is the second signal for the same reason git uses it: a byte
 // that cannot appear in text is the cheapest proof there is, and it catches
 // binaries whose first bytes happen to sniff as something benign.
+//
+// audio/ and video/ are deliberately ABSENT from the pass list below, though the
+// sniffer names them and an earlier version of this function let them through.
+// This list is not "types the sniffer recognises", it is "types raglit has an
+// extractor for" — and there is none for media. DocKind has no audio or video
+// kind and ClassifyDoc has no case for .mp4/.opus/.mp3/.wav, so a recording
+// reaches here as KindUnknown and passing it on hands it to the text reader.
+// Measured: an .mp4 of a court hearing was only stopped by IsMinified, on the
+// incidental grounds that its bytes contain a 5000-character run with no
+// newline. That is a heuristic about line length agreeing with the right answer
+// by accident; a recording whose container happens to break lines more often
+// would have been segmented and embedded as mojibake.
+//
+// The half of oidio that raglit took is the REVIEW half — attest verifies and
+// corrects a diarized reading that oidio already produced (see attestaudio.go).
+// Producing one is still oidio's job, so until an extractor exists the honest
+// answer for a media file is a refusal. Adding a media kind is what makes these
+// prefixes correct to restore, and the two changes belong together.
 func IsOpaque(head []byte) bool {
 	if len(head) == 0 {
 		return false // nothing to judge; let the normal path decide
@@ -229,8 +247,6 @@ func IsOpaque(head []byte) bool {
 	switch {
 	case strings.HasPrefix(ct, "text/"),
 		strings.HasPrefix(ct, "image/"),
-		strings.HasPrefix(ct, "audio/"),
-		strings.HasPrefix(ct, "video/"),
 		strings.Contains(ct, "pdf"),
 		strings.Contains(ct, "zip"),      // .docx/.xlsx/.odt/.epub are zips
 		strings.Contains(ct, "ms-excel"), // OLE2 lands here on some inputs
