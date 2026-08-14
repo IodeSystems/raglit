@@ -255,3 +255,36 @@ func CollapseToAuthoritative(hits []Hit, readingOf func(doc string) (Reading, bo
 	}
 	return out
 }
+
+
+// AuthorityFromTrail builds the resolver Store.SetAuthorityResolver wants, from
+// the judgement trail of the project a document belongs to.
+//
+// anyDoc is any document in the corpus; the trail is found by walking up from
+// it, the same way a correction is. Returns nil when there is no trail, which
+// leaves the level order in charge — the right answer for a corpus nobody has
+// ruled on, and better than an empty resolver that would claim every source is
+// unruled.
+//
+// Read ONCE and held: a search must not open and replay a trail per hit, and the
+// rulings are a small append-only file that changes when a person acts, not
+// while a query runs. A daemon that wants a change picked up re-installs it.
+func AuthorityFromTrail(anyDoc string) func(string) (string, bool) {
+	dir := ProjectDirForDoc(anyDoc)
+	if dir == "" {
+		return nil
+	}
+	js, err := OpenJudgements(AuditPath(dir))
+	if err != nil {
+		return nil
+	}
+	defer js.Close()
+	rulings := map[string]string{}
+	for _, a := range js.Authorities() {
+		rulings[a.Source] = a.Doc
+	}
+	if len(rulings) == 0 {
+		return nil
+	}
+	return func(src string) (string, bool) { d, ok := rulings[src]; return d, ok }
+}

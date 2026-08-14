@@ -51,16 +51,27 @@ func (s *Store) Search(query string, limit int) ([]Hit, error) {
 // constrained to a path subtree (pathPrefix). A non-branch store (parent == nil)
 // is just its local FTS.
 func (s *Store) SearchPath(query, pathPrefix string, limit int) ([]Hit, error) {
-	hits, err := s.searchLocal(query, pathPrefix, limit)
-	if err != nil || s.parent == nil {
+	// Over-fetch, because collapsing readings of one source removes rows: asking
+	// for exactly `limit` and then dropping the duplicate account of a hearing
+	// returns fewer answers than were asked for, which reads as a thinner corpus
+	// rather than as a tidier one.
+	fetch := limit
+	if fetch > 0 {
+		fetch *= 2
+	}
+	hits, err := s.searchLocal(query, pathPrefix, fetch)
+	if err != nil {
 		return hits, err
+	}
+	if s.parent == nil {
+		return s.collapseReadings(hits, limit), nil
 	}
 	s.touchAccess()
 	shadow, err := s.shadowedPaths()
 	if err != nil {
 		return nil, err
 	}
-	phits, err := s.parent.SearchPath(query, pathPrefix, limit)
+	phits, err := s.parent.SearchPath(query, pathPrefix, fetch)
 	if err != nil {
 		return nil, err
 	}
@@ -70,10 +81,24 @@ func (s *Store) SearchPath(query, pathPrefix string, limit int) ([]Hit, error) {
 		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	return s.collapseReadings(hits, limit), nil
+}
+
+// collapseReadings keeps one hit per SOURCE — the reading that governs — and
+// then truncates to the caller's limit.
+//
+// After the overlay and the re-rank, so a branch's reading and its parent's are
+// weighed against each other rather than each surviving its own half of the
+// merge. See CollapseToAuthoritative for why ranking must not decide.
+func (s *Store) collapseReadings(hits []Hit, limit int) []Hit {
+	hits = CollapseToAuthoritative(hits,
+		func(doc string) (Reading, bool) { r, ok, _ := s.ReadingFor(doc); return r, ok },
+		func(src string) []Reading { rs, _ := s.ReadingsOfSource(src); return rs },
+		s.authority)
 	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]
 	}
-	return hits, nil
+	return hits
 }
 
 // Documents overlays: branch docs, then parent docs not shadowed.

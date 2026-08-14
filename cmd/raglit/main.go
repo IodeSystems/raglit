@@ -49,6 +49,8 @@ func main() {
 		err = runIngest(os.Args[2:])
 	case "sync":
 		err = runSync(os.Args[2:])
+	case "import-readings":
+		err = runImportReadings(os.Args[2:])
 	case "migrate-attachments":
 		err = runMigrateAttachments(os.Args[2:])
 	case "branch":

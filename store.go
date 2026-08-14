@@ -62,7 +62,20 @@ type Store struct {
 	// parent at document grain (a branch doc / tombstone shadows the parent's).
 	// Writes go to the branch only (copy-on-write). See branch.go.
 	parent *Store
+	// authority answers which reading of a source a person ruled governs.
+	// See SetAuthorityResolver.
+	authority func(source string) (string, bool)
 }
+
+// SetAuthorityResolver supplies the person's ruling about which reading of a
+// source governs (readings.go).
+//
+// INJECTED, because the rulings live in the trail beside the documents and this
+// package must not go looking for it: an index does not know where its corpus
+// is, and one that guessed would answer differently depending on where it was
+// opened from. Unset → the level order decides, which is the right default for
+// a corpus nobody has ruled on.
+func (s *Store) SetAuthorityResolver(fn func(source string) (string, bool)) { s.authority = fn }
 
 // SetParent makes this store a branch over p (branch-over-parent overlay reads).
 func (s *Store) SetParent(p *Store) { s.parent = p }
