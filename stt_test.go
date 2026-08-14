@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iodesystems/raglit/attest"
 )
@@ -342,5 +343,76 @@ func TestSTTProducer_IsTheSameWhicheverRouteReachedIt(t *testing.T) {
 	}
 	if got := sttProducer("oidio-stt"); got != "oidio/stt" {
 		t.Errorf("sttProducer(oidio-stt) = %q", got)
+	}
+}
+
+// A 429 is "not now", not "no". Backpressure carries how long to wait, and
+// discarding a 40-minute upload over a condition that names its own expiry
+// throws away the expensive half of the work. Measured: four hearings queued
+// together, corrallm answered two with
+// {"capacity":2,"in_flight":2,"retry_after":9} and both failed outright.
+func TestSTT_WaitsOutBackpressureInsteadOfFailing(t *testing.T) {
+	var attempts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"capacity":2,"in_flight":2,"retry_after":0.01,` +
+				`"type":"backpressure","message":"backend at capacity; retry after backoff"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(oidioBody))
+	}))
+	defer srv.Close()
+
+	s := &STT{BaseURL: srv.URL + "/v1", Model: "oidio-stt-diarize", HTTP: srv.Client()}
+	out, err := s.Transcribe(context.Background(), "hearing.mp4", []byte("x"))
+	if err != nil {
+		t.Fatalf("a retryable refusal must not fail the job: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("want one retry, got %d attempts", attempts)
+	}
+	if len(out.Segments) == 0 {
+		t.Error("the retry must return the real transcription")
+	}
+}
+
+// Attempts are bounded: a queue that is genuinely full should put the job back
+// where it is visible rather than hold a worker slot indefinitely.
+func TestSTT_GivesUpAfterBoundedAttempts(t *testing.T) {
+	var attempts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"retry_after":0.01,"type":"backpressure"}}`))
+	}))
+	defer srv.Close()
+
+	s := &STT{BaseURL: srv.URL + "/v1", Model: "m", HTTP: srv.Client()}
+	if _, err := s.Transcribe(context.Background(), "a.mp4", []byte("x")); err == nil {
+		t.Fatal("persistent backpressure must eventually fail the job")
+	}
+	if attempts != sttMaxAttempts {
+		t.Errorf("attempts = %d, want %d", attempts, sttMaxAttempts)
+	}
+}
+
+// The wait comes from the server, because it is the only thing that knows.
+func TestRetryAfterOf_PrefersTheServersOwnNumber(t *testing.T) {
+	body := []byte(`{"error":{"retry_after":9,"capacity":2}}`)
+	if got := retryAfterOf(body, "3"); got != 9*time.Second {
+		t.Errorf("body must win over the header, got %v", got)
+	}
+	if got := retryAfterOf([]byte(`{}`), "4"); got != 4*time.Second {
+		t.Errorf("the header is the fallback, got %v", got)
+	}
+	// A refusal with no number still waits — 429 means "not now" either way.
+	if got := retryAfterOf([]byte(`nonsense`), ""); got != sttDefaultBackoff {
+		t.Errorf("a bare 429 must still back off, got %v", got)
+	}
+	// A hostile number cannot park a worker for an afternoon.
+	if got := retryAfterOf([]byte(`{"error":{"retry_after":86400}}`), ""); got != sttMaxBackoff {
+		t.Errorf("the wait must be capped, got %v", got)
 	}
 }

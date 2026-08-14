@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,9 +70,8 @@ func (h Home) TranscriptDir(mediaPath string) string {
 // STT turns a recording into a reading. nil on a Worker → an audio job fails
 // with a clear message, the same way a PDF job does without a vision model.
 type STT struct {
-	// BaseURL is oidio's root (e.g. http://127.0.0.1:8077/v1). Separate from
-	// Config.BaseURL because oidio is its own process on its own port; assuming a
-	// gateway fronts both would make a working setup unreachable for no benefit.
+	// BaseURL is the endpoint's root — normally the same broker as the vision and
+	// embed models, since corrallm re-exports oidio's backends beside them.
 	BaseURL string
 	APIKey  string
 	// Model is the oidio model id — "stt-diarize" for speaker-labelled segments,
@@ -79,6 +79,18 @@ type STT struct {
 	// outlives several models and a transcript whose author is unrecorded cannot
 	// be told from one a different model produced.
 	Model string
+	// Chan admits one transcription at a time per model, at a width learned from
+	// the server's own backpressure. nil → ungated, which is what a test wants
+	// and what a single-caller CLI can afford.
+	//
+	// Wired because the first real run proved it necessary and NOT wiring it was
+	// the bug modelchan.go's comment describes. Four hearings queued together,
+	// the daemon started all four, and corrallm answered two of them
+	// `429 {"capacity":2,"in_flight":2,"reason":"queue-timeout","retry_after":9}`
+	// — two 40-minute recordings failed after uploading, having done the work of
+	// getting there. A transcription is the most expensive request raglit makes
+	// and the least affordable one to throw away on a retryable refusal.
+	Chan *Channels
 	// HTTP overrides the client (tests). nil → a client with Timeout.
 	HTTP *http.Client
 	// Timeout bounds one transcription. Diarization costs roughly a minute per
@@ -126,20 +138,85 @@ type sttResponse struct {
 	Speakers []sttSpeaker `json:"speakers"`
 }
 
+// sttMaxAttempts bounds how many times one recording is offered.
+//
+// Small, because the admission channel is what actually prevents backpressure
+// and this is the backstop for the window between a width being learned and
+// another client taking the capacity anyway. A recording that cannot get in
+// after three tries is a queue that is genuinely full, and the job should go
+// back to the queue where it is visible rather than hold a worker slot.
+const sttMaxAttempts = 3
+
 // Transcribe uploads the recording and returns oidio's reading.
 //
 // name is the original filename; it rides along in the multipart part because
 // oidio's decoder uses the extension as a hint and an upload called "file" with
 // no extension is a container it has to guess at.
+//
+// Gated and retried, because the upload is the expensive part. corrallm refuses
+// a saturated backend with a 429 that carries how long to wait, and throwing a
+// 40-minute recording away on one is discarding minutes of transfer for a
+// condition that says, in the response body, when it will have passed.
 func (s *STT) Transcribe(ctx context.Context, name string, data []byte) (*sttResponse, error) {
+	if s.Chan != nil {
+		release, err := s.Chan.Acquire(ctx, s.Model)
+		if err != nil {
+			return nil, fmt.Errorf("raglit: stt: %w", err)
+		}
+		// ok=false on any error tells the channel not to count this as one of the
+		// clean calls that earn a wider width.
+		var out *sttResponse
+		var terr error
+		func() {
+			defer func() { release(terr == nil) }()
+			out, terr = s.transcribeRetrying(ctx, name, data)
+		}()
+		return out, terr
+	}
+	return s.transcribeRetrying(ctx, name, data)
+}
+
+// transcribeRetrying offers the recording until it is accepted or the attempts
+// run out, honouring the server's own Retry-After.
+func (s *STT) transcribeRetrying(ctx context.Context, name string, data []byte) (*sttResponse, error) {
+	var last error
+	for attempt := 1; attempt <= sttMaxAttempts; attempt++ {
+		out, wait, err := s.transcribeOnce(ctx, name, data)
+		if err == nil {
+			return out, nil
+		}
+		last = err
+		if wait <= 0 {
+			return nil, err // not backpressure; nothing to wait for
+		}
+		// Tell the channel what the server said, so the LEARNED width narrows
+		// rather than this one call simply trying again into the same wall.
+		if s.Chan != nil {
+			s.Chan.Note429(s.Model)
+		}
+		if attempt == sttMaxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return nil, last
+}
+
+// transcribeOnce makes one attempt. A non-zero retryAfter means the failure was
+// backpressure and names how long the server asked the caller to wait.
+func (s *STT) transcribeOnce(ctx context.Context, name string, data []byte) (_ *sttResponse, retryAfter time.Duration, _ error) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	part, err := mw.CreateFormFile("file", filepath.Base(name))
 	if err != nil {
-		return nil, fmt.Errorf("raglit: stt: build request: %w", err)
+		return nil, 0, fmt.Errorf("raglit: stt: build request: %w", err)
 	}
 	if _, err := part.Write(data); err != nil {
-		return nil, fmt.Errorf("raglit: stt: build request: %w", err)
+		return nil, 0, fmt.Errorf("raglit: stt: build request: %w", err)
 	}
 	for k, v := range map[string]string{
 		"model": s.Model,
@@ -150,17 +227,17 @@ func (s *STT) Transcribe(ctx context.Context, name string, data []byte) (*sttRes
 		"response_format": "verbose_json",
 	} {
 		if err := mw.WriteField(k, v); err != nil {
-			return nil, fmt.Errorf("raglit: stt: build request: %w", err)
+			return nil, 0, fmt.Errorf("raglit: stt: build request: %w", err)
 		}
 	}
 	if err := mw.Close(); err != nil {
-		return nil, fmt.Errorf("raglit: stt: build request: %w", err)
+		return nil, 0, fmt.Errorf("raglit: stt: build request: %w", err)
 	}
 
 	url := strings.TrimSuffix(s.BaseURL, "/") + "/audio/transcriptions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
 	if err != nil {
-		return nil, fmt.Errorf("raglit: stt: %w", err)
+		return nil, 0, fmt.Errorf("raglit: stt: %w", err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	if s.APIKey != "" {
@@ -177,30 +254,40 @@ func (s *STT) Transcribe(ctx context.Context, name string, data []byte) (*sttRes
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("raglit: stt: %s is unreachable — is oidio running? %w", url, err)
+		return nil, 0, fmt.Errorf("raglit: stt: %s is unreachable — is oidio running? %w", url, err)
 	}
 	defer resp.Body.Close()
 	// Bounded: an error body from a proxy can be a whole HTML page, and a
 	// transcription response for a long hearing is large but not unbounded.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return nil, fmt.Errorf("raglit: stt: reading response: %w", err)
+		return nil, 0, fmt.Errorf("raglit: stt: reading response: %w", err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// Backpressure names its own wait. corrallm answers with
+		// {"error":{"retry_after":9,"capacity":2,"in_flight":2,...}} and also sets
+		// Retry-After; the body is preferred because it is the one corrallm fills
+		// in for this case, and the header is the fallback for a proxy that only
+		// speaks HTTP. A refusal with no number at all still waits — a 429 means
+		// "not now" whether or not it says when.
+		return nil, retryAfterOf(raw, resp.Header.Get("Retry-After")),
+			fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
+		return nil, 0, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
 	}
 	var out sttResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("raglit: stt: response was not the expected JSON: %w", err)
+		return nil, 0, fmt.Errorf("raglit: stt: response was not the expected JSON: %w", err)
 	}
 	// A 200 with no words in it is a failure that reports success — the same
 	// class of silent-empty-decode oidio's own DecodePCM guards against on its
 	// side. Indexing it would create a document whose text is the empty string.
 	if strings.TrimSpace(out.Text) == "" && len(out.Segments) == 0 {
-		return nil, fmt.Errorf("raglit: stt: %s transcribed to nothing — no speech found, or the container has no audio stream",
+		return nil, 0, fmt.Errorf("raglit: stt: %s transcribed to nothing — no speech found, or the container has no audio stream",
 			filepath.Base(name))
 	}
-	return &out, nil
+	return &out, 0, nil
 }
 
 // ingestAudio transcribes a recording and indexes the TRANSCRIPT.
@@ -276,6 +363,43 @@ func writeReadingTo(dir, mediaPath string, rd *attest.Reading) (string, error) {
 // between them defeats that.
 func sttProducer(model string) string {
 	return "oidio/" + strings.TrimPrefix(model, "oidio-")
+}
+
+// sttDefaultBackoff is the wait when a 429 names no interval of its own.
+const sttDefaultBackoff = 15 * time.Second
+
+// sttMaxBackoff caps what a server can ask for. A cooperative one asks for
+// seconds; the cap is here so a bad or hostile number cannot park a worker slot
+// for an afternoon on a job that is still holding a claim.
+const sttMaxBackoff = 2 * time.Minute
+
+// retryAfterOf reads how long the server asked us to wait, from its body first
+// and the Retry-After header second.
+func retryAfterOf(body []byte, header string) time.Duration {
+	var e struct {
+		Error struct {
+			RetryAfter float64 `json:"retry_after"`
+		} `json:"error"`
+	}
+	d := time.Duration(0)
+	if json.Unmarshal(body, &e) == nil && e.Error.RetryAfter > 0 {
+		d = time.Duration(e.Error.RetryAfter * float64(time.Second))
+	}
+	if d == 0 && header != "" {
+		// Retry-After is delta-seconds in every response corrallm sends. The HTTP
+		// date form is legal and unhandled on purpose: nothing here emits it, and
+		// guessing at a parse failure is worse than falling back to the default.
+		if secs, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && secs > 0 {
+			d = time.Duration(secs * float64(time.Second))
+		}
+	}
+	if d == 0 {
+		d = sttDefaultBackoff
+	}
+	if d > sttMaxBackoff {
+		d = sttMaxBackoff
+	}
+	return d
 }
 
 func truncateForError(s string) string {
