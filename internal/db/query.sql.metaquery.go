@@ -545,6 +545,57 @@ var GetPageImagePathCols = struct {
 	ImagePath: metaquery.NewTextCol("image_path"),
 }
 
+var MetaGetReadingForDoc = metaquery.Query{
+	Name:    "GetReadingForDoc",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+FROM readings WHERE doc_path = ?`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+		{Name: "source_sha256", OriginalName: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "source_path", OriginalName: "source_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "doc_path", OriginalName: "doc_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "method", OriginalName: "method", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "level", OriginalName: "level", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "produced_by", OriginalName: "produced_by", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "ruled_by", OriginalName: "ruled_by", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "at", OriginalName: "at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "doc_path", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WrapGetReadingForDoc returns a metaquery.Builder over MetaGetReadingForDoc, pre-bound with typed arguments.
+func WrapGetReadingForDoc(docPath string) *metaquery.Builder {
+	return metaquery.Wrap(&MetaGetReadingForDoc, docPath)
+}
+
+// GetReadingForDocCols gives typed, name-safe access to GetReadingForDoc's output columns.
+var GetReadingForDocCols = struct {
+	ID           metaquery.IntCol
+	SourceSha256 metaquery.TextCol
+	SourcePath   metaquery.TextCol
+	DocPath      metaquery.TextCol
+	Method       metaquery.TextCol
+	Level        metaquery.TextCol
+	ProducedBy   metaquery.TextCol
+	RuledBy      metaquery.TextCol
+	At           metaquery.IntCol
+}{
+	ID:           metaquery.NewIntCol("id"),
+	SourceSha256: metaquery.NewTextCol("source_sha256"),
+	SourcePath:   metaquery.NewTextCol("source_path"),
+	DocPath:      metaquery.NewTextCol("doc_path"),
+	Method:       metaquery.NewTextCol("method"),
+	Level:        metaquery.NewTextCol("level"),
+	ProducedBy:   metaquery.NewTextCol("produced_by"),
+	RuledBy:      metaquery.NewTextCol("ruled_by"),
+	At:           metaquery.NewIntCol("at"),
+}
+
 var MetaInsertFragment = metaquery.Query{
 	Name:    "InsertFragment",
 	Cmd:     ":one",
@@ -783,6 +834,58 @@ var ListActiveJobsCols = struct {
 	ID:    metaquery.NewIntCol("id"),
 	Url:   metaquery.NewTextCol("url"),
 	State: metaquery.NewTextCol("state"),
+}
+
+var MetaListAllReadings = metaquery.Query{
+	Name:    "ListAllReadings",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+FROM readings ORDER BY source_sha256, at, id`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+		{Name: "source_sha256", OriginalName: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "source_path", OriginalName: "source_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "doc_path", OriginalName: "doc_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "method", OriginalName: "method", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "level", OriginalName: "level", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "produced_by", OriginalName: "produced_by", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "ruled_by", OriginalName: "ruled_by", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "at", OriginalName: "at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+	},
+}
+
+// WARNING: ListAllReadings ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListAllReadings returns a metaquery.Builder over MetaListAllReadings, pre-bound with typed arguments.
+func WrapListAllReadings() *metaquery.Builder {
+	return metaquery.Wrap(&MetaListAllReadings)
+}
+
+// ListAllReadingsCols gives typed, name-safe access to ListAllReadings's output columns.
+var ListAllReadingsCols = struct {
+	ID           metaquery.IntCol
+	SourceSha256 metaquery.TextCol
+	SourcePath   metaquery.TextCol
+	DocPath      metaquery.TextCol
+	Method       metaquery.TextCol
+	Level        metaquery.TextCol
+	ProducedBy   metaquery.TextCol
+	RuledBy      metaquery.TextCol
+	At           metaquery.IntCol
+}{
+	ID:           metaquery.NewIntCol("id"),
+	SourceSha256: metaquery.NewTextCol("source_sha256"),
+	SourcePath:   metaquery.NewTextCol("source_path"),
+	DocPath:      metaquery.NewTextCol("doc_path"),
+	Method:       metaquery.NewTextCol("method"),
+	Level:        metaquery.NewTextCol("level"),
+	ProducedBy:   metaquery.NewTextCol("produced_by"),
+	RuledBy:      metaquery.NewTextCol("ruled_by"),
+	At:           metaquery.NewIntCol("at"),
 }
 
 var MetaListDocumentPaths = metaquery.Query{
@@ -1161,6 +1264,61 @@ var ListOcrPagesByDocCols = struct {
 	ImagePath: metaquery.NewTextCol("image_path"),
 }
 
+var MetaListReadingsOfSource = metaquery.Query{
+	Name:    "ListReadingsOfSource",
+	Cmd:     ":many",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id`,
+	Columns: []metaquery.Column{
+		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+		{Name: "source_sha256", OriginalName: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "source_path", OriginalName: "source_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "doc_path", OriginalName: "doc_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "method", OriginalName: "method", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "level", OriginalName: "level", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "produced_by", OriginalName: "produced_by", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "ruled_by", OriginalName: "ruled_by", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "at", OriginalName: "at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WARNING: ListReadingsOfSource ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapListReadingsOfSource returns a metaquery.Builder over MetaListReadingsOfSource, pre-bound with typed arguments.
+func WrapListReadingsOfSource(sourceSha256 string) *metaquery.Builder {
+	return metaquery.Wrap(&MetaListReadingsOfSource, sourceSha256)
+}
+
+// ListReadingsOfSourceCols gives typed, name-safe access to ListReadingsOfSource's output columns.
+var ListReadingsOfSourceCols = struct {
+	ID           metaquery.IntCol
+	SourceSha256 metaquery.TextCol
+	SourcePath   metaquery.TextCol
+	DocPath      metaquery.TextCol
+	Method       metaquery.TextCol
+	Level        metaquery.TextCol
+	ProducedBy   metaquery.TextCol
+	RuledBy      metaquery.TextCol
+	At           metaquery.IntCol
+}{
+	ID:           metaquery.NewIntCol("id"),
+	SourceSha256: metaquery.NewTextCol("source_sha256"),
+	SourcePath:   metaquery.NewTextCol("source_path"),
+	DocPath:      metaquery.NewTextCol("doc_path"),
+	Method:       metaquery.NewTextCol("method"),
+	Level:        metaquery.NewTextCol("level"),
+	ProducedBy:   metaquery.NewTextCol("produced_by"),
+	RuledBy:      metaquery.NewTextCol("ruled_by"),
+	At:           metaquery.NewIntCol("at"),
+}
+
 var MetaListRunningJobOwners = metaquery.Query{
 	Name:    "ListRunningJobOwners",
 	Cmd:     ":many",
@@ -1476,4 +1634,33 @@ ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=exclu
 // WrapUpsertOcrPage returns a metaquery.Builder over MetaUpsertOcrPage, pre-bound with typed arguments.
 func WrapUpsertOcrPage(arg UpsertOcrPageParams) *metaquery.Builder {
 	return metaquery.Wrap(&MetaUpsertOcrPage, arg.DocID, arg.Page, arg.Engine, arg.ImagePath)
+}
+
+var MetaUpsertReading = metaquery.Query{
+	Name:    "UpsertReading",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at)
+VALUES(?,?,?,?,?,?,?,?)
+ON CONFLICT(doc_path) DO UPDATE SET
+  source_sha256=excluded.source_sha256, source_path=excluded.source_path,
+  method=excluded.method, level=excluded.level, produced_by=excluded.produced_by,
+  ruled_by=excluded.ruled_by, at=excluded.at`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "source_path", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 3, Name: "doc_path", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 4, Name: "method", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 5, Name: "level", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 6, Name: "produced_by", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 7, Name: "ruled_by", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 8, Name: "at", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+	Table: &metaquery.Table{Name: "readings"},
+}
+
+// WrapUpsertReading returns a metaquery.Builder over MetaUpsertReading, pre-bound with typed arguments.
+func WrapUpsertReading(arg UpsertReadingParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaUpsertReading, arg.SourceSha256, arg.SourcePath, arg.DocPath, arg.Method, arg.Level, arg.ProducedBy, arg.RuledBy, arg.At)
 }

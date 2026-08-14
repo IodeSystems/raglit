@@ -435,3 +435,51 @@ CREATE TABLE IF NOT EXISTS document_notes (
   created_at TEXT NOT NULL DEFAULT ''     -- RFC3339
 );
 CREATE INDEX IF NOT EXISTS document_notes_doc ON document_notes(doc_id, page, id);
+
+-- ===== readings: what a document IS a reading OF =====
+--
+-- A source can be read more than once, and the readings are not equal. A hearing
+-- recording has a machine transcript from oidio and, later, one whose speaker
+-- attribution a person ruled on; a scanned sheet has a whole-page read and a
+-- region descent; a bundle of SMS screenshots has the frames and the compiled
+-- PDF. Before this the index held them as unrelated documents, so the same
+-- 40,000-character hearing appeared twice in search and nothing said which one
+-- could be quoted.
+--
+-- Keyed on the SOURCE'S CONTENT, not its path, which is attest's rule and the
+-- right one: "a re-encoded recording or a re-scanned page is a different asset
+-- wearing the same filename, and verdicts recorded against the old one do not
+-- transfer."
+--
+-- A TABLE rather than columns on documents, because the number of readings is
+-- open-ended -- a re-read, a correction, a second model, a region descent -- and
+-- a fixed set of columns would have to be widened every time somebody read a
+-- source a new way.
+--
+-- What is NOT here: which reading is authoritative. That is a ruling, it cannot
+-- be recomputed from the corpus, and it lives with the other rulings beside the
+-- documents (judgements.go) rather than in this index, which is derived and
+-- thrown away by a reindex.
+CREATE TABLE IF NOT EXISTS readings (
+  id            INTEGER PRIMARY KEY,
+  -- The asset this reads. sha256 of the SOURCE bytes; empty when the producer
+  -- could not say, which is a fact worth storing rather than a row worth
+  -- refusing -- see oidio's diarized.json, which names no media at all.
+  source_sha256 TEXT NOT NULL DEFAULT '',
+  -- Where the source was when this reading was made. For display and for
+  -- re-deriving the digest; never for identity.
+  source_path   TEXT NOT NULL DEFAULT '',
+  -- The document holding this reading's text.
+  doc_path      TEXT NOT NULL,
+  -- How the text was produced: oidio-asr | vision-ocr | text-layer | region |
+  -- pandoc | email-mime | compiled | verbatim.
+  method        TEXT NOT NULL DEFAULT '',
+  -- machine | adapted | attested. What a reader may do with it.
+  level         TEXT NOT NULL DEFAULT 'machine',
+  -- The model or tool, and who ruled on it when a person did.
+  produced_by   TEXT NOT NULL DEFAULT '',
+  ruled_by      TEXT NOT NULL DEFAULT '',
+  at            INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(doc_path)
+);
+CREATE INDEX IF NOT EXISTS readings_source ON readings(source_sha256);

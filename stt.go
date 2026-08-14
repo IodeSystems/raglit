@@ -325,6 +325,18 @@ func (w *Worker) ingestAudio(ctx context.Context, job *Job, f Fetched, title str
 	// The digest is over the RECORDING's bytes, which is what attest's Asset
 	// means by one: every guarantee a reading makes is about pieces of that byte
 	// sequence, so a re-encode is a different asset and must not silently match.
+	// What this document is a reading OF, recorded before the reading is written.
+	//
+	// The digest is the recording's, which is the only durable handle: the
+	// verified transcript a person produces later is a DIFFERENT document reading
+	// the SAME asset, and this is what lets the two find each other instead of
+	// sitting in the index as two unrelated 40,000-character hearings.
+	if rerr := w.Store.RecordReading(Reading{
+		SourceSHA256: sha256hex(f.Data), SourcePath: corpus, DocPath: job.URL,
+		Method: MethodASR, Level: ReadingMachine, ProducedBy: producer,
+	}); rerr != nil {
+		sl.Fail("reading", "index", rerr)
+	}
 	if rd, rerr := STTReading(corpus, sha256hex(f.Data), producer, res); rerr != nil {
 		sl.Fail("reading", "attest", rerr)
 	} else if dir := w.Store.TranscriptDirFor(corpus); dir == "" {

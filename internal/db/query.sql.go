@@ -354,6 +354,28 @@ func (q *Queries) GetPageImagePath(ctx context.Context, arg GetPageImagePathPara
 	return image_path, err
 }
 
+const getReadingForDoc = `-- name: GetReadingForDoc :one
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+FROM readings WHERE doc_path = ?
+`
+
+func (q *Queries) GetReadingForDoc(ctx context.Context, docPath string) (Reading, error) {
+	row := q.db.QueryRowContext(ctx, getReadingForDoc, docPath)
+	var i Reading
+	err := row.Scan(
+		&i.ID,
+		&i.SourceSha256,
+		&i.SourcePath,
+		&i.DocPath,
+		&i.Method,
+		&i.Level,
+		&i.ProducedBy,
+		&i.RuledBy,
+		&i.At,
+	)
+	return i, err
+}
+
 const insertFragment = `-- name: InsertFragment :one
 INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans, origin)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
@@ -585,6 +607,44 @@ func (q *Queries) ListActiveJobs(ctx context.Context) ([]ListActiveJobsRow, erro
 	for rows.Next() {
 		var i ListActiveJobsRow
 		if err := rows.Scan(&i.ID, &i.Url, &i.State); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllReadings = `-- name: ListAllReadings :many
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+FROM readings ORDER BY source_sha256, at, id
+`
+
+func (q *Queries) ListAllReadings(ctx context.Context) ([]Reading, error) {
+	rows, err := q.db.QueryContext(ctx, listAllReadings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Reading
+	for rows.Next() {
+		var i Reading
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceSha256,
+			&i.SourcePath,
+			&i.DocPath,
+			&i.Method,
+			&i.Level,
+			&i.ProducedBy,
+			&i.RuledBy,
+			&i.At,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -964,6 +1024,44 @@ func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcr
 	return items, nil
 }
 
+const listReadingsOfSource = `-- name: ListReadingsOfSource :many
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id
+`
+
+func (q *Queries) ListReadingsOfSource(ctx context.Context, sourceSha256 string) ([]Reading, error) {
+	rows, err := q.db.QueryContext(ctx, listReadingsOfSource, sourceSha256)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Reading
+	for rows.Next() {
+		var i Reading
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceSha256,
+			&i.SourcePath,
+			&i.DocPath,
+			&i.Method,
+			&i.Level,
+			&i.ProducedBy,
+			&i.RuledBy,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunningJobOwners = `-- name: ListRunningJobOwners :many
 SELECT id, url, owner_pid, started_at FROM ingest_jobs WHERE state='running'
 `
@@ -1276,6 +1374,41 @@ func (q *Queries) UpsertOcrPage(ctx context.Context, arg UpsertOcrPageParams) er
 		arg.Page,
 		arg.Engine,
 		arg.ImagePath,
+	)
+	return err
+}
+
+const upsertReading = `-- name: UpsertReading :exec
+INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at)
+VALUES(?,?,?,?,?,?,?,?)
+ON CONFLICT(doc_path) DO UPDATE SET
+  source_sha256=excluded.source_sha256, source_path=excluded.source_path,
+  method=excluded.method, level=excluded.level, produced_by=excluded.produced_by,
+  ruled_by=excluded.ruled_by, at=excluded.at
+`
+
+type UpsertReadingParams struct {
+	SourceSha256 string `db:"source_sha256" derived:"readings.source_sha256" json:"source_sha256"`
+	SourcePath   string `db:"source_path" derived:"readings.source_path" json:"source_path"`
+	DocPath      string `db:"doc_path" derived:"readings.doc_path" json:"doc_path"`
+	Method       string `db:"method" derived:"readings.method" json:"method"`
+	Level        string `db:"level" derived:"readings.level" json:"level"`
+	ProducedBy   string `db:"produced_by" derived:"readings.produced_by" json:"produced_by"`
+	RuledBy      string `db:"ruled_by" derived:"readings.ruled_by" json:"ruled_by"`
+	At           int64  `db:"at" derived:"readings.at" json:"at"`
+}
+
+// ===== readings =====
+func (q *Queries) UpsertReading(ctx context.Context, arg UpsertReadingParams) error {
+	_, err := q.db.ExecContext(ctx, upsertReading,
+		arg.SourceSha256,
+		arg.SourcePath,
+		arg.DocPath,
+		arg.Method,
+		arg.Level,
+		arg.ProducedBy,
+		arg.RuledBy,
+		arg.At,
 	)
 	return err
 }

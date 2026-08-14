@@ -167,6 +167,18 @@ type PageReading struct {
 	Active int64  `db:"active" derived:"page_readings.active" json:"active"`
 }
 
+type Reading struct {
+	ID           int64  `db:"id" derived:"readings.id" json:"id"`
+	SourceSha256 string `db:"source_sha256" derived:"readings.source_sha256" json:"source_sha256"`
+	SourcePath   string `db:"source_path" derived:"readings.source_path" json:"source_path"`
+	DocPath      string `db:"doc_path" derived:"readings.doc_path" json:"doc_path"`
+	Method       string `db:"method" derived:"readings.method" json:"method"`
+	Level        string `db:"level" derived:"readings.level" json:"level"`
+	ProducedBy   string `db:"produced_by" derived:"readings.produced_by" json:"produced_by"`
+	RuledBy      string `db:"ruled_by" derived:"readings.ruled_by" json:"ruled_by"`
+	At           int64  `db:"at" derived:"readings.at" json:"at"`
+}
+
 type ShingleIndex struct {
 	Hash  int64 `db:"hash" derived:"shingle_index.hash" json:"hash"`
 	DocID int64 `db:"doc_id" derived:"shingle_index.doc_id" json:"doc_id"`
