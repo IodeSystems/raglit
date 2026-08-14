@@ -177,3 +177,81 @@ func levelRank(level string) int {
 	}
 	return 0
 }
+
+// AuthoritativeReading picks the reading of a source that governs.
+//
+// A person's ruling first, always. Levels only order what nobody has ruled on:
+// attested over adapted over machine, and the NEWEST wins a tie, because a
+// second reading at the same level is a re-read and a re-read supersedes.
+//
+// The ruling is looked up through `ruled`, which the caller supplies from the
+// judgement trail — this package must not open it, because the trail lives
+// beside the documents and the index does not know where that is.
+func AuthoritativeReading(rs []Reading, ruled func(source string) (string, bool)) (Reading, bool) {
+	if len(rs) == 0 {
+		return Reading{}, false
+	}
+	if ruled != nil {
+		if doc, ok := ruled(rs[0].SourceSHA256); ok {
+			for _, r := range rs {
+				if r.DocPath == doc {
+					return r, true
+				}
+			}
+			// A ruling naming a reading that is no longer here is not an error and
+			// not a reason to return nothing: the reading may be re-ingested. Fall
+			// through to the default order rather than reporting no answer.
+		}
+	}
+	best := rs[0]
+	for _, r := range rs[1:] {
+		br, rr := levelRank(best.Level), levelRank(r.Level)
+		if rr > br || (rr == br && r.At > best.At) {
+			best = r
+		}
+	}
+	return best, true
+}
+
+// CollapseToAuthoritative drops hits that are readings of a source some OTHER
+// hit reads better, keeping rank order.
+//
+// Search ranks fragments, and two readings of one recording are two sets of
+// fragments saying nearly the same thing — so a 44-minute hearing came back
+// twice, once as a verified transcript with people's names and once as machine
+// output with speaker-1 and speaker-6. Both are real; only one should be the
+// answer, and it must not be decided by which happened to score higher.
+//
+// Documents with no reading recorded are untouched. That is most of a corpus,
+// and a hit is never removed for want of a row nothing wrote.
+func CollapseToAuthoritative(hits []Hit, readingOf func(doc string) (Reading, bool),
+	readingsOf func(source string) []Reading, governs func(source string) (string, bool)) []Hit {
+	if readingOf == nil || readingsOf == nil {
+		return hits
+	}
+	// Which document wins for each source, decided ONCE per source and decided
+	// from every reading of it — not from whichever hit arrived first. Ranking
+	// must not choose: an unverified transcript that happens to score higher is
+	// precisely the case this exists to stop.
+	winner := map[string]string{}
+	out := make([]Hit, 0, len(hits))
+	for _, h := range hits {
+		r, ok := readingOf(h.Path)
+		if !ok || r.SourceSHA256 == "" {
+			out = append(out, h)
+			continue
+		}
+		w, seen := winner[r.SourceSHA256]
+		if !seen {
+			w = h.Path
+			if best, found := AuthoritativeReading(readingsOf(r.SourceSHA256), governs); found {
+				w = best.DocPath
+			}
+			winner[r.SourceSHA256] = w
+		}
+		if h.Path == w {
+			out = append(out, h)
+		}
+	}
+	return out
+}

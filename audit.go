@@ -46,6 +46,8 @@ func AuditPath(projectDir string) string {
 // file that outlives any refactor, and a rename must not orphan history.
 const (
 	OpRelationPut = "relation.put"
+	// OpAuthorityPut — a person ruled which reading of a source governs.
+	OpAuthorityPut = "authority.put"
 	OpSlicePut    = "slice.put"
 	OpSliceDelete = "slice.delete"
 	OpPageCorrect = "page.correct"
@@ -69,6 +71,32 @@ type AuditEvent struct {
 	Withdrawal *Withdrawal     `json:"withdrawal,omitempty"`
 	// RestorePath names the document a doc.restore returns to the corpus.
 	RestorePath string `json:"restore_path,omitempty"`
+	// Authority names the reading a person ruled governs for a source. See
+	// ReadingAuthority — it is a ruling, so it lives in the trail rather than in
+	// the index, which is derived and thrown away by a reindex.
+	Authority *ReadingAuthority `json:"authority,omitempty"`
+}
+
+// ReadingAuthority is a person's ruling that one reading of a source governs.
+//
+// The corpus holds several accounts of one thing — a machine transcript and a
+// verified one, a whole-page read and a region descent — and which of them may
+// be quoted is not something the corpus can compute. Levels give a default
+// order (attested over adapted over machine); this overrides it, because a
+// person may know that the older attested reading is the one to cite, or that a
+// machine reading of a re-scan beats a verified reading of a bad scan.
+type ReadingAuthority struct {
+	// Source is the sha256 of the asset both readings read. The ruling is about
+	// a SOURCE, not a pair, so a third reading arriving later does not need a
+	// second ruling to be ordered against the first two.
+	Source string `json:"source"`
+	// Doc is the document holding the reading that governs.
+	Doc string `json:"doc"`
+	// Why is the grounds. A ruling without them is a preference nobody can check
+	// later, which is the thing every other ruling here refuses to be.
+	Why string `json:"why,omitempty"`
+	By  string `json:"by,omitempty"`
+	At  string `json:"at,omitempty"`
 }
 
 // Withdrawal is a document ruled OUT of the corpus, and why.

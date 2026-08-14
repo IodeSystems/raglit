@@ -306,6 +306,19 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	// Process fresh, then remember it (per-index hash + shared pool).
 	n, mode, ierr := w.extractAndIngestAs(ctx, job, f, kind, title, sl)
 	if ierr == nil {
+		// What this ingest READ, recorded so a later account of the same bytes
+		// can find it (readings.go).
+		//
+		// The audio path records its own, because it knows the structure it
+		// produced. Everything else is registered here, at the one point that
+		// holds the source digest and the routing decision together — and the
+		// digest is the whole value: a corrected transcription of this document,
+		// or a region descent over the same sheet, is a reading of the SAME
+		// bytes, and that is what lets the two be compared instead of sitting in
+		// the index as unrelated documents.
+		if kind != KindAudio {
+			w.recordIngestReading(job.URL, hash, kind, mode, sl)
+		}
 		_ = w.Store.SetDocumentHash(job.URL, hash)
 		if w.Pool != nil && w.RecipeHash != "" {
 			if doc, e := w.Store.ExportDoc(job.URL); e == nil {
@@ -582,4 +595,43 @@ func writeTemp(data []byte, ext string) (path string, cleanup func(), err error)
 	}
 	f.Close()
 	return f.Name(), func() { os.Remove(f.Name()) }, nil
+}
+
+
+// recordIngestReading registers what an ordinary (non-audio) ingest read.
+//
+// A document is its OWN source here — the bytes fetched are the asset — so the
+// degenerate case is the common one and it is still worth recording: the row is
+// what a second reading of those bytes joins on.
+//
+// Best-effort. A reading that could not be registered must not fail an ingest
+// that produced a good document; the stage says so rather than the failure being
+// inferred from a missing row later.
+func (w *Worker) recordIngestReading(docPath, hash string, kind DocKind, mode string, sl *StageLog) {
+	method := MethodVerbatim
+	switch kind {
+	case KindPDF, KindImage:
+		method = MethodVision
+	case KindOffice, KindSpreadsheet:
+		method = MethodPandoc
+	case KindEmail:
+		method = MethodEmail
+	}
+	// mode reports what the fragmenter did, and two of its values say the text
+	// did not come from a model at all — worth keeping, because "read by a VLM"
+	// and "lifted from a text layer" are different claims about the same file.
+	if mode == "text-overlap" && (kind == KindPDF || kind == KindImage) {
+		method = MethodTextLayer
+	}
+	txt, terr := w.Store.DocText(docPath, 0, 0, 0)
+	text := ""
+	if terr == nil {
+		text = txt.Text
+	}
+	if err := w.Store.RecordReading(Reading{
+		SourceSHA256: hash, SourcePath: docPath, DocPath: docPath,
+		Method: method, Level: ReadingMachine, Text: text,
+	}); err != nil {
+		sl.Fail("reading", "index", err)
+	}
 }

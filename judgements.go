@@ -34,6 +34,7 @@ type JudgementStore struct {
 	marks       map[string]Mark           // by normalized pair key
 	slices      map[string]Slice          // by id
 	corrections map[string]PageCorrection // by doc\x00page
+	authority   map[string]ReadingAuthority // by source sha256
 	withdrawn   map[string]Withdrawal     // by path
 	history     map[string][]AuditEvent   // by subject, in order
 
@@ -60,6 +61,7 @@ func OpenJudgements(auditPath string) (*JudgementStore, error) {
 		marks:       map[string]Mark{},
 		slices:      map[string]Slice{},
 		corrections: map[string]PageCorrection{},
+		authority:   map[string]ReadingAuthority{},
 		withdrawn:   map[string]Withdrawal{},
 		history:     map[string][]AuditEvent{},
 	}
@@ -96,6 +98,18 @@ func correctionKey(doc string, page int) string { return fmt.Sprintf("%s\x00%d",
 // so a fresh read and a live write cannot diverge.
 func (s *JudgementStore) apply(ev AuditEvent) error {
 	switch ev.Op {
+	case OpAuthorityPut:
+		if ev.Authority == nil {
+			return fmt.Errorf("authority.put with no authority")
+		}
+		a := *ev.Authority
+		if a.At == "" {
+			a.At = ev.At
+		}
+		if a.By == "" {
+			a.By = ev.By
+		}
+		s.authority[a.Source] = a
 	case OpRelationPut:
 		if ev.Relation == nil {
 			return fmt.Errorf("relation.put with no relation")
@@ -187,6 +201,35 @@ func (s *JudgementStore) PutRelation(m Mark) error {
 	}
 	m = m.Normalize()
 	return s.record(AuditEvent{Op: OpRelationPut, By: m.By, Relation: &m})
+}
+
+// PutAuthority records which reading of a source governs.
+//
+// Keyed on the SOURCE, not on a pair: a third reading arriving later is ordered
+// against the others by this one ruling rather than needing a new one for every
+// combination. Re-ruling replaces — a person changing their mind is one fact,
+// and the trail keeps both.
+func (s *JudgementStore) PutAuthority(a ReadingAuthority) error {
+	if a.Source == "" || a.Doc == "" {
+		return fmt.Errorf("raglit: an authority ruling needs a source and the reading that governs it")
+	}
+	return s.record(AuditEvent{Op: OpAuthorityPut, By: a.By, Authority: &a})
+}
+
+// Authority returns the ruling for a source, if a person has made one.
+func (s *JudgementStore) Authority(source string) (ReadingAuthority, bool) {
+	a, ok := s.authority[source]
+	return a, ok
+}
+
+// Authorities returns every authority ruling.
+func (s *JudgementStore) Authorities() []ReadingAuthority {
+	out := make([]ReadingAuthority, 0, len(s.authority))
+	for _, a := range s.authority {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Source < out[j].Source })
+	return out
 }
 
 // Relation returns the ruling on a pair, in either order.
