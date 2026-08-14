@@ -84,6 +84,35 @@ func (s *Store) SearchPath(query, pathPrefix string, limit int) ([]Hit, error) {
 	return s.collapseReadings(hits, limit), nil
 }
 
+// indexedReadingsOf is the readings of a source that a search could actually
+// return — those whose document is in the index.
+//
+// A reading with no document cannot answer anything, so letting one govern
+// removes the source from the corpus: the recording's hit is dropped in favour
+// of a transcript that is not there. That is the "absent and quiet" failure in
+// its purest form, and it is why adoption MOVES the words into the source's
+// document rather than merely recording where better words live.
+func (s *Store) indexedReadingsOf(src string) []Reading {
+	all, err := s.ReadingsOfSource(src)
+	if err != nil {
+		return nil
+	}
+	out := make([]Reading, 0, len(all))
+	for _, r := range all {
+		if h, err := s.DocumentHash(r.DocPath); err == nil && h != "" {
+			out = append(out, r)
+			continue
+		}
+		// DocumentHash is empty for a document that exists but was never hashed,
+		// so fall back to asking whether the row is there at all.
+		var n int
+		if s.db.QueryRow(`SELECT COUNT(*) FROM documents WHERE path = ?`, r.DocPath).Scan(&n) == nil && n > 0 {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // collapseReadings keeps one hit per SOURCE — the reading that governs — and
 // then truncates to the caller's limit.
 //
@@ -93,7 +122,7 @@ func (s *Store) SearchPath(query, pathPrefix string, limit int) ([]Hit, error) {
 func (s *Store) collapseReadings(hits []Hit, limit int) []Hit {
 	hits = CollapseToAuthoritative(hits,
 		func(doc string) (Reading, bool) { r, ok, _ := s.ReadingFor(doc); return r, ok },
-		func(src string) []Reading { rs, _ := s.ReadingsOfSource(src); return rs },
+		func(src string) []Reading { return s.indexedReadingsOf(src) },
 		s.authority)
 	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]

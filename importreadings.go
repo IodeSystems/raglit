@@ -1,7 +1,10 @@
 package raglit
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -54,45 +57,72 @@ type TranscriptMatch struct {
 	Why string `json:"why,omitempty"`
 }
 
-// ImportVerifiedTranscripts finds documents that are verified transcripts of
-// recordings already indexed, and records them as ATTESTED readings of the same
-// source — so search collapses to one, and the one it keeps is the transcript a
-// person ruled on.
+// ImportVerifiedTranscripts finds verified transcripts ON DISK and records them
+// as ATTESTED readings of the recordings they transcribe — so search collapses
+// to one, and the one it keeps is the transcript a person ruled on.
+//
+// From DISK, not from the index, and that ordering is the point. A transcript
+// beside a recording should not be a document at all: it is a reading, and once
+// the corpus stops indexing these sidecars there is nothing in the index to walk.
+// An importer that could only see what was already indexed would stop working
+// the moment its job was done.
+//
+// Candidates come from the READINGS, not from the documents: a recording with a
+// machine reading is the only thing a transcript can be adopted onto, and the
+// digest to join on lives there. Transcripts are looked for in the directories
+// those recordings came from, which is where every producer puts them.
 //
 // dryRun reports the matches and records nothing.
 func (s *Store) ImportVerifiedTranscripts(dryRun bool, ruledBy string) ([]TranscriptMatch, error) {
-	docs, err := s.Documents()
+	all, err := s.q.ListAllReadings(context.Background())
 	if err != nil {
 		return nil, err
 	}
-
-	// The candidates: readings of a recording. Only a document that already has
-	// a reading row can be a target, because the source digest is the thing
-	// being joined on and nothing else knows it.
 	type candidate struct {
 		reading Reading
 		words   map[string]bool
 	}
 	var cands []candidate
-	var transcripts []string
-	for _, d := range docs {
-		r, ok, _ := s.ReadingFor(d.Path)
-		switch {
-		case ok && r.Method == MethodASR && r.SourceSHA256 != "":
-			cands = append(cands, candidate{reading: r, words: wordSet(r.Text)})
-		case !ok && isVerifiedTranscript(d.Path):
-			transcripts = append(transcripts, d.Path)
+	adopted := map[string]bool{}
+	dirs := map[string]bool{}
+	for _, row := range all {
+		r := readingFrom(row)
+		adopted[r.DocPath] = true
+		if r.Method != MethodASR || r.SourceSHA256 == "" || r.Level != ReadingMachine {
+			continue
+		}
+		cands = append(cands, candidate{reading: r, words: wordSet(r.Text)})
+		if d := filepath.Dir(strings.TrimPrefix(r.SourcePath, "file://")); d != "." {
+			dirs[d] = true
 		}
 	}
-	sort.Strings(transcripts)
 
-	var out []TranscriptMatch
-	for _, tp := range transcripts {
-		txt, err := s.DocText(tp, 0, 0, 0)
+	var files []string
+	for d := range dirs {
+		ents, err := os.ReadDir(d)
 		if err != nil {
 			continue
 		}
-		tw := wordSet(txt.Text)
+		for _, e := range ents {
+			if e.IsDir() {
+				continue
+			}
+			p := filepath.Join(d, e.Name())
+			if isVerifiedTranscript(p) && !adopted[p] {
+				files = append(files, p)
+			}
+		}
+	}
+	sort.Strings(files)
+
+	var out []TranscriptMatch
+	for _, tp := range files {
+		b, err := os.ReadFile(tp)
+		if err != nil {
+			out = append(out, TranscriptMatch{Transcript: tp, Why: err.Error()})
+			continue
+		}
+		tw := wordSet(string(b))
 		m := TranscriptMatch{Transcript: tp}
 		if len(cands) == 0 {
 			m.Why = "no recording in this index carries a machine reading to compare against"
@@ -113,9 +143,23 @@ func (s *Store) ImportVerifiedTranscripts(dryRun bool, ruledBy string) ([]Transc
 		if !dryRun {
 			if err := s.RecordReading(Reading{
 				SourceSHA256: m.Source, SourcePath: m.Recording, DocPath: tp,
-				Method: MethodASR, Level: ReadingAttested, RuledBy: ruledBy, Text: txt.Text,
+				Method: MethodASR, Level: ReadingAttested, RuledBy: ruledBy, Text: string(b),
 			}); err != nil {
 				m.Why = err.Error()
+				out = append(out, m)
+				continue
+			}
+			// The SOURCE's document now holds the governing reading's words.
+			//
+			// This is what adopting means. A transcript that is not indexed cannot
+			// answer a search, so recording it and stopping would take the hearing
+			// out of the corpus entirely — the reading would govern and nothing
+			// would be there to return. One document per source, carrying the best
+			// account of it, is the whole shape: the recording stays the thing you
+			// cite, and its text is now the one a person ruled on rather than the
+			// machine's speaker-1.
+			if err := s.reindexFromReading(m.Recording, string(b)); err != nil {
+				m.Why = "adopted, but the recording could not be re-indexed: " + err.Error()
 			}
 		}
 		out = append(out, m)
@@ -166,4 +210,20 @@ func containment(a, b map[string]bool) float64 {
 		}
 	}
 	return float64(n) / float64(len(a))
+}
+
+
+// reindexFromReading replaces a document's text with a reading's, keeping the
+// document's identity — its path, and everything keyed to it.
+func (s *Store) reindexFromReading(docPath, text string) error {
+	title := filepath.Base(strings.TrimPrefix(docPath, "file://"))
+	w, st, fl := ResolveFragParams(0, 0, 0, 0)
+	var frags []Fragment
+	for _, of := range OverlapFragments(text, w, st, fl) {
+		frags = append(frags, Fragment{Text: of.Text})
+	}
+	if len(frags) == 0 {
+		frags = []Fragment{{Text: text}}
+	}
+	return s.Ingest(context.Background(), Document{Path: docPath, Title: title, Fragments: frags})
 }
