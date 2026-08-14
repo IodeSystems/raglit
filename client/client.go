@@ -138,6 +138,68 @@ type Hit struct {
 	Snippet string  `json:"snippet,omitempty"`
 }
 
+// Documents lists what an index holds. Path is raglit's absolute doc id.
+//
+// One call instead of one per document: a consumer asking "does this have
+// readable text" for a whole corpus was otherwise a round trip per file, which
+// turns a backlog listing into a network storm.
+func (c *Client) Documents(ctx context.Context, index string) ([]Doc, error) {
+	v := url.Values{}
+	if index != "" {
+		v.Set("index", index)
+	}
+	var out struct {
+		Documents []Doc `json:"documents"`
+	}
+	if err := c.get(ctx, "/api/find-documents", v, &out); err != nil {
+		return nil, err
+	}
+	return out.Documents, nil
+}
+
+// Page is one page of a document, as raglit read it.
+type Page struct {
+	Page int    `json:"page"`
+	Text string `json:"text"`
+}
+
+// Doc is a document's text as raglit holds it, per page and whole.
+type Doc struct {
+	Index string `json:"index"`
+	Path  string `json:"path"`
+	Title string `json:"title,omitempty"`
+	Pages []Page `json:"pages,omitempty"`
+	Text  string `json:"text,omitempty"`
+	// Truncated reports that Text is not the whole document. A consumer checking
+	// whether a quotation appears MUST NOT read a miss as absence when this is
+	// set: the passage may be in the part that was cut.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// Document returns one document's text, per page where raglit knows the pages.
+//
+// PAGES, not fragments. A fragment may span a page boundary and carries a single
+// page number, so a hit inside one cannot be resolved to the page it is on — a
+// page number right for the start of a fragment and wrong for the rest is worse
+// than none, because a reader turns confidently to the wrong page. This returns
+// the per-page text raglit produced at ingest.
+//
+// An unreachable daemon is an error, for the reason on Search.
+func (c *Client) Document(ctx context.Context, index, path string) (Doc, error) {
+	var out Doc
+	if strings.TrimSpace(path) == "" {
+		return out, nil
+	}
+	v := url.Values{"path": {path}}
+	if index != "" {
+		v.Set("index", index)
+	}
+	if err := c.get(ctx, "/api/get-document", v, &out); err != nil {
+		return Doc{}, err
+	}
+	return out, nil
+}
+
 // Search runs one query against a named index and returns the best n fragments.
 //
 // index is raglit's full index name, which for a project-scoped index is
