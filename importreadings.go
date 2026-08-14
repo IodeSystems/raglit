@@ -87,7 +87,14 @@ func (s *Store) ImportVerifiedTranscripts(dryRun bool, ruledBy string) ([]Transc
 	dirs := map[string]bool{}
 	for _, row := range all {
 		r := readingFrom(row)
-		adopted[r.DocPath] = true
+		// Already ADOPTED means already an attested reading of something. A
+		// transcript that merely has a reading of ITSELF is not adopted — that row
+		// says only "this was ingested as a document", which is the state adoption
+		// exists to correct, and treating it as done silently skipped the one
+		// hearing that most needed adopting.
+		if r.Level == ReadingAttested {
+			adopted[r.DocPath] = true
+		}
 		if r.Method != MethodASR || r.SourceSHA256 == "" || r.Level != ReadingMachine {
 			continue
 		}

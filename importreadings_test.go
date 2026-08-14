@@ -134,3 +134,37 @@ func TestImportVerifiedTranscripts_DryRunChangesNothing(t *testing.T) {
 		t.Fatal("a dry run recorded a reading")
 	}
 }
+
+// A transcript that was indexed as an ordinary document has a reading OF ITSELF
+// — the worker records one for every ingest. That is not adoption, and treating
+// it as such skipped the one hearing that most needed adopting.
+func TestImportVerifiedTranscripts_ASelfReadingDoesNotBlockAdoption(t *testing.T) {
+	s := testStore(t)
+	dir := t.TempDir()
+	const machine = "speaker-1 the petition for protection order is denied and dismissed without prejudice today"
+	rec := seedRecording(t, s, dir, "h23-65.mp4", "sha-6565", machine)
+	tp := writeTranscript(t, dir, "h23-65.verified.md",
+		"Clerk the petition for protection order is denied and dismissed without prejudice today")
+
+	// Exactly what the worker leaves behind when the transcript is indexed as a
+	// document in its own right.
+	must(t, s.RecordReading(Reading{
+		SourceSHA256: "sha-of-the-md-itself", SourcePath: tp, DocPath: tp,
+		Method: MethodVerbatim, Level: ReadingMachine,
+	}))
+
+	got, err := s.ImportVerifiedTranscripts(false, "carl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Why != "" {
+		t.Fatalf("a self-reading blocked adoption: %+v", got)
+	}
+	if got[0].Recording != rec {
+		t.Fatalf("adopted onto %q, want the recording", got[0].Recording)
+	}
+	r, _, _ := s.ReadingFor(tp)
+	if r.Level != ReadingAttested || r.SourceSHA256 != "sha-6565" {
+		t.Fatalf("the self-reading was not replaced: %+v", r)
+	}
+}
