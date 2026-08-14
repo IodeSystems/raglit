@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -121,6 +122,50 @@ type Slice struct {
 	Note   string `json:"note,omitempty"`
 	By     string `json:"by,omitempty"`
 	At     string `json:"at,omitempty"`
+}
+
+// Hit is one search result: a fragment of a document raglit holds.
+//
+// Doc is raglit's own document id, which is an ABSOLUTE path — a consumer whose
+// own document paths are relative has to relativize it, and comparing the two
+// unnormalized matches nothing while looking exactly like "found nothing".
+type Hit struct {
+	Index   string  `json:"index"`
+	Doc     string  `json:"doc_id"`
+	Title   string  `json:"title,omitempty"`
+	Page    int     `json:"page,omitempty"`
+	Score   float64 `json:"score"`
+	Snippet string  `json:"snippet,omitempty"`
+}
+
+// Search runs one query against a named index and returns the best n fragments.
+//
+// index is raglit's full index name, which for a project-scoped index is
+// "<project>__<index>" — the daemon namespaces them, and passing a bare project
+// name silently searches somebody else's corpus.
+//
+// An unreachable daemon is an ERROR, never an empty result. A consumer deciding
+// whether a corpus holds a document cannot be handed "no" when the truth is "not
+// asked": that is the one answer that stops a person looking for evidence that
+// is actually there.
+func (c *Client) Search(ctx context.Context, index, q string, n int) ([]Hit, error) {
+	if strings.TrimSpace(q) == "" {
+		return nil, nil
+	}
+	if n <= 0 {
+		n = 10
+	}
+	v := url.Values{"q": {q}, "n": {strconv.Itoa(n)}}
+	if index != "" {
+		v.Set("index", index)
+	}
+	var out struct {
+		Hits []Hit `json:"hits"`
+	}
+	if err := c.get(ctx, "/search", v, &out); err != nil {
+		return nil, err
+	}
+	return out.Hits, nil
 }
 
 // Alive reports whether the daemon answers.
