@@ -355,7 +355,7 @@ func (q *Queries) GetPageImagePath(ctx context.Context, arg GetPageImagePathPara
 }
 
 const getReadingForDoc = `-- name: GetReadingForDoc :one
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
 FROM readings WHERE doc_path = ?
 `
 
@@ -372,6 +372,8 @@ func (q *Queries) GetReadingForDoc(ctx context.Context, docPath string) (Reading
 		&i.ProducedBy,
 		&i.RuledBy,
 		&i.At,
+		&i.Text,
+		&i.Data,
 	)
 	return i, err
 }
@@ -621,7 +623,7 @@ func (q *Queries) ListActiveJobs(ctx context.Context) ([]ListActiveJobsRow, erro
 }
 
 const listAllReadings = `-- name: ListAllReadings :many
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
 FROM readings ORDER BY source_sha256, at, id
 `
 
@@ -644,6 +646,8 @@ func (q *Queries) ListAllReadings(ctx context.Context) ([]Reading, error) {
 			&i.ProducedBy,
 			&i.RuledBy,
 			&i.At,
+			&i.Text,
+			&i.Data,
 		); err != nil {
 			return nil, err
 		}
@@ -1025,7 +1029,7 @@ func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcr
 }
 
 const listReadingsOfSource = `-- name: ListReadingsOfSource :many
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
 FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id
 `
 
@@ -1048,6 +1052,8 @@ func (q *Queries) ListReadingsOfSource(ctx context.Context, sourceSha256 string)
 			&i.ProducedBy,
 			&i.RuledBy,
 			&i.At,
+			&i.Text,
+			&i.Data,
 		); err != nil {
 			return nil, err
 		}
@@ -1379,12 +1385,12 @@ func (q *Queries) UpsertOcrPage(ctx context.Context, arg UpsertOcrPageParams) er
 }
 
 const upsertReading = `-- name: UpsertReading :exec
-INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at)
-VALUES(?,?,?,?,?,?,?,?)
+INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data)
+VALUES(?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(doc_path) DO UPDATE SET
   source_sha256=excluded.source_sha256, source_path=excluded.source_path,
   method=excluded.method, level=excluded.level, produced_by=excluded.produced_by,
-  ruled_by=excluded.ruled_by, at=excluded.at
+  ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data
 `
 
 type UpsertReadingParams struct {
@@ -1396,6 +1402,8 @@ type UpsertReadingParams struct {
 	ProducedBy   string `db:"produced_by" derived:"readings.produced_by" json:"produced_by"`
 	RuledBy      string `db:"ruled_by" derived:"readings.ruled_by" json:"ruled_by"`
 	At           int64  `db:"at" derived:"readings.at" json:"at"`
+	Text         string `db:"text" derived:"readings.text" json:"text"`
+	Data         string `db:"data" derived:"readings.data" json:"data"`
 }
 
 // ===== readings =====
@@ -1409,6 +1417,8 @@ func (q *Queries) UpsertReading(ctx context.Context, arg UpsertReadingParams) er
 		arg.ProducedBy,
 		arg.RuledBy,
 		arg.At,
+		arg.Text,
+		arg.Data,
 	)
 	return err
 }

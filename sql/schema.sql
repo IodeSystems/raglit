@@ -480,6 +480,22 @@ CREATE TABLE IF NOT EXISTS readings (
   produced_by   TEXT NOT NULL DEFAULT '',
   ruled_by      TEXT NOT NULL DEFAULT '',
   at            INTEGER NOT NULL DEFAULT 0,
+  -- The reading ITSELF, so it needs no file.
+  --
+  -- This is the point of the table. oidio leaves five artifacts beside a
+  -- recording -- diarized.json, truth.json, speakers.json, a transcript and a
+  -- verified transcript -- and raglit indexed two of them as unrelated
+  -- documents. Held here instead, a source has one document and N readings, and
+  -- nothing has to be written into somebody's evidence tree for a reading to
+  -- exist, be searched, or be compared with another.
+  --
+  -- text is what gets indexed when this reading governs. data is the structured
+  -- form the text was rendered from -- diarized turns with speakers and time
+  -- spans -- which is what a player seeks with and what attestation attaches to.
+  -- Empty data is normal: a page transcription has no structure worth keeping
+  -- beyond its text.
+  text          TEXT NOT NULL DEFAULT '',
+  data          TEXT NOT NULL DEFAULT '',
   UNIQUE(doc_path)
 );
 CREATE INDEX IF NOT EXISTS readings_source ON readings(source_sha256);

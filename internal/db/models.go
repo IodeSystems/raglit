@@ -177,6 +177,8 @@ type Reading struct {
 	ProducedBy   string `db:"produced_by" derived:"readings.produced_by" json:"produced_by"`
 	RuledBy      string `db:"ruled_by" derived:"readings.ruled_by" json:"ruled_by"`
 	At           int64  `db:"at" derived:"readings.at" json:"at"`
+	Text         string `db:"text" derived:"readings.text" json:"text"`
+	Data         string `db:"data" derived:"readings.data" json:"data"`
 }
 
 type ShingleIndex struct {

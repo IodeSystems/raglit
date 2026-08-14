@@ -323,6 +323,10 @@ func migrate(db *sql.DB) error {
 		{"page_readings", "model", "TEXT NOT NULL DEFAULT ''"},
 		{"ocr_pages", "model", "TEXT NOT NULL DEFAULT ''"},
 		{"ocr_pages", "dpi", "INTEGER NOT NULL DEFAULT 0"},
+		// A reading holds its own content, so nothing has to be written beside a
+		// document for it to exist (readings.go).
+		{"readings", "text", "TEXT NOT NULL DEFAULT ''"},
+		{"readings", "data", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

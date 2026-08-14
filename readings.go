@@ -62,6 +62,23 @@ type Reading struct {
 	ProducedBy   string `json:"produced_by,omitempty"`
 	RuledBy      string `json:"ruled_by,omitempty"`
 	At           int64  `json:"at,omitempty"`
+	// Text is the reading itself — what gets indexed when this reading governs.
+	Text string `json:"text,omitempty"`
+	// Data is the structured form the text was rendered from, as an attest.Reading:
+	// units, each with a locator into the asset.
+	//
+	// ONE shape for every kind, which is attest's whole design — a Unit is "one
+	// machine claim about one piece of the asset", and the locator differs by
+	// kind rather than the model differing. A diarized recording's units are
+	// turns located by TIME; a scanned sheet's are page or region reads located
+	// by AREA; a mail archive's are messages located by SPAN. So an audio
+	// transcript and a page transcription are attestable in the same way, by the
+	// same log, and a correction to either is an attestation rather than an edit
+	// to what the machine said.
+	//
+	// Empty is normal — a plain text extraction has no structure worth keeping
+	// beyond its text.
+	Data string `json:"data,omitempty"`
 }
 
 // RecordReading records what a document is a reading of. Idempotent per document
@@ -85,6 +102,7 @@ func (s *Store) RecordReading(r Reading) error {
 	return s.q.UpsertReading(context.Background(), gen.UpsertReadingParams{
 		SourceSha256: r.SourceSHA256, SourcePath: r.SourcePath, DocPath: r.DocPath,
 		Method: r.Method, Level: r.Level, ProducedBy: r.ProducedBy, RuledBy: r.RuledBy, At: r.At,
+		Text: r.Text, Data: r.Data,
 	})
 }
 
@@ -142,6 +160,7 @@ func readingFrom(r gen.Reading) Reading {
 	return Reading{
 		SourceSHA256: r.SourceSha256, SourcePath: r.SourcePath, DocPath: r.DocPath,
 		Method: r.Method, Level: r.Level, ProducedBy: r.ProducedBy, RuledBy: r.RuledBy, At: r.At,
+		Text: r.Text, Data: r.Data,
 	}
 }
 

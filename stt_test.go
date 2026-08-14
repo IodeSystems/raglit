@@ -262,10 +262,25 @@ func TestWorker_IngestsARecordingAsItsTranscript(t *testing.T) {
 	if !strings.HasSuffix(hits[0].Path, "H22-139-hearing.mp4") {
 		t.Errorf("the document should be the recording, got %s", hits[0].Path)
 	}
-	// The reading is kept where attest can review it, in raglit's home.
-	rd, ok, err := attest.ReadReading(filepath.Join(s.TranscriptDirFor(media), filepath.Base(media)))
+	// The reading is kept IN THE INDEX, content and structure, so it needs no
+	// file — see readings.go. It is still a whole attest.Reading, so a person can
+	// review and attest it exactly as before.
+	r, ok, err := s.ReadingFor("file://" + media)
 	if err != nil || !ok {
-		t.Fatalf("no reading was written for review: ok=%v err=%v", ok, err)
+		t.Fatalf("no reading was recorded for review: ok=%v err=%v", ok, err)
+	}
+	if r.Level != ReadingMachine {
+		t.Errorf("level = %q — an unreviewed transcript is a machine reading", r.Level)
+	}
+	if r.SourceSHA256 == "" {
+		t.Error("the reading does not name the recording it read")
+	}
+	if r.Text == "" {
+		t.Error("the reading holds no text — the table is the transcript's home now")
+	}
+	var rd attest.Reading
+	if err := json.Unmarshal([]byte(r.Data), &rd); err != nil {
+		t.Fatalf("the reading's structure did not survive: %v", err)
 	}
 	if rd.Producer != "oidio/stt-diarize" {
 		t.Errorf("producer = %q — a transcript whose author is unrecorded cannot be told from another model's", rd.Producer)

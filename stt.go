@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -331,38 +330,43 @@ func (w *Worker) ingestAudio(ctx context.Context, job *Job, f Fetched, title str
 	// verified transcript a person produces later is a DIFFERENT document reading
 	// the SAME asset, and this is what lets the two find each other instead of
 	// sitting in the index as two unrelated 40,000-character hearings.
-	if rerr := w.Store.RecordReading(Reading{
-		SourceSHA256: sha256hex(f.Data), SourcePath: corpus, DocPath: job.URL,
-		Method: MethodASR, Level: ReadingMachine, ProducedBy: producer,
-	}); rerr != nil {
-		sl.Fail("reading", "index", rerr)
-	}
-	if rd, rerr := STTReading(corpus, sha256hex(f.Data), producer, res); rerr != nil {
+	// The reading goes in the INDEX, content and all — see readings.go.
+	//
+	// Not beside the recording, and not as a file at all. oidio leaves five
+	// artifacts next to a hearing (diarized.json, truth.json, speakers.json, a
+	// transcript and a verified transcript) and raglit indexed two of them as
+	// unrelated documents, so the same 44 minutes appeared twice in search with
+	// nothing to say which could be quoted. Held as a reading, a source has one
+	// document and N readings of it.
+	text := TranscriptText(job.URL, res)
+	rd, rerr := STTReading(corpus, sha256hex(f.Data), producer, res)
+	if rerr != nil {
 		sl.Fail("reading", "attest", rerr)
-	} else if dir := w.Store.TranscriptDirFor(corpus); dir == "" {
-		sl.Skip("reading", "this index has no home to store the reading in")
-	} else if path, werr := writeReadingTo(dir, corpus, rd); werr != nil {
-		sl.Fail("reading", "attest", werr)
 	} else {
-		sl.Done("reading", "attest", fmt.Sprintf("%d unit(s) → %s", len(rd.Units), filepath.Base(path)))
+		// The attest Reading is kept whole, as the reading's structure: units
+		// with a locator each, which is what a player seeks with and what an
+		// attestation attaches to. Same shape for a page transcription, whose
+		// units are located by area rather than by time.
+		data, merr := json.Marshal(rd)
+		if merr != nil {
+			sl.Fail("reading", "attest", merr)
+			data = nil
+		}
+		if err := w.Store.RecordReading(Reading{
+			SourceSHA256: sha256hex(f.Data), SourcePath: corpus, DocPath: job.URL,
+			Method: MethodASR, Level: ReadingMachine, ProducedBy: producer,
+			Text: text, Data: string(data),
+		}); err != nil {
+			sl.Fail("reading", "index", err)
+		} else {
+			sl.Done("reading", "attest",
+				fmt.Sprintf("%d unit(s) recorded as a %s reading", len(rd.Units), ReadingMachine))
+		}
 	}
 
-	return w.ingestPlainText(ctx, job.URL, title, []byte(TranscriptText(job.URL, res)), sl)
+	return w.ingestPlainText(ctx, job.URL, title, []byte(text), sl)
 }
 
-// writeReadingTo puts the reading in raglit's storage rather than beside the
-// recording.
-//
-// attest.WriteReading appends its suffix to the path it is given, so handing it
-// <transcript-dir>/<basename> lands <basename>.reading.json inside raglit's
-// home. The suffix stays attest's to choose — the review workbench finds a
-// reading by that name and nothing here should second-guess it.
-func writeReadingTo(dir, mediaPath string, rd *attest.Reading) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("raglit: create %s: %w", dir, err)
-	}
-	return attest.WriteReading(filepath.Join(dir, filepath.Base(mediaPath)), rd)
-}
 
 // sttProducer names what read the recording, from the model id.
 //
