@@ -550,7 +550,7 @@ var MetaGetReadingForDoc = metaquery.Query{
 	Cmd:     ":one",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes, described_pct
 FROM readings WHERE doc_path = ?`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
@@ -566,6 +566,7 @@ FROM readings WHERE doc_path = ?`,
 		{Name: "data", OriginalName: "data", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "ruled", OriginalName: "ruled", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "describes", OriginalName: "describes", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+		{Name: "described_pct", OriginalName: "described_pct", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "doc_path", GoType: "string", DBType: "TEXT", NotNull: true},
@@ -592,6 +593,7 @@ var GetReadingForDocCols = struct {
 	Data         metaquery.TextCol
 	Ruled        metaquery.TextCol
 	Describes    metaquery.IntCol
+	DescribedPct metaquery.IntCol
 }{
 	ID:           metaquery.NewIntCol("id"),
 	SourceSha256: metaquery.NewTextCol("source_sha256"),
@@ -606,6 +608,7 @@ var GetReadingForDocCols = struct {
 	Data:         metaquery.NewTextCol("data"),
 	Ruled:        metaquery.NewTextCol("ruled"),
 	Describes:    metaquery.NewIntCol("describes"),
+	DescribedPct: metaquery.NewIntCol("described_pct"),
 }
 
 var MetaInsertFragment = metaquery.Query{
@@ -853,7 +856,7 @@ var MetaListAllReadings = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes, described_pct
 FROM readings ORDER BY source_sha256, at, id`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
@@ -869,6 +872,7 @@ FROM readings ORDER BY source_sha256, at, id`,
 		{Name: "data", OriginalName: "data", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "ruled", OriginalName: "ruled", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "describes", OriginalName: "describes", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+		{Name: "described_pct", OriginalName: "described_pct", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 	},
 }
 
@@ -896,6 +900,7 @@ var ListAllReadingsCols = struct {
 	Data         metaquery.TextCol
 	Ruled        metaquery.TextCol
 	Describes    metaquery.IntCol
+	DescribedPct metaquery.IntCol
 }{
 	ID:           metaquery.NewIntCol("id"),
 	SourceSha256: metaquery.NewTextCol("source_sha256"),
@@ -910,6 +915,7 @@ var ListAllReadingsCols = struct {
 	Data:         metaquery.NewTextCol("data"),
 	Ruled:        metaquery.NewTextCol("ruled"),
 	Describes:    metaquery.NewIntCol("describes"),
+	DescribedPct: metaquery.NewIntCol("described_pct"),
 }
 
 var MetaListDocumentPaths = metaquery.Query{
@@ -1257,11 +1263,13 @@ var MetaListOcrPagesByDoc = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL:     `SELECT page, engine, image_path FROM ocr_pages WHERE doc_id = ? ORDER BY page`,
+	SQL:     `SELECT page, engine, image_path, text_chars, described_chars FROM ocr_pages WHERE doc_id = ? ORDER BY page`,
 	Columns: []metaquery.Column{
 		{Name: "page", OriginalName: "page", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ocr_pages"},
 		{Name: "engine", OriginalName: "engine", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ocr_pages"},
 		{Name: "image_path", OriginalName: "image_path", GoType: "string", DBType: "TEXT", NotNull: true, Table: "ocr_pages"},
+		{Name: "text_chars", OriginalName: "text_chars", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ocr_pages"},
+		{Name: "described_chars", OriginalName: "described_chars", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "ocr_pages"},
 	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
@@ -1279,13 +1287,17 @@ func WrapListOcrPagesByDoc(docID int64) *metaquery.Builder {
 
 // ListOcrPagesByDocCols gives typed, name-safe access to ListOcrPagesByDoc's output columns.
 var ListOcrPagesByDocCols = struct {
-	Page      metaquery.IntCol
-	Engine    metaquery.TextCol
-	ImagePath metaquery.TextCol
+	Page           metaquery.IntCol
+	Engine         metaquery.TextCol
+	ImagePath      metaquery.TextCol
+	TextChars      metaquery.IntCol
+	DescribedChars metaquery.IntCol
 }{
-	Page:      metaquery.NewIntCol("page"),
-	Engine:    metaquery.NewTextCol("engine"),
-	ImagePath: metaquery.NewTextCol("image_path"),
+	Page:           metaquery.NewIntCol("page"),
+	Engine:         metaquery.NewTextCol("engine"),
+	ImagePath:      metaquery.NewTextCol("image_path"),
+	TextChars:      metaquery.NewIntCol("text_chars"),
+	DescribedChars: metaquery.NewIntCol("described_chars"),
 }
 
 var MetaListReadingsOfSource = metaquery.Query{
@@ -1293,7 +1305,7 @@ var MetaListReadingsOfSource = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes, described_pct
 FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
@@ -1309,6 +1321,7 @@ FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id`,
 		{Name: "data", OriginalName: "data", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "ruled", OriginalName: "ruled", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "describes", OriginalName: "describes", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
+		{Name: "described_pct", OriginalName: "described_pct", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true},
@@ -1339,6 +1352,7 @@ var ListReadingsOfSourceCols = struct {
 	Data         metaquery.TextCol
 	Ruled        metaquery.TextCol
 	Describes    metaquery.IntCol
+	DescribedPct metaquery.IntCol
 }{
 	ID:           metaquery.NewIntCol("id"),
 	SourceSha256: metaquery.NewTextCol("source_sha256"),
@@ -1353,6 +1367,7 @@ var ListReadingsOfSourceCols = struct {
 	Data:         metaquery.NewTextCol("data"),
 	Ruled:        metaquery.NewTextCol("ruled"),
 	Describes:    metaquery.NewIntCol("describes"),
+	DescribedPct: metaquery.NewIntCol("described_pct"),
 }
 
 var MetaListRunningJobOwners = metaquery.Query{
@@ -1656,20 +1671,23 @@ var MetaUpsertOcrPage = metaquery.Query{
 	Cmd:     ":exec",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `INSERT INTO ocr_pages(doc_id, page, engine, image_path) VALUES(?,?,?,?)
-ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=excluded.image_path`,
+	SQL: `INSERT INTO ocr_pages(doc_id, page, engine, image_path, text_chars, described_chars) VALUES(?,?,?,?,?,?)
+ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=excluded.image_path,
+  text_chars=excluded.text_chars, described_chars=excluded.described_chars`,
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "doc_id", GoType: "int64", DBType: "INTEGER", NotNull: true},
 		{Position: 2, Name: "page", GoType: "int64", DBType: "INTEGER", NotNull: true},
 		{Position: 3, Name: "engine", GoType: "string", DBType: "TEXT", NotNull: true},
 		{Position: 4, Name: "image_path", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 5, Name: "text_chars", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 6, Name: "described_chars", GoType: "int64", DBType: "INTEGER", NotNull: true},
 	},
 	Table: &metaquery.Table{Name: "ocr_pages"},
 }
 
 // WrapUpsertOcrPage returns a metaquery.Builder over MetaUpsertOcrPage, pre-bound with typed arguments.
 func WrapUpsertOcrPage(arg UpsertOcrPageParams) *metaquery.Builder {
-	return metaquery.Wrap(&MetaUpsertOcrPage, arg.DocID, arg.Page, arg.Engine, arg.ImagePath)
+	return metaquery.Wrap(&MetaUpsertOcrPage, arg.DocID, arg.Page, arg.Engine, arg.ImagePath, arg.TextChars, arg.DescribedChars)
 }
 
 var MetaUpsertReading = metaquery.Query{
@@ -1677,13 +1695,13 @@ var MetaUpsertReading = metaquery.Query{
 	Cmd:     ":exec",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+	SQL: `INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes, described_pct)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(doc_path) DO UPDATE SET
   source_sha256=excluded.source_sha256, source_path=excluded.source_path,
   method=excluded.method, level=excluded.level, produced_by=excluded.produced_by,
   ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data,
-  ruled=excluded.ruled, describes=excluded.describes`,
+  ruled=excluded.ruled, describes=excluded.describes, described_pct=excluded.described_pct`,
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true},
 		{Position: 2, Name: "source_path", GoType: "string", DBType: "TEXT", NotNull: true},
@@ -1697,11 +1715,12 @@ ON CONFLICT(doc_path) DO UPDATE SET
 		{Position: 10, Name: "data", GoType: "string", DBType: "TEXT", NotNull: true},
 		{Position: 11, Name: "ruled", GoType: "string", DBType: "TEXT", NotNull: true},
 		{Position: 12, Name: "describes", GoType: "int64", DBType: "INTEGER", NotNull: true},
+		{Position: 13, Name: "described_pct", GoType: "int64", DBType: "INTEGER", NotNull: true},
 	},
 	Table: &metaquery.Table{Name: "readings"},
 }
 
 // WrapUpsertReading returns a metaquery.Builder over MetaUpsertReading, pre-bound with typed arguments.
 func WrapUpsertReading(arg UpsertReadingParams) *metaquery.Builder {
-	return metaquery.Wrap(&MetaUpsertReading, arg.SourceSha256, arg.SourcePath, arg.DocPath, arg.Method, arg.Level, arg.ProducedBy, arg.RuledBy, arg.At, arg.Text, arg.Data, arg.Ruled, arg.Describes)
+	return metaquery.Wrap(&MetaUpsertReading, arg.SourceSha256, arg.SourcePath, arg.DocPath, arg.Method, arg.Level, arg.ProducedBy, arg.RuledBy, arg.At, arg.Text, arg.Data, arg.Ruled, arg.Describes, arg.DescribedPct)
 }

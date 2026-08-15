@@ -342,6 +342,11 @@ func migrate(db *sql.DB) error {
 		{"readings", "data", "TEXT NOT NULL DEFAULT ''"},
 		{"readings", "ruled", "TEXT NOT NULL DEFAULT ''"},
 		{"readings", "describes", "INTEGER NOT NULL DEFAULT 0"},
+		{"readings", "described_pct", "INTEGER NOT NULL DEFAULT 0"},
+		// How much of a page a model described rather than transcribed, measured
+		// at ingest because that is the only moment the evidence exists.
+		{"ocr_pages", "text_chars", "INTEGER NOT NULL DEFAULT 0"},
+		{"ocr_pages", "described_chars", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

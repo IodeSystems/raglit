@@ -355,7 +355,7 @@ func (q *Queries) GetPageImagePath(ctx context.Context, arg GetPageImagePathPara
 }
 
 const getReadingForDoc = `-- name: GetReadingForDoc :one
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes, described_pct
 FROM readings WHERE doc_path = ?
 `
 
@@ -376,6 +376,7 @@ func (q *Queries) GetReadingForDoc(ctx context.Context, docPath string) (Reading
 		&i.Data,
 		&i.Ruled,
 		&i.Describes,
+		&i.DescribedPct,
 	)
 	return i, err
 }
@@ -625,7 +626,7 @@ func (q *Queries) ListActiveJobs(ctx context.Context) ([]ListActiveJobsRow, erro
 }
 
 const listAllReadings = `-- name: ListAllReadings :many
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes, described_pct
 FROM readings ORDER BY source_sha256, at, id
 `
 
@@ -652,6 +653,7 @@ func (q *Queries) ListAllReadings(ctx context.Context) ([]Reading, error) {
 			&i.Data,
 			&i.Ruled,
 			&i.Describes,
+			&i.DescribedPct,
 		); err != nil {
 			return nil, err
 		}
@@ -1000,13 +1002,15 @@ func (q *Queries) ListMediaByFragment(ctx context.Context, fragmentID sql.NullIn
 }
 
 const listOcrPagesByDoc = `-- name: ListOcrPagesByDoc :many
-SELECT page, engine, image_path FROM ocr_pages WHERE doc_id = ? ORDER BY page
+SELECT page, engine, image_path, text_chars, described_chars FROM ocr_pages WHERE doc_id = ? ORDER BY page
 `
 
 type ListOcrPagesByDocRow struct {
-	Page      int64  `db:"page" derived:"ocr_pages.page" json:"page"`
-	Engine    string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
-	ImagePath string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
+	Page           int64  `db:"page" derived:"ocr_pages.page" json:"page"`
+	Engine         string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
+	ImagePath      string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
+	TextChars      int64  `db:"text_chars" derived:"ocr_pages.text_chars" json:"text_chars"`
+	DescribedChars int64  `db:"described_chars" derived:"ocr_pages.described_chars" json:"described_chars"`
 }
 
 func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcrPagesByDocRow, error) {
@@ -1018,7 +1022,13 @@ func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcr
 	var items []ListOcrPagesByDocRow
 	for rows.Next() {
 		var i ListOcrPagesByDocRow
-		if err := rows.Scan(&i.Page, &i.Engine, &i.ImagePath); err != nil {
+		if err := rows.Scan(
+			&i.Page,
+			&i.Engine,
+			&i.ImagePath,
+			&i.TextChars,
+			&i.DescribedChars,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1033,7 +1043,7 @@ func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcr
 }
 
 const listReadingsOfSource = `-- name: ListReadingsOfSource :many
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes, described_pct
 FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id
 `
 
@@ -1060,6 +1070,7 @@ func (q *Queries) ListReadingsOfSource(ctx context.Context, sourceSha256 string)
 			&i.Data,
 			&i.Ruled,
 			&i.Describes,
+			&i.DescribedPct,
 		); err != nil {
 			return nil, err
 		}
@@ -1368,15 +1379,18 @@ func (q *Queries) UpsertDocument(ctx context.Context, arg UpsertDocumentParams) 
 }
 
 const upsertOcrPage = `-- name: UpsertOcrPage :exec
-INSERT INTO ocr_pages(doc_id, page, engine, image_path) VALUES(?,?,?,?)
-ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=excluded.image_path
+INSERT INTO ocr_pages(doc_id, page, engine, image_path, text_chars, described_chars) VALUES(?,?,?,?,?,?)
+ON CONFLICT(doc_id, page) DO UPDATE SET engine=excluded.engine, image_path=excluded.image_path,
+  text_chars=excluded.text_chars, described_chars=excluded.described_chars
 `
 
 type UpsertOcrPageParams struct {
-	DocID     int64  `db:"doc_id" derived:"ocr_pages.doc_id" json:"doc_id"`
-	Page      int64  `db:"page" derived:"ocr_pages.page" json:"page"`
-	Engine    string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
-	ImagePath string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
+	DocID          int64  `db:"doc_id" derived:"ocr_pages.doc_id" json:"doc_id"`
+	Page           int64  `db:"page" derived:"ocr_pages.page" json:"page"`
+	Engine         string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
+	ImagePath      string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
+	TextChars      int64  `db:"text_chars" derived:"ocr_pages.text_chars" json:"text_chars"`
+	DescribedChars int64  `db:"described_chars" derived:"ocr_pages.described_chars" json:"described_chars"`
 }
 
 // ===== ocr_pages =====
@@ -1386,18 +1400,20 @@ func (q *Queries) UpsertOcrPage(ctx context.Context, arg UpsertOcrPageParams) er
 		arg.Page,
 		arg.Engine,
 		arg.ImagePath,
+		arg.TextChars,
+		arg.DescribedChars,
 	)
 	return err
 }
 
 const upsertReading = `-- name: UpsertReading :exec
-INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes, described_pct)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(doc_path) DO UPDATE SET
   source_sha256=excluded.source_sha256, source_path=excluded.source_path,
   method=excluded.method, level=excluded.level, produced_by=excluded.produced_by,
   ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data,
-  ruled=excluded.ruled, describes=excluded.describes
+  ruled=excluded.ruled, describes=excluded.describes, described_pct=excluded.described_pct
 `
 
 type UpsertReadingParams struct {
@@ -1413,6 +1429,7 @@ type UpsertReadingParams struct {
 	Data         string `db:"data" derived:"readings.data" json:"data"`
 	Ruled        string `db:"ruled" derived:"readings.ruled" json:"ruled"`
 	Describes    int64  `db:"describes" derived:"readings.describes" json:"describes"`
+	DescribedPct int64  `db:"described_pct" derived:"readings.described_pct" json:"described_pct"`
 }
 
 // ===== readings =====
@@ -1430,6 +1447,7 @@ func (q *Queries) UpsertReading(ctx context.Context, arg UpsertReadingParams) er
 		arg.Data,
 		arg.Ruled,
 		arg.Describes,
+		arg.DescribedPct,
 	)
 	return err
 }

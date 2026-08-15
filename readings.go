@@ -84,6 +84,10 @@ type Reading struct {
 	// Describes marks a reading that says what its source DEPICTS rather than
 	// what it says — a model's account of a photograph.
 	Describes bool `json:"describes,omitempty"`
+	// DescribedPct is how much of this reading the model DESCRIBED rather than
+	// transcribed, 0-100. See IsMixedPage: a screenshot is both, and a flag
+	// cannot say so.
+	DescribedPct int `json:"described_pct,omitempty"`
 }
 
 // RecordReading records what a document is a reading of. Idempotent per document
@@ -107,7 +111,7 @@ func (s *Store) RecordReading(r Reading) error {
 	return s.q.UpsertReading(context.Background(), gen.UpsertReadingParams{
 		SourceSha256: r.SourceSHA256, SourcePath: r.SourcePath, DocPath: r.DocPath,
 		Method: r.Method, Level: r.Level, ProducedBy: r.ProducedBy, RuledBy: r.RuledBy, At: r.At,
-		Text: r.Text, Data: r.Data, Ruled: r.Ruled, Describes: int64(boolInt(r.Describes)),
+		Text: r.Text, Data: r.Data, Ruled: r.Ruled, Describes: int64(boolInt(r.Describes)), DescribedPct: int64(r.DescribedPct),
 	})
 }
 
@@ -165,7 +169,7 @@ func readingFrom(r gen.Reading) Reading {
 	return Reading{
 		SourceSHA256: r.SourceSha256, SourcePath: r.SourcePath, DocPath: r.DocPath,
 		Method: r.Method, Level: r.Level, ProducedBy: r.ProducedBy, RuledBy: r.RuledBy, At: r.At,
-		Text: r.Text, Data: r.Data, Ruled: r.Ruled, Describes: r.Describes != 0,
+		Text: r.Text, Data: r.Data, Ruled: r.Ruled, Describes: r.Describes != 0, DescribedPct: int(r.DescribedPct),
 	}
 }
 

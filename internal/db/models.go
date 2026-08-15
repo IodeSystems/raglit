@@ -137,12 +137,14 @@ type Medium struct {
 }
 
 type OcrPage struct {
-	DocID     int64  `db:"doc_id" derived:"ocr_pages.doc_id" json:"doc_id"`
-	Page      int64  `db:"page" derived:"ocr_pages.page" json:"page"`
-	Engine    string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
-	Model     string `db:"model" derived:"ocr_pages.model" json:"model"`
-	Dpi       int64  `db:"dpi" derived:"ocr_pages.dpi" json:"dpi"`
-	ImagePath string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
+	DocID          int64  `db:"doc_id" derived:"ocr_pages.doc_id" json:"doc_id"`
+	Page           int64  `db:"page" derived:"ocr_pages.page" json:"page"`
+	Engine         string `db:"engine" derived:"ocr_pages.engine" json:"engine"`
+	Model          string `db:"model" derived:"ocr_pages.model" json:"model"`
+	Dpi            int64  `db:"dpi" derived:"ocr_pages.dpi" json:"dpi"`
+	ImagePath      string `db:"image_path" derived:"ocr_pages.image_path" json:"image_path"`
+	TextChars      int64  `db:"text_chars" derived:"ocr_pages.text_chars" json:"text_chars"`
+	DescribedChars int64  `db:"described_chars" derived:"ocr_pages.described_chars" json:"described_chars"`
 }
 
 type OcrPageCache struct {
@@ -181,6 +183,7 @@ type Reading struct {
 	Data         string `db:"data" derived:"readings.data" json:"data"`
 	Ruled        string `db:"ruled" derived:"readings.ruled" json:"ruled"`
 	Describes    int64  `db:"describes" derived:"readings.describes" json:"describes"`
+	DescribedPct int64  `db:"described_pct" derived:"readings.described_pct" json:"described_pct"`
 }
 
 type ShingleIndex struct {

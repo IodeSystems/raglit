@@ -113,11 +113,24 @@ func (r Reading) Trust() map[string]Confidence {
 	for f, c := range DefaultTrust(r.Method) {
 		out[f] = c
 	}
-	// A description is a claim about SUBJECT, not about text, whatever produced
-	// it. Recorded separately because the method says how it was made and this
-	// says what it is a claim about.
-	if r.Describes {
+	// What a reading DESCRIBED is a claim about subject, not about text — whatever
+	// produced it. Three cases, and the middle one is the one a flag could not
+	// express:
+	//
+	//   wholly described  — a photograph. It says nothing about text, and
+	//                       reporting a text score would invite quoting a model's
+	//                       account of a picture as though somebody wrote it.
+	//   mixed             — a SCREENSHOT. It transcribes the messages AND narrates
+	//                       the phone around them, so it makes both claims and
+	//                       both must be reported. The delano SMS exhibit measures
+	//                       15% described; recorded as pure transcription it
+	//                       overstated its text and hid its subject entirely.
+	//   wholly transcribed— an ordinary page. No subject claim at all.
+	switch {
+	case r.Describes || r.DescribedPct >= int(describedPageThreshold*100):
 		delete(out, FacetText)
+		out[FacetSubject] = TrustSubject
+	case r.DescribedPct > int(describedTraceFloor*100):
 		out[FacetSubject] = TrustSubject
 	}
 	for f, c := range r.decodeRuled() {

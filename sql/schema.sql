@@ -267,6 +267,13 @@ CREATE TABLE IF NOT EXISTS ocr_pages (
   -- because "why is this page wrong" is unanswerable afterwards without it.
   dpi        INTEGER NOT NULL DEFAULT 0,
   image_path TEXT NOT NULL DEFAULT '',
+  -- How much of this page a model DESCRIBED rather than transcribed, in
+  -- characters of indexable text. Written at ingest, when the layout markup that
+  -- says so still exists; nothing can recover it afterwards, because the index
+  -- holds the flattened text. Two counts, not a percentage, so a document sums
+  -- them exactly instead of averaging averages.
+  text_chars      INTEGER NOT NULL DEFAULT 0,
+  described_chars INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (doc_id, page)
 );
 -- Media objects: figures/diagrams explained into a fragment. A figure's DESCRIPTION
@@ -508,6 +515,10 @@ CREATE TABLE IF NOT EXISTS readings (
   -- model's account of what a photograph shows. A claim about subject, not text,
   -- and the least certain thing the corpus holds.
   describes     INTEGER NOT NULL DEFAULT 0,
+  -- How much of this reading is the model DESCRIBING rather than transcribing,
+  -- 0-100. A flag could not say it: a screenshot is both, and calling such a
+  -- page pure transcription overstates its text and hides its subject.
+  described_pct INTEGER NOT NULL DEFAULT 0,
   UNIQUE(doc_path)
 );
 CREATE INDEX IF NOT EXISTS readings_source ON readings(source_sha256);

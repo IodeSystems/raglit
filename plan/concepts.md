@@ -184,6 +184,46 @@ model described a record of survey as "a vicinity map showing a grid of
 sections" — true of one inset, silent about the survey. The region root is asked
 a different question: account for everything here.
 
+### A page is not either/or — it is a fraction
+
+A photograph is wholly described and an order is wholly transcribed, but a
+SCREENSHOT is both. chandra reading a page of SMS messages transcribes the
+messages and narrates the phone around them: status bar, app icons, microphone
+and camera buttons.
+
+	measured on the delano SMS exhibit 2026-08-15
+	  15 pages, all read by the VLM, 15% of the document described
+	  per page 0% to 28% — 13 of 15 pages carry some, 2 carry none
+
+Two measures, and they answer different questions:
+
+| measure | question | shape |
+|---|---|---|
+| `IsDescribedPage` (≥90%) | may this be quoted as the record? | binary, and stays binary |
+| `described_chars/text_chars` | how much of it did a model make up? | graded, per page |
+
+**Where it is measured is the whole constraint.** The evidence is the layout
+markup (`data-label="Image"`, `<img alt>`) and the index holds the FLATTENED
+text, so the fraction can only be taken in `ingestUnits` before the strip, and
+must be stored. It was being recomputed downstream from the indexed text, where
+it could only ever return 0.
+
+**The method is what READ the page, not what chopped it.** It was taken from the
+fragmenter's mode, and `text-overlap` is also what a vision read falls back to
+when the LLM segmenter drops text — so a 15-page exhibit read entirely by
+chandra was recorded as `text-layer`, which does not merely mislabel it, it
+RAISES the claimed trust from a model's 90 to an exact 100. It now comes from
+`ocr_pages.engine`, and any vision page makes the whole document a vision read:
+a reader quoting a document has no way to know which page a sentence came from,
+so the weaker claim governs.
+
+**Known gap, not fixed.** Only 14 of 657 documents in the delano index carry a
+reading at all — readings are recorded at ingest, and most of the corpus predates
+them. 342 documents have vision pages and no reading. They cannot be backfilled
+honestly: the described fraction needs markup that no longer exists, so a
+backfill would record `0% described` for every one of them, which is the same
+false claim in a new place. The only honest repair is a re-read.
+
 ### The cheap OCR tier cannot serve a corpus of drawings
 
 Reading a page has three tiers: the PDF text layer (no model), a cheap OCR

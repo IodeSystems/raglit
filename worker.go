@@ -317,7 +317,7 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 		// bytes, and that is what lets the two be compared instead of sitting in
 		// the index as unrelated documents.
 		if kind != KindAudio {
-			w.recordIngestReading(job.URL, hash, kind, mode, sl)
+			w.recordIngestReading(job.URL, hash, kind, sl)
 		}
 		_ = w.Store.SetDocumentHash(job.URL, hash)
 		if w.Pool != nil && w.RecipeHash != "" {
@@ -607,7 +607,7 @@ func writeTemp(data []byte, ext string) (path string, cleanup func(), err error)
 // Best-effort. A reading that could not be registered must not fail an ingest
 // that produced a good document; the stage says so rather than the failure being
 // inferred from a missing row later.
-func (w *Worker) recordIngestReading(docPath, hash string, kind DocKind, mode string, sl *StageLog) {
+func (w *Worker) recordIngestReading(docPath, hash string, kind DocKind, sl *StageLog) {
 	method := MethodVerbatim
 	switch kind {
 	case KindPDF, KindImage:
@@ -617,32 +617,60 @@ func (w *Worker) recordIngestReading(docPath, hash string, kind DocKind, mode st
 	case KindEmail:
 		method = MethodEmail
 	}
-	// mode reports what the fragmenter did, and two of its values say the text
-	// did not come from a model at all — worth keeping, because "read by a VLM"
-	// and "lifted from a text layer" are different claims about the same file.
-	if mode == "text-overlap" && (kind == KindPDF || kind == KindImage) {
-		method = MethodTextLayer
-	}
 	txt, terr := w.Store.DocText(docPath, 0, 0, 0)
 	text := ""
 	if terr == nil {
 		text = txt.Text
 	}
-	// A page a model DESCRIBED is a claim about what the image shows, not about
-	// what it says — the distinction the described-origin work drew, carried into
-	// the reading so its trust is reported as subject rather than as text.
-	describes := false
-	if _, pages, err := w.Store.DocReview(docPath); err == nil {
+	// What actually read this document, and how much of it a model made up.
+	//
+	// Both come from the PAGES, and both used to come from somewhere that could
+	// not know:
+	//
+	//   - The method was taken from the fragmenter's mode, which reports how the
+	//     text was CHOPPED, not where it came from. `text-overlap` is also what a
+	//     vision read falls back to when the LLM segmenter drops text, so the SMS
+	//     exhibit — 15 pages, every one read by chandra — was recorded as
+	//     `text-layer` and its trust went UP, from a model's 90 to an exact 100.
+	//   - The described fraction was measured over the page text held here, and
+	//     the evidence for it is the layout markup, which is stripped before that
+	//     text is stored. It could only ever have measured 0.
+	//
+	// So both read the per-page rows, which the pipeline writes while it still
+	// has the markup and the engine in hand. Weighted by characters, not by page
+	// count: one photograph in a forty-page bundle is a transcription.
+	describes, pct := false, 0
+	if _, pages, err := w.Store.DocReview(docPath); err == nil && len(pages) > 0 {
+		var chars, described, vision, measured int
 		for _, pg := range pages {
-			if IsDescribedPage(pg.Text) {
-				describes = true
-				break
+			chars += pg.TextChars
+			described += pg.DescribedChars
+			if pg.TextChars > 0 {
+				measured++
+				if pg.Vision {
+					vision++
+				}
+			}
+		}
+		if chars > 0 {
+			pct = described * 100 / chars
+			describes = pct >= int(describedPageThreshold*100)
+		}
+		// A page a model read is a page a model read, whatever the rest of the
+		// document did — the weaker claim governs, because a reader quoting the
+		// document has no way to know which page a sentence came from.
+		if (kind == KindPDF || kind == KindImage) && measured > 0 {
+			if vision > 0 {
+				method = MethodVision
+			} else {
+				method = MethodTextLayer
 			}
 		}
 	}
 	if err := w.Store.RecordReading(Reading{
 		SourceSHA256: hash, SourcePath: docPath, DocPath: docPath,
-		Method: method, Level: ReadingMachine, Text: text, Describes: describes,
+		Method: method, Level: ReadingMachine, Text: text,
+		Describes: describes, DescribedPct: pct,
 	}); err != nil {
 		sl.Fail("reading", "index", err)
 	}

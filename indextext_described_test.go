@@ -133,3 +133,30 @@ func TestDescribedFragmentCountsAsTheDocumentsOwnContent(t *testing.T) {
 		t.Fatalf("DocText dropped the description: %q", txt.Text)
 	}
 }
+
+// The three shapes a page can have, told apart.
+func TestDescribedFraction_MixedIsNeitherPureCase(t *testing.T) {
+	// A screenshot: real transcribed message text, plus the model narrating the
+	// phone around it.
+	mixed := `<div data-bbox="0 0 1000 120" data-label="Image"><img alt="A phone status bar showing battery, wifi and the time, with app icons below."/></div>` +
+		`<div data-bbox="0 130 1000 900" data-label="Text"><p>Larry: the surveyor is coming Thursday to set the corners</p>` +
+		`<p>Michele: ok I will be there, bring the plat map please</p>` +
+		`<p>Larry: already have it in the truck, see you at nine</p></div>`
+	f := DescribedFraction(mixed)
+	if f <= describedTraceFloor || f >= describedPageThreshold {
+		t.Fatalf("fraction %.2f is not in the mixed band — the test no longer covers the case", f)
+	}
+	if IsDescribedPage(mixed) {
+		t.Fatal("a page with real transcription was called a description")
+	}
+	if !IsMixedPage(mixed) {
+		t.Fatal("a screenshot that both transcribes and describes was not recognised as mixed")
+	}
+	// And the pure cases are still pure.
+	if IsMixedPage(photoDescription) {
+		t.Fatal("a photograph is wholly described, not mixed")
+	}
+	if IsMixedPage(faxTranscription) {
+		t.Fatal("a transcribed fax is not mixed")
+	}
+}

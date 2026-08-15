@@ -185,6 +185,37 @@ const describedPageThreshold = 0.9
 
 // IsDescribedPage reports whether a page is essentially a model's description of
 // an image rather than a transcription of text.
+//
+// The BINARY question, and it stays binary because what it decides is binary:
+// whether a fragment may be quoted as the record. A page mostly transcribed with
+// a figure in it must not be marked, because the transcription is real.
 func IsDescribedPage(raw string) bool {
 	return DescribedFraction(raw) >= describedPageThreshold
+}
+
+// describedTraceFloor is the point below which description is not worth
+// reporting: a figure caption inside a page of transcribed text, a stray alt.
+// Above it, the page is making two claims and both have to be said.
+const describedTraceFloor = 0.05
+
+// IsMixedPage reports a page that both transcribes and describes.
+//
+// The case the binary test misses, and it is not rare — it is what a SCREENSHOT
+// is. chandra reading a page of SMS messages transcribes the messages and
+// narrates the phone around them: the status bar, the app icons, the microphone
+// and camera buttons.
+//
+//	measured on the delano SMS exhibit 2026-08-15
+//	  15 pages, all read by the VLM, 15% of the document described
+//	  per page 0% to 28% — 13 of 15 pages carry some, 2 carry none
+//
+// Every one of those pages failed IsDescribedPage and was recorded as pure
+// transcription, so the reading claimed `text 90%` and claimed nothing at all
+// about subject. That overstates one thing and hides another: a reader searching
+// the text gets the model's prose back mixed in with the record — arrow,
+// battery, blurry, button, camera, compose, icon, logo, microphone, navigation —
+// with no sign of which is which.
+func IsMixedPage(raw string) bool {
+	f := DescribedFraction(raw)
+	return f > describedTraceFloor && f < describedPageThreshold
 }

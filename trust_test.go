@@ -69,3 +69,53 @@ func TestTrust_UnclaimedFacetsAreAbsentNotZero(t *testing.T) {
 		t.Fatal("a page transcription claimed something about who spoke")
 	}
 }
+
+// A SCREENSHOT is both, and that is the case a flag could not express.
+//
+// chandra reading a page of SMS messages transcribes the messages and narrates
+// the phone around them — status bar, app icons, microphone and camera buttons.
+// Measured at 15% of the delano SMS exhibit and 28% of its worst page, such a
+// page failed the binary test and was recorded as pure transcription: the
+// reading claimed `text 90%` and said nothing at all about subject, overstating
+// one and hiding the other.
+func TestTrust_AMixedPageClaimsBoth(t *testing.T) {
+	mixed := Reading{Method: MethodVision, DescribedPct: 40}.Trust()
+	if _, ok := mixed[FacetText]; !ok {
+		t.Fatal("a mixed page transcribes real text — dropping the text claim hides the record")
+	}
+	if mixed[FacetSubject] != TrustSubject {
+		t.Fatal("a mixed page also describes — a reader must be told the prose is a model's")
+	}
+	mr := Reading{Method: MethodVision, DescribedPct: 40}
+	if mr.LowestTrust() != TrustSubject {
+		t.Fatal("the weakest claim of a mixed page is the description")
+	}
+}
+
+// A figure caption inside a page of transcribed text is not worth reporting as a
+// subject claim — below the trace floor the page is a transcription.
+func TestTrust_ATraceOfDescriptionIsNotASubjectClaim(t *testing.T) {
+	tr := Reading{Method: MethodVision, DescribedPct: 2}.Trust()
+	if _, ok := tr[FacetSubject]; ok {
+		t.Fatal("a stray caption made the whole page a subject claim")
+	}
+	if tr[FacetText] != TrustVisionText {
+		t.Fatalf("text %d — a transcribed page with one caption is still transcription", tr[FacetText])
+	}
+}
+
+// Wholly described still claims nothing about text.
+func TestTrust_WhollyDescribedMakesNoTextClaim(t *testing.T) {
+	for _, r := range []Reading{
+		{Method: MethodVision, Describes: true},
+		{Method: MethodVision, DescribedPct: 95},
+	} {
+		tr := r.Trust()
+		if _, ok := tr[FacetText]; ok {
+			t.Fatalf("a photograph claimed something about text: %+v", tr)
+		}
+		if tr[FacetSubject] != TrustSubject {
+			t.Fatalf("subject %d", tr[FacetSubject])
+		}
+	}
+}

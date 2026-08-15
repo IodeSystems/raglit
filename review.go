@@ -144,6 +144,20 @@ type PageReview struct {
 	HasImage  bool   `json:"has_image"`
 	Fragments int    `json:"fragments"`
 	Text      string `json:"text"`
+	// TextChars and DescribedChars are how much indexable text this page produced
+	// and how much of it was the model DESCRIBING an image rather than reading
+	// one. Measured at ingest — the markup that says so does not survive into
+	// Text, so this cannot be recomputed from what is returned here.
+	TextChars      int `json:"text_chars,omitempty"`
+	DescribedChars int `json:"described_chars,omitempty"`
+}
+
+// DescribedPct is how much of this page a model made up, 0-100.
+func (p PageReview) DescribedPct() int {
+	if p.TextChars <= 0 {
+		return 0
+	}
+	return p.DescribedChars * 100 / p.TextChars
 }
 
 // DocReview returns a document's title and per-page OCR review (pages ≥ 1, in
@@ -168,6 +182,7 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 		page := PageReview{
 			Page: int(pr.Page), Engine: pr.Engine,
 			Vision: pr.Engine == "vision", HasImage: pr.ImagePath != "",
+			TextChars: int(pr.TextChars), DescribedChars: int(pr.DescribedChars),
 		}
 		// Page text is the concatenation of the fragments indexed for the page.
 		texts, err := s.q.ListFragmentTextByPage(ctx, gen.ListFragmentTextByPageParams{DocID: doc.ID, Page: pr.Page})

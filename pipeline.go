@@ -69,6 +69,16 @@ type stagedPage struct {
 	model   string
 	dpi     int
 	imgPath string
+	// How much of this page the model DESCRIBED rather than transcribed, in
+	// characters of indexable text. Measured here because this is the only moment
+	// it can be: the evidence is the layout markup, and it is stripped a few lines
+	// later. See DescribedFraction.
+	//
+	// Two counts rather than a percentage, so a document's fraction is the exact
+	// weighted total rather than an average of averages — a 40-character caption
+	// page must not count as much as a 4,000-character one.
+	textChars      int
+	describedChars int
 }
 
 // stagedMedia is a figure explained into a fragment, anchored by the fragment's
@@ -336,13 +346,35 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	// are layout markup, and the next three lines delete them. See
 	// DescribedFraction.
 	describedPages := map[int]bool{}
+	// And the GRADED measure alongside the binary one, kept per page.
+	//
+	// A page is not one or the other. A SCREENSHOT transcribes the messages and
+	// narrates the phone around them — status bar, app icons, microphone and
+	// camera buttons — and lands around 40%: too little to mark as a description,
+	// far too much to call a clean transcription. The binary test answers the
+	// binary question (may this be quoted as the record?) and must stay binary;
+	// this answers "how much of it did a model make up?", which a reader deciding
+	// how far to trust the page needs and nothing recorded.
+	measured := map[int][2]int{}
 	for i := range pages {
 		if IsDescribedPage(pages[i].text) {
 			describedPages[pages[i].page] = true
 		}
+		if n := len(FlattenForIndex(pages[i].text)); n > 0 {
+			d := measured[pages[i].page]
+			measured[pages[i].page] = [2]int{
+				d[0] + n,
+				d[1] + int(DescribedFraction(pages[i].text)*float64(n) + 0.5),
+			}
+		}
 		if f := FlattenForIndex(pages[i].text); f != pages[i].text {
 			flattened += len(pages[i].text) - len(f)
 			pages[i].text = f
+		}
+	}
+	for i := range provenance {
+		if m, ok := measured[provenance[i].page]; ok {
+			provenance[i].textChars, provenance[i].describedChars = m[0], m[1]
 		}
 	}
 	markDescribed := func(f *stagedFrag) {
@@ -919,7 +951,8 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		}
 	}
 	for _, p := range provenance {
-		if err := q.UpsertOcrPage(ctx, gen.UpsertOcrPageParams{DocID: docID, Page: int64(p.page), Engine: p.engine, ImagePath: p.imgPath}); err != nil {
+		if err := q.UpsertOcrPage(ctx, gen.UpsertOcrPageParams{DocID: docID, Page: int64(p.page), Engine: p.engine, ImagePath: p.imgPath,
+			TextChars: int64(p.textChars), DescribedChars: int64(p.describedChars)}); err != nil {
 			return err
 		}
 		// The model behind the engine, raw because the generated query predates
