@@ -143,3 +143,73 @@ func TestMixedPage_APlainPageIsUnaffected(t *testing.T) {
 		t.Fatal("a transcribed order makes no claim about what an image depicts")
 	}
 }
+
+// The other description mechanism counts too.
+//
+// A layout-aware read wraps descriptions in Image regions; the figure-caption
+// path writes `[FIGURE: ...]` inline instead, and the corpus holds both — 768
+// cached pages carry layout markup, 201 carry figure markers, no overlap.
+// Counting only the first scored a page whose only description is a figure
+// marker at 0%, which reads as "a model made none of this up".
+func TestMixedPage_FigureMarkersAreDescription(t *testing.T) {
+	page := "Wolff Hislop Crockett\n(509) 927-9700 (Phone)\n\n" +
+		"[FIGURE: Logo for Wolff Hislop Crockett, the letters W, H and C intertwined in a circular design]\n\n" +
+		"THE CONTENTS OF THIS ELECTRONIC MAIL ARE CONFIDENTIAL."
+	if got := DescribedFraction(page); got <= 0 {
+		t.Fatal("a figure marker is a model's account of an image and scored as nothing")
+	}
+	if !DescribableRead(page) {
+		t.Fatal("a page carrying figure markers can be scored")
+	}
+	// A pure caption page is a description, the same as a photograph.
+	if f := DescribedFraction("[FIGURE: A red Chevrolet Malibu parked on a gravel lot, plate CEP0912]"); f < describedPageThreshold {
+		t.Fatalf("a page that is nothing but a figure marker scored %.2f", f)
+	}
+}
+
+// "Described nothing" and "cannot tell" are different answers, and a reader
+// deciding whether to quote needs them kept apart.
+func TestMixedPage_AnUnmarkedModelReadIsNotScoredAtZero(t *testing.T) {
+	// What an older prompt returned: transcription and description run together
+	// with no seam, and nothing to say which is which.
+	plain := "8:09 AM Thu Sep 29\nA phone screen showing a message thread.\nLarry: the surveyor is coming Thursday"
+	if DescribableRead(plain) {
+		t.Fatal("a read with no description markup was called scorable")
+	}
+	// A layout read of the same page CAN be scored, even at zero.
+	labelled := `<div data-bbox="0 0 10 10" data-label="Text"><p>IT IS HEREBY ORDERED</p></div>`
+	if !DescribableRead(labelled) {
+		t.Fatal("a layout read is scorable")
+	}
+	if got := DescribedFraction(labelled); got != 0 {
+		t.Fatalf("a wholly transcribed page scored %.2f described", got)
+	}
+
+	// And end to end: a vision page with no markup leaves the reading UNMEASURED
+	// rather than claiming zero.
+	s := testStore(t)
+	const doc = "file:///corpus/oldread.pdf"
+	sl := s.NewStageLog(0)
+	if _, _, err := s.ingestUnits(context.Background(), nil, nil, doc, "oldread.pdf",
+		[]ingestUnit{{page: 1, text: plain}}, FragConfig{}, sl); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE ocr_pages SET engine='vision' WHERE doc_id=(SELECT id FROM documents WHERE path=?)`, doc); err != nil {
+		t.Fatal(err)
+	}
+	// The page rows must carry no measurement — the ingest ran as a text unit, so
+	// re-measure the way a vision read would have.
+	if _, err := s.db.Exec(
+		`UPDATE ocr_pages SET text_chars=0, described_chars=0 WHERE doc_id=(SELECT id FROM documents WHERE path=?)`, doc); err != nil {
+		t.Fatal(err)
+	}
+	(&Worker{Store: s}).recordIngestReading(doc, "abc", KindPDF, sl)
+	r, ok, _ := s.ReadingFor(doc)
+	if !ok {
+		t.Fatal("no reading")
+	}
+	if r.DescribedPct != DescribedUnmeasured {
+		t.Fatalf("described %d — an unmarked model read cannot be scored, and must not claim zero", r.DescribedPct)
+	}
+}

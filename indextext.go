@@ -124,13 +124,30 @@ var (
 // DescribedFraction is how much of a page's INDEXABLE text came from the model
 // describing an image, between 0 and 1. A page with no such regions is 0; a
 // photograph is ~1.
+//
+// BOTH description mechanisms count. A layout-aware read wraps what it describes
+// in an Image region with the text in an <img alt>; the figure-caption path
+// writes `[FIGURE: ...]` inline instead (figures.go), and the corpus holds both —
+// measured on the delano index, 768 cached pages carry layout markup and 201
+// carry figure markers, with no overlap. Counting only the first scored a page
+// whose only description is `[FIGURE: Logo for Wolff Hislop Crockett…]` at zero,
+// which is not "we could not tell" but "a model made none of this up".
 func DescribedFraction(raw string) float64 {
 	total := len(FlattenForIndex(raw))
 	if total == 0 {
 		return 0
 	}
 	described := 0
-	// Region text first — it contains the <img alt> as well as any prose the
+	// Figure markers first, and from the WHOLE page: they are inline in the text
+	// rather than inside a region, so no region removal applies to them. The
+	// whole marker counts, brackets and all — `[FIGURE: ` is not something a
+	// person wrote either, and excluding it left a page that is nothing BUT a
+	// figure marker scoring 0.86, under the threshold that would call it a
+	// description.
+	for _, m := range figureRE.FindAllString(raw, -1) {
+		described += len(strings.TrimSpace(m))
+	}
+	// Region text — it contains the <img alt> as well as any prose the
 	// model wrote around it, and both are description.
 	rest := raw
 	for _, m := range imageRegion.FindAllStringSubmatch(raw, -1) {
@@ -197,6 +214,24 @@ func IsDescribedPage(raw string) bool {
 // reporting: a figure caption inside a page of transcribed text, a stray alt.
 // Above it, the page is making two claims and both have to be said.
 const describedTraceFloor = 0.05
+
+// DescribableRead reports whether a page's raw text came from a reader that
+// SAYS what it described — the only kind that can be measured.
+//
+// The distinction between "described nothing" and "cannot tell" lives here, and
+// it is not academic. A layout-aware read wraps every block in a labelled region
+// and a figure-caption read leaves `[FIGURE: ...]` inline; a page from either can
+// be scored, and 0 means the model described nothing. A page with NEITHER came
+// from a reader that was never asked to mark descriptions — an older prompt, a
+// different model — and its text is a transcription and a description run
+// together with no seam. Measured on the delano index: 654 of 1422 cached vision
+// pages are like this.
+//
+// Scoring those 0 would be the worst available answer, because it looks
+// measured. See DescribedUnmeasured.
+func DescribableRead(raw string) bool {
+	return strings.Contains(raw, "data-label") || anyImgTag.MatchString(raw) || figureRE.MatchString(raw)
+}
 
 // IsMixedPage reports a page that both transcribes and describes.
 //

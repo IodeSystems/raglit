@@ -360,16 +360,23 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		if IsDescribedPage(pages[i].text) {
 			describedPages[pages[i].page] = true
 		}
-		if n := len(FlattenForIndex(pages[i].text)); n > 0 {
+		// Only a page that CAN be scored is scored. A model that was never asked to
+		// mark what it described returns transcription and description run
+		// together with no seam, and calling that 0% is a claim, not an absence —
+		// see DescribableRead. Anything that is not a model read (a text layer, a
+		// glyph recogniser) cannot describe at all, so 0 there is true.
+		scorable := pages[i].engine != "vision" || DescribableRead(pages[i].text)
+		flat := FlattenForIndex(pages[i].text)
+		if n := len(flat); n > 0 && scorable {
 			d := measured[pages[i].page]
 			measured[pages[i].page] = [2]int{
 				d[0] + n,
 				d[1] + int(DescribedFraction(pages[i].text)*float64(n) + 0.5),
 			}
 		}
-		if f := FlattenForIndex(pages[i].text); f != pages[i].text {
-			flattened += len(pages[i].text) - len(f)
-			pages[i].text = f
+		if flat != pages[i].text {
+			flattened += len(pages[i].text) - len(flat)
+			pages[i].text = flat
 		}
 	}
 	for i := range provenance {
