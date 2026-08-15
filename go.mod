@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.0
 	github.com/go-chi/chi/v5 v5.3.1
-	github.com/iodesystems/agentkit v0.4.0
+	github.com/iodesystems/agentkit v0.5.0
 	github.com/iodesystems/gwag v0.0.0-00010101000000-000000000000
 	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
 	github.com/mark3labs/mcp-go v0.55.1
@@ -52,7 +52,6 @@ require (
 	google.golang.org/grpc v1.81.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
