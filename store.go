@@ -340,6 +340,8 @@ func migrate(db *sql.DB) error {
 		// document for it to exist (readings.go).
 		{"readings", "text", "TEXT NOT NULL DEFAULT ''"},
 		{"readings", "data", "TEXT NOT NULL DEFAULT ''"},
+		{"readings", "ruled", "TEXT NOT NULL DEFAULT ''"},
+		{"readings", "describes", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

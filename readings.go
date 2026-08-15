@@ -79,6 +79,11 @@ type Reading struct {
 	// Empty is normal — a plain text extraction has no structure worth keeping
 	// beyond its text.
 	Data string `json:"data,omitempty"`
+	// Ruled is what a person has been through, per facet, as JSON. See trust.go.
+	Ruled string `json:"ruled,omitempty"`
+	// Describes marks a reading that says what its source DEPICTS rather than
+	// what it says — a model's account of a photograph.
+	Describes bool `json:"describes,omitempty"`
 }
 
 // RecordReading records what a document is a reading of. Idempotent per document
@@ -102,7 +107,7 @@ func (s *Store) RecordReading(r Reading) error {
 	return s.q.UpsertReading(context.Background(), gen.UpsertReadingParams{
 		SourceSha256: r.SourceSHA256, SourcePath: r.SourcePath, DocPath: r.DocPath,
 		Method: r.Method, Level: r.Level, ProducedBy: r.ProducedBy, RuledBy: r.RuledBy, At: r.At,
-		Text: r.Text, Data: r.Data,
+		Text: r.Text, Data: r.Data, Ruled: r.Ruled, Describes: int64(boolInt(r.Describes)),
 	})
 }
 
@@ -160,7 +165,7 @@ func readingFrom(r gen.Reading) Reading {
 	return Reading{
 		SourceSHA256: r.SourceSha256, SourcePath: r.SourcePath, DocPath: r.DocPath,
 		Method: r.Method, Level: r.Level, ProducedBy: r.ProducedBy, RuledBy: r.RuledBy, At: r.At,
-		Text: r.Text, Data: r.Data,
+		Text: r.Text, Data: r.Data, Ruled: r.Ruled, Describes: r.Describes != 0,
 	}
 }
 

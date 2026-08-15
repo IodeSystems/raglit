@@ -52,6 +52,8 @@ type TranscriptMatch struct {
 	Recording  string  `json:"recording,omitempty"`
 	Source     string  `json:"source,omitempty"`
 	Score      float64 `json:"score"`
+	// Trust is what the adopted reading would be worth, per facet.
+	Trust []string `json:"trust,omitempty"`
 	// Why is set when nothing was adopted, and says which of the two failure
 	// shapes it was: nothing close enough, or nothing to compare against.
 	Why string `json:"why,omitempty"`
@@ -141,6 +143,9 @@ func (s *Store) ImportVerifiedTranscripts(dryRun bool, ruledBy string) ([]Transc
 				m.Score, m.Recording, m.Source = sc, c.reading.DocPath, c.reading.SourceSHA256
 			}
 		}
+		if m.Score >= importMatchFloor && dryRun {
+			m.Trust = Reading{Method: MethodASR}.WithRuling(FacetSpeaker, TrustRuled).TrustSummary()
+		}
 		if m.Score < importMatchFloor {
 			m.Why = fmt.Sprintf("best match %.0f%% is below the floor — left alone rather than guessed at", m.Score*100)
 			m.Recording, m.Source = "", ""
@@ -148,10 +153,21 @@ func (s *Store) ImportVerifiedTranscripts(dryRun bool, ruledBy string) ([]Transc
 			continue
 		}
 		if !dryRun {
-			if err := s.RecordReading(Reading{
+			// SPEAKER is what was ruled on, and only speaker. These files say so
+			// themselves — "Speaker attribution is complete … ⚠ The WORDS are
+			// unverified. Attribution was checked; the text was not." Marking the
+			// whole reading attested would assert the opposite of what the
+			// document it came from says, which is the failure this whole model
+			// exists to avoid.
+			//
+			// So the words keep the recogniser's confidence and the attribution
+			// goes to 100. A reader is told exactly what a person stood behind.
+			r := Reading{
 				SourceSHA256: m.Source, SourcePath: m.Recording, DocPath: tp,
 				Method: MethodASR, Level: ReadingAttested, RuledBy: ruledBy, Text: string(b),
-			}); err != nil {
+			}.WithRuling(FacetSpeaker, TrustRuled)
+			m.Trust = r.TrustSummary()
+			if err := s.RecordReading(r); err != nil {
 				m.Why = err.Error()
 				out = append(out, m)
 				continue

@@ -355,7 +355,7 @@ func (q *Queries) GetPageImagePath(ctx context.Context, arg GetPageImagePathPara
 }
 
 const getReadingForDoc = `-- name: GetReadingForDoc :one
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings WHERE doc_path = ?
 `
 
@@ -374,6 +374,8 @@ func (q *Queries) GetReadingForDoc(ctx context.Context, docPath string) (Reading
 		&i.At,
 		&i.Text,
 		&i.Data,
+		&i.Ruled,
+		&i.Describes,
 	)
 	return i, err
 }
@@ -623,7 +625,7 @@ func (q *Queries) ListActiveJobs(ctx context.Context) ([]ListActiveJobsRow, erro
 }
 
 const listAllReadings = `-- name: ListAllReadings :many
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings ORDER BY source_sha256, at, id
 `
 
@@ -648,6 +650,8 @@ func (q *Queries) ListAllReadings(ctx context.Context) ([]Reading, error) {
 			&i.At,
 			&i.Text,
 			&i.Data,
+			&i.Ruled,
+			&i.Describes,
 		); err != nil {
 			return nil, err
 		}
@@ -1029,7 +1033,7 @@ func (q *Queries) ListOcrPagesByDoc(ctx context.Context, docID int64) ([]ListOcr
 }
 
 const listReadingsOfSource = `-- name: ListReadingsOfSource :many
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id
 `
 
@@ -1054,6 +1058,8 @@ func (q *Queries) ListReadingsOfSource(ctx context.Context, sourceSha256 string)
 			&i.At,
 			&i.Text,
 			&i.Data,
+			&i.Ruled,
+			&i.Describes,
 		); err != nil {
 			return nil, err
 		}
@@ -1385,12 +1391,13 @@ func (q *Queries) UpsertOcrPage(ctx context.Context, arg UpsertOcrPageParams) er
 }
 
 const upsertReading = `-- name: UpsertReading :exec
-INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data)
-VALUES(?,?,?,?,?,?,?,?,?,?)
+INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(doc_path) DO UPDATE SET
   source_sha256=excluded.source_sha256, source_path=excluded.source_path,
   method=excluded.method, level=excluded.level, produced_by=excluded.produced_by,
-  ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data
+  ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data,
+  ruled=excluded.ruled, describes=excluded.describes
 `
 
 type UpsertReadingParams struct {
@@ -1404,6 +1411,8 @@ type UpsertReadingParams struct {
 	At           int64  `db:"at" derived:"readings.at" json:"at"`
 	Text         string `db:"text" derived:"readings.text" json:"text"`
 	Data         string `db:"data" derived:"readings.data" json:"data"`
+	Ruled        string `db:"ruled" derived:"readings.ruled" json:"ruled"`
+	Describes    int64  `db:"describes" derived:"readings.describes" json:"describes"`
 }
 
 // ===== readings =====
@@ -1419,6 +1428,8 @@ func (q *Queries) UpsertReading(ctx context.Context, arg UpsertReadingParams) er
 		arg.At,
 		arg.Text,
 		arg.Data,
+		arg.Ruled,
+		arg.Describes,
 	)
 	return err
 }

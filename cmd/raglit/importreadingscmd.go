@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // `raglit import-readings` adopts verified transcripts already in the corpus as
@@ -61,8 +62,9 @@ because a wrong match ranks a transcript above the wrong hearing.
 			if *apply {
 				verb = "adopted"
 			}
-			fmt.Printf("  %s %s\n      as an attested reading of %s (%.0f%% of its words)\n",
-				verb, base(m.Transcript), base(m.Recording), m.Score*100)
+			fmt.Printf("  %s %s\n      as a reading of %s (%.0f%% of its words)\n      trust: %s\n",
+				verb, base(m.Transcript), base(m.Recording), m.Score*100,
+				strings.Join(m.Trust, " · "))
 		}
 	}
 	fmt.Printf("\n%d of %d transcript(s) matched a recording.\n", adopted, len(matches))

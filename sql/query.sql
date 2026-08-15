@@ -204,21 +204,22 @@ FROM media WHERE fragment_id = ? ORDER BY ord;
 
 -- ===== readings =====
 -- name: UpsertReading :exec
-INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data)
-VALUES(?,?,?,?,?,?,?,?,?,?)
+INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(doc_path) DO UPDATE SET
   source_sha256=excluded.source_sha256, source_path=excluded.source_path,
   method=excluded.method, level=excluded.level, produced_by=excluded.produced_by,
-  ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data;
+  ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data,
+  ruled=excluded.ruled, describes=excluded.describes;
 
 -- name: ListReadingsOfSource :many
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id;
 
 -- name: GetReadingForDoc :one
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings WHERE doc_path = ?;
 
 -- name: ListAllReadings :many
-SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings ORDER BY source_sha256, at, id;

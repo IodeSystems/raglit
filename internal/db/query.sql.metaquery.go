@@ -550,7 +550,7 @@ var MetaGetReadingForDoc = metaquery.Query{
 	Cmd:     ":one",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings WHERE doc_path = ?`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
@@ -564,6 +564,8 @@ FROM readings WHERE doc_path = ?`,
 		{Name: "at", OriginalName: "at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "data", OriginalName: "data", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "ruled", OriginalName: "ruled", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "describes", OriginalName: "describes", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "doc_path", GoType: "string", DBType: "TEXT", NotNull: true},
@@ -588,6 +590,8 @@ var GetReadingForDocCols = struct {
 	At           metaquery.IntCol
 	Text         metaquery.TextCol
 	Data         metaquery.TextCol
+	Ruled        metaquery.TextCol
+	Describes    metaquery.IntCol
 }{
 	ID:           metaquery.NewIntCol("id"),
 	SourceSha256: metaquery.NewTextCol("source_sha256"),
@@ -600,6 +604,8 @@ var GetReadingForDocCols = struct {
 	At:           metaquery.NewIntCol("at"),
 	Text:         metaquery.NewTextCol("text"),
 	Data:         metaquery.NewTextCol("data"),
+	Ruled:        metaquery.NewTextCol("ruled"),
+	Describes:    metaquery.NewIntCol("describes"),
 }
 
 var MetaInsertFragment = metaquery.Query{
@@ -847,7 +853,7 @@ var MetaListAllReadings = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings ORDER BY source_sha256, at, id`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
@@ -861,6 +867,8 @@ FROM readings ORDER BY source_sha256, at, id`,
 		{Name: "at", OriginalName: "at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "data", OriginalName: "data", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "ruled", OriginalName: "ruled", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "describes", OriginalName: "describes", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 	},
 }
 
@@ -886,6 +894,8 @@ var ListAllReadingsCols = struct {
 	At           metaquery.IntCol
 	Text         metaquery.TextCol
 	Data         metaquery.TextCol
+	Ruled        metaquery.TextCol
+	Describes    metaquery.IntCol
 }{
 	ID:           metaquery.NewIntCol("id"),
 	SourceSha256: metaquery.NewTextCol("source_sha256"),
@@ -898,6 +908,8 @@ var ListAllReadingsCols = struct {
 	At:           metaquery.NewIntCol("at"),
 	Text:         metaquery.NewTextCol("text"),
 	Data:         metaquery.NewTextCol("data"),
+	Ruled:        metaquery.NewTextCol("ruled"),
+	Describes:    metaquery.NewIntCol("describes"),
 }
 
 var MetaListDocumentPaths = metaquery.Query{
@@ -1281,7 +1293,7 @@ var MetaListReadingsOfSource = metaquery.Query{
 	Cmd:     ":many",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data
+	SQL: `SELECT id, source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes
 FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id`,
 	Columns: []metaquery.Column{
 		{Name: "id", OriginalName: "id", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
@@ -1295,6 +1307,8 @@ FROM readings WHERE source_sha256 = ? AND source_sha256 <> '' ORDER BY at, id`,
 		{Name: "at", OriginalName: "at", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 		{Name: "text", OriginalName: "text", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
 		{Name: "data", OriginalName: "data", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "ruled", OriginalName: "ruled", GoType: "string", DBType: "TEXT", NotNull: true, Table: "readings"},
+		{Name: "describes", OriginalName: "describes", GoType: "int64", DBType: "INTEGER", NotNull: true, Table: "readings"},
 	},
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true},
@@ -1323,6 +1337,8 @@ var ListReadingsOfSourceCols = struct {
 	At           metaquery.IntCol
 	Text         metaquery.TextCol
 	Data         metaquery.TextCol
+	Ruled        metaquery.TextCol
+	Describes    metaquery.IntCol
 }{
 	ID:           metaquery.NewIntCol("id"),
 	SourceSha256: metaquery.NewTextCol("source_sha256"),
@@ -1335,6 +1351,8 @@ var ListReadingsOfSourceCols = struct {
 	At:           metaquery.NewIntCol("at"),
 	Text:         metaquery.NewTextCol("text"),
 	Data:         metaquery.NewTextCol("data"),
+	Ruled:        metaquery.NewTextCol("ruled"),
+	Describes:    metaquery.NewIntCol("describes"),
 }
 
 var MetaListRunningJobOwners = metaquery.Query{
@@ -1659,12 +1677,13 @@ var MetaUpsertReading = metaquery.Query{
 	Cmd:     ":exec",
 	Source:  "query.sql",
 	Dialect: metaquery.DialectSQLite,
-	SQL: `INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data)
-VALUES(?,?,?,?,?,?,?,?,?,?)
+	SQL: `INSERT INTO readings(source_sha256, source_path, doc_path, method, level, produced_by, ruled_by, at, text, data, ruled, describes)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(doc_path) DO UPDATE SET
   source_sha256=excluded.source_sha256, source_path=excluded.source_path,
   method=excluded.method, level=excluded.level, produced_by=excluded.produced_by,
-  ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data`,
+  ruled_by=excluded.ruled_by, at=excluded.at, text=excluded.text, data=excluded.data,
+  ruled=excluded.ruled, describes=excluded.describes`,
 	Args: []metaquery.Arg{
 		{Position: 1, Name: "source_sha256", GoType: "string", DBType: "TEXT", NotNull: true},
 		{Position: 2, Name: "source_path", GoType: "string", DBType: "TEXT", NotNull: true},
@@ -1676,11 +1695,13 @@ ON CONFLICT(doc_path) DO UPDATE SET
 		{Position: 8, Name: "at", GoType: "int64", DBType: "INTEGER", NotNull: true},
 		{Position: 9, Name: "text", GoType: "string", DBType: "TEXT", NotNull: true},
 		{Position: 10, Name: "data", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 11, Name: "ruled", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 12, Name: "describes", GoType: "int64", DBType: "INTEGER", NotNull: true},
 	},
 	Table: &metaquery.Table{Name: "readings"},
 }
 
 // WrapUpsertReading returns a metaquery.Builder over MetaUpsertReading, pre-bound with typed arguments.
 func WrapUpsertReading(arg UpsertReadingParams) *metaquery.Builder {
-	return metaquery.Wrap(&MetaUpsertReading, arg.SourceSha256, arg.SourcePath, arg.DocPath, arg.Method, arg.Level, arg.ProducedBy, arg.RuledBy, arg.At, arg.Text, arg.Data)
+	return metaquery.Wrap(&MetaUpsertReading, arg.SourceSha256, arg.SourcePath, arg.DocPath, arg.Method, arg.Level, arg.ProducedBy, arg.RuledBy, arg.At, arg.Text, arg.Data, arg.Ruled, arg.Describes)
 }

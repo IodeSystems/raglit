@@ -496,6 +496,18 @@ CREATE TABLE IF NOT EXISTS readings (
   -- beyond its text.
   text          TEXT NOT NULL DEFAULT '',
   data          TEXT NOT NULL DEFAULT '',
+  -- What a person has RULED ON, per facet: {"speaker":100}. See trust.go.
+  --
+  -- Per facet because that is how ruling happens. Somebody checks the speaker
+  -- attribution of a hearing, or corrects the wording of a page, and almost
+  -- never both -- oidio's verified transcripts say so on their face: attribution
+  -- ruled on, "the WORDS are unverified". A single verified flag would assert
+  -- the opposite of what the file it came from says.
+  ruled         TEXT NOT NULL DEFAULT '',
+  -- Whether this reading DESCRIBES its source rather than transcribing it: a
+  -- model's account of what a photograph shows. A claim about subject, not text,
+  -- and the least certain thing the corpus holds.
+  describes     INTEGER NOT NULL DEFAULT 0,
   UNIQUE(doc_path)
 );
 CREATE INDEX IF NOT EXISTS readings_source ON readings(source_sha256);

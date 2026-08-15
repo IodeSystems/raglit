@@ -628,9 +628,21 @@ func (w *Worker) recordIngestReading(docPath, hash string, kind DocKind, mode st
 	if terr == nil {
 		text = txt.Text
 	}
+	// A page a model DESCRIBED is a claim about what the image shows, not about
+	// what it says — the distinction the described-origin work drew, carried into
+	// the reading so its trust is reported as subject rather than as text.
+	describes := false
+	if _, pages, err := w.Store.DocReview(docPath); err == nil {
+		for _, pg := range pages {
+			if IsDescribedPage(pg.Text) {
+				describes = true
+				break
+			}
+		}
+	}
 	if err := w.Store.RecordReading(Reading{
 		SourceSHA256: hash, SourcePath: docPath, DocPath: docPath,
-		Method: method, Level: ReadingMachine, Text: text,
+		Method: method, Level: ReadingMachine, Text: text, Describes: describes,
 	}); err != nil {
 		sl.Fail("reading", "index", err)
 	}
