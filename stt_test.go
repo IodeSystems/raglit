@@ -431,3 +431,78 @@ func TestRetryAfterOf_PrefersTheServersOwnNumber(t *testing.T) {
 		t.Errorf("the wait must be capped, got %v", got)
 	}
 }
+
+// A restarting gateway is a routine event, not a fault. corrallm gives in-flight
+// work a ten-second drain and then SIGTERMs every backend, so a transcription
+// running when somebody reloads the service dies mid-flight: the client sees a
+// 502 with an empty body, then 503 until the backend is warm again. Measured on
+// this box: 26 restarts in 24 hours during ordinary development.
+func TestSTT_SurvivesAGatewayRestart(t *testing.T) {
+	var attempts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		switch attempts {
+		case 1:
+			w.WriteHeader(http.StatusBadGateway) // upstream killed mid-request; empty body
+		case 2:
+			w.WriteHeader(http.StatusServiceUnavailable) // still coming back up
+		default:
+			_, _ = w.Write([]byte(oidioBody))
+		}
+	}))
+	defer srv.Close()
+
+	// A short backoff so the test does not wait out the real restart window.
+	s := &STT{BaseURL: srv.URL + "/v1", Model: "oidio-stt-diarize", HTTP: srv.Client(),
+		GatewayBackoff: 10 * time.Millisecond}
+	out, err := s.Transcribe(context.Background(), "hearing.mp4", []byte("x"))
+	if err != nil {
+		t.Fatalf("a gateway restart must not fail the job: %v", err)
+	}
+	if attempts != 3 || len(out.Segments) == 0 {
+		t.Errorf("attempts=%d, segments=%d", attempts, len(out.Segments))
+	}
+}
+
+// A 500 is the backend answering that THIS request failed. Offering it again
+// spends another upload to be told the same thing.
+func TestSTT_DoesNotRetryARealError(t *testing.T) {
+	var attempts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("decode failed: no audio stream"))
+	}))
+	defer srv.Close()
+	s := &STT{BaseURL: srv.URL + "/v1", Model: "m", HTTP: srv.Client(), GatewayBackoff: time.Millisecond}
+	if _, err := s.Transcribe(context.Background(), "a.mp4", []byte("x")); err == nil {
+		t.Fatal("a 500 must fail the job")
+	}
+	if attempts != 1 {
+		t.Errorf("a 500 must not be retried, got %d attempts", attempts)
+	}
+}
+
+func TestRetryableAfter_SeparatesBackpressureFromRestarts(t *testing.T) {
+	// Backpressure honours the server's own number.
+	if got := retryableAfter(429, []byte(`{"error":{"retry_after":9}}`), "", 0); got != 9*time.Second {
+		t.Errorf("429 = %v, want 9s", got)
+	}
+	// A restarting gateway usually says nothing; it needs longer than
+	// backpressure, because it has to respawn the backend and reload models.
+	for _, code := range []int{502, 503, 504} {
+		if got := retryableAfter(code, nil, "", 0); got != sttGatewayBackoff {
+			t.Errorf("%d = %v, want %v", code, got, sttGatewayBackoff)
+		}
+	}
+	// But it is still believed when it does say.
+	if got := retryableAfter(503, nil, "5", 0); got != 5*time.Second {
+		t.Errorf("503 with Retry-After = %v, want 5s", got)
+	}
+	// Final statuses.
+	for _, code := range []int{200, 400, 401, 404, 500} {
+		if got := retryableAfter(code, nil, "", 0); got != 0 {
+			t.Errorf("%d must be final, got %v", code, got)
+		}
+	}
+}

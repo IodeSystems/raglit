@@ -92,6 +92,10 @@ type STT struct {
 	Chan *Channels
 	// HTTP overrides the client (tests). nil → a client with Timeout.
 	HTTP *http.Client
+	// GatewayBackoff overrides how long to wait after a 502/503/504. 0 →
+	// sttGatewayBackoff. Set short in tests, which must not sit out a real
+	// restart window to prove they retry.
+	GatewayBackoff time.Duration
 	// Timeout bounds one transcription. Diarization costs roughly a minute per
 	// minute of audio, so this is measured in hours, not the seconds an HTTP
 	// default assumes: the 20-minute hearing that prompted this would trip a
@@ -209,17 +213,18 @@ func (s *STT) transcribeRetrying(ctx context.Context, name string, data []byte) 
 	return nil, last
 }
 
-// transcribeOnce makes one attempt. A non-zero retryAfter means the failure was
-// backpressure and names how long the server asked the caller to wait.
-func (s *STT) transcribeOnce(ctx context.Context, name string, data []byte) (_ *sttResponse, retryAfter time.Duration, _ error) {
+// transcribeOnce makes one attempt. A non-zero retryAfter means the failure is
+// worth offering again and names how long to wait; status is the HTTP status it
+// came from, so the caller can tell backpressure from a restarting gateway.
+func (s *STT) transcribeOnce(ctx context.Context, name string, data []byte) (_ *sttResponse, retryAfter time.Duration, status int, _ error) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	part, err := mw.CreateFormFile("file", filepath.Base(name))
 	if err != nil {
-		return nil, 0, fmt.Errorf("raglit: stt: build request: %w", err)
+		return nil, 0, 0, fmt.Errorf("raglit: stt: build request: %w", err)
 	}
 	if _, err := part.Write(data); err != nil {
-		return nil, 0, fmt.Errorf("raglit: stt: build request: %w", err)
+		return nil, 0, 0, fmt.Errorf("raglit: stt: build request: %w", err)
 	}
 	for k, v := range map[string]string{
 		"model": s.Model,
@@ -230,17 +235,17 @@ func (s *STT) transcribeOnce(ctx context.Context, name string, data []byte) (_ *
 		"response_format": "verbose_json",
 	} {
 		if err := mw.WriteField(k, v); err != nil {
-			return nil, 0, fmt.Errorf("raglit: stt: build request: %w", err)
+			return nil, 0, 0, fmt.Errorf("raglit: stt: build request: %w", err)
 		}
 	}
 	if err := mw.Close(); err != nil {
-		return nil, 0, fmt.Errorf("raglit: stt: build request: %w", err)
+		return nil, 0, 0, fmt.Errorf("raglit: stt: build request: %w", err)
 	}
 
 	url := strings.TrimSuffix(s.BaseURL, "/") + "/audio/transcriptions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
 	if err != nil {
-		return nil, 0, fmt.Errorf("raglit: stt: %w", err)
+		return nil, 0, 0, fmt.Errorf("raglit: stt: %w", err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	if s.APIKey != "" {
@@ -257,33 +262,33 @@ func (s *STT) transcribeOnce(ctx context.Context, name string, data []byte) (_ *
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("raglit: stt: %s is unreachable — is oidio running? %w", url, err)
+		return nil, 0, 0, fmt.Errorf("raglit: stt: %s is unreachable — is oidio running? %w", url, err)
 	}
 	defer resp.Body.Close()
 	// Bounded: an error body from a proxy can be a whole HTML page, and a
 	// transcription response for a long hearing is large but not unbounded.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return nil, 0, fmt.Errorf("raglit: stt: reading response: %w", err)
+		return nil, 0, 0, fmt.Errorf("raglit: stt: reading response: %w", err)
 	}
-	if wait := retryableAfter(resp.StatusCode, raw, resp.Header.Get("Retry-After")); wait > 0 {
-		return nil, wait, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
+	if wait := retryableAfter(resp.StatusCode, raw, resp.Header.Get("Retry-After"), s.GatewayBackoff); wait > 0 {
+		return nil, wait, resp.StatusCode, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, 0, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
+		return nil, 0, resp.StatusCode, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
 	}
 	var out sttResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, 0, fmt.Errorf("raglit: stt: response was not the expected JSON: %w", err)
+		return nil, 0, 0, fmt.Errorf("raglit: stt: response was not the expected JSON: %w", err)
 	}
 	// A 200 with no words in it is a failure that reports success — the same
 	// class of silent-empty-decode oidio's own DecodePCM guards against on its
 	// side. Indexing it would create a document whose text is the empty string.
 	if strings.TrimSpace(out.Text) == "" && len(out.Segments) == 0 {
-		return nil, 0, fmt.Errorf("raglit: stt: %s transcribed to nothing — no speech found, or the container has no audio stream",
+		return nil, 0, 0, fmt.Errorf("raglit: stt: %s transcribed to nothing — no speech found, or the container has no audio stream",
 			filepath.Base(name))
 	}
-	return &out, 0, nil
+	return &out, 0, http.StatusOK, nil
 }
 
 // ingestAudio transcribes a recording and indexes the TRANSCRIPT.
@@ -364,7 +369,6 @@ func (w *Worker) ingestAudio(ctx context.Context, job *Job, f Fetched, title str
 	return w.ingestPlainText(ctx, job.URL, title, []byte(text), sl)
 }
 
-
 // sttProducer names what read the recording, from the model id.
 //
 // The same oidio model has two ids depending on how it is reached: "stt-diarize"
@@ -406,7 +410,7 @@ const sttGatewayBackoff = 30 * time.Second
 // gone (502), unavailable (503) or slow (504) is describing a condition that
 // passes; a 500 is the backend answering that this request failed, and offering
 // it again spends another upload to be told the same thing.
-func retryableAfter(status int, body []byte, header string) time.Duration {
+func retryableAfter(status int, body []byte, header string, gatewayBackoff time.Duration) time.Duration {
 	switch status {
 	case http.StatusTooManyRequests:
 		// Backpressure names its own wait. corrallm answers with
@@ -422,6 +426,9 @@ func retryableAfter(status int, body []byte, header string) time.Duration {
 		// honoured when present and the gateway default stands in when it is not.
 		if d := retryAfterOfOptional(body, header); d > 0 {
 			return d
+		}
+		if gatewayBackoff > 0 {
+			return gatewayBackoff
 		}
 		return sttGatewayBackoff
 	}
