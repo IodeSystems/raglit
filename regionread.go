@@ -286,6 +286,11 @@ func (rr *RegionReader) readRegion(ctx context.Context, page image.Image, reg *R
 	if err != nil {
 		return RegionReading{}, false, err
 	}
+	// What is measurably wrong with these PIXELS, taken on the crop as rendered
+	// and BEFORE the call — the same discipline as low-resolution. Measured on the
+	// filtered image when a filter is in force, which is what makes a repair
+	// testable: a contrast transform that clears `faded` cleared it on the bytes
+	// the model was handed.
 	var damage []string
 	if m, _, derr := image.Decode(bytes.NewReader(img)); derr == nil {
 		// Same decode as the damage flags: where this crop's ink CLUSTERS, which
