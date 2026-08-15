@@ -180,17 +180,21 @@ func (s *STT) Transcribe(ctx context.Context, name string, data []byte) (*sttRes
 func (s *STT) transcribeRetrying(ctx context.Context, name string, data []byte) (*sttResponse, error) {
 	var last error
 	for attempt := 1; attempt <= sttMaxAttempts; attempt++ {
-		out, wait, err := s.transcribeOnce(ctx, name, data)
+		out, wait, status, err := s.transcribeOnce(ctx, name, data)
 		if err == nil {
 			return out, nil
 		}
 		last = err
 		if wait <= 0 {
-			return nil, err // not backpressure; nothing to wait for
+			return nil, err // final; nothing to wait for
 		}
-		// Tell the channel what the server said, so the LEARNED width narrows
-		// rather than this one call simply trying again into the same wall.
-		if s.Chan != nil {
+		// Only BACKPRESSURE teaches the channel. A 429 is the server saying this
+		// caller is asking for too much, which is what the learned width is for.
+		// A 502/503 is the gateway restarting — it says nothing about how much
+		// raglit may ask for, and narrowing on it would shrink the width for a
+		// reason that has already passed, then make it climb back a call at a
+		// time. The width would end up tracking somebody's deploy cadence.
+		if s.Chan != nil && status == http.StatusTooManyRequests {
 			s.Chan.Note429(s.Model)
 		}
 		if attempt == sttMaxAttempts {
@@ -262,15 +266,8 @@ func (s *STT) transcribeOnce(ctx context.Context, name string, data []byte) (_ *
 	if err != nil {
 		return nil, 0, fmt.Errorf("raglit: stt: reading response: %w", err)
 	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		// Backpressure names its own wait. corrallm answers with
-		// {"error":{"retry_after":9,"capacity":2,"in_flight":2,...}} and also sets
-		// Retry-After; the body is preferred because it is the one corrallm fills
-		// in for this case, and the header is the fallback for a proxy that only
-		// speaks HTTP. A refusal with no number at all still waits — a 429 means
-		// "not now" whether or not it says when.
-		return nil, retryAfterOf(raw, resp.Header.Get("Retry-After")),
-			fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
+	if wait := retryableAfter(resp.StatusCode, raw, resp.Header.Get("Retry-After")); wait > 0 {
+		return nil, wait, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, 0, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
@@ -381,8 +378,55 @@ func sttProducer(model string) string {
 	return "oidio/" + strings.TrimPrefix(model, "oidio-")
 }
 
-// sttDefaultBackoff is the wait when a 429 names no interval of its own.
+// sttDefaultBackoff is the wait when a refusal names no interval of its own.
 const sttDefaultBackoff = 15 * time.Second
+
+// sttGatewayBackoff is the wait after the gateway itself went away.
+//
+// Longer than the backpressure default because a different thing has to happen
+// first. Backpressure clears when somebody else's request finishes; a 502/503
+// means corrallm is restarting, and it has to come up, respawn the backend and
+// load the models again. Measured on this box: corrallm was listening one second
+// after exit, and oidio took a further nine to report `listening on :5806`.
+// Thirty seconds clears that with room, and costs nothing that was going to
+// succeed sooner.
+const sttGatewayBackoff = 30 * time.Second
+
+// retryableAfter says how long to wait before offering a recording again, or 0
+// when the status is final.
+//
+// The gateway statuses are here because of what a restart does to a long
+// request. corrallm gives in-flight work a ten-second drain and then SIGTERMs
+// every backend, so a transcription running when somebody reloads the service
+// dies mid-flight and the client sees 502 — then 503 until the backend is warm.
+// Measured: 26 restarts in 24 hours on this box during ordinary development.
+// That is a routine event, not a fault, and it is exactly what a retry is for.
+//
+// 500 is deliberately NOT retryable. A gateway that reports its upstream is
+// gone (502), unavailable (503) or slow (504) is describing a condition that
+// passes; a 500 is the backend answering that this request failed, and offering
+// it again spends another upload to be told the same thing.
+func retryableAfter(status int, body []byte, header string) time.Duration {
+	switch status {
+	case http.StatusTooManyRequests:
+		// Backpressure names its own wait. corrallm answers with
+		// {"error":{"retry_after":9,"capacity":2,"in_flight":2,...}} and also sets
+		// Retry-After; the body is preferred because it is the one corrallm fills
+		// in for this case, and the header is the fallback for a proxy that only
+		// speaks HTTP. A refusal with no number at all still waits — a 429 means
+		// "not now" whether or not it says when.
+		return retryAfterOf(body, header)
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		// A restarting gateway usually says nothing at all — the 502 that started
+		// this investigation had an empty body — so the server's own number is
+		// honoured when present and the gateway default stands in when it is not.
+		if d := retryAfterOfOptional(body, header); d > 0 {
+			return d
+		}
+		return sttGatewayBackoff
+	}
+	return 0
+}
 
 // sttMaxBackoff caps what a server can ask for. A cooperative one asks for
 // seconds; the cap is here so a bad or hostile number cannot park a worker slot
@@ -392,6 +436,18 @@ const sttMaxBackoff = 2 * time.Minute
 // retryAfterOf reads how long the server asked us to wait, from its body first
 // and the Retry-After header second.
 func retryAfterOf(body []byte, header string) time.Duration {
+	d := retryAfterOfOptional(body, header)
+	if d == 0 {
+		d = sttDefaultBackoff
+	}
+	return d
+}
+
+// retryAfterOfOptional is the same reading, returning 0 when the server named no
+// interval — so a caller with a better default than sttDefaultBackoff can use
+// its own. A restarting gateway typically says nothing at all, and it needs
+// longer than backpressure does.
+func retryAfterOfOptional(body []byte, header string) time.Duration {
 	var e struct {
 		Error struct {
 			RetryAfter float64 `json:"retry_after"`
@@ -408,9 +464,6 @@ func retryAfterOf(body []byte, header string) time.Duration {
 		if secs, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && secs > 0 {
 			d = time.Duration(secs * float64(time.Second))
 		}
-	}
-	if d == 0 {
-		d = sttDefaultBackoff
 	}
 	if d > sttMaxBackoff {
 		d = sttMaxBackoff

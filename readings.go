@@ -52,6 +52,17 @@ const (
 	MethodVerbatim  = "verbatim"
 )
 
+// DescribedUnmeasured marks a reading whose described fraction is UNKNOWN, as
+// distinct from known to be zero.
+//
+// The measurement is taken from layout markup that only exists during ingest, so
+// a document indexed before that measurement existed cannot be scored without
+// re-reading it — and 0 would claim a model made none of it up, about exactly
+// the documents most likely to be screenshots. Negative so it can never be
+// mistaken for a percentage, and queryable, so the set that needs re-reading can
+// be listed rather than guessed at.
+const DescribedUnmeasured = -1
+
 // Reading is one account of one source.
 type Reading struct {
 	SourceSHA256 string `json:"source_sha256,omitempty"`
@@ -85,8 +96,8 @@ type Reading struct {
 	// what it says — a model's account of a photograph.
 	Describes bool `json:"describes,omitempty"`
 	// DescribedPct is how much of this reading the model DESCRIBED rather than
-	// transcribed, 0-100. See IsMixedPage: a screenshot is both, and a flag
-	// cannot say so.
+	// transcribed, 0-100, or DescribedUnmeasured. See IsMixedPage: a screenshot is
+	// both, and a flag cannot say so.
 	DescribedPct int `json:"described_pct,omitempty"`
 }
 

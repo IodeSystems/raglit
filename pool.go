@@ -41,6 +41,16 @@ type PooledFragment struct {
 	PageSpans []PageSpan `json:"page_spans,omitempty"`
 	Text      string     `json:"text"`
 	Vec       []float32  `json:"vec,omitempty"`
+	// Origin marks text nobody wrote — "described", a model's account of an
+	// image. Carried for the reason PageSpans is, and more urgently: reuse
+	// replays a document without OCR, and the evidence for the mark (layout
+	// markup) is gone by then, so a mark dropped here can never be recomputed.
+	//
+	// Without it a photograph pooled from one index arrived in the next as an
+	// ORDINARY fragment: a model's "a red Chevrolet Malibu, licence plate
+	// CEP0912" indexed with nothing to say a model made it up, quotable as the
+	// record. Empty for transcription, which is nearly everything.
+	Origin string `json:"origin,omitempty"`
 }
 
 // PooledPage is one cached page's provenance. Image is an absolute source path on
@@ -49,6 +59,13 @@ type PooledPage struct {
 	Page   int    `json:"page"`
 	Engine string `json:"engine"`
 	Image  string `json:"image,omitempty"`
+	// How much of this page a model DESCRIBED rather than transcribed. Same
+	// reason as PooledFragment.Origin: measured from layout markup that reuse
+	// never sees, so it travels or it is lost. Absent in payloads pooled before
+	// the field existed, which read back as 0 — see recordIngestReading on why
+	// that is treated as UNMEASURED and not as "nothing described".
+	TextChars      int `json:"text_chars,omitempty"`
+	DescribedChars int `json:"described_chars,omitempty"`
 }
 
 // PooledDoc is a fully-processed document: the reusable output of one ingest.
@@ -356,7 +373,7 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 	// travels in Identity instead. (Raw for the same reason TruePages is; see
 	// its comment on regenerating the sqlc layer.)
 	frows, err := s.db.QueryContext(ctx,
-		`SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, COALESCE(fv.vec, x'')
+		`SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, f.origin, COALESCE(fv.vec, x'')
 		   FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 		  WHERE f.doc_id = ? AND f.origin <> 'identity' ORDER BY f.page, f.ord`, doc.ID)
 	if err != nil {
@@ -365,13 +382,13 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 	defer frows.Close()
 	for frows.Next() {
 		var page, ord, startOff, endOff int64
-		var text, spans string
+		var text, spans, origin string
 		var vec []byte
-		if err := frows.Scan(&page, &ord, &text, &startOff, &endOff, &spans, &vec); err != nil {
+		if err := frows.Scan(&page, &ord, &text, &startOff, &endOff, &spans, &origin, &vec); err != nil {
 			return PooledDoc{}, err
 		}
 		pf := PooledFragment{Page: int(page), Ord: int(ord), StartOff: int(startOff),
-			EndOff: int(endOff), PageSpans: DecodePageSpans(spans), Text: text}
+			EndOff: int(endOff), PageSpans: DecodePageSpans(spans), Text: text, Origin: origin}
 		if len(vec) > 0 {
 			pf.Vec = decodeVec(vec)
 		}
@@ -385,7 +402,8 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 		return PooledDoc{}, err
 	}
 	for _, r := range prows {
-		out.Pages = append(out.Pages, PooledPage{Page: int(r.Page), Engine: r.Engine, Image: r.ImagePath})
+		out.Pages = append(out.Pages, PooledPage{Page: int(r.Page), Engine: r.Engine, Image: r.ImagePath,
+			TextChars: int(r.TextChars), DescribedChars: int(r.DescribedChars)})
 	}
 	return out, nil
 }
@@ -398,7 +416,7 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 	vecs := map[int][]float32{}
 	for i, f := range doc.Fragments {
 		frags[i] = stagedFrag{page: f.Page, ord: f.Ord, startOff: f.StartOff, endOff: f.EndOff,
-			text: f.Text, pageSpans: f.PageSpans}
+			text: f.Text, pageSpans: f.PageSpans, origin: f.Origin}
 		if len(f.Vec) > 0 {
 			vecs[i] = f.Vec
 		}
@@ -411,7 +429,8 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 				imgPath = dst
 			}
 		}
-		prov = append(prov, stagedPage{page: p.Page, engine: p.Engine, imgPath: imgPath})
+		prov = append(prov, stagedPage{page: p.Page, engine: p.Engine, imgPath: imgPath,
+			textChars: p.TextChars, describedChars: p.DescribedChars})
 	}
 	// Media rows are recomputed from the pooled fragments' figure markers + the
 	// restored page images (same as a fresh ingest), not serialized. Re-embed them

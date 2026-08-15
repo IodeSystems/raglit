@@ -296,6 +296,20 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 			}
 			if n, err := w.Store.IngestPooled(ctx, job.URL, t, doc, w.Pool.FileDir(hash)); err == nil {
 				_ = w.Store.SetDocumentHash(job.URL, hash)
+				// A pooled document is a READING of these bytes exactly as a fresh
+				// one is — the same fragments, the same pages, produced by the same
+				// recipe. It was the one ingest path that recorded none, so a
+				// document's trust depended on which index happened to read it
+				// first: the first got `vision-ocr, text 90%, subject 80%` and every
+				// index that reused it got nothing at all.
+				//
+				// Recorded from the pages just committed, so it says what this index
+				// actually holds. Payloads pooled before the measurement existed
+				// carry no per-page counts and are recorded UNMEASURED rather than
+				// as zero.
+				if kind != KindAudio {
+					w.recordIngestReading(job.URL, hash, kind, sl)
+				}
 				sl.Skip("extract", "pooled — reused cached processing (recipe+kind+file match)")
 				return n, "pooled", nil
 			}
@@ -647,19 +661,28 @@ func (w *Worker) recordIngestReading(docPath, hash string, kind DocKind, sl *Sta
 			described += pg.DescribedChars
 			if pg.TextChars > 0 {
 				measured++
-				if pg.Vision {
-					vision++
-				}
+			}
+			if pg.Vision {
+				vision++
 			}
 		}
-		if chars > 0 {
+		switch {
+		case measured == 0:
+			// Pages exist but none carries a measurement: rows written before the
+			// columns did, or a pool payload from the same era. UNMEASURED is not
+			// zero, and recording it as zero would assert "a model made none of
+			// this up" about the documents most likely to be screenshots. Said out
+			// loud so a backfill can find them.
+			pct = DescribedUnmeasured
+		case chars > 0:
 			pct = described * 100 / chars
 			describes = pct >= int(describedPageThreshold*100)
 		}
 		// A page a model read is a page a model read, whatever the rest of the
 		// document did — the weaker claim governs, because a reader quoting the
-		// document has no way to know which page a sentence came from.
-		if (kind == KindPDF || kind == KindImage) && measured > 0 {
+		// document has no way to know which page a sentence came from. The engine
+		// is reliable even on old rows, so this does not depend on `measured`.
+		if kind == KindPDF || kind == KindImage {
 			if vision > 0 {
 				method = MethodVision
 			} else {

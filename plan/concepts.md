@@ -217,6 +217,36 @@ RAISES the claimed trust from a model's 90 to an exact 100. It now comes from
 a reader quoting a document has no way to know which page a sentence came from,
 so the weaker claim governs.
 
+### The pool replays a document without the evidence for it
+
+Cross-index reuse copies fragments, vectors and page images into the next index
+with no OCR and no model — so anything the FIRST read established has to travel
+in the payload or it is gone, and cannot be recomputed, because the layout
+markup it came from is not in the payload at all.
+
+Three things did not travel, and each made the reused copy claim more than the
+original:
+
+| lost | consequence |
+|---|---|
+| `fragments.origin` | a photograph's description arrived UNMARKED — a model's "a red Chevrolet Malibu, licence plate CEP0912" indexed as quotable record in every index but the first |
+| per-page described counts | the reused copy could not be scored at all |
+| the reading itself | the pooled path never recorded one, so trust depended on which index read the file first |
+
+All three now travel. Payloads pooled before the counts existed read back as 0,
+which is why `DescribedUnmeasured` (-1) exists: unmeasured is not zero, and
+recording it as zero asserts "a model made none of this up" about exactly the
+documents most likely to be screenshots.
+
+**Does the pool cache failures?** Not hard ones — `Pool.Put` runs only when the
+ingest returned no error. It does cache PARTIAL reads: a document where some
+pages failed and at least one page read is committed as a success (deliberately
+— "some content beats none, none is a failure"), with `engine='failed'`
+provenance rows, and that is what gets pooled and replayed. Measured on the
+dogfood pool: 2651 entries, 2 carrying a failed page, 38 with no fragments at
+all. Small, and not the cause of the reading gap — that was simply an early
+return ahead of the recording call.
+
 **Known gap, not fixed.** Only 14 of 657 documents in the delano index carry a
 reading at all — readings are recorded at ingest, and most of the corpus predates
 them. 342 documents have vision pages and no reading. They cannot be backfilled
