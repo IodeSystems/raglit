@@ -127,6 +127,35 @@ func (s *Store) collapseReadings(hits []Hit, limit int) []Hit {
 	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]
 	}
+	return s.attachTrust(hits)
+}
+
+// attachTrust hangs each surviving hit's reading on it, so a result says how far
+// it can be relied on and about what.
+//
+// AFTER the truncation, so the lookup is bounded by the caller's limit rather
+// than by the over-fetch — the collapse asks for limit*2 and this would otherwise
+// pay for rows nobody sees. Cached per document because a document contributes
+// several fragments to one result set and they share a reading.
+//
+// A document with no reading gets nil, and nil is not "trustworthy": see
+// HitTrust.Caveat, which says so out loud rather than rendering an empty caveat.
+func (s *Store) attachTrust(hits []Hit) []Hit {
+	seen := map[string]*HitTrust{}
+	for i := range hits {
+		t, ok := seen[hits[i].Path]
+		if !ok {
+			if r, found, _ := s.ReadingFor(hits[i].Path); found {
+				facets := r.Trust()
+				t = &HitTrust{
+					Method: r.Method, Level: r.Level, DescribedPct: r.DescribedPct,
+					Facets: facets, Summary: r.TrustSummary(), RuledBy: r.RuledBy,
+				}
+			}
+			seen[hits[i].Path] = t
+		}
+		hits[i].Trust = t
+	}
 	return hits
 }
 

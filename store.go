@@ -626,6 +626,65 @@ type Hit struct {
 	// But they are a machine's words, so every renderer says so and nothing
 	// quotes from them.
 	Origin string
+	// Trust is how far the text of this hit can be relied on, and about WHAT.
+	// Nil when nothing is recorded about how the document was read, which is not
+	// a claim of reliability — see HitTrust.
+	Trust *HitTrust
+}
+
+// HitTrust is the caveat a search result carries: what produced this text, and
+// what a person has ruled on.
+//
+// A ranked list presents every row in the same shape, and the shape reads as
+// "the document says this". For most rows that is right. For others the sentence
+// was written by a model looking at a picture, and the two are indistinguishable
+// once they are excerpts in a panel.
+//
+// Origin already marks the clear-cut case, but only when EVERY page a fragment
+// touches is ≥90% description — so a survey sheet measured at 88%, whose entire
+// indexed text is a model's account of a map down to which annotation arrow is
+// which colour, comes back with an empty Origin and reads as the record. That is
+// the case this exists for, and it is one bind away from deriving backing in
+// caselit.
+//
+// Reported, never enforced. Nothing here decides that a hit may not be used —
+// that is a person's ruling, and presenting a confidence as a verdict would be
+// the same mistake as presenting rank as authority.
+type HitTrust struct {
+	// Method is what produced the text: text-layer, vision-ocr, oidio-asr…
+	Method string `json:"method,omitempty"`
+	// Level is machine, adapted or attested — whether a person has been through it.
+	Level string `json:"level,omitempty"`
+	// DescribedPct is how much of the DOCUMENT is a model's description rather
+	// than a transcription, or DescribedUnmeasured when it cannot be known.
+	DescribedPct int `json:"described_pct,omitempty"`
+	// Facets is the per-facet confidence: text, speaker, layout, subject. A facet
+	// that is absent is NOT claimed rather than distrusted.
+	Facets map[string]Confidence `json:"facets,omitempty"`
+	// Summary renders Facets weakest-first for a reader ("subject 80%", "text 90%").
+	Summary []string `json:"summary,omitempty"`
+	// RuledBy is the person who ruled, when one has.
+	RuledBy string `json:"ruled_by,omitempty"`
+}
+
+// Caveat is the one line a renderer shows beside an excerpt, or "" when the hit
+// carries no caution worth spending a line on.
+//
+// Deliberately silent for an ordinary transcription: a caveat on every row is a
+// caveat on none, and the rows that need one stop standing out.
+func (t *HitTrust) Caveat() string {
+	if t == nil {
+		return "how this was read was never recorded — not a claim that it is reliable"
+	}
+	switch {
+	case t.DescribedPct == DescribedUnmeasured:
+		return "how much of this a model described was never measured"
+	case t.DescribedPct >= int(describedPageThreshold*100):
+		return fmt.Sprintf("a model's DESCRIPTION of an image (%d%%), not a transcription — nobody wrote these words", t.DescribedPct)
+	case t.DescribedPct > int(describedTraceFloor*100):
+		return fmt.Sprintf("%d%% of this document is a model describing an image, not transcribing text", t.DescribedPct)
+	}
+	return ""
 }
 
 // IsDescription reports whether this hit is a DESCRIPTION of a document — its

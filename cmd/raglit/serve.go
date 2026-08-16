@@ -773,6 +773,20 @@ func taggedHits(hits []indexedHit) any {
 		// because that is what makes a badly named document findable, and it is
 		// labelled because an agent quoting it would be quoting a paraphrase.
 		Origin string `json:"origin,omitempty"`
+		// Caveat is the one line an agent must not miss before quoting: this text
+		// is a model's account of a picture, or how it was read was never
+		// recorded. Empty for an ordinary transcription — a caveat on every row
+		// is a caveat on none.
+		//
+		// Origin cannot carry this. It marks a fragment only when EVERY page it
+		// touches is ≥90% description, so a survey sheet measured at 88% — whose
+		// whole indexed text is a model's account of a map, down to which
+		// annotation arrow is which colour — arrives with Origin empty and reads
+		// as the record.
+		Caveat string `json:"caveat,omitempty"`
+		// Trust is the same fact structured: method, level, described %, and the
+		// per-facet confidences. A facet that is absent is NOT claimed.
+		Trust *raglit.HitTrust `json:"trust,omitempty"`
 	}
 	out := struct {
 		Hits []outHit `json:"hits"`
@@ -786,6 +800,7 @@ func taggedHits(hits []indexedHit) any {
 		out.Hits = append(out.Hits, outHit{
 			Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 			Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
+			Caveat: h.Trust.Caveat(), Trust: h.Trust,
 		})
 	}
 	return out

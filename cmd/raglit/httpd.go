@@ -463,6 +463,11 @@ type hitRow struct {
 	// Origin marks a hit on the document's GENERATED caption/summary rather than
 	// on the document (identity.go): findable by it, not quotable from it.
 	Origin string `json:"origin,omitempty"`
+	// Caveat is the one line to render beside the excerpt when this text cannot
+	// be read as the record — a model's description, or a read nobody measured.
+	// Empty for an ordinary transcription. See raglit.HitTrust.
+	Caveat string           `json:"caveat,omitempty"`
+	Trust  *raglit.HitTrust `json:"trust,omitempty"`
 }
 type searchIn struct {
 	Query string `query:"q"`
@@ -509,6 +514,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			out.Body.Hits = append(out.Body.Hits, hitRow{
 				Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 				Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
+				Caveat: h.Trust.Caveat(), Trust: h.Trust,
 			})
 		}
 		return out, nil
