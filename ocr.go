@@ -9,10 +9,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	xdraw "golang.org/x/image/draw"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/iodesystems/agentkit/llm"
 	"io"
@@ -177,6 +179,18 @@ func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine strin
 		// cheap error or gibberish → fall through to the VLM.
 	}
 	t, n, verr := o.visionPage(ctx, img, assist)
+	// A salvaged page is a READ page, not a failed one. The sentinel carries the
+	// one thing the caller must not lose — that the tail was never seen — into
+	// the engine, where every consumer of provenance already looks.
+	if errors.Is(verr, errSalvagedTail) {
+		o.tracef("vision: %d chars SALVAGED at a structural loop, %s total — tail of the page NOT read",
+			len(t), time.Since(started).Round(time.Millisecond))
+		o.event("vision.salvaged", map[string]any{
+			"img_sha": sha, "chars": len(t), "downscales": n,
+			"duration_ms": time.Since(started).Milliseconds(),
+		})
+		return t, enginePartialVision, n, nil
+	}
 	if verr != nil {
 		o.tracef("vision: FAILED after %s: %v", time.Since(started).Round(time.Millisecond), verr)
 		o.event("vision.error", map[string]any{
@@ -313,10 +327,34 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (str
 	}
 	if rep != nil {
 		// The page derailed. Retry ONCE with sampling that can actually escape
-		// the loop — the prompt is unchanged on purpose, because re-anchoring a
-		// transcription on a partial transcription is how a VLM starts inventing
-		// survey text that reads exactly like the real thing.
+		// the loop — the prompt carries no transcribed text on purpose, because
+		// re-anchoring a transcription on a partial transcription is how a VLM
+		// starts inventing survey text that reads exactly like the real thing.
 		cut := unloopedLen(text, rep)
+		first, rep0 := text, rep
+		// A STRUCTURAL loop is a different failure and needs a different retry.
+		//
+		// Sampling is the right lever when a model is stuck re-emitting REAL text:
+		// it has lost its place in the page and randomness lets it move on. It is
+		// the wrong lever for a mostly-empty grid, where the model has not lost its
+		// place at all — it read every row that has content and is now dutifully
+		// emitting the hundred blank cells that follow, one `<td></td>` at a time.
+		// No temperature makes emptiness end sooner, which is why the loop-break
+		// retry failed identically on both PL99-0479 sheets.
+		//
+		// So the retry TELLS IT TO SKIP THE BLANKS. That is an instruction, not
+		// content: it adds nothing the model could mistake for text it already
+		// read, so the re-anchoring failure above is not in play.
+		//
+		// Measured — the two Record of Ownership sheets, a 14-row grid holding one
+		// filled row (Cartwright → McKinnon, 1972). Both looped on
+		// `<td></td><td></td></tr><tr>`, both were dropped entirely, and the entry
+		// was invisible to search until the grid was cropped away by hand.
+		sparse := structuralRepetition(rep)
+		if sparse {
+			o.tracef("loop was STRUCTURAL (%q) — retrying with the sparse-table instruction", rep.Sample)
+			msg.Parts[0] = llm.TextPart(prompt + sparseTableAssist)
+		}
 		text, rep, err = collectStream(ctx, o.Client, []llm.Message{msg}, loopBreakSampling(opts))
 		if err != nil {
 			return "", shrinks, fmt.Errorf("raglit: ocr page %d (loop-break retry): %w", img.Page, err)
@@ -327,6 +365,34 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (str
 		// than failing: nothing would ever revisit it. Fail loudly so the job
 		// retries or a human looks.
 		if rep != nil {
+			// Instruction did not work either. Measured against chandra on both
+			// PL99-0479 sheets: told in as many words not to emit table markup, it
+			// emitted the identical 54-character block ten times over. A model that
+			// will not stop describing emptiness cannot be talked out of it.
+			//
+			// So SALVAGE, but only for a structural loop, and the distinction is
+			// the whole licence to do it. The refusal above rests on a premise —
+			// "a cut transcription is the page's text with an UNKNOWN amount
+			// missing" — and for empty markup that premise is false: what follows
+			// the cut is blank cells, and the prefix holds every row that has
+			// content. For a content loop the premise holds and the page is still
+			// refused.
+			//
+			// It is not free, and the engine says so rather than the text
+			// pretending otherwise. Anything BELOW the loop is lost — on these
+			// sheets, the "Adjoining Property" heading under the blank remainder —
+			// so the page is recorded as enginePartialVision: indexed, findable,
+			// and marked as a page whose tail was never read.
+			if structuralRepetition(rep) {
+				best := unloopedPrefix(text, rep)
+				if a, b := FlattenForIndex(best), FlattenForIndex(unloopedPrefix(first, rep0)); len(strings.TrimSpace(b)) > len(strings.TrimSpace(a)) {
+					best = unloopedPrefix(first, rep0)
+				}
+				if strings.TrimSpace(FlattenForIndex(best)) != "" {
+					o.tracef("both passes looped on empty markup — salvaging %d chars of content, tail NOT read", len(best))
+					return strings.TrimSpace(best), shrinks, errSalvagedTail
+				}
+			}
 			return "", shrinks, fmt.Errorf(
 				"raglit: ocr page %d: the model %s, on the loop-break retry too — page NOT indexed",
 				img.Page, rep)
@@ -349,14 +415,145 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (str
 		// matters: a loop pads the cut output with the same span over and over, so
 		// comparing raw lengths would flag every genuine recovery as a failure —
 		// the successful retry is routinely shorter than the garbage it replaces.
-		if got := len(strings.TrimSpace(text)); cut > 0 && got < cut {
+		// On the sparse path the bar is CONTENT, not characters.
+		//
+		// The retry was told to omit the blank rows, so it is expected to come back
+		// shorter by exactly the markup that caused the loop — comparing raw
+		// lengths would reject every recovery this instruction exists to produce.
+		// Comparing flattened text asks the question that actually matters, since
+		// empty cells contribute no characters to it: did the retry come back with
+		// less READING than the first pass had already got off the page?
+		got, bar := len(strings.TrimSpace(text)), cut
+		if sparse {
+			got = len(strings.TrimSpace(FlattenForIndex(text)))
+			bar = len(strings.TrimSpace(FlattenForIndex(unloopedPrefix(first, rep0))))
+		}
+		if bar > 0 && got < bar {
 			return "", shrinks, fmt.Errorf(
 				"raglit: ocr page %d: the loop-break retry returned %d chars where the cut pass had already transcribed %d "+
 					"before it started repeating — a shorter retry means the page was dropped, not recovered; page NOT indexed",
-				img.Page, got, cut)
+				img.Page, got, bar)
 		}
 	}
 	return strings.TrimSpace(text), shrinks, nil
+}
+
+// errSalvagedTail reports a page read up to a structural loop and no further:
+// every row with content is present, the blank remainder and anything below it
+// is not. A sentinel rather than a bool so it cannot be ignored by a caller that
+// only checks err — the page IS usable, and the caller must say so on the row.
+var errSalvagedTail = errors.New("raglit: page salvaged at a structural loop — content read, tail not")
+
+// enginePartialVision marks a page the vision model read only as far as a
+// structural loop. A member of the "vision" family (see isVisionEngine) because
+// a model did read it; distinct because part of the page was never seen.
+const enginePartialVision = "vision-partial"
+
+// isVisionEngine reports whether a page was read by the VLM, salvaged or whole.
+// The family exists so a new engine value cannot silently fall out of the
+// checks that decide model attribution, described-fraction scoring and what the
+// review panel shows.
+func isVisionEngine(e string) bool { return e == "vision" || e == enginePartialVision }
+
+// sparseTableAssist is the retry instruction for a page whose table is mostly
+// empty. An INSTRUCTION and nothing else — it carries no transcribed text, so it
+// cannot re-anchor the model on its own partial output.
+//
+// It asks for the blank remainder to be SUMMARISED rather than dropped, because
+// how many rows a form leaves blank is itself a fact about the record: a Record
+// of Ownership with one entry in fourteen rows says one transfer was recorded,
+// and a transcription that silently omits the empty rows loses that.
+const sparseTableAssist = "\n\nIMPORTANT — this page contains a table whose rows are mostly EMPTY, " +
+	"and a previous attempt to read it got stuck emitting blank cells forever.\n" +
+	"For THIS page only, do NOT use table markup of any kind. No <table>, no <tr>, no <td>, no | pipes.\n" +
+	"Instead: write the column headings as one plain line, then write ONE PLAIN LINE for each row that " +
+	"CONTAINS DATA, with its values separated by a comma. Skip every empty row entirely. " +
+	"Finish with one line naming how many rows were left blank, e.g. (11 further rows are blank)."
+
+// structuralRepetition reports that what the model looped on carries NO CONTENT
+// — it is empty markup, not text.
+//
+// This is the line between two failures that look identical in a log and are
+// opposite in what they mean:
+//
+//	content    a model re-emitting an 85-character span of a legal description
+//	           has LOST ITS PLACE. Its output is the page with an unknown amount
+//	           missing, and indexing it would be indexing a lie.
+//	structural a model emitting `<td></td><td></td></tr><tr>` has not lost its
+//	           place. It read every row that has content and is working through
+//	           the blank remainder of the grid.
+//
+// Any letter or digit OUTSIDE the markup makes it content, and the strict
+// reading (refuse) still applies.
+func structuralRepetition(rep *llm.RepetitionInfo) bool {
+	if rep == nil || strings.TrimSpace(rep.Sample) == "" {
+		return false
+	}
+	for _, r := range outsideMarkup(rep.Sample) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// outsideMarkup returns the characters of s that are not inside a tag.
+//
+// Hand-rolled rather than FlattenForIndex because the input is a SAMPLE — one
+// period of a repeating block, sliced out of a stream wherever the loop happened
+// to begin. It routinely starts and ends mid-tag:
+//
+//	><td></td><td></td><td></td></tr><tr><td></td><td></td
+//
+// A tag-stripping regexp leaves the dangling `<td` and the orphan `>`, and the
+// `td` reads as two letters of content — which flips the verdict to "the model
+// lost its place" and drops a page that was only ever stuttering on blanks.
+// Scanning by depth has no such edge: an unterminated tag simply never closes.
+func outsideMarkup(s string) string {
+	// The sample is sliced at an arbitrary offset, so it can begin PART WAY
+	// THROUGH a tag — the real cut on the Record of Ownership sheets began
+	// `td><td></td>…`. Those two leading letters sit outside any `<`, so a plain
+	// depth scan reports them as content and the page is dropped as "lost text".
+	// A `>` before the first `<` can only be the tail of a tag that started
+	// before the sample did, so everything up to it goes.
+	if i := strings.IndexByte(s, '>'); i >= 0 {
+		if j := strings.IndexByte(s, '<'); j < 0 || i < j {
+			s = s[i+1:]
+		}
+	}
+	var b strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch {
+		case r == '<':
+			depth++
+		case r == '>':
+			if depth > 0 {
+				depth--
+			}
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// unloopedPrefix is a cut generation with the redundant copies of the repeated
+// block trimmed off the end, leaving one intact copy — the text the model
+// actually got off the page before it began stuttering.
+func unloopedPrefix(text string, rep *llm.RepetitionInfo) string {
+	if rep == nil || rep.Trailing <= 0 || rep.Trailing >= len(text) {
+		return text
+	}
+	out := text[:len(text)-rep.Trailing]
+	// The cut is a byte offset and lands wherever the period says, which is
+	// routinely mid-tag — it left a bare `</td` at the end of a salvaged Record
+	// of Ownership, indexed as if it were words. Drop a trailing tag that never
+	// closes.
+	if i := strings.LastIndexByte(out, '<'); i > strings.LastIndexByte(out, '>') {
+		out = out[:i]
+	}
+	return out
 }
 
 // unloopedLen is how much of a cut generation was real transcription: its length

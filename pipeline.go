@@ -260,13 +260,13 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			}
 			text = t
 			engine = eng
-			if engine == "vision" {
+			if isVisionEngine(engine) {
 				model = ocr.Model
 			} else {
 				model = engine
 			}
 			ocrEngines[engine]++
-			if engine == "vision" {
+			if isVisionEngine(engine) {
 				sawVision = true
 			}
 			// Save the page image + record provenance with the REAL cascade engine
@@ -365,13 +365,13 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		// together with no seam, and calling that 0% is a claim, not an absence —
 		// see DescribableRead. Anything that is not a model read (a text layer, a
 		// glyph recogniser) cannot describe at all, so 0 there is true.
-		scorable := pages[i].engine != "vision" || DescribableRead(pages[i].text)
+		scorable := !isVisionEngine(pages[i].engine) || DescribableRead(pages[i].text)
 		flat := FlattenForIndex(pages[i].text)
 		if n := len(flat); n > 0 && scorable {
 			d := measured[pages[i].page]
 			measured[pages[i].page] = [2]int{
 				d[0] + n,
-				d[1] + int(DescribedFraction(pages[i].text)*float64(n) + 0.5),
+				d[1] + int(DescribedFraction(pages[i].text)*float64(n)+0.5),
 			}
 		}
 		if flat != pages[i].text {

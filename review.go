@@ -78,7 +78,7 @@ type DocSummary struct {
 // invisible in its row. (Raw for the reason TruePages gives — see its comment on
 // regenerating the sqlc layer.)
 //
-// The exclusion is `origin <> 'identity'`, NOT `origin = ''`, and the difference
+// The exclusion is `origin <> 'identity'`, NOT `origin = ”`, and the difference
 // is load-bearing. A photograph's only fragment is the model's DESCRIPTION of it
 // (origin='described'), which is not a caption about the document — it IS the
 // document's indexed content, and all of it there will ever be. Written the
@@ -127,7 +127,7 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 			n := int(e.N)
 			out[i].Engines[e.Engine] = n
 			out[i].Pages += n
-			if e.Engine == "vision" {
+			if isVisionEngine(e.Engine) {
 				out[i].Vision += n
 			}
 		}
@@ -181,7 +181,7 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 	for _, pr := range prows {
 		page := PageReview{
 			Page: int(pr.Page), Engine: pr.Engine,
-			Vision: pr.Engine == "vision", HasImage: pr.ImagePath != "",
+			Vision: isVisionEngine(pr.Engine), HasImage: pr.ImagePath != "",
 			TextChars: int(pr.TextChars), DescribedChars: int(pr.DescribedChars),
 		}
 		// Page text is the concatenation of the fragments indexed for the page.

@@ -184,6 +184,43 @@ model described a record of survey as "a vicinity map showing a grid of
 sections" — true of one inset, silent about the survey. The region root is asked
 a different question: account for everything here.
 
+### A mostly-empty grid defeats a whole-page read AND the region walk
+
+A model handed a 14-row table with one filled row does not lose its place. It
+reads every row that has content, then works through the blank remainder one
+`<td></td>` at a time until the repetition guard cuts the stream — and the page
+is dropped entire.
+
+The region walk cannot rescue it: the ROOT read loops before there is anything
+to subdivide. Measured on both PL99-0479 Record of Ownership sheets — page 2 of
+the mother parcel tiled into six and returned near-empty tiles; page 3 of the
+certification returned `1 region, repetition exhausted`.
+
+**Two failures look identical in a log and are opposite in meaning.**
+
+| repeated block | what it means | what to do |
+|---|---|---|
+| real text (a legal description) | the model LOST ITS PLACE; output is the page with an unknown amount missing | refuse — indexing it indexes a lie |
+| empty markup (`<td></td></tr><tr>`) | the model kept its place and is stuttering on blanks | the prefix holds every row with content |
+
+`structuralRepetition` draws the line: any letter or digit outside the markup
+makes it content. The sample is sliced at an arbitrary offset and routinely
+begins PART WAY THROUGH a tag — the real cut began `td><td></td>…`, whose two
+leading letters a naive scan reads as content. That bug shipped once and kept
+both sheets failing after the first fix; the scan now drops a `>` that precedes
+the first `<`.
+
+**Prompting does not fix it — measured, twice.** Sampling is the wrong lever (no
+temperature makes emptiness end sooner), and chandra told in as many words to
+emit no table markup produced the identical 54-character block ten times over.
+
+So a structural loop on BOTH passes is SALVAGED: the prefix is kept, redundant
+copies trimmed to one, any dangling mid-tag fragment dropped. It is not free —
+anything below the loop is lost, here the "Adjoining Property" heading — so the
+page records `engine = vision-partial`, a member of the vision family
+(`isVisionEngine`) so model attribution and described-scoring still see it, and
+distinct so nothing reads it as a whole page.
+
 ### A page is not either/or — it is a fraction
 
 A photograph is wholly described and an order is wholly transcribed, but a
