@@ -383,6 +383,31 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (str
 			// sheets, the "Adjoining Property" heading under the blank remainder —
 			// so the page is recorded as enginePartialVision: indexed, findable,
 			// and marked as a page whose tail was never read.
+			// A CONTENT loop on a whole page is the measured signature of a page
+			// read SIDEWAYS, and the region walk already knows it. From its own
+			// sweep of the survey (plan/hierarchical-regions.md, 2026-08-03):
+			//
+			//	whole sheet sideways  9,316 chars  89% of lines duplicated  2 bearings wrong
+			//	whole sheet upright   2,187 chars   2% duplicated           correct
+			//
+			// "The wrong orientation does not lose text. It makes the model run
+			// on." A plan sheet filed on its side hands the model a column of
+			// rotated glyphs, it re-reads the same block, and the guard cuts it —
+			// which is exactly how page 9 of the lisser exhibit failed, on a
+			// Record of Survey whose notes name the lot certification at issue.
+			//
+			// So TURN THE PAGE. Only right angles, and the rotation is accepted
+			// only when the reading is measurably less degenerate — the one
+			// discriminator that sweep found with no overlap between the good and
+			// bad renders. A rotation that does not clear the repetition is
+			// discarded and the page still fails.
+			if !structuralRepetition(rep) {
+				if turned, deg, ok := o.readTurned(ctx, img, prompt, opts); ok {
+					o.tracef("content loop cleared by rotating the page %d° — reading it upright", deg)
+					o.event("vision.rotated", map[string]any{"img_sha": imgSHA(img.Data), "degrees": deg, "chars": len(turned)})
+					return strings.TrimSpace(turned), shrinks, nil
+				}
+			}
 			if structuralRepetition(rep) {
 				best := unloopedPrefix(text, rep)
 				if a, b := FlattenForIndex(best), FlattenForIndex(unloopedPrefix(first, rep0)); len(strings.TrimSpace(b)) > len(strings.TrimSpace(a)) {
@@ -436,6 +461,50 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (str
 		}
 	}
 	return strings.TrimSpace(text), shrinks, nil
+}
+
+// loopRotations are the right angles tried when a whole-page read loops on
+// CONTENT, in the order they pay off: a sheet filed on its side is overwhelmingly
+// a quarter turn away, either direction, and 180° is the rare upside-down scan.
+var loopRotations = []int{270, 90, 180}
+
+// readTurned re-reads a page at each right angle and returns the first reading
+// that is not a repetition loop.
+//
+// The bar is degenerateRatio, borrowed from the region walk because that is
+// where it was measured: correct renders of the survey duplicated 2-3% of their
+// lines and the mis-rotated ones 89-94%, with nothing observed between. A
+// rotation that comes back still repeating itself is not an improvement and is
+// discarded — this turns a page, it does not lower the standard.
+//
+// The prompt is the ORIGINAL one. Nothing about the failed pass is fed back, for
+// the reason the loop-break retry gives: re-anchoring a transcription on a
+// partial transcription is how a VLM starts inventing text that reads like the
+// real thing.
+func (o *OCR) readTurned(ctx context.Context, img PageImage, prompt string, opts *llm.ChatOpts) (string, int, bool) {
+	src, _, err := image.Decode(bytes.NewReader(img.Data))
+	if err != nil {
+		return "", 0, false
+	}
+	for _, deg := range loopRotations {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, rotateImage(src, deg)); err != nil {
+			continue
+		}
+		msg := llm.Message{Role: "user", Parts: []llm.ContentPart{
+			llm.TextPart(prompt), llm.ImageData("image/png", buf.Bytes()),
+		}}
+		text, rep, err := collectStream(ctx, o.Client, []llm.Message{msg}, opts)
+		if err != nil || strings.TrimSpace(text) == "" {
+			continue
+		}
+		if rep != nil || degenerateRatio(text) >= degenerateLineRatio {
+			o.tracef("rotation %d° still repeats itself — discarded", deg)
+			continue
+		}
+		return text, deg, true
+	}
+	return "", 0, false
 }
 
 // errSalvagedTail reports a page read up to a structural loop and no further:

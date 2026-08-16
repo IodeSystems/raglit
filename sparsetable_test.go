@@ -1,12 +1,29 @@
 package raglit
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 
 	"github.com/iodesystems/agentkit/llm"
 )
+
+// onePixelPNG is a decodable image, which the rotation path needs — it turns the
+// pixels rather than trusting a flag.
+func onePixelPNG(t *testing.T) []byte {
+	t.Helper()
+	m := image.NewRGBA(image.Rect(0, 0, 2, 3))
+	m.Set(0, 0, color.Black)
+	var b bytes.Buffer
+	if err := png.Encode(&b, m); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
 
 // A mostly-empty grid defeated both the whole-page read and the region walk.
 //
@@ -253,5 +270,81 @@ func TestSparseTable_ContentLoopIsNeverSalvaged(t *testing.T) {
 	_, _, _, err := o.PageAsSeen(context.Background(), PageImage{Page: 1, Mime: "image/png", Data: []byte("x")})
 	if err == nil {
 		t.Fatal("a page whose model lost its place in real text was salvaged — that indexes an unknown amount of missing text as whole")
+	}
+}
+
+// A CONTENT loop on a whole page is the measured signature of a page read
+// SIDEWAYS — so turn it, don't drop it.
+//
+// From the region walk's own sweep (plan/hierarchical-regions.md): the sideways
+// render duplicated 89% of its lines and got two bearings wrong; upright
+// duplicated 2% and was correct. "The wrong orientation does not lose text. It
+// makes the model run on." Page 9 of the lisser exhibit failed exactly this way,
+// on a Record of Survey whose notes name lot certification PL99-0479.
+func TestContentLoop_ARotatedSheetIsTurnedRatherThanDropped(t *testing.T) {
+	span := "ALSO LOTS 13 AND 14, BLOCK 30, PLAT OF RESERVE ADDITION TO THE TOWN OF MONTBORNE\n"
+	rep := &llm.RepetitionInfo{Sample: span, Period: len(span), Reps: 3, Trailing: len(span) * 2}
+	upright := "RECORD OF SURVEY\nNOTE:\n3. LOTS E, F, G, H & I ARE CREATED PER LOT CERTIFICATION PL99-0479\n" +
+		"WITH ADJUSTING BOUNDARY LINES FOR MINIMUM LOT SIZE.\nSURVEYOR'S CERTIFICATE\n"
+	c := &loopingChatter{
+		// first pass, loop-break retry, then the rotated read
+		replies: []string{strings.Repeat(span, 3), strings.Repeat(span, 3), upright},
+		reps:    []*llm.RepetitionInfo{rep, rep, nil},
+	}
+	o := &OCR{Client: c, Model: "test-vlm"}
+	got, engine, _, err := o.PageAsSeen(context.Background(), PageImage{Page: 9, Mime: "image/png", Data: onePixelPNG(t)})
+	if err != nil {
+		t.Fatalf("a sideways sheet was dropped instead of turned: %v", err)
+	}
+	if !strings.Contains(got, "PL99-0479") {
+		t.Fatalf("the upright reading did not come back: %q", got)
+	}
+	if engine != "vision" {
+		t.Fatalf("engine %q — a rotated read is a COMPLETE read, not a partial one", engine)
+	}
+	if c.n < 3 {
+		t.Fatalf("only %d calls — the page was never re-read at another angle", c.n)
+	}
+}
+
+// A rotation that still repeats itself is not an improvement, and the page
+// still fails. Turning a page must not lower the standard.
+func TestContentLoop_ARotationThatStillRepeatsIsDiscarded(t *testing.T) {
+	span := "thence North 89 degrees East a distance of 208.71 feet\n"
+	rep := &llm.RepetitionInfo{Sample: span, Period: len(span), Reps: 4, Trailing: len(span) * 3}
+	// Every angle comes back just as degenerate, with no repetition cut to
+	// betray it — degenerateRatio is what has to catch this.
+	c := &loopingChatter{
+		replies: []string{strings.Repeat(span, 4), strings.Repeat(span, 4),
+			strings.Repeat(span, 4), strings.Repeat(span, 4), strings.Repeat(span, 4)},
+		reps: []*llm.RepetitionInfo{rep, rep, nil, nil, nil},
+	}
+	o := &OCR{Client: c, Model: "test-vlm"}
+	_, _, _, err := o.PageAsSeen(context.Background(), PageImage{Page: 1, Mime: "image/png", Data: onePixelPNG(t)})
+	if err == nil {
+		t.Fatal("a reading that repeats 100% of its lines was accepted because it arrived from a rotation")
+	}
+}
+
+// A STRUCTURAL loop is not a rotation problem and must not spend calls turning
+// the page — it goes straight to salvage.
+func TestContentLoop_StructuralLoopsDoNotRotate(t *testing.T) {
+	blank := "<tr><td></td><td></td></tr>"
+	rep := &llm.RepetitionInfo{Sample: blank, Period: len(blank), Reps: 10, Trailing: len(blank) * 9}
+	body := `<tr><td>Cartwright</td><td>McKinnon</td></tr>`
+	c := &loopingChatter{
+		replies: []string{body + strings.Repeat(blank, 10), body + strings.Repeat(blank, 10)},
+		reps:    []*llm.RepetitionInfo{rep, rep},
+	}
+	o := &OCR{Client: c, Model: "test-vlm"}
+	_, engine, _, err := o.PageAsSeen(context.Background(), PageImage{Page: 2, Mime: "image/png", Data: onePixelPNG(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine != enginePartialVision {
+		t.Fatalf("engine %q", engine)
+	}
+	if c.n != 2 {
+		t.Fatalf("%d calls — an empty grid was rotated, which cannot help and costs a call per angle", c.n)
 	}
 }
