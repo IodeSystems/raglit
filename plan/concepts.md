@@ -239,7 +239,7 @@ So the two loop kinds route to different remedies, and neither lowers the bar:
 
 | loop | remedy | accepted when |
 |---|---|---|
-| structural (empty markup) | salvage the prefix | always — the tail is blank cells; page marked `vision-partial` |
+| structural (empty markup) | salvage the prefix | always — the tail is blank cells; page marked `vision-partial`, reported as `page-partial` |
 | content (real text) | re-read at each right angle | `degenerateRatio` drops below 0.5; else the page still fails |
 
 Rotation reuses `degenerateRatio`/`degenerateLineRatio` from the region walk
@@ -247,6 +247,13 @@ rather than inventing a second threshold, because that is where they were
 measured — correct renders duplicated 2-3% of their lines, mis-rotated ones
 89-94%, nothing observed between. A rotated read is a COMPLETE read, so it stays
 `engine = vision`.
+
+A salvaged page is reported in Health as `page-partial`, kept apart from
+`page-unread` because the two need different judgement: an unread page is a hole
+a reader can SEE, while a salvaged page reads like a whole page — heading, rows,
+a shape — and what is missing left no gap in the text to notice. Its fix is not
+`reread` (the loop is deterministic and salvages identically) but reading the
+page in pieces, and failing that, a person looking at the stored image.
 
 Recovered page 9 of the lisser exhibit, a Record of Survey filed on its side,
 whose notes name lot certification PL99-0479 and the WAC 332.130 occupational

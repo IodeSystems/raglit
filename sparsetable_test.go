@@ -348,3 +348,51 @@ func TestContentLoop_StructuralLoopsDoNotRotate(t *testing.T) {
 		t.Fatalf("%d calls — an empty grid was rotated, which cannot help and costs a call per angle", c.n)
 	}
 }
+
+// A salvaged page must be FINDABLE, or the trade that created it is unsound.
+//
+// page-unread's own reasoning applies harder here: an unread page is a hole a
+// reader can see, but a salvaged page reads like a whole page — heading, rows, a
+// shape — and what is missing left no gap in the text to notice. On the Record
+// of Ownership sheets the lost part was the "Adjoining Property" heading under
+// the blank rows, exactly the absence a reader takes for the record's silence.
+func TestPartialPage_IsReportedInHealth(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	const doc = "file:///corpus/ownership.pdf"
+	if err := s.Ingest(ctx, Document{Path: doc, Title: "ownership.pdf",
+		Fragments: []Fragment{{Text: "Record of Ownership. 11/1/72 777201 Cartwright McKinnon RC"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := s.db.QueryRow(`SELECT id FROM documents WHERE path=?`, doc).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO ocr_pages(doc_id,page,engine) VALUES(?,?,?)`,
+		id, 2, enginePartialVision); err != nil {
+		t.Fatal(err)
+	}
+	probs, err := s.Problems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *Problem
+	for i := range probs {
+		if probs[i].Kind == ProblemPartialPage && probs[i].Subject == doc {
+			got = &probs[i]
+		}
+		if probs[i].Kind == ProblemUnreadPage && probs[i].Subject == doc {
+			t.Fatal("a salvaged page was reported as UNREAD — it has content, and the two need different judgement")
+		}
+	}
+	if got == nil {
+		t.Fatal("a page whose tail was never read is invisible in Health; nothing would ever revisit it")
+	}
+	if !strings.Contains(got.Detail, "2") {
+		t.Fatalf("the row does not say which page: %q", got.Detail)
+	}
+	// reread is the wrong remedy — the loop is deterministic and salvages again.
+	if strings.Contains(got.Fix, "reread") {
+		t.Fatalf("fix %q re-runs a deterministic failure", got.Fix)
+	}
+}

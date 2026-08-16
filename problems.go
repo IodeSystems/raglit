@@ -82,6 +82,22 @@ const (
 	// a partial document nobody knows is partial is the more dangerous object,
 	// because search returns it and a reader assumes the absence is the record's.
 	ProblemUnreadPage ProblemKind = "page-unread"
+	// ProblemPartialPage — a page the model read only as far as a structural
+	// loop: every row with content is present, the blank remainder and anything
+	// BELOW it was never seen (see enginePartialVision).
+	//
+	// Separate from page-unread because the two need different judgement. An
+	// unread page is a hole a reader can see. A salvaged page reads like a whole
+	// page — it has a heading, rows, a shape — and the part that is missing left
+	// no gap in the text to notice. On the two Record of Ownership sheets what
+	// went missing was the "Adjoining Property" heading under the blank rows,
+	// which is precisely the kind of absence a reader would take for the
+	// record's own silence.
+	//
+	// Salvage is still the right trade: the alternative was dropping the page
+	// entire, and it dropped a 1972 chain-of-title entry with it. The trade is
+	// only sound while the partial is FINDABLE, which is what this row is for.
+	ProblemPartialPage ProblemKind = "page-partial"
 	// ProblemEmptySource — the file is there and it is zero bytes.
 	//
 	// Reported rather than failed, because having no content is a fact about the
@@ -177,6 +193,22 @@ var problemQueries = []problemQuery{
 		// refusal, and the page needs `raglit regions` to be read in pieces
 		// instead. Both are one command; the cheap one is offered first.
 		fix: func(p Problem) string { return "raglit reread " + p.Subject },
+	},
+	{
+		kind: ProblemPartialPage,
+		// Per DOCUMENT, like page-unread, and for the same reason.
+		sql: `SELECT d.path, 0, 'ocr',
+		             'salvaged page(s), tail not read: ' || group_concat(o.page, ' ')
+		        FROM ocr_pages o JOIN documents d ON d.id = o.doc_id
+		       WHERE o.engine = '` + enginePartialVision + `'
+		         AND NOT EXISTS (SELECT 1 FROM withdrawals w WHERE w.path = d.path)
+		       GROUP BY d.id
+		       ORDER BY d.path`,
+		// NOT `reread`: the loop is deterministic, so a re-read salvages
+		// identically. Reading the page in pieces is the one thing that has not
+		// been tried on it — and if that fails too, the answer is a person
+		// looking at the stored page image, not another model call.
+		fix: func(p Problem) string { return "raglit regions --page N " + p.Subject },
 	},
 	{
 		kind: ProblemGenerated,
