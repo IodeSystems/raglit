@@ -247,12 +247,30 @@ dogfood pool: 2651 entries, 2 carrying a failed page, 38 with no fragments at
 all. Small, and not the cause of the reading gap — that was simply an early
 return ahead of the recording call.
 
-**Known gap, not fixed.** Only 14 of 657 documents in the delano index carry a
-reading at all — readings are recorded at ingest, and most of the corpus predates
-them. 342 documents have vision pages and no reading. They cannot be backfilled
-honestly: the described fraction needs markup that no longer exists, so a
-backfill would record `0% described` for every one of them, which is the same
-false claim in a new place. The only honest repair is a re-read.
+**Backfilled 2026-08-15.** Readings went from 14 of 657 documents to 412, and no
+document with pages lacks one. A re-read alone would NOT have done it: the OCR
+page cache is keyed on the page image hash, so a re-ingest replays the same
+answer — the trap `reread.go` was written for. Of 1422 cached vision pages, 768
+carried layout markup and 201 carried figure markers (free to re-measure); the
+other 453 carried neither and were purged so they would actually be read again.
+
+What the corpus turned out to be:
+
+| band | documents | what it is |
+|---|---|---|
+| ≥90% described | 46 | photographs — findable, not quotable |
+| 20-89% | 32 | maps, survey sheets, screenshot exhibits |
+| 5-19% | 72 | pages with figures in real text |
+| 1-4% | 103 | a stray caption; below the floor, no subject claim |
+| measured 0% | 152 | clean transcription |
+| unmeasured | 7 | single images the model returned unmarked |
+
+138 readings now report a SUBJECT claim they did not before. The sharpest case is
+`2026-07-30-2008-summit-survey-correction.pdf` at 88%: its entire indexed text is
+a model's account of a survey map — "Survey map showing Parcel A, B, C… includes
+handwritten annotations: 'Incorrect' (blue arrow)" — two points under the
+threshold that would have marked it unquotable, and previously carrying no
+reading at all and so no trust of any kind.
 
 ### The cheap OCR tier cannot serve a corpus of drawings
 
