@@ -172,3 +172,59 @@ func TestHitTrust_ARulingReachesTheHit(t *testing.T) {
 		t.Fatalf("text %d — the words are still the recogniser's", tr.Facets[FacetText])
 	}
 }
+
+// The caveat has to answer for the FRAGMENT the reader is reading.
+//
+// A document-level number can be honestly small while the excerpt in front of a
+// person is entirely a model's. Measured on this corpus: the 2002 record of
+// survey scores 3% described — correct, a transcribed sheet with one figure —
+// and the top excerpt a survey query returns from it is
+// "[FIGURE: Section map showing grid lines and section number 6]", which is
+// nobody's words. A document-level caveat alone stays silent there.
+func TestHitCaveat_AFigureExcerptSaysSoEvenWhenTheDocumentIsMostlyTranscribed(t *testing.T) {
+	h := Hit{
+		Text:  "[FIGURE: Section map showing grid lines and section number 6]",
+		Trust: &HitTrust{Method: MethodVision, DescribedPct: 3},
+	}
+	if h.Trust.Caveat() != "" {
+		t.Fatal("the document-level caveat should be silent at 3% — the fixture no longer covers the case")
+	}
+	got := h.Caveat()
+	if !strings.Contains(got, "figure") && !strings.Contains(got, "DESCRIPTION") {
+		t.Fatalf("caveat %q — the reader is looking at a model's words with nothing to say so", got)
+	}
+}
+
+// A figure marker INSIDE a page of real transcription is a figure in a
+// document, not a description of one, and must not caveat the passage.
+func TestHitCaveat_AFigureInsideRealTextIsNotADescription(t *testing.T) {
+	h := Hit{
+		Text: "IT IS HEREBY ORDERED that the motion to continue is granted, and the clerk " +
+			"shall note the same upon the docket of this court forthwith. " +
+			"[FIGURE: the court's seal] Dated this 14th day of March, 2023, at Mount Vernon.",
+		Trust: &HitTrust{Method: MethodTextLayer, DescribedPct: 0},
+	}
+	if got := h.Caveat(); got != "" {
+		t.Fatalf("caveat %q — the transcription is real and calling it generated is its own kind of lie", got)
+	}
+}
+
+// A fragment the pipeline MARKED described needs no arithmetic.
+func TestHitCaveat_AMarkedFragmentIsAlwaysCaveated(t *testing.T) {
+	h := Hit{
+		Origin: FragOriginDescribed,
+		Text:   "A red Chevrolet Malibu parked on a gravel lot, licence plate CEP0912.",
+		Trust:  &HitTrust{Method: MethodVision, DescribedPct: 100},
+	}
+	if got := h.Caveat(); !strings.Contains(got, "nobody wrote these words") {
+		t.Fatalf("caveat %q", got)
+	}
+}
+
+// And with no reading at all, the document-level answer still comes through.
+func TestHitCaveat_FallsBackToTheDocumentLevelAnswer(t *testing.T) {
+	h := Hit{Text: "the surveyor set the corners on Thursday"}
+	if got := h.Caveat(); !strings.Contains(got, "never recorded") {
+		t.Fatalf("caveat %q", got)
+	}
+}

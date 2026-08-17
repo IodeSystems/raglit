@@ -136,6 +136,41 @@ type Hit struct {
 	Page    int     `json:"page,omitempty"`
 	Score   float64 `json:"score"`
 	Snippet string  `json:"snippet,omitempty"`
+	// Caveat is the one line to show beside the snippet when it cannot be read
+	// as the record — a model's description of an image, or a read nobody
+	// measured. EMPTY for an ordinary transcription, because a caveat on every
+	// row is a caveat on none.
+	//
+	// A consumer that shows the snippet and drops this is showing a model's
+	// account of a picture as though somebody wrote it down.
+	Caveat string `json:"caveat,omitempty"`
+	// Trust is the same fact structured: what produced the text, whether a
+	// person has ruled on it, and the per-facet confidences. Nil when raglit
+	// recorded nothing about how the document was read — which is NOT a claim
+	// that it is reliable, and is why Caveat is non-empty in that case.
+	Trust *HitTrust `json:"trust,omitempty"`
+}
+
+// HitTrust is how far a hit's text can be relied on, and about WHAT.
+//
+// Mirrored here rather than imported from raglit's root package, for the reason
+// this package exists: the contract is the JSON, so raglit may reshape its
+// internals and a consumer only has to keep speaking this.
+type HitTrust struct {
+	// Method is what produced the text: text-layer, vision-ocr, oidio-asr, pandoc…
+	Method string `json:"method,omitempty"`
+	// Level is machine, adapted or attested — whether a person has been through it.
+	Level string `json:"level,omitempty"`
+	// DescribedPct is how much of the document a model DESCRIBED rather than
+	// transcribed. -1 means it was never measured, which is distinct from 0.
+	DescribedPct int `json:"described_pct,omitempty"`
+	// Facets is the per-facet confidence, 0-100: text, speaker, layout, subject.
+	// A facet that is ABSENT is not claimed, rather than distrusted.
+	Facets map[string]int `json:"facets,omitempty"`
+	// Summary renders Facets weakest-first for a reader ("subject 80%", "text 90%").
+	Summary []string `json:"summary,omitempty"`
+	// RuledBy is the person who ruled, when one has.
+	RuledBy string `json:"ruled_by,omitempty"`
 }
 
 // Documents lists what an index holds. Path is raglit's absolute doc id.

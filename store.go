@@ -667,6 +667,37 @@ type HitTrust struct {
 	RuledBy string `json:"ruled_by,omitempty"`
 }
 
+// Caveat is the caution for THIS hit: the fragment first, then the document.
+//
+// Two levels, because a reader reads a FRAGMENT and the document-level number
+// can be honestly small while the excerpt in front of them is entirely a
+// model's. Measured on this corpus: a 2002 record of survey scores 3% described
+// — correctly, it is a transcribed sheet with one figure on it — and the top
+// excerpt a survey query returns from it is
+// `[FIGURE: Section map showing grid lines and section number 6]`, which is
+// nobody's words. A document-level caveat alone stays silent there.
+func (h Hit) Caveat() string {
+	// The fragment's own origin, when the pipeline marked it: a page that was
+	// essentially all description. Strongest signal available and it needs no
+	// guessing.
+	if h.Origin == FragOriginDescribed {
+		return "this passage is a model's DESCRIPTION of an image — nobody wrote these words"
+	}
+	// Otherwise, whether THIS text is a figure marker rather than transcription.
+	// Only when the marker is most of it: a marker inside a page of real
+	// transcription is a figure in a document, not a description of one.
+	if n := len(strings.TrimSpace(FlattenForIndex(h.Text))); n > 0 {
+		described := 0
+		for _, m := range figureRE.FindAllString(h.Text, -1) {
+			described += len(strings.TrimSpace(m))
+		}
+		if float64(described)/float64(n) >= describedPageThreshold {
+			return "this passage is a figure DESCRIPTION written by a model, not text off the page"
+		}
+	}
+	return h.Trust.Caveat()
+}
+
 // Caveat is the one line a renderer shows beside an excerpt, or "" when the hit
 // carries no caution worth spending a line on.
 //

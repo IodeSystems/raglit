@@ -514,7 +514,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			out.Body.Hits = append(out.Body.Hits, hitRow{
 				Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 				Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
-				Caveat: h.Trust.Caveat(), Trust: h.Trust,
+				Caveat: h.Caveat(), Trust: h.Trust,
 			})
 		}
 		return out, nil

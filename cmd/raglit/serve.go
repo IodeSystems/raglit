@@ -800,7 +800,7 @@ func taggedHits(hits []indexedHit) any {
 		out.Hits = append(out.Hits, outHit{
 			Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 			Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
-			Caveat: h.Trust.Caveat(), Trust: h.Trust,
+			Caveat: h.Caveat(), Trust: h.Trust,
 		})
 	}
 	return out
