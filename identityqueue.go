@@ -33,10 +33,13 @@ import (
 
 // IdentityJob is one queued captioning task.
 type IdentityJob struct {
-	ID         int64  `json:"id"`
-	Path       string `json:"path"`
-	State      string `json:"state"` // pending|running|done|skipped|error
-	Force      bool   `json:"force,omitempty"`
+	ID    int64  `json:"id"`
+	Path  string `json:"path"`
+	State string `json:"state"` // pending|running|done|skipped|error
+	Force bool   `json:"force,omitempty"`
+	// TagsOnly asks for TAGS and leaves the caption alone — the backfill for a
+	// corpus captioned before tags existed. See Store.TagDocument.
+	TagsOnly   bool   `json:"tags_only,omitempty"`
 	Error      string `json:"error,omitempty"`
 	EnqueuedAt int64  `json:"enqueued_at,omitempty"`
 	StartedAt  int64  `json:"started_at,omitempty"`
@@ -72,22 +75,34 @@ func (q IdentityQueueStatus) Empty() bool { return q.Pending == 0 && q.Running =
 // document named explicitly, or a --force sweep, is somebody saying that has
 // changed — which it does the moment a document is re-OCR'd.
 func (s *Store) EnqueueIdentity(path string, force bool) (bool, error) {
+	return s.enqueueIdentity(path, force, false)
+}
+
+// EnqueueTags queues one document for the TAGS-ONLY ask. Same queue, same
+// rows, same resumability — a backfill of hundreds is the same shape of work
+// as a captioning sweep and has no business being a second mechanism.
+func (s *Store) EnqueueTags(path string, force bool) (bool, error) {
+	return s.enqueueIdentity(path, force, true)
+}
+
+func (s *Store) enqueueIdentity(path string, force, tagsOnly bool) (bool, error) {
 	if strings.TrimSpace(path) == "" {
 		return false, fmt.Errorf("raglit: enqueue identity: empty path")
 	}
 	now := time.Now().UnixNano()
 	res, err := s.db.Exec(
-		`INSERT INTO identity_jobs(path, state, force, enqueued_at) VALUES(?, 'pending', ?, ?)
+		`INSERT INTO identity_jobs(path, state, force, tags_only, enqueued_at) VALUES(?, 'pending', ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
 		   state       = 'pending',
 		   force       = excluded.force,
+		   tags_only   = excluded.tags_only,
 		   error       = '',
 		   enqueued_at = excluded.enqueued_at,
 		   started_at  = 0,
 		   finished_at = 0,
 		   owner_pid   = 0
 		 WHERE identity_jobs.state IN ('done','skipped','error')`,
-		path, boolInt(force), now)
+		path, boolInt(force), boolInt(tagsOnly), now)
 	if err != nil {
 		return false, err
 	}
@@ -147,6 +162,45 @@ func (s *Store) EnqueueMissingIdentities(force bool) (int, error) {
 		return 0, err
 	}
 	return s.EnqueueIdentityFor(paths, force)
+}
+
+// EnqueueTagsFor queues every given path for the tags-only ask.
+func (s *Store) EnqueueTagsFor(paths []string, force bool) (int, error) {
+	n := 0
+	for _, p := range paths {
+		queued, err := s.EnqueueTags(p, force)
+		if err != nil {
+			return n, err
+		}
+		if queued {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// EnqueueMissingTags queues every CAPTIONED document that has no tags — or,
+// with force, every captioned document. The backfill for a corpus captioned
+// before tags existed.
+func (s *Store) EnqueueMissingTags(force bool) (int, error) {
+	var paths []string
+	if force {
+		ids, err := s.Identities()
+		if err != nil {
+			return 0, err
+		}
+		for _, st := range ids {
+			if !st.Empty() {
+				paths = append(paths, st.Path)
+			}
+		}
+	} else {
+		var err error
+		if paths, err = s.DocumentsMissingTags(); err != nil {
+			return 0, err
+		}
+	}
+	return s.EnqueueTagsFor(paths, force)
 }
 
 // captionableMissing is every document that OWES a caption: one that has none,
@@ -242,24 +296,24 @@ func (s *Store) staleCaptions() ([]string, error) {
 // Returns nil when the queue is empty.
 func (s *Store) claimNextIdentityJob() (*IdentityJob, error) {
 	var j IdentityJob
-	var force int
+	var force, tagsOnly int
 	now := time.Now().UnixNano()
 	err := s.db.QueryRow(
 		`UPDATE identity_jobs SET state='running', started_at=?, owner_pid=?
 		  WHERE id = (SELECT id FROM identity_jobs WHERE state='pending' ORDER BY id LIMIT 1)
-		 RETURNING id, path, force, enqueued_at`,
+		 RETURNING id, path, force, tags_only, enqueued_at`,
 		// The claiming process is stamped for the same reason ingest stamps it: a
 		// 'running' row outlives the process that owned it, and without the pid a
 		// fresh worker cannot tell its own live work from a dead worker's leftovers.
 		now, os.Getpid()).
-		Scan(&j.ID, &j.Path, &force, &j.EnqueuedAt)
+		Scan(&j.ID, &j.Path, &force, &tagsOnly, &j.EnqueuedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	j.State, j.Force, j.StartedAt = "running", force != 0, now
+	j.State, j.Force, j.TagsOnly, j.StartedAt = "running", force != 0, tagsOnly != 0, now
 	return &j, nil
 }
 
@@ -426,8 +480,19 @@ type identityTask struct {
 	// can tell whether the transcript has moved. Computed by the loader, off a
 	// slot, from the same read.
 	textHash string
-	id       DocIdentity
-	err      error
+	// tagCtx is the index's established tag vocabulary as it stood when this job
+	// was loaded (Store.TagContext). Read by the loader, off a slot, and carried
+	// per task rather than held on the Identifier — one *Identifier is shared by
+	// every slot and every index, so a field there would be a data race and
+	// would leak one index's vocabulary into the next. Read per job rather than
+	// once per drain so a corpus captioned from empty aligns with the terms it
+	// has established so far.
+	tagCtx string
+	// cur is the identity as it stood when the job was loaded. A tags-only job
+	// writes tags INTO it, so the caption and its authorship survive untouched.
+	cur DocIdentity
+	id  DocIdentity
+	err error
 }
 
 // Drain works the queue until it is empty, returning how many jobs finished
@@ -491,10 +556,19 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 			// not the last caption of it) and whether this job may replace what
 			// is already recorded.
 			cur, err := w.Store.DocumentIdentity(job.Path)
+			t.cur = cur
 			switch {
 			case err != nil:
 				t.err = err
-			case cur.ByPerson() || (!cur.Empty() && !job.Force):
+			// A tags-only job has the OPPOSITE keep rule: an existing caption is
+			// the precondition, not the reason to decline, and a person's is kept
+			// BY not touching it rather than by refusing the job. What it declines
+			// is a document that already has tags.
+			case job.TagsOnly && cur.Empty():
+				t.err = fmt.Errorf("raglit: no caption to tag — run identify first")
+			case job.TagsOnly && len(cur.ContentTags) > 0 && !job.Force:
+				t.err = ErrIdentityKept
+			case !job.TagsOnly && (cur.ByPerson() || (!cur.Empty() && !job.Force)):
 				t.err = ErrIdentityKept
 			default:
 				// The reading in force, not the machine's first attempt at it:
@@ -510,6 +584,7 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 					t.err = &ErrIdentityTooShort{Chars: contentChars(text)}
 				default:
 					t.text = text
+					t.tagCtx = w.Store.TagContext()
 					if h, herr := w.Store.documentTextHash(ctx, job.Path); herr == nil {
 						t.textHash = h
 					}
@@ -530,7 +605,13 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 			defer wg.Done()
 			for t := range loaded {
 				if t.err == nil {
-					t.id, t.err = w.Store.identifier.Identify(ctx, t.text)
+					if t.job.TagsOnly {
+						t.id = t.cur
+						t.id.ContentTags, t.id.RoleTags, t.err =
+							w.Store.identifier.IdentifyTags(ctx, t.text, t.tagCtx)
+					} else {
+						t.id, t.err = w.Store.identifier.Identify(ctx, t.text, t.tagCtx)
+					}
 					t.text = "" // done with it; do not carry a document through the queue
 				}
 				select {
@@ -550,7 +631,13 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 		// job, not a lost one — the row keeps the reason.
 		err := t.err
 		if err == nil {
-			t.id.TextHash = t.textHash
+			// A tags-only job keeps the hash the CAPTION was written from. The
+			// caption is what goes stale when the transcript moves, and stamping
+			// it with text no caption was read from would claim it is current and
+			// silence the re-arm in commitDoc.
+			if !t.job.TagsOnly {
+				t.id.TextHash = t.textHash
+			}
 			err = w.Store.SetDocumentIdentity(ctx, t.job.Path, t.id)
 		}
 		if errors.Is(err, ErrIdentityKept) {

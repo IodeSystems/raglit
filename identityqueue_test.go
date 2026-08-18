@@ -37,7 +37,7 @@ func (c *countingChatter) ChatStream(_ context.Context, _ []llm.Message, _ []llm
 	c.inFlight--
 	c.mu.Unlock()
 	return streamReply(fmt.Sprintf(
-		`{"name":"Document number %d, captioned","summary":"A document held in this corpus, summarised for the purpose of this test at sufficient length.","kind":"analysis"}`, n)), nil
+		`{"name":"Document number %d, captioned","summary":"A document held in this corpus, summarised for the purpose of this test at sufficient length.","kind":"analysis","content_tags":["purchase agreement","parcel conveyance","closing terms"],"role_tags":["reference"]}`, n)), nil
 }
 
 // storeWithDocs is an in-memory index holding n captionable documents.
@@ -178,7 +178,7 @@ func TestIdentityWorker_SkipsWhatIsAlreadyAnswered(t *testing.T) {
 	s := storeWithDocs(t, 2)
 	ctx := context.Background()
 	if _, err := s.RecordIdentity(ctx, "/corpus/scan_000.pdf",
-		DocIdentity{Name: "Mine", Summary: "A caption a person wrote, long enough to be real.", Kind: "deed"}, "carl"); err != nil {
+		DocIdentity{Name: "Mine", Summary: "A caption a person wrote, long enough to be real.", Kind: "deed", ContentTags: []string{"property transfer", "conveyance", "ownership record"}, RoleTags: []string{"reference"}}, "carl"); err != nil {
 		t.Fatal(err)
 	}
 	c := &countingChatter{}
@@ -452,7 +452,7 @@ func TestCommitDoc_ReArmsWhenTheTextChangesUnderACaption(t *testing.T) {
 	}
 
 	// A person's caption is never re-armed by a re-read.
-	if _, err := s.RecordIdentity(ctx, doc, DocIdentity{Name: "Mine, and it stays"}, "carl"); err != nil {
+	if _, err := s.RecordIdentity(ctx, doc, DocIdentity{Name: "Mine, and it stays", ContentTags: []string{"property transfer", "conveyance", "ownership record"}, RoleTags: []string{"reference"}}, "carl"); err != nil {
 		t.Fatal(err)
 	}
 	calls = c.calls
@@ -463,5 +463,181 @@ func TestCommitDoc_ReArmsWhenTheTextChangesUnderACaption(t *testing.T) {
 	}
 	if got, _ := s.DocumentIdentity(doc); got.Name != "Mine, and it stays" {
 		t.Errorf("person's caption = %+v", got)
+	}
+}
+
+// promptChatter answers like countingChatter and keeps every prompt it was
+// sent, under a lock — the worker calls it from every slot at once.
+type promptChatter struct {
+	mu      sync.Mutex
+	prompts []string
+}
+
+func (c *promptChatter) ChatStream(_ context.Context, msgs []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	c.mu.Lock()
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			c.prompts = append(c.prompts, p.Text)
+		}
+	}
+	c.mu.Unlock()
+	return streamReply(
+		`{"name":"A document captioned for this test","summary":"A document held in this corpus, summarised for the purpose of this test at sufficient length.","kind":"analysis","content_tags":["purchase agreement","parcel conveyance","closing terms"],"role_tags":["reference"]}`), nil
+}
+
+// The queue is the path that captions a whole corpus, so it is the path where
+// tags drift. It must carry the index's established vocabulary into the prompt
+// — a mechanism wired only into the one-off IdentifyDocument would never see
+// the hundreds of documents it exists for.
+func TestIdentityWorker_CarriesTheIndexVocabularyIntoThePrompt(t *testing.T) {
+	s := storeWithDocs(t, 2)
+	ctx := context.Background()
+	// One document already tagged, by a person, so the worker declines to
+	// re-caption it and the only prompt observed is the OTHER document's.
+	if _, err := s.RecordIdentity(ctx, "/corpus/scan_000.pdf", DocIdentity{
+		Name: "Mine", Summary: "A caption a person wrote, long enough to be real.", Kind: "deed",
+		ContentTags: []string{"lead paint abatement"}, RoleTags: []string{"reference"},
+	}, "carl"); err != nil {
+		t.Fatal(err)
+	}
+	c := &promptChatter{}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+	if _, err := s.EnqueueIdentity("/corpus/scan_001.pdf", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.prompts) == 0 {
+		t.Fatal("the worker asked nothing")
+	}
+	for _, p := range c.prompts {
+		if !strings.Contains(p, "lead paint abatement") {
+			t.Errorf("prompt carries no existing vocabulary:\n%s", p)
+		}
+	}
+}
+
+// tagsChatter answers the TAGS-ONLY ask, and refuses the full one — so a test
+// that thinks it is backfilling tags cannot quietly be rewriting captions.
+type tagsChatter struct {
+	mu      sync.Mutex
+	calls   int
+	prompts []string
+}
+
+func (c *tagsChatter) ChatStream(_ context.Context, msgs []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	c.mu.Lock()
+	c.calls++
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			c.prompts = append(c.prompts, p.Text)
+		}
+	}
+	c.mu.Unlock()
+	return streamReply(
+		`{"content_tags":["lead paint","boundary survey","escrow closing"],"role_tags":["report"]}`), nil
+}
+
+// The backfill for a corpus captioned before tags existed. What it must NOT do
+// is the reason it exists: a full re-identify would rewrite hundreds of names
+// that are already right, a person's among them.
+func TestIdentityWorker_TagsOnlyLeavesTheCaptionAndItsAuthorAlone(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	ctx := context.Background()
+	doc := "/corpus/scan_000.pdf"
+	before, err := s.RecordIdentity(ctx, doc, DocIdentity{
+		Name: "Mine", Summary: "A caption a person wrote, long enough to be real.", Kind: "deed",
+	}, "carl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before.ContentTags) != 0 {
+		t.Fatalf("the fixture starts tagged: %+v", before)
+	}
+
+	c := &tagsChatter{}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+	if _, err := s.EnqueueTags(doc, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.DocumentIdentity(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ContentTags) != 3 || got.ContentTags[0] != "lead paint" {
+		t.Errorf("content tags = %v", got.ContentTags)
+	}
+	if len(got.RoleTags) != 1 || got.RoleTags[0] != "report" {
+		t.Errorf("role tags = %v", got.RoleTags)
+	}
+	if got.Name != before.Name || got.Summary != before.Summary || got.Kind != before.Kind {
+		t.Errorf("the caption changed: %+v", got)
+	}
+	// A person's caption stays a person's. If a backfill demoted it to
+	// gen_source='machine', the next --force sweep would overwrite it.
+	if !got.ByPerson() || got.Model != before.Model || got.At != before.At {
+		t.Errorf("authorship changed: %+v (was %+v)", got, before)
+	}
+	// And the caption still says which text it was written from — stamping it
+	// with text no caption was read from would silence the staleness re-arm.
+	if got.TextHash != before.TextHash {
+		t.Errorf("text hash moved: %q → %q", before.TextHash, got.TextHash)
+	}
+
+	// Already tagged: a second sweep is not more work.
+	c.mu.Lock()
+	first := c.calls
+	c.mu.Unlock()
+	if _, err := s.EnqueueTags(doc, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.calls != first {
+		t.Errorf("a tagged document was asked again: %d → %d calls", first, c.calls)
+	}
+}
+
+func TestDocumentsMissingTags_SelectsCaptionedDocumentsOnly(t *testing.T) {
+	s := storeWithDocs(t, 3)
+	ctx := context.Background()
+	// Captioned, untagged — the backfill's work.
+	if err := s.SetDocumentIdentity(ctx, "/corpus/scan_000.pdf", DocIdentity{
+		Name: "Captioned before tags existed", Summary: "A summary long enough to be a real one.",
+		Kind: "deed", Source: IdentityByMachine, Model: "m", At: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Captioned AND tagged — done.
+	if err := s.SetDocumentIdentity(ctx, "/corpus/scan_001.pdf", DocIdentity{
+		Name: "Captioned and tagged", Summary: "A summary long enough to be a real one.",
+		Kind: "deed", Source: IdentityByMachine, Model: "m", At: 1,
+		ContentTags: []string{"lead paint"}, RoleTags: []string{"report"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// scan_002 has no caption at all — that is `identify`'s work, not this.
+	paths, err := s.DocumentsMissingTags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != "/corpus/scan_000.pdf" {
+		t.Fatalf("missing tags = %v", paths)
+	}
+	n, err := s.EnqueueMissingTags(false)
+	if err != nil || n != 1 {
+		t.Fatalf("enqueued %d, %v — want 1", n, err)
 	}
 }

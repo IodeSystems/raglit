@@ -115,6 +115,10 @@ func main() {
 		err = runReadings(os.Args[2:])
 	case "identify":
 		err = runIdentify(os.Args[2:])
+	case "audit-tags":
+		err = runAuditTags(os.Args[2:])
+	case "about":
+		err = runAbout(os.Args[2:])
 	case "health":
 		err = runHealth(os.Args[2:])
 	case "doctor":
@@ -222,7 +226,7 @@ usage:
                 no slice claims. That is what says a bundle is fully linearized
                 rather than merely started.
 
-  raglit identify [--list] [--force] [--limit N] [--wait] [--dry-run] [DOC...]
+  raglit identify [--list] [--force] [--tags-only] [--limit N] [--wait] [--dry-run] [DOC...]
                 what a document IS, as opposed to what its file is called: a
                 caption, a summary and a kind, asked of the model on the text
                 already indexed. Ingest does this per document; this is for a
@@ -240,6 +244,32 @@ usage:
   raglit identify --name "..." [--summary "..."] [--kind K] <DOC>
                 a PERSON saying what the document is. Supersedes the machine's
                 caption and is never regenerated over.
+
+  raglit identify --tags-only [--force] [DOC...]
+                the TAG backfill: what each document is about, and what job it
+                does in the corpus, asked for documents that already have a
+                caption. Written to the tag columns alone — the caption, its
+                author and the text it was written from are left exactly as
+                they are, which is what makes this safe to run over a corpus
+                somebody has already corrected by hand.
+
+  raglit about [--write] [--json]
+                what this INDEX is: how many documents, which kinds, which tags
+                — counted, so never stale — and, with --write, a paragraph the
+                model writes from the captions. Search returns the counted half
+                automatically when a query finds nothing, so an agent can tell
+                "not in this corpus" from "badly phrased".
+
+  raglit audit-tags [--min-count N] [--documents] [--json]
+  raglit audit-tags --merge "old,other=>new"
+                the tag vocabulary and the drift in it. Content tags are an open
+                vocabulary, so "lead paint", "LBP" and "paint inspection" arrive
+                from three documents meaning one thing; the identity prompt is
+                seeded with the index's established tags to stop most of that as
+                it happens, and this reports what got through. ≈ marks tags
+                sharing a word — a PROPOSAL. Whether two terms mean the same
+                thing is not something spelling establishes, so --merge applies
+                only what a person named.
 
   raglit mark <A> <B> <copy|version|unrelated> [--supersedes PATH] [--note ...]
                 record that ruling. Appended to raglit-audit.jsonl beside the

@@ -51,6 +51,14 @@ type DocIdentity struct {
 	Name    string `json:"name"`
 	Summary string `json:"summary"`
 	Kind    string `json:"kind"`
+	// ContentTags are 3–5 short noun phrases describing what the document is
+	// ABOUT (subject matter, entities, procedures). Open vocabulary but
+	// constrained in shape; see validateIdentity.
+	ContentTags []string `json:"content_tags,omitempty"`
+	// RoleTags are 1–3 terms from identityRoleKinds describing what job the
+	// document does in the corpus (documentation, reference, overview…).
+	// Closed vocabulary so they stay groupable and filterable.
+	RoleTags []string `json:"role_tags,omitempty"`
 	// Source is 'machine' (a model read the transcript) or 'person' (someone
 	// corrected it). A person's identity is never overwritten by a re-run.
 	Source string `json:"source,omitempty"`
@@ -202,6 +210,77 @@ func NormalizeKind(s string) (string, bool) {
 // IdentityKinds is the vocabulary, for a help string or a UI filter.
 func IdentityKinds() []string { return append([]string(nil), identityKinds...) }
 
+// identityRoleKinds is the CLOSED vocabulary for role tags: what job a document
+// does in the corpus. Closed for the same reason kind is — an open one produces
+// forty spellings of "documentation", and a role nobody can group by is a role
+// nobody can filter on. A document gets 1–3 of these (see validateIdentity).
+var identityRoleKinds = []string{
+	"documentation", // explains how something works; meant to be read
+	"reference",     // looked up for a fact, not read through
+	"overview",      // orienting summary of a larger body of work
+	"specification", // prescribes what something should be or do
+	"guide",         // step-by-step instructions for doing something
+	"changelog",     // records what changed and when
+	"notes",         // working notes, scratch, intermediate thinking
+	"report",        // findings from an investigation or measurement
+	"data",          // tabular or structured data, not prose about it
+	"other",         // none of the above genuinely fits
+}
+
+// identityRoleAliases maps common model spellings onto the vocabulary.
+var identityRoleAliases = map[string]string{
+	"doc":           "documentation",
+	"docs":          "documentation",
+	"manual":        "documentation",
+	"handbook":      "documentation",
+	"wiki":          "documentation",
+	"readme":        "documentation",
+	"ref":           "reference",
+	"lookup":        "reference",
+	"cheat sheet":   "reference",
+	"overview doc":  "overview",
+	"summary":       "overview",
+	"introduction":  "overview",
+	"intro":         "overview",
+	"spec":          "specification",
+	"requirements":  "specification",
+	"tutorial":      "guide",
+	"how-to":        "guide",
+	"howto":         "guide",
+	"walkthrough":   "guide",
+	"changelog":     "changelog",
+	"release notes": "changelog",
+	"scratch":       "notes",
+	"draft":         "notes",
+	"meeting notes": "notes",
+	"minutes":       "notes",
+	"csv":           "data",
+	"spreadsheet":   "data",
+	"dataset":       "data",
+}
+
+// NormalizeRole maps a model's role tag onto identityRoleKinds, returning
+// ok=false when it is not a term this vocabulary knows.
+func NormalizeRole(s string) (string, bool) {
+	r := strings.ToLower(strings.TrimSpace(s))
+	r = strings.Trim(r, ".")
+	if r == "" {
+		return "", false
+	}
+	for _, want := range identityRoleKinds {
+		if r == want {
+			return want, true
+		}
+	}
+	if alias, ok := identityRoleAliases[r]; ok {
+		return alias, true
+	}
+	return "", false
+}
+
+// IdentityRoleKinds is the vocabulary, for a help string or a UI filter.
+func IdentityRoleKinds() []string { return append([]string(nil), identityRoleKinds...) }
+
 // Identifier asks a model what a document is. One call per document, on the
 // assembled transcript rather than per page — cheap next to the OCR that
 // produced the transcript.
@@ -221,7 +300,7 @@ func NewIdentifier(c Chatter, model string) *Identifier {
 		Client:     c,
 		Model:      model,
 		MaxRetries: 2,
-		validator:  agent.NewSchemaValidator([]llm.ToolDef{identityToolDef()}),
+		validator:  agent.NewSchemaValidator([]llm.ToolDef{identityToolDef(), identityTagsToolDef()}),
 	}
 }
 
@@ -234,11 +313,31 @@ func identityToolDef() llm.ToolDef {
 	td.Function.Parameters = map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"name":    map[string]any{"type": "string"},
-			"summary": map[string]any{"type": "string"},
-			"kind":    map[string]any{"type": "string", "enum": identityKinds},
+			"name":         map[string]any{"type": "string"},
+			"summary":      map[string]any{"type": "string"},
+			"kind":         map[string]any{"type": "string", "enum": identityKinds},
+			"content_tags": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 3, "maxItems": 5},
+			"role_tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": identityRoleKinds}, "minItems": 1, "maxItems": 3},
 		},
-		"required": []string{"name", "summary", "kind"},
+		"required": []string{"name", "summary", "kind", "content_tags", "role_tags"},
+	}
+	return td
+}
+
+// identityTagsToolDef is the schema for the TAGS-ONLY ask (IdentifyTags). The
+// same two fields, without the caption a backfill must not touch.
+func identityTagsToolDef() llm.ToolDef {
+	var td llm.ToolDef
+	td.Type = "function"
+	td.Function.Name = "emit_tags"
+	td.Function.Description = "Emit what this document is about, and what job it does in the corpus."
+	td.Function.Parameters = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"content_tags": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 3, "maxItems": 5},
+			"role_tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": identityRoleKinds}, "minItems": 1, "maxItems": 3},
+		},
+		"required": []string{"content_tags", "role_tags"},
 	}
 	return td
 }
@@ -292,19 +391,92 @@ func (e *ErrIdentityTooShort) Error() string {
 // document a person can still find by its filename; a document with a WRONG
 // caption is one whose list entry now lies with a machine's confidence. There is
 // no degraded answer worth storing here.
-func (id *Identifier) Identify(ctx context.Context, text string) (DocIdentity, error) {
+// tagContext is the index's established tag vocabulary — see Store.TagContext.
+// It is a PARAMETER rather than a field because one *Identifier is shared by
+// every index in a registry and by every slot of the captioning queue: a field
+// would be a data race, and would carry one index's vocabulary into the next.
+func (id *Identifier) Identify(ctx context.Context, text, tagContext string) (DocIdentity, error) {
 	if n := contentChars(text); n < identityMinTextChars {
 		return DocIdentity{}, &ErrIdentityTooShort{Chars: n}
 	}
-	msgs := []llm.Message{{Role: "user", Parts: []llm.ContentPart{
-		llm.TextPart(identityPrompt + "\n\nDOCUMENT:\n" + identityExcerpt(text)),
-	}}}
+	var got DocIdentity
+	err := id.ask(ctx, identityPrompt+tagContextBlock(tagContext)+"\n\nDOCUMENT:\n"+identityExcerpt(text),
+		"emit_identity", identityJSONShape, func(js string) error {
+			var d DocIdentity
+			if err := json.Unmarshal([]byte(js), &d); err != nil {
+				return fmt.Errorf("unparseable: %v", err)
+			}
+			d, err := validateIdentity(d)
+			if err != nil {
+				return err
+			}
+			got = d
+			return nil
+		})
+	if err != nil {
+		return DocIdentity{}, fmt.Errorf("identity: %w", err)
+	}
+	got.Source = IdentityByMachine
+	got.Model = id.Model
+	got.At = time.Now().UnixNano()
+	return got, nil
+}
+
+// IdentifyTags asks for TAGS ALONE, leaving a caption that already exists
+// alone with it. The backfill for a corpus captioned before tags existed: the
+// full identity would rewrite hundreds of names that are already right (and a
+// person's, which must never be regenerated), for the sake of two columns.
+//
+// Returns the content and role tags. Source/Model/At are the CALLER's to
+// merge, because what is being written is part of an identity somebody else
+// already authored.
+func (id *Identifier) IdentifyTags(ctx context.Context, text, tagContext string) (content, roles []string, err error) {
+	if n := contentChars(text); n < identityMinTextChars {
+		return nil, nil, &ErrIdentityTooShort{Chars: n}
+	}
+	err = id.ask(ctx, identityTagsPrompt+tagContextBlock(tagContext)+"\n\nDOCUMENT:\n"+identityExcerpt(text),
+		"emit_tags", identityTagsJSONShape, func(js string) error {
+			var d DocIdentity
+			if uerr := json.Unmarshal([]byte(js), &d); uerr != nil {
+				return fmt.Errorf("unparseable: %v", uerr)
+			}
+			c, r, verr := validateTags(d.ContentTags, d.RoleTags)
+			if verr != nil {
+				return verr
+			}
+			content, roles = c, r
+			return nil
+		})
+	if err != nil {
+		return nil, nil, fmt.Errorf("identity tags: %w", err)
+	}
+	return content, roles, nil
+}
+
+// tagContextBlock renders the index's established vocabulary for a prompt.
+func tagContextBlock(tagContext string) string {
+	if strings.TrimSpace(tagContext) == "" {
+		return ""
+	}
+	return "\n\nExisting tags in this index (reuse these terms when they fit):\n" + tagContext
+}
+
+// ask runs one bounded question with its JSON fix loop: schema-validate the
+// answer, hand it to accept for the checks a schema cannot express, and quote
+// the failure back with the shape on a retry.
+//
+// Shared by both asks. The loop is the part that is easy to get subtly wrong —
+// a cut-off answer needs a different sampler, a wrong answer needs the reason
+// quoted back — and having it once is what keeps the tags ask from being a
+// worse version of it.
+func (id *Identifier) ask(ctx context.Context, prompt, tool, shape string, accept func(js string) error) error {
+	msgs := []llm.Message{{Role: "user", Parts: []llm.ContentPart{llm.TextPart(prompt)}}}
 	opts := &llm.ChatOpts{MaxTokens: identityMaxTokens}
 	var lastErr error
 	for attempt := 0; attempt <= id.MaxRetries; attempt++ {
 		out, rep, err := collectStream(ctx, id.Client, msgs, opts)
 		if err != nil {
-			return DocIdentity{}, err
+			return err
 		}
 		if rep != nil {
 			// Three short fields cannot legitimately collapse into repetition, so
@@ -317,31 +489,62 @@ func (id *Identifier) Identify(ctx context.Context, text string) (DocIdentity, e
 				llm.Message{Role: "assistant", Content: excerptForRetry(out)},
 				llm.Message{Role: "user", Content: fmt.Sprintf(
 					"Your answer was cut off: %v. Answer once, briefly, and output ONLY the JSON object %s.",
-					lastErr, identityJSONShape)})
+					lastErr, shape)})
 			continue
 		}
 		js := extractJSON(out)
-		if lastErr = id.validator.ValidateArgs("emit_identity", js); lastErr == nil {
-			var got DocIdentity
-			if err := json.Unmarshal([]byte(js), &got); err != nil {
-				lastErr = fmt.Errorf("unparseable: %v", err)
-			} else if got, lastErr = validateIdentity(got); lastErr == nil {
-				got.Source = IdentityByMachine
-				got.Model = id.Model
-				got.At = time.Now().UnixNano()
-				return got, nil
+		if lastErr = id.validator.ValidateArgs(tool, js); lastErr == nil {
+			if lastErr = accept(js); lastErr == nil {
+				return nil
 			}
 		}
 		msgs = append(msgs,
 			llm.Message{Role: "assistant", Content: excerptForRetry(out)},
 			llm.Message{Role: "user", Content: fmt.Sprintf(
-				"That was not valid: %v. Output ONLY the JSON object %s.", lastErr, identityJSONShape)})
+				"That was not valid: %v. Output ONLY the JSON object %s.", lastErr, shape)})
 	}
-	return DocIdentity{}, fmt.Errorf("identity: %w", lastErr)
+	return lastErr
 }
 
 // identityJSONShape is the shape quoted back at the model on a retry.
-const identityJSONShape = `{"name":"...","summary":"...","kind":"..."}`
+const identityJSONShape = `{"name":"...","summary":"...","kind":"...","content_tags":["..."],"role_tags":["..."]}`
+
+// identityTagsJSONShape is the same, for the tags-only ask.
+const identityTagsJSONShape = `{"content_tags":["..."],"role_tags":["..."]}`
+
+// identityTagsPrompt is the tags-only ask. It shares the field descriptions
+// with identityPrompt rather than restating them, because two prompts that
+// drift produce two vocabularies — which is the exact failure tags exist to
+// avoid, one level up.
+var identityTagsPrompt = `You are tagging a document that is already catalogued in a legal/records
+index. It already has a caption; do not write another one. Read it and output
+ONLY a JSON object:
+` + identityTagsJSONShape + `
+
+` + identityTagFields + `
+
+Describe only what the document says. Do not infer a subject it does not state.`
+
+// identityTagFields describes the two tag fields, for both prompts that ask for
+// them. One text, so the two asks cannot describe the same field differently.
+const identityTagFields = `- "content_tags": 3 to 5 short noun phrases (1–3 words each, lowercase) naming
+  what the document is ABOUT — its subject matter, the entities or procedures it
+  concerns. Not the document type, and not a summary of its content. Examples:
+  "lead paint inspection", "boundary survey", "escrow closing". No commas inside
+  a tag. Reuse terms from the existing tag list below when they fit; do not
+  invent a new spelling for a concept already tagged.
+- "role_tags": 1 to 3 of the following, naming what job this document does in
+  the corpus:
+    documentation — explains how something works; meant to be read
+    reference     — looked up for a fact, not read through
+    overview      — orienting summary of a larger body of work
+    specification — prescribes what something should be or do
+    guide         — step-by-step instructions for doing something
+    changelog     — records what changed and when
+    notes         — working notes, scratch, intermediate thinking
+    report        — findings from an investigation or measurement
+    data          — tabular or structured data, not prose about it
+    other         — none of the above genuinely fits`
 
 // identityPrompt asks for the three fields. It names the vocabulary inline
 // because a model cannot pick from a list it was not shown, and the fix loop
@@ -374,6 +577,8 @@ output ONLY a JSON object:
                      order, a receipt, a statement, a property listing
     other          — none of the above genuinely fits. Prefer any term above to
                      this one; "other" is a last resort, not a default.
+
+` + identityTagFields + `
 
 Describe only what the document says. Do not infer a purpose it does not state,
 and do not carry over an assumption from how the document is titled.`
@@ -418,7 +623,80 @@ func validateIdentity(d DocIdentity) (DocIdentity, error) {
 		return d, fmt.Errorf("\"kind\" must be exactly one of: %s", strings.Join(identityKinds, ", "))
 	}
 	d.Kind = kind
+	ct, rt, err := validateTags(d.ContentTags, d.RoleTags)
+	if err != nil {
+		return d, err
+	}
+	d.ContentTags, d.RoleTags = ct, rt
 	return d, nil
+}
+
+// validateTags enforces the tag shapes: 3–5 short content phrases, 1–3 roles
+// from the closed vocabulary. Shared by the full ask and the tags-only one.
+func validateTags(content, roles []string) ([]string, []string, error) {
+	var ct []string
+	for _, tag := range content {
+		tag = normalizeContentTag(tag)
+		if tag == "" || len(tag) > identityMaxTagChars || len(strings.Fields(tag)) > identityMaxTagWords {
+			continue
+		}
+		if !tagContains(ct, tag) {
+			ct = append(ct, tag)
+		}
+	}
+	if len(ct) < 3 {
+		return nil, nil, fmt.Errorf("\"content_tags\" needs 3 to 5 short noun phrases (1–3 words each, lowercase, no commas); got %d usable", len(ct))
+	}
+	var rt []string
+	for _, tag := range roles {
+		r, ok := NormalizeRole(tag)
+		if !ok {
+			continue
+		}
+		if !tagContains(rt, r) {
+			rt = append(rt, r)
+		}
+	}
+	if len(rt) < 1 {
+		return nil, nil, fmt.Errorf("\"role_tags\" needs 1 to 3 of: %s", strings.Join(identityRoleKinds, ", "))
+	}
+	return ct[:min(len(ct), 5)], rt[:min(len(rt), 3)], nil
+}
+
+const (
+	// identityMaxTagChars / identityMaxTagWords bound a tag to a phrase. Past
+	// them the model has written a summary into a tag field, and a tag nothing
+	// else will ever repeat cannot group anything.
+	identityMaxTagChars = 40
+	identityMaxTagWords = 3
+)
+
+// normalizeContentTag lowercases a tag, collapses its whitespace, and strips
+// the punctuation that would break the storage.
+//
+// The COMMA matters: tags are stored comma-separated, so a tag containing one
+// comes back as two tags on the next read — silently, and only for the
+// documents that happened to get one. Stripped rather than rejected, because
+// "escrow, closing" is a usable tag with a stray comma in it, not junk.
+func normalizeContentTag(tag string) string {
+	tag = strings.Map(func(r rune) rune {
+		switch r {
+		case ',', ';', '"', '\'':
+			return ' '
+		}
+		return r
+	}, tag)
+	tag = strings.ToLower(strings.Join(strings.Fields(tag), " "))
+	return strings.Trim(tag, ".-·")
+}
+
+func tagContains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // DocumentIdentity returns what is recorded about a document. A document with
@@ -426,14 +704,55 @@ func validateIdentity(d DocIdentity) (DocIdentity, error) {
 // failure. An unknown path IS an error.
 func (s *Store) DocumentIdentity(path string) (DocIdentity, error) {
 	var d DocIdentity
+	var ctStr, rtStr string
 	err := s.db.QueryRow(
-		`SELECT gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at, gen_text_hash
+		`SELECT gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at, gen_text_hash,
+		        gen_content_tags, gen_role_tags
 		   FROM documents WHERE path = ?`, path).
-		Scan(&d.Name, &d.Summary, &d.Kind, &d.Source, &d.Model, &d.At, &d.TextHash)
+		Scan(&d.Name, &d.Summary, &d.Kind, &d.Source, &d.Model, &d.At, &d.TextHash, &ctStr, &rtStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DocIdentity{}, fmt.Errorf("raglit: no document with path %q", path)
 	}
-	return d, err
+	if err != nil {
+		return DocIdentity{}, err
+	}
+	d.ContentTags = splitTagList(ctStr)
+	d.RoleTags = splitTagList(rtStr)
+	return d, nil
+}
+
+// splitTagList turns a comma-separated tag column back into a slice.
+func splitTagList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// identityTagContextSize is how much of the index's vocabulary the prompt
+// carries: enough that an established term is recognisable, short enough that
+// it does not crowd out the document itself.
+const identityTagContextSize = 15
+
+// TagContext is this index's established tag vocabulary, as one line for the
+// identity prompt — the mechanism that keeps "lead paint" from drifting into
+// "LBP", "paint inspection" and "lead-based paint hazards" across a corpus.
+// Empty for a fresh index, and empty rather than an error when the read fails:
+// a caption without the vocabulary is worse than one with it, not a failure.
+func (s *Store) TagContext() string {
+	d, err := s.IndexDigestFor("", identityTagContextSize)
+	if err != nil || len(d.Content) == 0 {
+		return ""
+	}
+	return TagLine(d.Content)
 }
 
 // SetDocumentIdentity records what a document is and re-indexes its identity
@@ -480,9 +799,11 @@ func (s *Store) SetDocumentIdentity(ctx context.Context, path string, d DocIdent
 // sixty broken ones.
 func writeIdentity(ctx context.Context, tx dbExecer, docID int64, d DocIdentity) error {
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE documents SET gen_name=?, gen_summary=?, gen_kind=?, gen_source=?, gen_model=?, gen_at=?, gen_text_hash=?
+		`UPDATE documents SET gen_name=?, gen_summary=?, gen_kind=?, gen_source=?, gen_model=?, gen_at=?, gen_text_hash=?,
+		   gen_content_tags=?, gen_role_tags=?
 		  WHERE id=?`,
-		d.Name, d.Summary, d.Kind, d.Source, d.Model, d.At, d.TextHash, docID); err != nil {
+		d.Name, d.Summary, d.Kind, d.Source, d.Model, d.At, d.TextHash,
+		strings.Join(d.ContentTags, ","), strings.Join(d.RoleTags, ","), docID); err != nil {
 		return fmt.Errorf("raglit: set identity: %w", err)
 	}
 	// One identity fragment per document, replaced rather than accumulated.
@@ -619,7 +940,9 @@ func (s *Store) IdentifyDocument(ctx context.Context, path string, force bool) (
 	if err != nil {
 		return DocIdentity{}, err
 	}
-	id, err := s.identifier.Identify(ctx, text)
+	// The index's existing tag vocabulary, so new tags align with established
+	// terms rather than inventing spellings for a concept already tagged.
+	id, err := s.identifier.Identify(ctx, text, s.TagContext())
 	if err != nil {
 		return DocIdentity{}, err
 	}
@@ -655,9 +978,13 @@ func (s *Store) RecordIdentity(ctx context.Context, path string, d DocIdentity, 
 		Name:     firstNonBlank(d.Name, cur.Name),
 		Summary:  firstNonBlank(d.Summary, cur.Summary),
 		Kind:     firstNonBlank(d.Kind, cur.Kind),
-		Source:   IdentityByPerson,
-		Model:    strings.TrimSpace(by),
-		At:       time.Now().UnixNano(),
+		// Tags are the machine's until a person supplies their own; a correction
+		// to the name does not silently blank the tags.
+		ContentTags: firstNonEmpty(d.ContentTags, cur.ContentTags),
+		RoleTags:    firstNonEmpty(d.RoleTags, cur.RoleTags),
+		Source:      IdentityByPerson,
+		Model:       strings.TrimSpace(by),
+		At:          time.Now().UnixNano(),
 	}
 	if strings.TrimSpace(out.Name) == "" {
 		return DocIdentity{}, fmt.Errorf("raglit: an identity needs a name")
@@ -676,6 +1003,16 @@ func (s *Store) RecordIdentity(ctx context.Context, path string, d DocIdentity, 
 	return out, nil
 }
 
+// firstNonEmpty returns the first non-empty slice, or nil.
+func firstNonEmpty(ss ...[]string) []string {
+	for _, s := range ss {
+		if len(s) > 0 {
+			return s
+		}
+	}
+	return nil
+}
+
 func firstNonBlank(ss ...string) string {
 	for _, s := range ss {
 		if strings.TrimSpace(s) != "" {
@@ -689,6 +1026,67 @@ func firstNonBlank(ss ...string) string {
 type IdentityStatus struct {
 	Path string `json:"path"`
 	DocIdentity
+}
+
+// DocumentsMissingTags lists documents that HAVE a caption but no tags — a
+// corpus captioned before tags existed. Its own selector rather than a flag on
+// the one above, because the two are different work: one needs a caption
+// written, the other needs a caption LEFT ALONE and two columns filled in.
+func (s *Store) DocumentsMissingTags() ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT path FROM documents
+		  WHERE TRIM(gen_name) <> '' AND TRIM(gen_content_tags) = ''
+		  ORDER BY added_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// TagDocument fills in a document's tags WITHOUT touching its caption.
+//
+// The caption's authorship is preserved exactly — a person's stays a person's,
+// a machine's keeps the model and timestamp that wrote it — because tags are
+// not a re-reading of the document, they are two columns that were never asked
+// for. Returns ErrIdentityKept when the document already has tags, unless
+// forced.
+func (s *Store) TagDocument(ctx context.Context, path string, force bool) (DocIdentity, error) {
+	cur, err := s.DocumentIdentity(path)
+	if err != nil {
+		return DocIdentity{}, err
+	}
+	if cur.Empty() {
+		return DocIdentity{}, fmt.Errorf("raglit: %s has no caption to tag — run identify first", path)
+	}
+	if len(cur.ContentTags) > 0 && !force {
+		return cur, ErrIdentityKept
+	}
+	if s.identifier == nil {
+		return DocIdentity{}, ErrNoIdentifier
+	}
+	text, err := s.IdentityText(ctx, path)
+	if err != nil {
+		return DocIdentity{}, err
+	}
+	content, roles, err := s.identifier.IdentifyTags(ctx, text, s.TagContext())
+	if err != nil {
+		return DocIdentity{}, err
+	}
+	out := cur
+	out.ContentTags, out.RoleTags = content, roles
+	if err := s.SetDocumentIdentity(ctx, path, out); err != nil {
+		return DocIdentity{}, err
+	}
+	return out, nil
 }
 
 // DocumentsMissingIdentity lists the paths of indexed documents with no caption
@@ -717,7 +1115,8 @@ func (s *Store) DocumentsMissingIdentity() ([]string, error) {
 // captions.
 func (s *Store) Identities() ([]IdentityStatus, error) {
 	rows, err := s.db.Query(
-		`SELECT path, gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at
+		`SELECT path, gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at,
+		        gen_content_tags, gen_role_tags
 		   FROM documents ORDER BY added_at DESC`)
 	if err != nil {
 		return nil, err
@@ -726,9 +1125,12 @@ func (s *Store) Identities() ([]IdentityStatus, error) {
 	var out []IdentityStatus
 	for rows.Next() {
 		var st IdentityStatus
-		if err := rows.Scan(&st.Path, &st.Name, &st.Summary, &st.Kind, &st.Source, &st.Model, &st.At); err != nil {
+		var ctStr, rtStr string
+		if err := rows.Scan(&st.Path, &st.Name, &st.Summary, &st.Kind, &st.Source, &st.Model, &st.At, &ctStr, &rtStr); err != nil {
 			return nil, err
 		}
+		st.ContentTags = splitTagList(ctStr)
+		st.RoleTags = splitTagList(rtStr)
 		out = append(out, st)
 	}
 	return out, rows.Err()
@@ -756,6 +1158,12 @@ func identityFragmentText(d DocIdentity) string {
 	}
 	if d.Kind != "" {
 		b.WriteString("KIND: " + d.Kind + "\n")
+	}
+	if len(d.ContentTags) > 0 {
+		b.WriteString("CONTENT: " + strings.Join(d.ContentTags, ", ") + "\n")
+	}
+	if len(d.RoleTags) > 0 {
+		b.WriteString("ROLE: " + strings.Join(d.RoleTags, ", ") + "\n")
 	}
 	if d.Summary != "" {
 		b.WriteString("\n" + d.Summary + "\n")

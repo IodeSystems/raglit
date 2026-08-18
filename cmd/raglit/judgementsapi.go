@@ -659,9 +659,10 @@ func identifyOp(reg *raglit.Registry) func(context.Context, *identifyIn) (*ident
 // client can be closed, and nothing depends on a CLI staying alive for an hour.
 
 type enqueueIdentityIn struct {
-	Index string `query:"index" doc:"index name (default: the default index)"`
-	Path  string `query:"path" doc:"one document; empty → every document with no caption yet"`
-	Force bool   `query:"force" doc:"re-caption documents that already have one (never a person's)"`
+	Index    string `query:"index" doc:"index name (default: the default index)"`
+	Path     string `query:"path" doc:"one document; empty → every document with no caption yet"`
+	Force    bool   `query:"force" doc:"re-caption documents that already have one (never a person's)"`
+	TagsOnly bool   `query:"tags_only" doc:"ask for TAGS only, leaving the caption alone; empty path → every captioned document with no tags"`
 }
 
 type enqueueIdentityOut struct {
@@ -678,12 +679,20 @@ func enqueueIdentityOp(reg *raglit.Registry) func(context.Context, *enqueueIdent
 			return nil, huma.Error500InternalServerError("open index", err)
 		}
 		var n int
-		if strings.TrimSpace(in.Path) != "" {
+		switch {
+		case strings.TrimSpace(in.Path) != "" && in.TagsOnly:
+			var queued bool
+			if queued, err = st.EnqueueTags(in.Path, in.Force); queued {
+				n = 1
+			}
+		case strings.TrimSpace(in.Path) != "":
 			var queued bool
 			if queued, err = st.EnqueueIdentity(in.Path, in.Force); queued {
 				n = 1
 			}
-		} else {
+		case in.TagsOnly:
+			n, err = st.EnqueueMissingTags(in.Force)
+		default:
 			n, err = st.EnqueueMissingIdentities(in.Force)
 		}
 		if err != nil {

@@ -36,6 +36,7 @@ func runIdentify(args []string) error {
 	kind := fs.String("kind", "", "record this kind: "+strings.Join(raglit.IdentityKinds(), " | "))
 	by := fs.String("by", defaultWithdrawBy(), "who is recording it (with --name)")
 	wait := fs.Bool("wait", false, "follow the queue until it drains (the work continues either way)")
+	tagsOnly := fs.Bool("tags-only", false, "ask for TAGS only, leaving existing captions alone (the backfill for a corpus captioned before tags existed)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -81,7 +82,7 @@ func runIdentify(args []string) error {
 		return nil
 	}
 
-	paths, err := identifyTargets(st, targets, *force)
+	paths, err := identifyTargets(st, targets, *force, *tagsOnly)
 	if err != nil {
 		return err
 	}
@@ -89,7 +90,11 @@ func runIdentify(args []string) error {
 		paths = paths[:*limit]
 	}
 	if len(paths) == 0 {
-		fmt.Println("nothing to identify — every document has a name")
+		if *tagsOnly {
+			fmt.Println("nothing to tag — every captioned document has tags")
+		} else {
+			fmt.Println("nothing to identify — every document has a name")
+		}
 		return nil
 	}
 	if *dry {
@@ -106,7 +111,7 @@ func runIdentify(args []string) error {
 	// identity worker drains them at the endpoint's real concurrency. --wait
 	// follows along, and closing it stops the watching, not the work.
 	ctx := context.Background()
-	queued, err := enqueueIdentityWork(st, paths, *force, routed)
+	queued, err := enqueueIdentityWork(st, paths, *force, *tagsOnly, routed)
 	if err != nil {
 		return err
 	}
@@ -127,13 +132,16 @@ func runIdentify(args []string) error {
 
 // enqueueIdentityWork records the work: through the daemon when routed (it owns
 // the index), directly otherwise.
-func enqueueIdentityWork(st *raglit.Store, paths []string, force, routed bool) (int, error) {
+func enqueueIdentityWork(st *raglit.Store, paths []string, force, tagsOnly, routed bool) (int, error) {
 	if !routed {
+		if tagsOnly {
+			return st.EnqueueTagsFor(paths, force)
+		}
 		return st.EnqueueIdentityFor(paths, force)
 	}
 	n := 0
 	for _, p := range paths {
-		queued, err := daemonEnqueueIdentity(p, force)
+		queued, err := daemonEnqueueIdentity(p, force, tagsOnly)
 		if err != nil {
 			return n, err
 		}
@@ -212,7 +220,7 @@ func waitForIdentityQueue(st *raglit.Store) error {
 
 // identifyTargets is the work list: the named documents, or every document with
 // no caption yet (with --force, every document).
-func identifyTargets(st *raglit.Store, targets []string, force bool) ([]string, error) {
+func identifyTargets(st *raglit.Store, targets []string, force, tagsOnly bool) ([]string, error) {
 	if len(targets) > 0 {
 		docs, err := st.Documents()
 		if err != nil {
@@ -234,6 +242,9 @@ func identifyTargets(st *raglit.Store, targets []string, force bool) ([]string, 
 			out = append(out, d.Path)
 		}
 		return out, nil
+	}
+	if tagsOnly {
+		return st.DocumentsMissingTags()
 	}
 	return st.DocumentsMissingIdentity()
 }
@@ -315,6 +326,12 @@ func printIdentity(path string, d raglit.DocIdentity) {
 	if d.Kind != "" {
 		fmt.Printf("\n    kind: %s", d.Kind)
 	}
+	if len(d.ContentTags) > 0 {
+		fmt.Printf("\n    about: %s", strings.Join(d.ContentTags, ", "))
+	}
+	if len(d.RoleTags) > 0 {
+		fmt.Printf("\n    role:  %s", strings.Join(d.RoleTags, ", "))
+	}
 	if strings.TrimSpace(who) != "" {
 		fmt.Printf("  ·  %s", strings.TrimSpace(who))
 	}
@@ -326,7 +343,7 @@ func printIdentity(path string, d raglit.DocIdentity) {
 
 // daemonEnqueueIdentity queues one document with the daemon, returning how many
 // rows it added (0 when one is already in flight for that path).
-func daemonEnqueueIdentity(path string, force bool) (int, error) {
+func daemonEnqueueIdentity(path string, force, tagsOnly bool) (int, error) {
 	base, idx, dir, err := daemonTarget()
 	if err != nil {
 		return 0, err
@@ -334,6 +351,9 @@ func daemonEnqueueIdentity(path string, force bool) (int, error) {
 	q := urlValues("project", dir, "index", idx, "path", path)
 	if force {
 		q.Set("force", "true")
+	}
+	if tagsOnly {
+		q.Set("tags_only", "true")
 	}
 	b, err := daemonPostJSON(base, "/api/identify/queue?"+q.Encode(), map[string]any{})
 	if err != nil {

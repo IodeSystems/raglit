@@ -109,9 +109,13 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 				"Search the document index(es). Returns ranked fragments as JSON "+
 					"{hits:[{index,doc_id,title,page,score,snippet,origin}]}, best first. A hit "+
 					"with origin=\"identity\" is the document's GENERATED caption/summary, not "+
-					"its own words — use it to find the document, never to quote it. `index` "+
-					"selects one index or a comma-separated set; omit it to search ALL "+
-					"(results merged with reciprocal-rank fusion, each hit tagged by index)."),
+					"its own words — use it to find the document, never to quote it. When hits are "+
+					"empty, the response carries a \"covers\" digest per index — {index, path, "+
+					"documents, kinds, content, roles}, counted from the documents themselves and "+
+					"scoped to the same `path` as the search — so you can tell the topic is ABSENT "+
+					"from this corpus rather than re-querying. `index` selects one index or a "+
+					"comma-separated set; omit it to search ALL (results merged with reciprocal-rank "+
+					"fusion, each hit tagged by index)."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language or keyword query")),
 			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
 			mcp.WithString("path", mcp.Description("constrain to documents whose path starts with this prefix (a subtree; use a trailing / for a clean directory)")),
@@ -159,7 +163,14 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 	)
 	s.AddTool(
 		mcp.NewTool("list_indexes",
-			mcp.WithDescription("List the available indexes with their document/fragment counts (JSON)."),
+			mcp.WithDescription(
+				"List the available indexes with their document/fragment counts and what each one "+
+					"HOLDS: {name, documents, fragments, about, kinds, content, roles}. `kinds`, "+
+					"`content` and `roles` are counted from the documents themselves — [{tag,count}], "+
+					"most common first. `about` is a model's paragraph written from the documents' "+
+					"generated captions, so it is a paraphrase of a paraphrase: use it to CHOOSE an "+
+					"index, never to state what the corpus contains. `about_stale` marks one written "+
+					"when the index held materially fewer documents."),
 		),
 		h.listIndexes,
 	)
@@ -452,6 +463,35 @@ func selectIndexes(reg *raglit.Registry, arg string) []string {
 	return out
 }
 
+// coversTopTags is how much of an index's vocabulary an empty search reports:
+// enough to recognise the corpus, short enough that it is not itself a wall of
+// text where a result list was expected.
+const coversTopTags = 10
+
+// coversFor is the digest attached to a search that found nothing, scoped to
+// the same indexes and the same subtree the search was.
+//
+// Shared by the two backings (this server and the daemon's HTTP search), for
+// the same reason the tool definitions are: an agent must not get a different
+// answer for having reached raglit through the daemon, which is the DEFAULT
+// path and was the one this was missing from.
+func coversFor(reg *raglit.Registry, names []string, path string) []raglit.IndexDigest {
+	var covers []raglit.IndexDigest
+	for _, name := range names {
+		st, err := reg.Get(name)
+		if err != nil {
+			continue
+		}
+		d, err := st.IndexDigestFor(path, coversTopTags)
+		if err != nil || d.Empty() {
+			continue
+		}
+		d.Name = name
+		covers = append(covers, d)
+	}
+	return covers
+}
+
 func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
 	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		q, err := req.RequireString("query")
@@ -476,6 +516,26 @@ func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
 			lists[name] = hits
 		}
 		merged := rrfMerge(lists, limit)
+
+		// When search finds nothing, say what the index DOES hold. An empty
+		// result is indistinguishable from a badly phrased query, so an agent
+		// rephrases and searches again — four times, against a corpus that was
+		// never going to have the topic. The digest is counted, not generated,
+		// and scoped to the same subtree the search was: a whole-index digest
+		// shown for a path-scoped search claims coverage the subtree lacks.
+		if len(merged) == 0 {
+			covers := coversFor(reg, names, path)
+			if len(covers) > 0 {
+				b, err := json.Marshal(struct {
+					Hits   []any                `json:"hits"`
+					Covers []raglit.IndexDigest `json:"covers"`
+				}{[]any{}, covers})
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("encode", err), nil
+				}
+				return mcp.NewToolResultText(string(b)), nil
+			}
+		}
 
 		b, err := json.Marshal(taggedHits(merged))
 		if err != nil {
@@ -587,6 +647,13 @@ func listHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 			Name      string `json:"name"`
 			Documents int    `json:"documents"`
 			Fragments int    `json:"fragments"`
+			// What the index is ABOUT, so choosing between several does not
+			// require searching each one to find out what it holds.
+			About      string            `json:"about,omitempty"`
+			AboutStale bool              `json:"about_stale,omitempty"`
+			Kinds      []raglit.TagCount `json:"kinds,omitempty"`
+			Content    []raglit.TagCount `json:"content,omitempty"`
+			Roles      []raglit.TagCount `json:"roles,omitempty"`
 		}
 		out := struct {
 			Indexes []idx `json:"indexes"`
@@ -597,7 +664,12 @@ func listHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 				continue
 			}
 			s, _ := st.IndexStatus()
-			out.Indexes = append(out.Indexes, idx{name, s.Documents, s.Fragments})
+			e := idx{Name: name, Documents: s.Documents, Fragments: s.Fragments}
+			if d, err := st.IndexDigest(); err == nil {
+				e.About, e.AboutStale = d.About, d.AboutStale
+				e.Kinds, e.Content, e.Roles = d.Kinds, d.Content, d.Roles
+			}
+			out.Indexes = append(out.Indexes, e)
 		}
 		b, _ := json.Marshal(out)
 		return mcp.NewToolResultText(string(b)), nil

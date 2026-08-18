@@ -46,9 +46,11 @@ func TestIdentify_ReturnsCaptionSummaryKind(t *testing.T) {
 	c := &identityChatter{replies: []string{
 		`{"name":"2021-05-25 Form 21 purchase and sale agreement (Ardley/Brannock)",
 		  "summary":"The buyer's signed offer for 24053 North Northlea Road, dated May 25 2021, between Ardley and Brannock, closing July 1 2021.",
-		  "kind":"agreement"}`,
+		  "kind":"agreement",
+		  "content_tags":["purchase agreement","property transfer","escrow closing"],
+		  "role_tags":["reference"]}`,
 	}}
-	id, err := NewIdentifier(c, "test-model").Identify(context.Background(), psaText)
+	id, err := NewIdentifier(c, "test-model").Identify(context.Background(), psaText, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +59,12 @@ func TestIdentify_ReturnsCaptionSummaryKind(t *testing.T) {
 	}
 	if id.Kind != "agreement" || id.Source != IdentityByMachine || id.Model != "test-model" || id.At == 0 {
 		t.Errorf("identity = %+v", id)
+	}
+	if len(id.ContentTags) != 3 || id.ContentTags[0] != "purchase agreement" {
+		t.Errorf("content_tags = %v", id.ContentTags)
+	}
+	if len(id.RoleTags) != 1 || id.RoleTags[0] != "reference" {
+		t.Errorf("role_tags = %v", id.RoleTags)
 	}
 	// The filename is deliberately never sent: a model handed "Lead-Based
 	// Paint.pdf" hedges toward it, which reproduces the failure being fixed.
@@ -67,10 +75,14 @@ func TestIdentify_ReturnsCaptionSummaryKind(t *testing.T) {
 
 func TestIdentify_FixLoopOnAnInventedKind(t *testing.T) {
 	c := &identityChatter{replies: []string{
-		`{"name":"A letter about the fence","summary":"A letter from the surveyor about the fence line, dated 1994, sent to the county.","kind":"missive"}`,
-		`{"name":"1994 surveyor letter re fence line","summary":"A letter from the surveyor about the fence line, dated 1994, sent to the county.","kind":"correspondence"}`,
+		`{"name":"A letter about the fence","summary":"A letter from the surveyor about the fence line, dated 1994, sent to the county.","kind":"missive",
+		  "content_tags":["fence line","surveyor correspondence","property boundary"],
+		  "role_tags":["reference"]}`,
+		`{"name":"1994 surveyor letter re fence line","summary":"A letter from the surveyor about the fence line, dated 1994, sent to the county.","kind":"correspondence",
+		  "content_tags":["fence line","surveyor correspondence","property boundary"],
+		  "role_tags":["reference"]}`,
 	}}
-	id, err := NewIdentifier(c, "m").Identify(context.Background(), psaText)
+	id, err := NewIdentifier(c, "m").Identify(context.Background(), psaText, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,12 +100,12 @@ func TestIdentify_FixLoopOnAnInventedKind(t *testing.T) {
 func TestIdentify_ErrorsRatherThanGuessing(t *testing.T) {
 	// A model that will not produce a usable answer must yield NO identity. A
 	// wrong caption stated with a machine's confidence is worse than none.
-	c := &identityChatter{replies: []string{`{"name":"","summary":"","kind":""}`}}
-	if _, err := NewIdentifier(c, "m").Identify(context.Background(), psaText); err == nil {
+	c := &identityChatter{replies: []string{`{"name":"","summary":"","kind":"","content_tags":[],"role_tags":[]}`}}
+	if _, err := NewIdentifier(c, "m").Identify(context.Background(), psaText, ""); err == nil {
 		t.Fatal("want an error, got an identity")
 	}
 	var short *ErrIdentityTooShort
-	if _, err := NewIdentifier(c, "m").Identify(context.Background(), "hi"); !errors.As(err, &short) {
+	if _, err := NewIdentifier(c, "m").Identify(context.Background(), "hi", ""); !errors.As(err, &short) {
 		t.Fatalf("short document: err = %v, want ErrIdentityTooShort", err)
 	}
 }
@@ -153,6 +165,8 @@ func machineIdentity() DocIdentity {
 		Name:    "2021-05-25 Form 21 purchase and sale agreement (Ardley/Brannock)",
 		Summary: "The executed purchase and sale agreement for 24053 North Northlea Road.",
 		Kind:    "agreement", Source: IdentityByMachine, Model: "m", At: 1,
+		ContentTags: []string{"purchase agreement", "property transfer", "escrow closing"},
+		RoleTags:    []string{"reference"},
 	}
 }
 
@@ -275,7 +289,8 @@ func TestCommitDoc_APersonsCaptionOutranksTheMachines(t *testing.T) {
 func TestIdentifyDocument_KeepsWhatIsRecordedUnlessForced(t *testing.T) {
 	s := storeWithDoc(t)
 	ctx := context.Background()
-	answer := `{"name":"A generated caption for the agreement","summary":"The purchase and sale agreement between Ardley and Brannock for North Northlea Road.","kind":"agreement"}`
+	answer := `{"name":"A generated caption for the agreement","summary":"The purchase and sale agreement between Ardley and Brannock for North Northlea Road.","kind":"agreement",
+		"content_tags":["purchase agreement","property transfer","escrow closing"],"role_tags":["reference"]}`
 	c := &identityChatter{replies: []string{answer}}
 	s.SetIdentifier(NewIdentifier(c, "m"))
 

@@ -417,6 +417,13 @@ type idxRow struct {
 	Name      string `json:"name"`
 	Documents int    `json:"documents"`
 	Fragments int    `json:"fragments"`
+	// What the index HOLDS, so choosing between several does not require
+	// searching each one to find out. Counted, except About — see IndexDigest.
+	About      string            `json:"about,omitempty"`
+	AboutStale bool              `json:"about_stale,omitempty"`
+	Kinds      []raglit.TagCount `json:"kinds,omitempty"`
+	Content    []raglit.TagCount `json:"content,omitempty"`
+	Roles      []raglit.TagCount `json:"roles,omitempty"`
 }
 type listIndexesOut struct {
 	Body struct {
@@ -434,7 +441,12 @@ func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIn
 				continue
 			}
 			s, _ := st.IndexStatus()
-			out.Body.Indexes = append(out.Body.Indexes, idxRow{name, s.Documents, s.Fragments})
+			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments}
+			if d, err := st.IndexDigest(); err == nil {
+				row.About, row.AboutStale = d.About, d.AboutStale
+				row.Kinds, row.Content, row.Roles = d.Kinds, d.Content, d.Roles
+			}
+			out.Body.Indexes = append(out.Body.Indexes, row)
 		}
 		return out, nil
 	}
@@ -479,6 +491,11 @@ type searchIn struct {
 type searchOut struct {
 	Body struct {
 		Hits []hitRow `json:"hits"`
+		// Covers is what the searched indexes DO hold, present only when the
+		// search found nothing. See the same block in serve.go: an empty result
+		// is indistinguishable from a badly phrased query, and an agent that
+		// cannot tell the difference rephrases and asks again.
+		Covers []raglit.IndexDigest `json:"covers,omitempty"`
 	}
 }
 
@@ -516,6 +533,9 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 				Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
 				Caveat: h.Caveat(), Trust: h.Trust,
 			})
+		}
+		if len(out.Body.Hits) == 0 {
+			out.Body.Covers = coversFor(reg, selectIndexes(reg, in.Index), in.Path)
 		}
 		return out, nil
 	}
@@ -1189,7 +1209,6 @@ func pageLayoutOp(reg *raglit.Registry) func(context.Context, *struct {
 	}
 }
 
-
 type channelsOut struct {
 	Body struct {
 		Channels []raglit.ChannelStat `json:"channels"`
@@ -1213,7 +1232,6 @@ func modelChannelsOp(lf *llmFlags) func(context.Context, *struct{}) (*channelsOu
 		return out, nil
 	}
 }
-
 
 type emailIn struct {
 	Index string `query:"index"`

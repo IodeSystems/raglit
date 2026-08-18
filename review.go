@@ -68,6 +68,10 @@ type DocSummary struct {
 	GenName   string `json:"gen_name,omitempty"`
 	GenKind   string `json:"gen_kind,omitempty"`
 	GenSource string `json:"gen_source,omitempty"` // machine | person
+	// GenContentTags / GenRoleTags are the document's tags (identity.go):
+	// what it is about, and what job it does in the corpus.
+	GenContentTags []string `json:"gen_content_tags,omitempty"`
+	GenRoleTags    []string `json:"gen_role_tags,omitempty"`
 }
 
 // Documents lists indexed documents with fragment/page/engine counts, newest
@@ -89,6 +93,7 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	ctx := context.Background()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.id, d.path, d.title, d.added_at, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
+		        d.gen_content_tags, d.gen_role_tags,
 		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND f.origin <> 'identity') AS fragments
 		   FROM documents d ORDER BY d.added_at DESC`)
 	if err != nil {
@@ -102,14 +107,15 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	var ids []int64
 	for rows.Next() {
 		var id, addedAt, frags int64
-		var path, title, fragMode, genName, genKind, genSource string
-		if err := rows.Scan(&id, &path, &title, &addedAt, &fragMode, &genName, &genKind, &genSource, &frags); err != nil {
+		var path, title, fragMode, genName, genKind, genSource, ctStr, rtStr string
+		if err := rows.Scan(&id, &path, &title, &addedAt, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &frags); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		out = append(out, DocSummary{Path: path, Title: title, Fragments: int(frags), FragMode: fragMode,
 			AddedAt: addedAt, Engines: map[string]int{},
-			GenName: genName, GenKind: genKind, GenSource: genSource})
+			GenName: genName, GenKind: genKind, GenSource: genSource,
+			GenContentTags: splitTagList(ctStr), GenRoleTags: splitTagList(rtStr)})
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
