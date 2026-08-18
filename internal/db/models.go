@@ -33,6 +33,7 @@ type DocField struct {
 	Model    string `db:"model" derived:"doc_fields.model" json:"model"`
 	At       int64  `db:"at" derived:"doc_fields.at" json:"at"`
 	TextHash string `db:"text_hash" derived:"doc_fields.text_hash" json:"text_hash"`
+	TypeHash string `db:"type_hash" derived:"doc_fields.type_hash" json:"type_hash"`
 }
 
 type DocType struct {

@@ -251,7 +251,7 @@ func (s *Store) EnqueueMissingFields(force bool) (int, error) {
 		}
 	} else {
 		var err error
-		if paths, err = s.DocumentsMissingFields(); err != nil {
+		if paths, err = s.ExtractableMissing(); err != nil {
 			return 0, err
 		}
 	}
@@ -597,8 +597,21 @@ func (w *IdentityWorker) loadJobPrecondition(t *identityTask, job IdentityJob, c
 		if err != nil {
 			return err
 		}
-		if f.ByPerson() || (!f.Empty() && !job.Force) {
+		if f.ByPerson() {
 			return ErrIdentityKept
+		}
+		// An extraction answering the type's CURRENT questions is done. One
+		// written under an older schema, or from a transcript the document no
+		// longer has, is work owed — declining it would leave a record that
+		// looks right and answers questions nobody is asking.
+		if !f.Empty() && !job.Force {
+			why, serr := w.Store.fieldsStaleness(context.Background(), job.Path, f, dt)
+			if serr != nil {
+				return serr
+			}
+			if !why.Stale() {
+				return ErrIdentityKept
+			}
 		}
 	default:
 		if cur.ByPerson() || (!cur.Empty() && !job.Force) {
@@ -749,6 +762,7 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 			switch t.job.Mode {
 			case IdentityAskFields:
 				t.fields.TextHash = t.textHash
+				t.fields.TypeHash = t.docType.Hash()
 				err = w.Store.SetDocumentFields(ctx, t.job.Path, t.fields)
 			case IdentityAskTags:
 				// A tags-only job keeps the hash the CAPTION was written from. The

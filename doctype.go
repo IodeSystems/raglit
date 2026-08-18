@@ -66,6 +66,35 @@ type DocType struct {
 	UpdatedAt int64    `json:"updated_at,omitempty"`
 }
 
+// Hash fingerprints the parts of a type definition that shape an EXTRACTION:
+// the schema, the reading instructions, and the description (which the
+// extraction prompt carries as "this document is a X — <description>").
+//
+// The name is deliberately NOT in it. A rename is a rename; it does not change
+// what was asked of the document, and re-extracting a corpus because somebody
+// fixed a capital letter is a bill for nothing. The gold paths are out for the
+// same reason — they say where the schema came from, not what it asks.
+//
+// The schema is hashed through a decode/re-encode round trip, so a
+// reformatted-but-identical schema hashes the same: Go marshals map keys in
+// sorted order, which makes that canonical. A schema that will not decode is
+// hashed as its raw bytes, which is the conservative answer — it will simply
+// read as changed more often than it is.
+func (t DocType) Hash() string {
+	schema := string(t.Schema)
+	var v any
+	if json.Unmarshal(t.Schema, &v) == nil {
+		if b, err := json.Marshal(v); err == nil {
+			schema = string(b)
+		}
+	}
+	return HashHex([]byte(strings.Join([]string{
+		strings.TrimSpace(t.Description),
+		strings.TrimSpace(t.Prompt),
+		schema,
+	}, "\x00")))
+}
+
 // FieldNames lists the schema's top-level properties, in schema order where the
 // JSON preserves it and alphabetically otherwise. For a summary line.
 func (t DocType) FieldNames() []string {

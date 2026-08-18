@@ -272,8 +272,8 @@ usage:
                 are ingested again.
 
   raglit doctype list | show <NAME> | rm <NAME>
-  raglit doctype propose <NAME> <DOC>... [--save]
-  raglit doctype add <NAME> --file <F>
+  raglit doctype propose [--save] <NAME> <DOC>...
+  raglit doctype add --file <F> <NAME>
                 the SCHEMAED documents of this corpus. Some documents are forms
                 — receipts, work orders, lab reports, bills — and a hundred of
                 those are worth far more as a hundred records than as a hundred

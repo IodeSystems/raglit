@@ -263,3 +263,212 @@ func TestFieldsFragment_IsNotTheDocumentsOwnWords(t *testing.T) {
 		t.Errorf("identity would re-read its own extraction:\n%s", idText)
 	}
 }
+
+// A schema is edited and every extraction already made answers the OLD
+// questions — carrying the right type name and a plausible record, with the new
+// field simply absent, which reads exactly like a document that did not state
+// one. Nothing but the recorded hash can tell the difference.
+func TestFieldsStaleness_ASchemaEditInvalidatesWhatWasReadUnderIt(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	ctx := context.Background()
+	doc := "/corpus/scan_000.pdf"
+	dt := registerWorkOrder(t, s)
+	resolvedAs(t, s, doc, "work order")
+	s.SetIdentifier(NewIdentifier(&fieldsChatter{reply: workOrderReply}, "m"))
+	if _, err := s.ExtractFields(ctx, doc, false); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := s.FieldsStaleness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("a fresh extraction is stale: %+v", stale)
+	}
+
+	// A cosmetic re-registration is NOT an edit: same questions, same answers,
+	// and re-extracting a corpus for a reformatted schema is a bill for nothing.
+	same := dt
+	same.Schema = json.RawMessage("  " + workOrderSchema + "\n")
+	if err := s.SetDocType(same); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.FieldsStaleness(); len(got) != 0 {
+		t.Errorf("a reformatted schema read as changed: %+v", got)
+	}
+	// Nor is a rename: it does not change what was asked of the document.
+	renamed := dt
+	renamed.Name = "WORK ORDER"
+	if err := s.SetDocType(renamed); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.FieldsStaleness(); len(got) != 0 {
+		t.Errorf("a rename read as a schema change: %+v", got)
+	}
+
+	// Adding a field IS.
+	edited := dt
+	edited.Schema = json.RawMessage(`{"type":"object","properties":{` +
+		`"order_number":{"type":"string"},"customer":{"type":"string"},` +
+		`"total":{"type":"number"},"technician":{"type":"string"}},` +
+		`"required":["order_number"]}`)
+	if err := s.SetDocType(edited); err != nil {
+		t.Fatal(err)
+	}
+	stale, err = s.FieldsStaleness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 1 || stale[0].Reason != FieldsSchemaMoved {
+		t.Fatalf("stale = %+v", stale)
+	}
+
+	// And so is a change to the READING INSTRUCTIONS alone — the prompt is
+	// where "that column is the customer's, not a duplicate" lives, and an
+	// extraction made without it is as wrong as one made against fewer fields.
+	edited.Prompt = "The technician's initials are bottom left, not the customer's."
+	if err := s.SetDocType(edited); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.FieldsStaleness(); len(got) != 1 {
+		t.Errorf("a prompt edit did not invalidate: %+v", got)
+	}
+
+	// Owed work, so a plain sweep re-runs it — no --force needed. Declining it
+	// would leave a record that looks right and answers nobody's questions.
+	owed, err := s.ExtractableMissing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owed) != 1 || owed[0] != doc {
+		t.Fatalf("owed = %v", owed)
+	}
+	c := &fieldsChatter{reply: `{"order_number":"RO-04471","technician":"JM"}`}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+	got, err := s.ExtractFields(ctx, doc, false)
+	if err != nil {
+		t.Fatalf("a stale extraction was declined: %v", err)
+	}
+	if !strings.Contains(string(got.Fields), "JM") {
+		t.Errorf("fields = %s", got.Fields)
+	}
+	if after, _ := s.FieldsStaleness(); len(after) != 0 {
+		t.Errorf("still stale after re-running: %+v", after)
+	}
+	// And now it is done again.
+	if _, err := s.ExtractFields(ctx, doc, false); !errors.Is(err, ErrIdentityKept) {
+		t.Errorf("re-extract of a current record = %v", err)
+	}
+}
+
+// A person's extraction is theirs. A schema edit does not make what they wrote
+// wrong, and re-running over it would discard a ruling.
+func TestFieldsStaleness_APersonsExtractionIsNeverStale(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	ctx := context.Background()
+	doc := "/corpus/scan_000.pdf"
+	dt := registerWorkOrder(t, s)
+	resolvedAs(t, s, doc, "work order")
+	if _, err := s.RecordFields(ctx, doc,
+		DocFields{Fields: json.RawMessage(`{"order_number":"RO-4471-A"}`)}, "carl"); err != nil {
+		t.Fatal(err)
+	}
+	dt.Prompt = "changed"
+	if err := s.SetDocType(dt); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.FieldsStaleness(); len(got) != 0 {
+		t.Errorf("a person's extraction went stale: %+v", got)
+	}
+	owed, _ := s.ExtractableMissing()
+	if len(owed) != 0 {
+		t.Errorf("a person's extraction is owed a re-run: %v", owed)
+	}
+}
+
+// The other three reasons an extraction stops being current.
+func TestFieldsStaleness_TheOtherReasons(t *testing.T) {
+	newStore := func(t *testing.T) (*Store, string) {
+		s := storeWithDocs(t, 1)
+		doc := "/corpus/scan_000.pdf"
+		registerWorkOrder(t, s)
+		resolvedAs(t, s, doc, "work order")
+		s.SetIdentifier(NewIdentifier(&fieldsChatter{reply: workOrderReply}, "m"))
+		if _, err := s.ExtractFields(context.Background(), doc, false); err != nil {
+			t.Fatal(err)
+		}
+		return s, doc
+	}
+
+	// The type is gone. Reported, but NOT re-queued: there is nothing to extract
+	// against, and a permanent no-op would read as outstanding work forever.
+	s, _ := newStore(t)
+	if err := s.DeleteDocType("work order"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.FieldsStaleness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Reason != FieldsTypeGone {
+		t.Fatalf("stale = %+v", got)
+	}
+	if owed, _ := s.ExtractableMissing(); len(owed) != 0 {
+		t.Errorf("a removed type was queued for re-extraction: %v", owed)
+	}
+
+	// The document now resolves as a DIFFERENT type.
+	s2, doc2 := newStore(t)
+	if err := s2.SetDocType(DocType{Name: "invoice", Schema: json.RawMessage(workOrderSchema)}); err != nil {
+		t.Fatal(err)
+	}
+	resolvedAs(t, s2, doc2, "invoice")
+	got2, err := s2.FieldsStaleness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got2) != 1 || got2[0].Reason != FieldsTypeChanged {
+		t.Fatalf("stale = %+v", got2)
+	}
+
+	// The transcript moved under it — the same rule a caption follows.
+	s3, doc3 := newStore(t)
+	if err := s3.Ingest(context.Background(), Document{
+		Path: doc3, Title: "scan_000.pdf",
+		Fragments: []Fragment{{Page: 1, Ord: 0, Text: psaText + " And a corrected clause, added on re-reading."}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got3, err := s3.FieldsStaleness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got3) != 1 || got3[0].Reason != FieldsTextMoved {
+		t.Fatalf("stale = %+v", got3)
+	}
+}
+
+func TestFieldsCoverage_CountsStaleSeparately(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	ctx := context.Background()
+	doc := "/corpus/scan_000.pdf"
+	dt := registerWorkOrder(t, s)
+	resolvedAs(t, s, doc, "work order")
+	s.SetIdentifier(NewIdentifier(&fieldsChatter{reply: workOrderReply}, "m"))
+	if _, err := s.ExtractFields(ctx, doc, false); err != nil {
+		t.Fatal(err)
+	}
+	dt.Prompt = "changed"
+	if err := s.SetDocType(dt); err != nil {
+		t.Fatal(err)
+	}
+	cov, err := s.FieldsCoverage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "1 of 1 extracted" over a schema edited a moment ago is a coverage report
+	// that lies, so the stale count is its own column.
+	if len(cov) != 1 || cov[0].Extracted != 1 || cov[0].Stale != 1 {
+		t.Fatalf("coverage = %+v", cov)
+	}
+}

@@ -130,7 +130,11 @@ func docTypeList(args []string) error {
 	}
 	for _, t := range types {
 		c := byType[t.Name]
-		fmt.Printf("%s  —  %d resolved, %d extracted\n", t.Name, c.Resolved, c.Extracted)
+		fmt.Printf("%s  —  %d resolved, %d extracted", t.Name, c.Resolved, c.Extracted)
+		if c.Stale > 0 {
+			fmt.Printf(", %d STALE (`raglit fields` re-runs them)", c.Stale)
+		}
+		fmt.Println()
 		if t.Description != "" {
 			fmt.Printf("    %s\n", t.Description)
 		}
@@ -221,6 +225,7 @@ func docTypePropose(args []string) error {
 		if err := st.SetDocType(t); err != nil {
 			return err
 		}
+		defer reportInvalidated(st, t.Name)
 	}
 	if *asJSON {
 		return printJSON(t)
@@ -233,7 +238,7 @@ func docTypePropose(args []string) error {
 	fmt.Printf("\nproposed from %d document(s): %s\n", len(gold), strings.Join(gold, ", "))
 	if !*save {
 		fmt.Println("\nNOT registered. Review it, then re-run with --save,")
-		fmt.Println("or edit the JSON and register it with: raglit doctype add <name> --file <f>")
+		fmt.Println("or edit the JSON and register it with: raglit doctype add --file <f> <name>")
 	}
 	return nil
 }
@@ -248,7 +253,10 @@ func docTypeAdd(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 || *file == "" {
-		return fmt.Errorf("doctype add: name the type and pass --file")
+		// Flags come before the name, as everywhere else here: Go's flag package
+		// stops parsing at the first non-flag argument, so `add <name> --file f`
+		// silently drops the flag rather than failing on it.
+		return fmt.Errorf("doctype add: usage is `doctype add --file <F> <NAME>`")
 	}
 	var b []byte
 	var err error
@@ -274,7 +282,35 @@ func docTypeAdd(args []string) error {
 		return err
 	}
 	fmt.Printf("registered %q with %d field(s)\n", raglit.NormalizeTypeName(t.Name), len(t.FieldNames()))
+	reportInvalidated(st, raglit.NormalizeTypeName(t.Name))
 	return nil
+}
+
+// reportInvalidated says what a registration just made stale.
+//
+// Said HERE because this is the moment somebody can act on it: an extraction
+// written under the old schema still carries the right type name and a
+// plausible record, and the field just added is simply absent from it — which
+// reads exactly like a document that did not state one. Nothing else in the
+// output would ever mention it.
+func reportInvalidated(st *raglit.Store, name string) {
+	stale, err := st.FieldsStaleness()
+	if err != nil {
+		return
+	}
+	n := 0
+	for _, s := range stale {
+		if raglit.NormalizeTypeName(s.Type) == name && s.Reason == raglit.FieldsSchemaMoved {
+			n++
+		}
+	}
+	if n == 0 {
+		return
+	}
+	fmt.Printf("\n%d extraction(s) answer the PREVIOUS schema and are now stale.\n", n)
+	fmt.Println("They still read as complete records — the fields you just added are")
+	fmt.Println("absent from them, which looks like a document that did not state one.")
+	fmt.Println("`raglit fields` re-runs them; `raglit fields --list` names them.")
 }
 
 func docTypeRemove(args []string) error {

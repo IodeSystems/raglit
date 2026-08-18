@@ -457,7 +457,20 @@ CREATE TABLE IF NOT EXISTS doc_fields (
   source    TEXT NOT NULL DEFAULT '',
   model     TEXT NOT NULL DEFAULT '',
   at        INTEGER NOT NULL DEFAULT 0,
-  text_hash TEXT NOT NULL DEFAULT ''
+  text_hash TEXT NOT NULL DEFAULT '',
+  -- The TYPE DEFINITION these fields were read under, hashed (DocType.Hash).
+  --
+  -- A schema is edited — a field added, a description sharpened, the reading
+  -- instructions corrected because the first hundred extractions got a column
+  -- wrong — and every extraction already made answers the OLD questions. There
+  -- is no way to tell from the row: it has the right type name and a plausible
+  -- record in it, and the field somebody added is simply absent, which is
+  -- indistinguishable from a document that did not state it.
+  --
+  -- Empty means unknown — written before this column existed. Treated as stale,
+  -- for the reason gen_text_hash is: it is exactly as trustworthy as an
+  -- unverified one.
+  type_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS doc_fields_type ON doc_fields(type);
 

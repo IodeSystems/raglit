@@ -88,7 +88,23 @@ func runFields(args []string) error {
 		paths = paths[:*limit]
 	}
 	if len(paths) == 0 {
-		fmt.Println("nothing to extract — every document that resolved as a type has its fields")
+		// "Nothing owed" and "nothing wrong" are different sentences. An
+		// extraction whose type was removed is not current and cannot be
+		// re-run, and saying everything is current would bury that.
+		blocked := 0
+		if stale, serr := st.FieldsStaleness(); serr == nil {
+			for _, s := range stale {
+				if s.Reason == raglit.FieldsTypeGone {
+					blocked++
+				}
+			}
+		}
+		fmt.Println("nothing to extract — every document that resolved as a type has current fields")
+		if blocked > 0 {
+			fmt.Printf("\nexcept %d whose type is no longer registered, which cannot be re-run\n", blocked)
+			fmt.Println("until it is: `raglit fields --list` names them.")
+			return nil
+		}
 		fmt.Println("(`raglit doctype list` shows the types; a corpus with none has nothing to extract)")
 		return nil
 	}
@@ -158,7 +174,9 @@ func fieldsTargets(st *raglit.Store, targets []string, force bool) ([]string, er
 		}
 		return out, nil
 	}
-	return st.DocumentsMissingFields()
+	// Owed, not merely absent: an extraction written under a schema that has
+	// since been edited answers questions nobody is asking any more.
+	return st.ExtractableMissing()
 }
 
 // drainFieldsLocally works the queue in-process, for an embedded index with no
@@ -213,8 +231,48 @@ func printFieldsCoverage(st *raglit.Store, asJSON bool) error {
 		return nil
 	}
 	for _, c := range cov {
-		fmt.Printf("  %4d resolved  %4d extracted  %s\n", c.Resolved, c.Extracted, c.Type)
+		fmt.Printf("  %4d resolved  %4d extracted", c.Resolved, c.Extracted)
+		if c.Stale > 0 {
+			fmt.Printf("  (%d stale)", c.Stale)
+		}
+		fmt.Printf("  %s\n", c.Type)
 	}
+	// Named, not just counted: a stale extraction looks right, so the reason is
+	// the only thing that says why it is being re-run.
+	stale, err := st.FieldsStaleness()
+	if err != nil {
+		return err
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+	fmt.Printf("\n%d extraction(s) are not current:\n", len(stale))
+	byReason := map[raglit.FieldsStale][]string{}
+	for _, s := range stale {
+		byReason[s.Reason] = append(byReason[s.Reason], s.Path)
+	}
+	for _, r := range []raglit.FieldsStale{
+		raglit.FieldsSchemaMoved, raglit.FieldsTextMoved,
+		raglit.FieldsTypeChanged, raglit.FieldsTypeGone,
+	} {
+		paths := byReason[r]
+		if len(paths) == 0 {
+			continue
+		}
+		fmt.Printf("  %d — %s\n", len(paths), r.Reason())
+		for i, p := range paths {
+			if i == 5 {
+				fmt.Printf("      … and %d more\n", len(paths)-5)
+				break
+			}
+			fmt.Printf("      %s\n", p)
+		}
+	}
+	if len(byReason[raglit.FieldsTypeGone]) > 0 {
+		fmt.Println("\n(a removed type cannot be re-extracted against — register it again, or")
+		fmt.Println(" the records stay as they are, which is what those documents said)")
+	}
+	fmt.Println("\n`raglit fields` re-runs everything that is owed.")
 	return nil
 }
 

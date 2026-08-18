@@ -121,6 +121,58 @@ query that means it. Adding a generated origin means deciding which list it
 joins, once, in one place. `TestFieldsFragment_IsNotTheDocumentsOwnWords` fails
 on the old predicate.
 
+### Staleness — an extraction that answers questions nobody is asking
+
+A schema is edited: a field added, a description sharpened, the reading
+instructions corrected because the first hundred extractions got a column wrong.
+Every extraction already made answers the OLD questions, and NOTHING about the
+record says so — it carries the right type name and a plausible set of values,
+and the field just added is simply absent, which is indistinguishable from a
+document that did not state one.
+
+So `doc_fields.type_hash` records the type definition an extraction was read
+UNDER, next to the `text_hash` that records what it was read FROM. `DocType.Hash`
+covers the description, the prompt and the schema — the parts that shape an
+ANSWER. The name is deliberately out: a rename is a rename, and re-extracting a
+corpus because somebody fixed a capital letter is a bill for nothing. The schema
+is hashed through a decode/re-encode round trip (Go sorts map keys on marshal),
+so a reformatted-but-identical schema hashes the same.
+
+Five ways an extraction stops being current, and they are reported apart because
+they need different sentences said to somebody:
+
+| reason | what happened | re-queued? |
+|---|---|---|
+| `schema` | the type definition changed under it | yes |
+| `text` | the document was re-read under it | yes |
+| `type differs` | the document now resolves as a different type | yes |
+| `type removed` | its type is no longer registered | NO — reported only |
+| `none` | never extracted | yes (`DocumentsMissingFields`) |
+
+`type removed` is reported and not queued for the reason `captionableMissing`
+already gives about skipped documents: there is nothing to extract against, so a
+re-queue is a permanent no-op that would nonetheless read as outstanding work
+forever. The record stays — it is what that document said — and the person who
+removed the type is the one who can decide.
+
+A PERSON's extraction is never stale. A schema edit does not make what they
+wrote wrong, and re-running over it would discard a ruling.
+
+Stale is owed work, so a plain `raglit fields` re-runs it — no `--force`.
+`--force` still means what it meant: re-extract everything that resolved as a
+type, current or not. And the invalidation is reported at the moment somebody
+can act on it, which is the registration itself:
+
+    $ raglit doctype add --file wo.json "work order"
+    registered "work order" with 4 field(s)
+
+    2 extraction(s) answer the PREVIOUS schema and are now stale.
+    They still read as complete records — the fields you just added are
+    absent from them, which looks like a document that did not state one.
+
+`FieldsCoverage.Stale` is its own column for the same reason: "88 of 88
+extracted" over a schema edited yesterday is a coverage report that lies.
+
 ## Verified
 
 - `doctype_test.go`: names normalise ("Work Order" and "work order" are one
@@ -130,6 +182,12 @@ on the old predicate.
   types; the hint reaches the identity, tags and extraction asks; the proposal
   reads EVERY gold document, carries the hint, keeps the gold paths, and does
   not register itself.
+- `docfields_test.go` (staleness): a schema edit invalidates what was read under
+  it, while a reformat and a rename do NOT; a change to the reading instructions
+  alone counts; stale is re-run by a plain sweep and current is declined after;
+  a person's is never stale and never owed; a removed type is reported and not
+  queued; a different resolved type and a moved transcript each get their own
+  reason; and the coverage report counts stale apart from extracted.
 - `docfields_test.go`: the schema is filled out, the type's own prompt reaches
   the ask, and the result is searchable by a value that appears nowhere else;
   a document that is not one of the types errors rather than guessing; an echoed
@@ -140,10 +198,6 @@ on the old predicate.
 
 ## Open / not done
 
-- **Nothing re-extracts when a schema changes.** Editing a type leaves every
-  extraction made under the old one, and nothing marks them. The shape is the
-  one identity already uses — a hash of the schema on the row, compared the way
-  `gen_text_hash` is.
 - **Extractions are not queryable in aggregate.** They are searchable and
   readable per document; "every work order over $500" needs a field index and a
   query surface, which was deliberately deferred.
