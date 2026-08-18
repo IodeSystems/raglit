@@ -187,17 +187,41 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	if pool != nil {
 		w.Pool = pool
 		fw, fs, ff := raglit.ResolveFragParams(cfg.FragWindow, cfg.FragStride, cfg.FragFloor, cfg.EmbedLimitChars)
-		// The index HINT is part of the recipe: it changes the transcription and
-		// the segmentation prompts, so a page read under one hint is not the same
-		// page read under another. Without it, editing the hint would leave every
-		// already-pooled document replaying the reading it got under the old one,
-		// and nothing would say so.
-		recipe := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d|hint=%s",
-			*lf.visionModel, *lf.embedModel, cfg.OCR.CheapEngine, fw, fs, ff,
-			raglit.FigurePromptVersion(), raglit.HashHex([]byte(store.IndexHint())))
-		w.RecipeHash = raglit.HashHex([]byte(recipe))
+		w.RecipeHash = raglit.HashHex([]byte(ingestRecipe(recipeInputs{
+			VisionModel: *lf.visionModel, EmbedModel: *lf.embedModel,
+			CheapEngine: cfg.OCR.CheapEngine,
+			FragWindow:  fw, FragStride: fs, FragFloor: ff,
+			IndexHint: store.IndexHint(),
+		})))
 	}
 	return w
+}
+
+// recipeInputs is everything that shapes a document's INDEXED OUTPUT — the
+// models, the fragmenter, and the corpus hint.
+type recipeInputs struct {
+	VisionModel string
+	EmbedModel  string
+	CheapEngine string
+	FragWindow  int
+	FragStride  int
+	FragFloor   int
+	// IndexHint is the corpus owner's account of how to read this collection.
+	// It is IN the recipe because it changes the transcription and segmentation
+	// prompts: a page read under one hint is not the same page read under
+	// another. Left out, editing a hint would leave every already-pooled
+	// document replaying the reading it got under the old one, and nothing
+	// would say so — the pool would report a hit and the job would report done.
+	IndexHint string
+}
+
+// ingestRecipe renders the pool key's inputs. Its own function so the thing
+// that must not silently lose a term can be asserted on.
+func ingestRecipe(in recipeInputs) string {
+	return fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d|hint=%s",
+		in.VisionModel, in.EmbedModel, in.CheapEngine,
+		in.FragWindow, in.FragStride, in.FragFloor,
+		raglit.FigurePromptVersion(), raglit.HashHex([]byte(in.IndexHint)))
 }
 
 // runIngest enqueues URLs for lazy ingestion. With --now it also drains the

@@ -207,6 +207,33 @@ extracted" over a schema edited yesterday is a coverage report that lies.
   types; the hint reaches the identity, tags and extraction asks; the proposal
   reads EVERY gold document, carries the hint, keeps the gold paths, and does
   not register itself.
+- `indexhint_test.go`: the hint reaches the SEGMENTATION prompt and the
+  TRANSCRIPTION prompt — the two calls outside identity, and the two a fake
+  identity chatter cannot see — on every reading turn (plain, root, crop and the
+  escalation that decides whether a page is upside down); and an index with no
+  hint gets no empty preamble about one. Both fail if the append is removed.
+- `cmd/raglit/recipe_test.go`: every term that shapes a document's indexed
+  output changes the pool recipe, the index hint among them. Without that, a
+  changed hint is a cache HIT: the pool replays the old reading and the job
+  reports done, with nothing saying the result is not what the current settings
+  would produce. (The recipe was inline in newWorker; it is `ingestRecipe` now,
+  so the thing that must not silently lose a term can be asserted on.)
+- `cmd/raglit/doctypecmd_test.go`: the hint round-trips and setting one says
+  what it does NOT do; `doctype list` reports coverage and fields; `add`
+  registers from a file, refuses the flag-after-name order Go's flag package
+  silently drops, and says what a schema edit just invalidated; `rm` says the
+  records survive it.
+- `cmd/raglit/fieldscmd_test.go`: `--list` counts stale apart and names it with
+  its reason; `--dry-run` names what is owed and nothing else, and distinguishes
+  "nothing owed" from "something is stuck"; a person's ruling round-trips,
+  inherits the resolved type, and is never queued for a machine re-run.
+- `cmd/raglit/fieldsapi_test.go`: `/api/fields` and `/api/doc-types` return the
+  record with its provenance and the types with their coverage; a document that
+  is not a form returns an EMPTY record rather than a 404; and the client-mode
+  MCP proxy reaches them. That last one matters because client mode is the
+  DEFAULT path — `get_fields` registered with a nil handler compiles fine and
+  panics on first call, and a table test now holds every tool to having a
+  handler in both backings.
 - `docfields_test.go` (sequencing): a caption that resolves a type is followed
   by the extraction it established, in that order, inside ONE drain, and settles
   — a second drain asks nothing; a document that resolves as no type chains
@@ -225,6 +252,19 @@ extracted" over a schema edited yesterday is a coverage report that lies.
   fragment flattens nested values and skips what the document did not state; a
   fields job through the queue extracts against the resolved type and leaves the
   caption alone; and the fragment is not the document's own words.
+
+### What the tests do NOT establish
+
+Every test here drives a FAKE chatter returning a canned string. That validates
+the plumbing — the prompts carry what they should, the schema is enforced, the
+staleness rules hold, the sequencing holds — and it validates none of the thing
+the feature actually IS: whether a model shown a real work order proposes a
+usable schema, whether `doc_type` resolution is accurate enough to act on, and
+whether extractions come back correct rather than merely well-shaped.
+
+`document-identity.md` has a "Live, against the configured endpoint" section for
+exactly this reason. This feature has no equivalent yet. Until it does, the
+plumbing is proven and the feature is not.
 
 ## Open / not done
 
