@@ -661,3 +661,33 @@ func (s *Store) ExtractableMissing() ([]string, error) {
 	}
 	return missing, nil
 }
+
+// owesFields reports whether a document has resolved as a registered type and
+// its extraction is missing or no longer current.
+//
+// The chaining test: an identity job that has just established a type leaves an
+// extraction owed, and it must run after that caption rather than beside it.
+// Silent about the reasons it CANNOT be owed — no type, an unregistered one, a
+// person's extraction — because none of those is a failure.
+func (s *Store) owesFields(ctx context.Context, path string) (bool, error) {
+	id, err := s.DocumentIdentity(path)
+	if err != nil || strings.TrimSpace(id.DocType) == "" {
+		return false, nil //nolint:nilerr // an unreadable identity is not work owed
+	}
+	t, err := s.DocTypeByName(id.DocType)
+	if err != nil {
+		return false, nil //nolint:nilerr // a type nobody registered cannot be extracted against
+	}
+	f, err := s.DocumentFields(path)
+	if err != nil {
+		return false, err
+	}
+	if f.ByPerson() {
+		return false, nil
+	}
+	why, err := s.fieldsStaleness(ctx, path, f, t)
+	if err != nil {
+		return false, err
+	}
+	return why.Stale(), nil
+}

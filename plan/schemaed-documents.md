@@ -103,6 +103,31 @@ all three: identity declines an existing caption, tags REQUIRE one, fields
 require a resolved type and decline an existing extraction. A person's is never
 regenerated in any of the three.
 
+### Sequencing: the caption comes first
+
+A caption is what establishes a document's TYPE, so an extraction has to run
+after it and not beside it. The queue holds ONE ROW PER PATH, which is the
+sequencing — a document cannot be queued for both at once. The worker chains:
+when an `identity` job closes successfully and the document now owes an
+extraction (`owesFields`), it queues the `fields` job right there, at the moment
+the identity row has gone terminal and is therefore revivable.
+
+Two consequences, both handled:
+
+- `Drain` loops until the queue is EMPTY, not until one pass ends. The loader
+  for a pass has already seen an empty queue and stopped by the time the commit
+  loop chains the extraction on, so a single pass would leave it pending and
+  report the drain complete.
+- `raglit fields` cannot queue a document whose caption is already in flight —
+  `EnqueueFields` returns false, which used to read as a short count and nothing
+  else. It now says so, and says the worker will queue it as the caption closes.
+
+`enqueueIdentityTx` — commitDoc's re-arm when a transcript moves — sets
+`mode='identity'` EXPLICITLY. Left implicit it revived whatever the document's
+last job was, so a document whose last job was an extraction was re-armed as an
+extraction and the caption the re-arm exists to refresh was never re-asked, with
+nothing saying so.
+
 ## The trap this walked into, and out of
 
 `indextext.go` already recorded a rule: the predicate for "the document's own
@@ -182,6 +207,11 @@ extracted" over a schema edited yesterday is a coverage report that lies.
   types; the hint reaches the identity, tags and extraction asks; the proposal
   reads EVERY gold document, carries the hint, keeps the gold paths, and does
   not register itself.
+- `docfields_test.go` (sequencing): a caption that resolves a type is followed
+  by the extraction it established, in that order, inside ONE drain, and settles
+  — a second drain asks nothing; a document that resolves as no type chains
+  nothing; and a transcript that moves under a document whose last job was an
+  extraction re-arms the CAPTION, which then leads the extraction again.
 - `docfields_test.go` (staleness): a schema edit invalidates what was read under
   it, while a reformat and a rename do NOT; a change to the reading instructions
   alone counts; stale is re-run by a plain sweep and current is declined after;

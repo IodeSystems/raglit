@@ -125,6 +125,16 @@ func runFields(args []string) error {
 	q := identityQueueNow(st, routed)
 	fmt.Printf("queued %d document(s) — %d pending, %d running, %d done, %d skipped, %d failed\n",
 		queued, q.Pending, q.Running, q.Done, q.Skipped, q.Failed)
+	// The queue holds one row per document, so a document already in flight for
+	// its CAPTION cannot also hold an extraction row. That is the sequencing —
+	// a caption can establish the type an extraction reads against, so the
+	// extraction follows it — and the worker queues the extraction itself when
+	// the caption closes. Said out loud, because otherwise the count above just
+	// looks short.
+	if deferred := len(paths) - queued; deferred > 0 {
+		fmt.Printf("%d deferred behind a caption already in flight — the worker queues those\n", deferred)
+		fmt.Println("as each caption closes, because a caption is what establishes the type.")
+	}
 	if !routed {
 		return drainFieldsLocally(context.Background(), st, lf, homeOf())
 	}

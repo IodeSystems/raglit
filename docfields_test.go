@@ -41,7 +41,7 @@ func resolvedAs(t *testing.T, s *Store, path, docType string) {
 		Name: "A caption for " + path, Summary: "A summary long enough to be a real one.",
 		Kind: "commercial", Source: IdentityByMachine, Model: "m", At: 1,
 		ContentTags: []string{"repair order"}, RoleTags: []string{"reference"},
-		DocType:     docType,
+		DocType: docType,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -470,5 +470,196 @@ func TestFieldsCoverage_CountsStaleSeparately(t *testing.T) {
 	// that lies, so the stale count is its own column.
 	if len(cov) != 1 || cov[0].Extracted != 1 || cov[0].Stale != 1 {
 		t.Fatalf("coverage = %+v", cov)
+	}
+}
+
+// seqChatter answers a scripted sequence, under a lock, and keeps every
+// prompt in order — so a test can assert WHICH ask came first.
+type seqChatter struct {
+	mu      sync.Mutex
+	replies []string
+	calls   int
+	prompts []string
+}
+
+func (c *seqChatter) ChatStream(_ context.Context, msgs []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	c.mu.Lock()
+	var b strings.Builder
+	for _, m := range msgs {
+		b.WriteString(m.Content)
+		for _, p := range m.Parts {
+			b.WriteString(p.Text)
+		}
+	}
+	c.prompts = append(c.prompts, b.String())
+	i := c.calls
+	c.calls++
+	if i >= len(c.replies) {
+		i = len(c.replies) - 1
+	}
+	reply := c.replies[i]
+	c.mu.Unlock()
+	return streamReply(reply), nil
+}
+
+// A caption is what establishes a document's TYPE, so an extraction must run
+// after it, not beside it. The queue holds one row per document, which is the
+// sequencing: the worker chains the extraction on as the caption closes.
+func TestIdentityWorker_ACaptionIsFollowedByTheExtractionItEstablishes(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	ctx := context.Background()
+	doc := "/corpus/scan_000.pdf"
+	registerWorkOrder(t, s)
+
+	// One chatter answering BOTH asks in order: the caption resolves the type,
+	// then the extraction fills out that type's schema.
+	c := &seqChatter{replies: []string{
+		`{"name":"2021 repair order 4471 (Ardley)","summary":"A repair order for the vehicle, listing parts and labour at sufficient length to be real.","kind":"commercial","content_tags":["repair order","vehicle service","parts billing"],"role_tags":["reference"],"doc_type":"work order"}`,
+		workOrderReply,
+	}}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+	if _, err := s.EnqueueIdentity(doc, false); err != nil {
+		t.Fatal(err)
+	}
+	// One drain. The extraction is queued by the worker as the caption closes,
+	// so it is picked up in the same pass rather than needing a second sweep.
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := s.DocumentIdentity(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.DocType != "work order" {
+		t.Fatalf("doc_type = %q", id.DocType)
+	}
+	f, err := s.DocumentFields(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Empty() || !strings.Contains(string(f.Fields), "RO-04471") {
+		t.Fatalf("the extraction did not follow the caption: %+v", f)
+	}
+	// Order, not just arrival: the extraction ask must have been made SECOND,
+	// or it read against a type the caption had not yet established.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.prompts) != 2 {
+		t.Fatalf("%d ask(s), want 2", len(c.prompts))
+	}
+	if !strings.Contains(c.prompts[0], "cataloguing a document") {
+		t.Errorf("the first ask was not the caption:\n%s", c.prompts[0])
+	}
+	if !strings.Contains(c.prompts[1], "fill out the fields") {
+		t.Errorf("the second ask was not the extraction:\n%s", c.prompts[1])
+	}
+
+	// And it settles: nothing is owed, so a second drain asks nothing.
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.prompts) != 2 {
+		t.Errorf("the chain did not settle: %d ask(s)", len(c.prompts))
+	}
+}
+
+// A document that resolves as NO type must not chain into an extraction — most
+// documents are not forms, and a queued no-op per document is a bill for it.
+func TestIdentityWorker_ACaptionWithNoTypeChainsNothing(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	ctx := context.Background()
+	registerWorkOrder(t, s)
+	c := &seqChatter{replies: []string{
+		`{"name":"1994 surveyor letter re fence line","summary":"A letter from the surveyor about the fence line, dated 1994, sent to the county at length.","kind":"correspondence","content_tags":["fence line","boundary survey","county filing"],"role_tags":["reference"],"doc_type":""}`,
+	}}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+	if _, err := s.EnqueueIdentity("/corpus/scan_000.pdf", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.prompts) != 1 {
+		t.Errorf("a document that is not a form was asked %d times", len(c.prompts))
+	}
+}
+
+// commitDoc re-arms a caption when the transcript moves under it. The row is
+// one per path, so a document whose last job was an EXTRACTION would be revived
+// as one — leaving the caption it exists to refresh untouched, and nothing
+// saying so.
+func TestCommitDoc_ReArmsTheCaptionEvenAfterAnExtraction(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	const doc = "/corpus/psa.pdf"
+	commit := func(text string) {
+		t.Helper()
+		if err := s.commitDoc(doc, "psa.pdf", "llm-seg", "r",
+			[]stagedFrag{{page: 1, ord: 0, text: text}}, nil, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	registerWorkOrder(t, s)
+	const caption = `{"name":"2021 repair order 4471 (Ardley)","summary":"A repair order for the vehicle, listing parts and labour at sufficient length to be real.","kind":"commercial","content_tags":["repair order","vehicle service","parts billing"],"role_tags":["reference"],"doc_type":"work order"}`
+	// Caption, extraction, and the same pair again after the transcript moves.
+	c := &seqChatter{replies: []string{caption, workOrderReply, caption, workOrderReply}}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+
+	commit(psaText)
+	if _, err := (&IdentityWorker{Store: s, Slots: 1}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The document is captioned AND extracted, so the queue's one row for it now
+	// says 'fields'.
+	if f, ferr := s.DocumentFields(doc); ferr != nil || f.Empty() {
+		t.Fatalf("fields = %+v, %v", f, ferr)
+	}
+	jobs, err := s.IdentityJobs("", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Mode != IdentityAskFields {
+		t.Fatalf("queue = %+v", jobs)
+	}
+
+	// Now the transcript moves under both.
+	commit(psaText + " And a clause corrected on re-reading, added by a second pass.")
+	jobs, err = s.IdentityJobs("pending", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("nothing was re-armed when the transcript moved: %+v", jobs)
+	}
+	// The row is one per path, so this revived whatever the document's last job
+	// was. Left implicit, that is an EXTRACTION — and the caption this re-arm
+	// exists to refresh would never be re-asked, with nothing saying so.
+	if jobs[0].Mode != IdentityAskFull {
+		t.Fatalf("the caption re-arm queued mode %q", jobs[0].Mode)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 1}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Caption, extraction, caption again, extraction again: the caption is
+	// re-asked first, and the extraction follows it rather than racing it.
+	if len(c.prompts) != 4 {
+		t.Fatalf("%d ask(s), want 4", len(c.prompts))
+	}
+	if !strings.Contains(c.prompts[2], "cataloguing a document") {
+		t.Errorf("the re-arm did not re-ask the caption:\n%s", c.prompts[2])
+	}
+	if !strings.Contains(c.prompts[3], "fill out the fields") {
+		t.Errorf("the extraction did not follow it:\n%s", c.prompts[3])
 	}
 }

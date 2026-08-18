@@ -134,11 +134,16 @@ func (s *Store) enqueueIdentity(path string, force bool, mode string) (bool, err
 // existing caption and decline, which is exactly the stale caption being
 // replaced. A PERSON's caption is still refused downstream (IdentifyDocument),
 // and commitDoc does not queue those at all.
+//
+// mode is set EXPLICITLY, and must be. The row is one per path, so this revives
+// whatever the last job on that document was — and a document whose last job
+// was an extraction would have been re-armed as an extraction, leaving the
+// caption this exists to refresh untouched and nothing saying so.
 func enqueueIdentityTx(ctx context.Context, tx dbExecer, path string) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO identity_jobs(path, state, force, enqueued_at) VALUES(?, 'pending', 1, ?)
+		`INSERT INTO identity_jobs(path, state, force, mode, enqueued_at) VALUES(?, 'pending', 1, 'identity', ?)
 		 ON CONFLICT(path) DO UPDATE SET
-		   state='pending', force=1, error='', enqueued_at=excluded.enqueued_at,
+		   state='pending', force=1, mode='identity', error='', enqueued_at=excluded.enqueued_at,
 		   started_at=0, finished_at=0, owner_pid=0
 		 WHERE identity_jobs.state IN ('done','skipped','error')`,
 		path, time.Now().UnixNano())
@@ -466,7 +471,7 @@ func (s *Store) IdentityQueue() (IdentityQueueStatus, error) {
 
 // IdentityJobs lists the queue, newest first, optionally only one state.
 func (s *Store) IdentityJobs(state string, limit int) ([]IdentityJob, error) {
-	q := `SELECT id, path, state, force, error, enqueued_at, started_at, finished_at FROM identity_jobs`
+	q := `SELECT id, path, state, force, mode, error, enqueued_at, started_at, finished_at FROM identity_jobs`
 	var args []any
 	if state != "" {
 		q += ` WHERE state = ?`
@@ -486,11 +491,14 @@ func (s *Store) IdentityJobs(state string, limit int) ([]IdentityJob, error) {
 	for rows.Next() {
 		var j IdentityJob
 		var force int
-		if err := rows.Scan(&j.ID, &j.Path, &j.State, &force, &j.Error,
+		if err := rows.Scan(&j.ID, &j.Path, &j.State, &force, &j.Mode, &j.Error,
 			&j.EnqueuedAt, &j.StartedAt, &j.FinishedAt); err != nil {
 			return nil, err
 		}
 		j.Force = force != 0
+		if j.Mode == "" {
+			j.Mode = IdentityAskFull
+		}
 		out = append(out, j)
 	}
 	return out, rows.Err()
@@ -625,7 +633,19 @@ func (w *IdentityWorker) loadJobPrecondition(t *identityTask, job IdentityJob, c
 // (successfully or not). This is the whole sweep for a CLI; Run is the daemon's
 // version, which waits for more work instead of returning.
 func (w *IdentityWorker) Drain(ctx context.Context) (int, error) {
-	return w.run(ctx, false)
+	// Until it is EMPTY, not until one pass ends. A finished caption can queue
+	// the extraction it established (see the chaining in run), and the loader
+	// for this pass has already seen an empty queue and stopped by then — so a
+	// single pass would leave that extraction sitting pending and report the
+	// drain complete.
+	total := 0
+	for {
+		n, err := w.run(ctx, false)
+		total += n
+		if err != nil || n == 0 || ctx.Err() != nil {
+			return total, err
+		}
+	}
 }
 
 // Run drains forever, sleeping IdlePoll between empty polls, until ctx is done.
@@ -785,6 +805,19 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 		// row records why, and so a caller's OnDone can tell the two apart.
 		if ferr := w.Store.finishIdentityJob(t.job.ID, err); ferr != nil && firstErr == nil {
 			firstErr = ferr
+		}
+		// A caption can establish a document type, and the extraction that owes
+		// must run AFTER it — not beside it. The rows are one per path, so this
+		// is the chaining point rather than a second queue: the identity job has
+		// just closed terminal, which is exactly the state EnqueueFields can
+		// revive. Queued here rather than left to the next sweep so a fresh
+		// ingest lands captioned AND extracted without a person asking twice.
+		if err == nil && t.job.Mode == IdentityAskFull {
+			if owes, oerr := w.Store.owesFields(ctx, t.job.Path); oerr == nil && owes {
+				if _, qerr := w.Store.EnqueueFields(t.job.Path, false); qerr != nil && firstErr == nil {
+					firstErr = qerr
+				}
+			}
 		}
 		if w.OnDone != nil {
 			w.OnDone(t.job, t.id, err)
