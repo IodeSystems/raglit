@@ -55,7 +55,13 @@ CREATE TABLE IF NOT EXISTS documents (
   --
   -- gen_role_tags is CLOSED (identityRoleKinds), for the same reason gen_kind is.
   gen_content_tags TEXT NOT NULL DEFAULT '',
-  gen_role_tags    TEXT NOT NULL DEFAULT ''
+  gen_role_tags    TEXT NOT NULL DEFAULT '',
+  -- Which of the index's registered document types this document resolved as,
+  -- empty for none (see doc_types). Chosen in the identity call rather than by
+  -- a classifier of its own: the model is already reading the document to say
+  -- what it is, and "which of these types is it" is that same question with a
+  -- shorter list of answers.
+  gen_doc_type TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS fragments (
   id     INTEGER PRIMARY KEY,
@@ -391,10 +397,15 @@ CREATE TABLE IF NOT EXISTS identity_jobs (
   path        TEXT NOT NULL UNIQUE,
   state       TEXT NOT NULL DEFAULT 'pending',  -- pending|running|done|error
   force       INTEGER NOT NULL DEFAULT 0,       -- replace a machine caption that exists
-  -- tags_only: ask for TAGS and write only those, leaving the caption alone.
-  -- The backfill for a corpus captioned before tags existed, where re-running
-  -- the whole identity would rewrite hundreds of names that were already right.
-  tags_only   INTEGER NOT NULL DEFAULT 0,
+  -- mode: WHICH ask this job is. 'identity' is the whole caption; 'tags' asks
+  -- for tags and leaves the caption alone (the backfill for a corpus captioned
+  -- before tags existed, where re-running the whole identity would rewrite
+  -- hundreds of names that were already right); 'fields' fills out the schema
+  -- of the document type it resolved as.
+  --
+  -- One column rather than a flag per ask: three asks are three states, and two
+  -- booleans are four.
+  mode        TEXT NOT NULL DEFAULT 'identity',  -- identity|tags|fields
   error       TEXT NOT NULL DEFAULT '',
   enqueued_at INTEGER NOT NULL,
   started_at  INTEGER NOT NULL DEFAULT 0,
@@ -402,6 +413,53 @@ CREATE TABLE IF NOT EXISTS identity_jobs (
   owner_pid   INTEGER NOT NULL DEFAULT 0        -- the claiming process; see reclaim
 );
 CREATE INDEX IF NOT EXISTS identity_jobs_state ON identity_jobs(state, id);
+
+-- Document types: the schemaed documents of THIS index.
+--
+-- Some documents are forms. A receipt, a work order, a lab report and a bill
+-- each have the same fields every time, and a corpus of them is worth far more
+-- as records than as prose — but which fields, and what they are called, is a
+-- property of the corpus and not of raglit. So the vocabulary is per-index and
+-- open-ended: a person registers a type, and every document that resolves as
+-- one is asked to fill out its schema.
+--
+-- `schema` is a JSON Schema object (the `parameters` of a tool call). `prompt`
+-- is the extraction instruction that goes with it — the two travel together
+-- because a schema without the reading instructions produces a filled-in form
+-- of confident guesses.
+--
+-- `gold` is the documents the schema was PROPOSED from (ProposeDocType), kept
+-- so a later revision can be judged against the same examples rather than
+-- against whatever is at hand.
+CREATE TABLE IF NOT EXISTS doc_types (
+  id          INTEGER PRIMARY KEY,
+  name        TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',   -- one line: how to recognise one
+  prompt      TEXT NOT NULL DEFAULT '',   -- how to read the fields out
+  schema      TEXT NOT NULL DEFAULT '{}', -- JSON Schema for the fields
+  gold        TEXT NOT NULL DEFAULT '[]', -- JSON array of the paths it was proposed from
+  model       TEXT NOT NULL DEFAULT '',   -- which model proposed it
+  created_at  INTEGER NOT NULL DEFAULT 0,
+  updated_at  INTEGER NOT NULL DEFAULT 0
+);
+
+-- What a document's schema says, filled out. One row per document, replaced
+-- rather than accumulated — the same rule the identity fragment follows, and
+-- for the same reason.
+--
+-- `text_hash` fingerprints the text the fields were read from, so a corrected
+-- transcript can be told from one nothing has touched. `source` is 'machine' or
+-- 'person'; a person's extraction is never regenerated over.
+CREATE TABLE IF NOT EXISTS doc_fields (
+  doc_id    INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+  type      TEXT NOT NULL DEFAULT '',
+  fields    TEXT NOT NULL DEFAULT '{}',
+  source    TEXT NOT NULL DEFAULT '',
+  model     TEXT NOT NULL DEFAULT '',
+  at        INTEGER NOT NULL DEFAULT 0,
+  text_hash TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS doc_fields_type ON doc_fields(type);
 
 -- Branch storage: a tombstone marks a PARENT document path as deleted-in-branch,
 -- so the parent's version does not show through the branch-over-parent overlay.

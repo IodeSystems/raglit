@@ -25,6 +25,28 @@ type Attestation struct {
 	RuledAt   string `db:"ruled_at" derived:"attestations.ruled_at" json:"ruled_at"`
 }
 
+type DocField struct {
+	DocID    int64  `db:"doc_id" derived:"doc_fields.doc_id" json:"doc_id"`
+	Type     string `db:"type" derived:"doc_fields.type" json:"type"`
+	Fields   string `db:"fields" derived:"doc_fields.fields" json:"fields"`
+	Source   string `db:"source" derived:"doc_fields.source" json:"source"`
+	Model    string `db:"model" derived:"doc_fields.model" json:"model"`
+	At       int64  `db:"at" derived:"doc_fields.at" json:"at"`
+	TextHash string `db:"text_hash" derived:"doc_fields.text_hash" json:"text_hash"`
+}
+
+type DocType struct {
+	ID          int64  `db:"id" derived:"doc_types.id" json:"id"`
+	Name        string `db:"name" derived:"doc_types.name" json:"name"`
+	Description string `db:"description" derived:"doc_types.description" json:"description"`
+	Prompt      string `db:"prompt" derived:"doc_types.prompt" json:"prompt"`
+	Schema      string `db:"schema" derived:"doc_types.schema" json:"schema"`
+	Gold        string `db:"gold" derived:"doc_types.gold" json:"gold"`
+	Model       string `db:"model" derived:"doc_types.model" json:"model"`
+	CreatedAt   int64  `db:"created_at" derived:"doc_types.created_at" json:"created_at"`
+	UpdatedAt   int64  `db:"updated_at" derived:"doc_types.updated_at" json:"updated_at"`
+}
+
 type Document struct {
 	ID             int64  `db:"id" derived:"documents.id" json:"id"`
 	Path           string `db:"path" derived:"documents.path" json:"path"`
@@ -42,6 +64,7 @@ type Document struct {
 	GenTextHash    string `db:"gen_text_hash" derived:"documents.gen_text_hash" json:"gen_text_hash"`
 	GenContentTags string `db:"gen_content_tags" derived:"documents.gen_content_tags" json:"gen_content_tags"`
 	GenRoleTags    string `db:"gen_role_tags" derived:"documents.gen_role_tags" json:"gen_role_tags"`
+	GenDocType     string `db:"gen_doc_type" derived:"documents.gen_doc_type" json:"gen_doc_type"`
 }
 
 type DocumentNote struct {
@@ -80,7 +103,7 @@ type IdentityJob struct {
 	Path       string `db:"path" derived:"identity_jobs.path" json:"path"`
 	State      string `db:"state" derived:"identity_jobs.state" json:"state"`
 	Force      int64  `db:"force" derived:"identity_jobs.force" json:"force"`
-	TagsOnly   int64  `db:"tags_only" derived:"identity_jobs.tags_only" json:"tags_only"`
+	Mode       string `db:"mode" derived:"identity_jobs.mode" json:"mode"`
 	Error      string `db:"error" derived:"identity_jobs.error" json:"error"`
 	EnqueuedAt int64  `db:"enqueued_at" derived:"identity_jobs.enqueued_at" json:"enqueued_at"`
 	StartedAt  int64  `db:"started_at" derived:"identity_jobs.started_at" json:"started_at"`
