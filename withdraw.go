@@ -95,7 +95,7 @@ func (s *Store) ReferencesTo(ctx context.Context, path string) ([]Reference, err
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.path, f.page, f.text FROM fragments f
 		   JOIN documents d ON d.id = f.doc_id
-		  WHERE (f.text LIKE ? OR f.text LIKE ?) AND d.path <> ? AND f.origin <> 'identity'
+		  WHERE (f.text LIKE ? OR f.text LIKE ?) AND d.path <> ? AND `+SQLOwnWordsF+`
 		  ORDER BY d.path, f.page`,
 		"%"+path+"%", "%"+base+"%", path)
 	if err != nil {

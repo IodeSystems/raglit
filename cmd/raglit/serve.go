@@ -82,6 +82,7 @@ func runServe(args []string) error {
 		listIndexes:   listHandler(reg),
 		listDocuments: listDocumentsHandler(reg),
 		getDocument:   getDocumentHandler(reg),
+		getFields:     getFieldsHandler(reg),
 		ocr:           ocrHandler(buildToolOCR(lf, homeOf())),
 	})
 	return server.ServeStdio(s)
@@ -97,6 +98,7 @@ type toolHandlers struct {
 	listIndexes   server.ToolHandlerFunc
 	listDocuments server.ToolHandlerFunc
 	getDocument   server.ToolHandlerFunc
+	getFields     server.ToolHandlerFunc
 	ocr           server.ToolHandlerFunc
 }
 
@@ -108,8 +110,10 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 			mcp.WithDescription(
 				"Search the document index(es). Returns ranked fragments as JSON "+
 					"{hits:[{index,doc_id,title,page,score,snippet,origin}]}, best first. A hit "+
-					"with origin=\"identity\" is the document's GENERATED caption/summary, not "+
-					"its own words — use it to find the document, never to quote it. When hits are "+
+					"with origin=\"identity\" is the document's GENERATED caption/summary, and one "+
+					"with origin=\"fields\" is its document type's schema filled out FROM it — "+
+					"both are a model's reading, so use them to find the document and cite the "+
+					"document, never them (get_fields returns the whole record). When hits are "+
 					"empty, the response carries a \"covers\" digest per index — {index, path, "+
 					"documents, kinds, content, roles}, counted from the documents themselves and "+
 					"scoped to the same `path` as the search — so you can tell the topic is ABSENT "+
@@ -160,6 +164,23 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 			mcp.WithString("index", mcp.Description("index name; empty = aggregate all")),
 		),
 		h.status,
+	)
+	s.AddTool(
+		mcp.NewTool("get_fields",
+			mcp.WithDescription(
+				"Get a document's EXTRACTED FIELDS as JSON {index,path,type,fields,source,model}. "+
+					"An index may register document TYPES — receipts, work orders, lab reports, "+
+					"whatever that corpus is made of — each with a schema; a document that "+
+					"resolves as one has that schema filled out from its text. `fields` is the "+
+					"filled-out record. It is a model's READING of the document, not the "+
+					"document's own words: cite the document, not this. A document that is not "+
+					"one of the index's types returns type=\"\" and no fields, which is the "+
+					"normal case rather than an error. `path` is a document path (the doc_id "+
+					"from a search hit) or a unique filename substring."),
+			mcp.WithString("path", mcp.Required(), mcp.Description("document path, or a unique filename substring")),
+			mcp.WithString("index", mcp.Description("index name; empty = the default index")),
+		),
+		h.getFields,
 	)
 	s.AddTool(
 		mcp.NewTool("list_indexes",
@@ -487,6 +508,10 @@ func coversFor(reg *raglit.Registry, names []string, path string) []raglit.Index
 			continue
 		}
 		d.Name = name
+		// The schemaed documents too: an empty search for an invoice number in a
+		// corpus that holds no invoices is answered by saying which types it DOES
+		// hold, and that is not derivable from the tag histogram.
+		d.Types, _ = st.FieldsCoverage()
 		covers = append(covers, d)
 	}
 	return covers
@@ -538,6 +563,57 @@ func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
 		}
 
 		b, err := json.Marshal(taggedHits(merged))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// getFieldsHandler returns one document's extracted fields.
+func getFieldsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		ref, err := req.RequireString("path")
+		if err != nil {
+			return mcp.NewToolResultError("path is required"), nil
+		}
+		name := strings.TrimSpace(req.GetString("index", ""))
+		if name == "" {
+			name = "default"
+		}
+		st, err := reg.Get(name)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("open index", err), nil
+		}
+		ms, err := st.MatchDocuments(ref)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("resolve", err), nil
+		}
+		if len(ms) == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("no document matches %q", ref)), nil
+		}
+		if len(ms) > 1 {
+			var b strings.Builder
+			fmt.Fprintf(&b, "%q is ambiguous — matches %d documents:\n", ref, len(ms))
+			for i, m := range ms {
+				if i == 8 {
+					fmt.Fprintf(&b, "  … and %d more\n", len(ms)-8)
+					break
+				}
+				fmt.Fprintf(&b, "  %s\n", m.Path)
+			}
+			return mcp.NewToolResultError(b.String()), nil
+		}
+		path := ms[0].Path
+		f, err := st.DocumentFields(path)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("fields", err), nil
+		}
+		b, err := json.Marshal(struct {
+			Index string `json:"index"`
+			Path  string `json:"path"`
+			raglit.DocFields
+		}{name, path, f})
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("encode", err), nil
 		}

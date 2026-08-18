@@ -183,12 +183,30 @@ const FragOriginDescribed = "described"
 // caption of it. 'described' IS a document's content: a photograph has no other
 // text, and dropping it means the photograph has none.
 //
-// So the predicate for "the document's own indexed words" is
-// `origin <> 'identity'`, never `origin = ''`. Six queries were written the
-// second way before descriptions existed, and each one silently changed meaning
-// the moment they did: the document list reported photographs as empty,
-// get_document returned nothing for them, and the cross-index pool would have
-// re-imported them with their only content stripped.
+// So the predicate for "the document's own indexed words" is NOT `origin = ”`.
+// Six queries were written that way before descriptions existed, and each one
+// silently changed meaning the moment they did: the document list reported
+// photographs as empty, get_document returned nothing for them, and the
+// cross-index pool would have re-imported them with their only content stripped.
+//
+// It is not `origin <> 'identity'` either, which is how it was written next.
+// 'fields' — a document type's schema, filled out (docfields.go) — is the same
+// kind of thing a caption is: a record ABOUT the document. Named the same way
+// and added the same way, it would have walked straight back into the same trap
+// from the other side, with every extraction reappearing as the document's own
+// text in get_document and in its fragment count.
+//
+// So the predicate is this constant, in every query that means it. Adding a
+// generated origin means deciding which list it joins, ONCE, here.
+const (
+	// SQLOwnWords constrains fragments to the document's own indexed words —
+	// the transcription and the descriptions that ARE its content — excluding
+	// the fragments that are about it. Unqualified column, for a query with one
+	// table.
+	SQLOwnWords = `origin NOT IN ('identity', 'fields')`
+	// SQLOwnWordsF is the same, qualified for a query that joins `fragments f`.
+	SQLOwnWordsF = `f.origin NOT IN ('identity', 'fields')`
+)
 
 // describedPageThreshold is how much of a page must be description before the
 // page is called one.

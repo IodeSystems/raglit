@@ -254,6 +254,8 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("pageLayout", http.MethodGet, "/api/page-layout", "One page's layout blocks, raw transcription and indexed text."), pageLayoutOp(reg))
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
+	gat.Register(api, g, op("getFields", http.MethodGet, "/api/fields", "One document's extracted fields — its document type's schema, filled out."), getFieldsOp(reg))
+	gat.Register(api, g, op("listDocTypes", http.MethodGet, "/api/doc-types", "The index's registered document types: what a schemaed document of this corpus looks like."), listDocTypesOp(reg))
 	gat.Register(api, g, op("listProjects", http.MethodGet, "/api/projects", "Indexes grouped by the project namespace they carry, with branch lineage and watch state."), listProjectsOp(reg, watch))
 	gat.Register(api, g, op("emailThread", http.MethodGet, "/api/email", "A mail archive as a thread: messages, enclosure depth, every header, and its attachments."), emailThreadOp(reg))
 	gat.Register(api, g, op("modelChannels", http.MethodGet, "/api/channels", "Per-model admission channels: the learned width, what is in flight, and how much backpressure taught it."), modelChannelsOp(lf))
@@ -447,6 +449,77 @@ func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIn
 				row.Kinds, row.Content, row.Roles = d.Kinds, d.Content, d.Roles
 			}
 			out.Body.Indexes = append(out.Body.Indexes, row)
+		}
+		return out, nil
+	}
+}
+
+type getFieldsIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	Path  string `query:"path" doc:"document path, or a unique filename substring"`
+}
+type getFieldsOut struct {
+	Body struct {
+		Index string `json:"index"`
+		Path  string `json:"path"`
+		raglit.DocFields
+	}
+}
+
+func getFieldsOp(reg *raglit.Registry) func(context.Context, *getFieldsIn) (*getFieldsOut, error) {
+	return func(_ context.Context, in *getFieldsIn) (*getFieldsOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		ms, err := st.MatchDocuments(in.Path)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("resolve", err)
+		}
+		switch {
+		case len(ms) == 0:
+			return nil, huma.Error404NotFound(fmt.Sprintf("no document matches %q", in.Path))
+		case len(ms) > 1:
+			return nil, huma.Error400BadRequest(fmt.Sprintf("%q matches %d documents", in.Path, len(ms)))
+		}
+		f, err := st.DocumentFields(ms[0].Path)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("fields", err)
+		}
+		out := &getFieldsOut{}
+		out.Body.Index, out.Body.Path, out.Body.DocFields = in.Index, ms[0].Path, f
+		return out, nil
+	}
+}
+
+type listDocTypesIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+}
+type listDocTypesOut struct {
+	Body struct {
+		Types    []raglit.DocType        `json:"types"`
+		Coverage []raglit.FieldsCoverage `json:"coverage,omitempty"`
+	}
+}
+
+func listDocTypesOp(reg *raglit.Registry) func(context.Context, *listDocTypesIn) (*listDocTypesOut, error) {
+	return func(_ context.Context, in *listDocTypesIn) (*listDocTypesOut, error) {
+		st, err := reg.Get(in.Index)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("open index", err)
+		}
+		types, err := st.DocTypes()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("doc types", err)
+		}
+		cov, err := st.FieldsCoverage()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("coverage", err)
+		}
+		out := &listDocTypesOut{}
+		out.Body.Types, out.Body.Coverage = types, cov
+		if out.Body.Types == nil {
+			out.Body.Types = []raglit.DocType{}
 		}
 		return out, nil
 	}

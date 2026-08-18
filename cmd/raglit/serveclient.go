@@ -93,6 +93,16 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			return mcp.NewToolResultText(string(filterIndexList(stripSchema(b), ns, shared))), nil
 		},
 
+		getFields: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			path, err := req.RequireString("path")
+			if err != nil {
+				return mcp.NewToolResultError("path is required"), nil
+			}
+			v := url.Values{"path": {path}}
+			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			return proxyGet(base, "/api/fields", v, ns)
+		},
+
 		listDocuments: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v := url.Values{}
 			setIf(v, "name", req.GetString("name", ""))

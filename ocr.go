@@ -35,6 +35,17 @@ type OCR struct {
 	// several models.
 	Model  string
 	Prompt string // transcription instruction; "" → Prompt(PromptPlain)
+	// Collection is what the corpus owner says about reading THIS collection
+	// (Store.IndexHint) — appended to every reading prompt.
+	//
+	// It reaches the transcription rather than only the later asks because
+	// "how to decode" is a property of the pixels: "RO" on a garage's paperwork
+	// is a repair order, the second column of a carbon copy is the customer's,
+	// and a model reading one page cannot infer either. It is part of the
+	// READING RECIPE for the same reason — a changed hint changes what a page
+	// says, and pooled work read under the old one must not be replayed under
+	// the new.
+	Collection string
 	// Trace, when non-nil, receives one line per decision this OCR takes.
 	//
 	// It exists because nothing else reports what a call DID. `raglit doctor`

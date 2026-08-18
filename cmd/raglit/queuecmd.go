@@ -154,6 +154,10 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		// Recorded on every page this reads, so a transcription says which model
 		// produced it (page_readings.model) rather than only "machine".
 		w.OCR.Model = *lf.visionModel
+		// What the corpus owner says about reading THIS collection, carried into
+		// every prompt that reads it. Read once here rather than per page: it is
+		// a property of the index, and the worker is per-index.
+		w.OCR.Collection = store.IndexHint()
 		attachCheapOCR(w.OCR, home, "")
 		// Only used when a page escalates to the VLM (llm-seg); text never does.
 		// Its own client, because the segmenter's job is a structured tool call
@@ -166,6 +170,7 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		segClient.OnRetry = w.Retries.Observe
 		segModel := firstNonEmpty(*lf.segmentModel, *lf.visionModel)
 		w.Segmenter = raglit.NewSegmenter(lf.gate(segClient, segModel))
+		w.Segmenter.Collection = store.IndexHint()
 		if *lf.segmentModel != "" && *lf.segmentModel != *lf.visionModel {
 			log.Printf("raglit: segmenter model=%s (vision model=%s)", *lf.segmentModel, *lf.visionModel)
 		}
@@ -182,8 +187,14 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	if pool != nil {
 		w.Pool = pool
 		fw, fs, ff := raglit.ResolveFragParams(cfg.FragWindow, cfg.FragStride, cfg.FragFloor, cfg.EmbedLimitChars)
-		recipe := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d",
-			*lf.visionModel, *lf.embedModel, cfg.OCR.CheapEngine, fw, fs, ff, raglit.FigurePromptVersion())
+		// The index HINT is part of the recipe: it changes the transcription and
+		// the segmentation prompts, so a page read under one hint is not the same
+		// page read under another. Without it, editing the hint would leave every
+		// already-pooled document replaying the reading it got under the old one,
+		// and nothing would say so.
+		recipe := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d|hint=%s",
+			*lf.visionModel, *lf.embedModel, cfg.OCR.CheapEngine, fw, fs, ff,
+			raglit.FigurePromptVersion(), raglit.HashHex([]byte(store.IndexHint())))
 		w.RecipeHash = raglit.HashHex([]byte(recipe))
 	}
 	return w

@@ -50,7 +50,7 @@ func TestIdentify_ReturnsCaptionSummaryKind(t *testing.T) {
 		  "content_tags":["purchase agreement","property transfer","escrow closing"],
 		  "role_tags":["reference"]}`,
 	}}
-	id, err := NewIdentifier(c, "test-model").Identify(context.Background(), psaText, "")
+	id, err := NewIdentifier(c, "test-model").Identify(context.Background(), IdentityAsk{Text: psaText})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestIdentify_FixLoopOnAnInventedKind(t *testing.T) {
 		  "content_tags":["fence line","surveyor correspondence","property boundary"],
 		  "role_tags":["reference"]}`,
 	}}
-	id, err := NewIdentifier(c, "m").Identify(context.Background(), psaText, "")
+	id, err := NewIdentifier(c, "m").Identify(context.Background(), IdentityAsk{Text: psaText})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +101,11 @@ func TestIdentify_ErrorsRatherThanGuessing(t *testing.T) {
 	// A model that will not produce a usable answer must yield NO identity. A
 	// wrong caption stated with a machine's confidence is worse than none.
 	c := &identityChatter{replies: []string{`{"name":"","summary":"","kind":"","content_tags":[],"role_tags":[]}`}}
-	if _, err := NewIdentifier(c, "m").Identify(context.Background(), psaText, ""); err == nil {
+	if _, err := NewIdentifier(c, "m").Identify(context.Background(), IdentityAsk{Text: psaText}); err == nil {
 		t.Fatal("want an error, got an identity")
 	}
 	var short *ErrIdentityTooShort
-	if _, err := NewIdentifier(c, "m").Identify(context.Background(), "hi", ""); !errors.As(err, &short) {
+	if _, err := NewIdentifier(c, "m").Identify(context.Background(), IdentityAsk{Text: "hi"}); !errors.As(err, &short) {
 		t.Fatalf("short document: err = %v, want ErrIdentityTooShort", err)
 	}
 }

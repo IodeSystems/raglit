@@ -107,7 +107,7 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 	// origin there fails with "no such column". (Raw for the reason TruePages
 	// gives; see its comment on regenerating the sqlc layer.)
 	q := `SELECT page, ord, text, start_off, end_off FROM fragments
-	       WHERE doc_id = ? AND origin <> 'identity'`
+	       WHERE doc_id = ? AND ` + SQLOwnWords
 	args := []any{doc.ID}
 	if from > 0 {
 		q += " AND page >= ?"
@@ -306,7 +306,7 @@ func (s *Store) TruePages(exactPath string) ([]PageText, error) {
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT page, ord, text, start_off, end_off, page_spans
-		 FROM fragments WHERE doc_id = ? AND origin <> 'identity' ORDER BY page, ord`, doc.ID)
+		 FROM fragments WHERE doc_id = ? AND `+SQLOwnWords+` ORDER BY page, ord`, doc.ID)
 	if err != nil {
 		return nil, err
 	}

@@ -50,6 +50,12 @@ type IndexDigest struct {
 	Kinds     []TagCount `json:"kinds,omitempty"`
 	Content   []TagCount `json:"content,omitempty"`
 	Roles     []TagCount `json:"roles,omitempty"`
+	// Types is the index's SCHEMAED documents — which registered document types
+	// its documents resolved as, and how many of each have been extracted. Part
+	// of the digest because "this corpus holds 88 work orders whose fields are
+	// readable" is the single most useful thing that can be said about an index
+	// that has any, and nothing else says it.
+	Types []FieldsCoverage `json:"types,omitempty"`
 	// About is the generated paragraph, when one has been written and still
 	// matches the corpus it was written from. See IndexAbout.
 	About string `json:"about,omitempty"`
@@ -168,6 +174,7 @@ func (s *Store) IndexDigest() (IndexDigest, error) {
 	if len(d.Content) > indexDigestTopTags {
 		d.Content = d.Content[:indexDigestTopTags]
 	}
+	d.Types, _ = s.FieldsCoverage()
 	about, stale, _ := s.indexAboutStored(d.Documents)
 	d.About, d.AboutStale = about, stale
 	return d, nil
@@ -352,3 +359,52 @@ func (s *Store) WriteIndexAbout(ctx context.Context) (string, error) {
 
 // oneLineTag flattens a caption onto one line for a prompt list.
 func oneLineTag(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// The index hint.
+
+const (
+	metaIndexHint   = "index_hint"
+	metaIndexHintAt = "index_hint_at"
+)
+
+// IndexHint is what a person tells the models about THIS corpus, in their own
+// words: how to decode it, which of its ambiguities resolve which way, what
+// matters in it.
+//
+// It exists because the model is answering a general question about a specific
+// corpus, and the corpus is the half it cannot see. "RO" on a garage's paperwork
+// is a repair order, not "received"; a survey's marginal figures are bearings,
+// not measurements; a scanned carbon copy's second column is the customer's, not
+// a duplicate. None of that is inferable from one page, all of it is obvious to
+// whoever owns the corpus, and every prompt that reads a document is worse for
+// not having it.
+//
+// So it travels the whole way down: the page transcription, the segmentation,
+// the identity, and the field extraction. It is part of the READING recipe for
+// that reason — a changed hint changes what a page says, and pooled work read
+// under the old one must not be replayed under the new.
+func (s *Store) IndexHint() string {
+	h, _ := s.Meta(metaIndexHint)
+	return strings.TrimSpace(h)
+}
+
+// SetIndexHint records it. Empty clears it.
+func (s *Store) SetIndexHint(hint string, now int64) error {
+	hint = strings.TrimSpace(hint)
+	if err := s.SetMeta(metaIndexHint, hint, now); err != nil {
+		return err
+	}
+	return s.SetMeta(metaIndexHintAt, fmt.Sprint(now), now)
+}
+
+// HintBlock renders the hint for a prompt, or "" when there is none. One
+// wording, so the four prompts that carry it cannot present it differently —
+// and labelled as the corpus owner's words, so a model weighs it as context
+// about the collection rather than as an instruction from the document.
+func HintBlock(hint string) string {
+	if strings.TrimSpace(hint) == "" {
+		return ""
+	}
+	return "\n\nABOUT THIS COLLECTION (from the person who owns it — context for" +
+		" reading it, not part of any document):\n" + strings.TrimSpace(hint)
+}

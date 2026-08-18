@@ -85,6 +85,12 @@ func runAbout(args []string) error {
 	if len(d.Roles) > 0 {
 		fmt.Printf("roles:   %s\n", raglit.TagLine(d.Roles))
 	}
+	if len(d.Types) > 0 {
+		fmt.Println("\nschemaed documents:")
+		for _, t := range d.Types {
+			fmt.Printf("  %4d resolved  %4d extracted  %s\n", t.Resolved, t.Extracted, t.Type)
+		}
+	}
 	return nil
 }
 

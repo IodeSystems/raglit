@@ -375,7 +375,7 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 	frows, err := s.db.QueryContext(ctx,
 		`SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, f.origin, COALESCE(fv.vec, x'')
 		   FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
-		  WHERE f.doc_id = ? AND f.origin <> 'identity' ORDER BY f.page, f.ord`, doc.ID)
+		  WHERE f.doc_id = ? AND `+SQLOwnWordsF+` ORDER BY f.page, f.ord`, doc.ID)
 	if err != nil {
 		return PooledDoc{}, err
 	}

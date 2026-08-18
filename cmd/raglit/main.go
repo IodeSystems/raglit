@@ -119,6 +119,12 @@ func main() {
 		err = runAuditTags(os.Args[2:])
 	case "about":
 		err = runAbout(os.Args[2:])
+	case "hint":
+		err = runHint(os.Args[2:])
+	case "doctype":
+		err = runDocType(os.Args[2:])
+	case "fields":
+		err = runFields(os.Args[2:])
 	case "health":
 		err = runHealth(os.Args[2:])
 	case "doctor":
@@ -252,6 +258,40 @@ usage:
                 author and the text it was written from are left exactly as
                 they are, which is what makes this safe to run over a corpus
                 somebody has already corrected by hand.
+
+  raglit hint [--set "..." | --clear]
+                what YOU tell the models about this corpus: its conventions, its
+                abbreviations, which of its ambiguities resolve which way. A
+                model reading one page is answering a general question about a
+                specific collection, and the collection is the half it cannot
+                see — "RO" on a garage's paperwork is a repair order, not
+                "received", and nothing on the page says so. The hint reaches
+                the page transcription, the segmentation, the identity and every
+                extraction, and it is part of the READING RECIPE: change it and
+                documents read under the old one keep that reading until they
+                are ingested again.
+
+  raglit doctype list | show <NAME> | rm <NAME>
+  raglit doctype propose <NAME> <DOC>... [--save]
+  raglit doctype add <NAME> --file <F>
+                the SCHEMAED documents of this corpus. Some documents are forms
+                — receipts, work orders, lab reports, bills — and a hundred of
+                those are worth far more as a hundred records than as a hundred
+                summaries. Which fields, and what they are called, is a property
+                of the corpus and not of raglit, so the vocabulary is per-index
+                and authored: 'propose' reads GOLD documents you picked and
+                proposes the schema and the reading instructions, printing them
+                for review rather than registering them. Identity then resolves
+                each document as one type or none.
+
+  raglit fields [--list] [--force] [--limit N] [--dry-run] [DOC...]
+  raglit fields --set '{"...":"..."}' <DOC>
+                fill out the schema of documents that resolved as a type, or
+                read one back. Queued and drained like identify — same rows,
+                different ask. The extraction is indexed, so a query for a work
+                order number ranks the document carrying it, and it is MARKED as
+                generated: it is a model's reading of a form, not the form.
+                --set records a person's, which is never regenerated over.
 
   raglit about [--write] [--json]
                 what this INDEX is: how many documents, which kinds, which tags
@@ -515,11 +555,18 @@ func runSearch(args []string) error {
 		if h.Page > 0 {
 			loc = fmt.Sprintf("%s p%d", h.Path, h.Page)
 		}
-		if h.IsDescription() {
-			// The hit is on the document's caption/summary, which is a machine's
-			// description of it. Said here rather than left to the page number,
-			// because there is no page and the text reads like the document.
+		// The hit is on GENERATED text — a caption of the document, or its type's
+		// schema filled out from it. Said here rather than left to the page
+		// number, because there is no page and the text reads like the document.
+		switch h.Origin {
+		case "identity":
 			loc += "  [what this document is — a description of it, not its words]"
+		case "fields":
+			loc += "  [fields READ OUT of this document — cite the document, not this]"
+		default:
+			if h.IsDescription() {
+				loc += "  [generated text, not the document's own words]"
+			}
 		}
 		fmt.Printf("%d. [%.3f] %s\n   %s\n", i+1, h.Score, loc, clip(oneLine(h.Text), 160))
 	}

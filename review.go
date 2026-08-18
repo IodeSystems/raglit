@@ -94,7 +94,7 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.id, d.path, d.title, d.added_at, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
 		        d.gen_content_tags, d.gen_role_tags,
-		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND f.origin <> 'identity') AS fragments
+		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND `+SQLOwnWordsF+`) AS fragments
 		   FROM documents d ORDER BY d.added_at DESC`)
 	if err != nil {
 		return nil, err

@@ -344,6 +344,19 @@ func printIdentity(path string, d raglit.DocIdentity) {
 // daemonEnqueueIdentity queues one document with the daemon, returning how many
 // rows it added (0 when one is already in flight for that path).
 func daemonEnqueueIdentity(path string, force, tagsOnly bool) (int, error) {
+	mode := ""
+	if tagsOnly {
+		mode = raglit.IdentityAskTags
+	}
+	return daemonEnqueueAsk(path, force, mode)
+}
+
+// daemonEnqueueFields is the same, for the schema ask.
+func daemonEnqueueFields(path string, force bool) (int, error) {
+	return daemonEnqueueAsk(path, force, raglit.IdentityAskFields)
+}
+
+func daemonEnqueueAsk(path string, force bool, mode string) (int, error) {
 	base, idx, dir, err := daemonTarget()
 	if err != nil {
 		return 0, err
@@ -352,8 +365,8 @@ func daemonEnqueueIdentity(path string, force, tagsOnly bool) (int, error) {
 	if force {
 		q.Set("force", "true")
 	}
-	if tagsOnly {
-		q.Set("tags_only", "true")
+	if mode != "" {
+		q.Set("mode", mode)
 	}
 	b, err := daemonPostJSON(base, "/api/identify/queue?"+q.Encode(), map[string]any{})
 	if err != nil {

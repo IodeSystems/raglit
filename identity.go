@@ -59,6 +59,12 @@ type DocIdentity struct {
 	// document does in the corpus (documentation, reference, overview…).
 	// Closed vocabulary so they stay groupable and filterable.
 	RoleTags []string `json:"role_tags,omitempty"`
+	// DocType is which of the INDEX's registered document types this resolved
+	// as, empty for none. Its vocabulary is per-index and authored (doctype.go),
+	// unlike Kind, which is raglit's and closed. A document that resolves as one
+	// is asked to fill out that type's schema; most documents resolve as none,
+	// and that is the normal case rather than a failure.
+	DocType string `json:"doc_type,omitempty"`
 	// Source is 'machine' (a model read the transcript) or 'person' (someone
 	// corrected it). A person's identity is never overwritten by a re-run.
 	Source string `json:"source,omitempty"`
@@ -294,6 +300,13 @@ type Identifier struct {
 	validator *agent.SchemaValidator
 }
 
+// newValidator builds a validator over one tool def — the per-call form, for an
+// ask whose schema is not known until the call (a document type's fields, a
+// type proposal, an identity whose doc_type enum is this index's types).
+func newValidator(tds ...llm.ToolDef) *agent.SchemaValidator {
+	return agent.NewSchemaValidator(tds)
+}
+
 // NewIdentifier builds an Identifier over a chat client (an *llm.Client).
 func NewIdentifier(c Chatter, model string) *Identifier {
 	return &Identifier{
@@ -395,19 +408,31 @@ func (e *ErrIdentityTooShort) Error() string {
 // It is a PARAMETER rather than a field because one *Identifier is shared by
 // every index in a registry and by every slot of the captioning queue: a field
 // would be a data race, and would carry one index's vocabulary into the next.
-func (id *Identifier) Identify(ctx context.Context, text, tagContext string) (DocIdentity, error) {
-	if n := contentChars(text); n < identityMinTextChars {
+func (id *Identifier) Identify(ctx context.Context, ask IdentityAsk) (DocIdentity, error) {
+	if n := contentChars(ask.Text); n < identityMinTextChars {
 		return DocIdentity{}, &ErrIdentityTooShort{Chars: n}
 	}
+	names := typeNames(ask.DocTypes)
+	validator := id.validator
+	if len(names) > 0 {
+		// The doc_type enum is THIS index's vocabulary, so the schema is not
+		// known until the call. Built per ask rather than per Identifier for the
+		// same reason the tag context is a parameter: one *Identifier serves
+		// every index in a registry.
+		validator = newValidator(identityToolDefWithTypes(names))
+	}
 	var got DocIdentity
-	err := id.ask(ctx, identityPrompt+tagContextBlock(tagContext)+"\n\nDOCUMENT:\n"+identityExcerpt(text),
-		"emit_identity", identityJSONShape, func(js string) error {
+	err := id.askWith(ctx, validator, ask.prompt(), "emit_identity", identityJSONShape,
+		func(js string) error {
 			var d DocIdentity
 			if err := json.Unmarshal([]byte(js), &d); err != nil {
 				return fmt.Errorf("unparseable: %v", err)
 			}
 			d, err := validateIdentity(d)
 			if err != nil {
+				return err
+			}
+			if d.DocType, err = normalizeDocType(d.DocType, names); err != nil {
 				return err
 			}
 			got = d
@@ -422,6 +447,97 @@ func (id *Identifier) Identify(ctx context.Context, text, tagContext string) (Do
 	return got, nil
 }
 
+// IdentityAsk is everything one identity call needs to know that is not the
+// prompt: the document, and the three things about the INDEX that shape the
+// answer.
+//
+// A struct rather than four parameters, and a parameter rather than fields on
+// the Identifier, because one *Identifier is shared by every index in a
+// registry and by every slot of the captioning queue — state there is a data
+// race and carries one index's context into the next.
+type IdentityAsk struct {
+	// Text is the document's own words, as indexed.
+	Text string
+	// TagContext is the index's established tag vocabulary (Store.TagContext),
+	// so new tags align with terms the corpus already uses.
+	TagContext string
+	// IndexHint is what the corpus owner says about reading this collection
+	// (Store.IndexHint).
+	IndexHint string
+	// DocTypes are the index's registered document types, which the answer may
+	// choose one of. Empty → the doc_type field is not asked for at all, which
+	// is right for an index that has registered none.
+	DocTypes []DocType
+}
+
+func (a IdentityAsk) prompt() string {
+	p := identityPrompt + docTypeBlock(a.DocTypes) + tagContextBlock(a.TagContext) +
+		HintBlock(a.IndexHint)
+	return p + "\n\nDOCUMENT:\n" + identityExcerpt(a.Text)
+}
+
+func typeNames(types []DocType) []string {
+	out := make([]string, 0, len(types))
+	for _, t := range types {
+		if n := NormalizeTypeName(t.Name); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// identityToolDefWithTypes is the identity schema with this index's document
+// types as the doc_type enum. Not required — most documents are not forms, and
+// a required enum with no "none" member is an instruction to pick one anyway.
+func identityToolDefWithTypes(names []string) llm.ToolDef {
+	td := identityToolDef()
+	params, _ := td.Function.Parameters.(map[string]any)
+	props, _ := params["properties"].(map[string]any)
+	props["doc_type"] = map[string]any{
+		"type": "string",
+		"enum": append(append([]string{}, names...), ""),
+	}
+	return td
+}
+
+// docTypeBlock names the registered types for the prompt, with the one line
+// each that says how to recognise one.
+func docTypeBlock(types []DocType) string {
+	if len(types) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n- \"doc_type\": if this document is one of the following, name it" +
+		" EXACTLY as written here. If it is not clearly one of them, use \"\" —" +
+		" most documents are not, and a wrong type produces a filled-in form of" +
+		" guesses:\n")
+	for _, t := range types {
+		fmt.Fprintf(&b, "    %s", NormalizeTypeName(t.Name))
+		if d := strings.TrimSpace(t.Description); d != "" {
+			b.WriteString(" — " + oneLineTag(d))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// normalizeDocType holds the answer to the index's registered names. An
+// unregistered one is REFUSED rather than recorded: it would resolve to no
+// schema, so a document carrying it is a document that claims a type nothing
+// can extract.
+func normalizeDocType(got string, names []string) (string, error) {
+	got = NormalizeTypeName(got)
+	if got == "" || len(names) == 0 {
+		return "", nil
+	}
+	for _, n := range names {
+		if got == n {
+			return n, nil
+		}
+	}
+	return "", fmt.Errorf("\"doc_type\" must be \"\" or exactly one of: %s", strings.Join(names, ", "))
+}
+
 // IdentifyTags asks for TAGS ALONE, leaving a caption that already exists
 // alone with it. The backfill for a corpus captioned before tags existed: the
 // full identity would rewrite hundreds of names that are already right (and a
@@ -430,23 +546,24 @@ func (id *Identifier) Identify(ctx context.Context, text, tagContext string) (Do
 // Returns the content and role tags. Source/Model/At are the CALLER's to
 // merge, because what is being written is part of an identity somebody else
 // already authored.
-func (id *Identifier) IdentifyTags(ctx context.Context, text, tagContext string) (content, roles []string, err error) {
-	if n := contentChars(text); n < identityMinTextChars {
+func (id *Identifier) IdentifyTags(ctx context.Context, ask IdentityAsk) (content, roles []string, err error) {
+	if n := contentChars(ask.Text); n < identityMinTextChars {
 		return nil, nil, &ErrIdentityTooShort{Chars: n}
 	}
-	err = id.ask(ctx, identityTagsPrompt+tagContextBlock(tagContext)+"\n\nDOCUMENT:\n"+identityExcerpt(text),
-		"emit_tags", identityTagsJSONShape, func(js string) error {
-			var d DocIdentity
-			if uerr := json.Unmarshal([]byte(js), &d); uerr != nil {
-				return fmt.Errorf("unparseable: %v", uerr)
-			}
-			c, r, verr := validateTags(d.ContentTags, d.RoleTags)
-			if verr != nil {
-				return verr
-			}
-			content, roles = c, r
-			return nil
-		})
+	prompt := identityTagsPrompt + tagContextBlock(ask.TagContext) + HintBlock(ask.IndexHint) +
+		"\n\nDOCUMENT:\n" + identityExcerpt(ask.Text)
+	err = id.ask(ctx, prompt, "emit_tags", identityTagsJSONShape, func(js string) error {
+		var d DocIdentity
+		if uerr := json.Unmarshal([]byte(js), &d); uerr != nil {
+			return fmt.Errorf("unparseable: %v", uerr)
+		}
+		c, r, verr := validateTags(d.ContentTags, d.RoleTags)
+		if verr != nil {
+			return verr
+		}
+		content, roles = c, r
+		return nil
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("identity tags: %w", err)
 	}
@@ -470,6 +587,11 @@ func tagContextBlock(tagContext string) string {
 // quoted back — and having it once is what keeps the tags ask from being a
 // worse version of it.
 func (id *Identifier) ask(ctx context.Context, prompt, tool, shape string, accept func(js string) error) error {
+	return id.askWith(ctx, id.validator, prompt, tool, shape, accept)
+}
+
+func (id *Identifier) askWith(ctx context.Context, validator *agent.SchemaValidator,
+	prompt, tool, shape string, accept func(js string) error) error {
 	msgs := []llm.Message{{Role: "user", Parts: []llm.ContentPart{llm.TextPart(prompt)}}}
 	opts := &llm.ChatOpts{MaxTokens: identityMaxTokens}
 	var lastErr error
@@ -493,7 +615,7 @@ func (id *Identifier) ask(ctx context.Context, prompt, tool, shape string, accep
 			continue
 		}
 		js := extractJSON(out)
-		if lastErr = id.validator.ValidateArgs(tool, js); lastErr == nil {
+		if lastErr = validator.ValidateArgs(tool, js); lastErr == nil {
 			if lastErr = accept(js); lastErr == nil {
 				return nil
 			}
@@ -707,9 +829,9 @@ func (s *Store) DocumentIdentity(path string) (DocIdentity, error) {
 	var ctStr, rtStr string
 	err := s.db.QueryRow(
 		`SELECT gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at, gen_text_hash,
-		        gen_content_tags, gen_role_tags
+		        gen_content_tags, gen_role_tags, gen_doc_type
 		   FROM documents WHERE path = ?`, path).
-		Scan(&d.Name, &d.Summary, &d.Kind, &d.Source, &d.Model, &d.At, &d.TextHash, &ctStr, &rtStr)
+		Scan(&d.Name, &d.Summary, &d.Kind, &d.Source, &d.Model, &d.At, &d.TextHash, &ctStr, &rtStr, &d.DocType)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DocIdentity{}, fmt.Errorf("raglit: no document with path %q", path)
 	}
@@ -735,6 +857,22 @@ func splitTagList(s string) []string {
 		}
 	}
 	return out
+}
+
+// identityAsk assembles everything about THIS index that shapes an identity
+// answer: the established tag vocabulary, the corpus owner's hint, and the
+// registered document types the answer may choose one of.
+func (s *Store) identityAsk(text string) (IdentityAsk, error) {
+	types, err := s.DocTypeRefs()
+	if err != nil {
+		return IdentityAsk{}, err
+	}
+	return IdentityAsk{
+		Text:       text,
+		TagContext: s.TagContext(),
+		IndexHint:  s.IndexHint(),
+		DocTypes:   types,
+	}, nil
 }
 
 // identityTagContextSize is how much of the index's vocabulary the prompt
@@ -800,10 +938,10 @@ func (s *Store) SetDocumentIdentity(ctx context.Context, path string, d DocIdent
 func writeIdentity(ctx context.Context, tx dbExecer, docID int64, d DocIdentity) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE documents SET gen_name=?, gen_summary=?, gen_kind=?, gen_source=?, gen_model=?, gen_at=?, gen_text_hash=?,
-		   gen_content_tags=?, gen_role_tags=?
+		   gen_content_tags=?, gen_role_tags=?, gen_doc_type=?
 		  WHERE id=?`,
 		d.Name, d.Summary, d.Kind, d.Source, d.Model, d.At, d.TextHash,
-		strings.Join(d.ContentTags, ","), strings.Join(d.RoleTags, ","), docID); err != nil {
+		strings.Join(d.ContentTags, ","), strings.Join(d.RoleTags, ","), d.DocType, docID); err != nil {
 		return fmt.Errorf("raglit: set identity: %w", err)
 	}
 	// One identity fragment per document, replaced rather than accumulated.
@@ -940,9 +1078,11 @@ func (s *Store) IdentifyDocument(ctx context.Context, path string, force bool) (
 	if err != nil {
 		return DocIdentity{}, err
 	}
-	// The index's existing tag vocabulary, so new tags align with established
-	// terms rather than inventing spellings for a concept already tagged.
-	id, err := s.identifier.Identify(ctx, text, s.TagContext())
+	ask, err := s.identityAsk(text)
+	if err != nil {
+		return DocIdentity{}, err
+	}
+	id, err := s.identifier.Identify(ctx, ask)
 	if err != nil {
 		return DocIdentity{}, err
 	}
@@ -982,6 +1122,7 @@ func (s *Store) RecordIdentity(ctx context.Context, path string, d DocIdentity, 
 		// to the name does not silently blank the tags.
 		ContentTags: firstNonEmpty(d.ContentTags, cur.ContentTags),
 		RoleTags:    firstNonEmpty(d.RoleTags, cur.RoleTags),
+		DocType:     firstNonBlank(d.DocType, cur.DocType),
 		Source:      IdentityByPerson,
 		Model:       strings.TrimSpace(by),
 		At:          time.Now().UnixNano(),
@@ -1077,7 +1218,11 @@ func (s *Store) TagDocument(ctx context.Context, path string, force bool) (DocId
 	if err != nil {
 		return DocIdentity{}, err
 	}
-	content, roles, err := s.identifier.IdentifyTags(ctx, text, s.TagContext())
+	ask, err := s.identityAsk(text)
+	if err != nil {
+		return DocIdentity{}, err
+	}
+	content, roles, err := s.identifier.IdentifyTags(ctx, ask)
 	if err != nil {
 		return DocIdentity{}, err
 	}
@@ -1116,7 +1261,7 @@ func (s *Store) DocumentsMissingIdentity() ([]string, error) {
 func (s *Store) Identities() ([]IdentityStatus, error) {
 	rows, err := s.db.Query(
 		`SELECT path, gen_name, gen_summary, gen_kind, gen_source, gen_model, gen_at,
-		        gen_content_tags, gen_role_tags
+		        gen_content_tags, gen_role_tags, gen_doc_type
 		   FROM documents ORDER BY added_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1126,7 +1271,7 @@ func (s *Store) Identities() ([]IdentityStatus, error) {
 	for rows.Next() {
 		var st IdentityStatus
 		var ctStr, rtStr string
-		if err := rows.Scan(&st.Path, &st.Name, &st.Summary, &st.Kind, &st.Source, &st.Model, &st.At, &ctStr, &rtStr); err != nil {
+		if err := rows.Scan(&st.Path, &st.Name, &st.Summary, &st.Kind, &st.Source, &st.Model, &st.At, &ctStr, &rtStr, &st.DocType); err != nil {
 			return nil, err
 		}
 		st.ContentTags = splitTagList(ctStr)
@@ -1164,6 +1309,9 @@ func identityFragmentText(d DocIdentity) string {
 	}
 	if len(d.RoleTags) > 0 {
 		b.WriteString("ROLE: " + strings.Join(d.RoleTags, ", ") + "\n")
+	}
+	if d.DocType != "" {
+		b.WriteString("TYPE: " + d.DocType + "\n")
 	}
 	if d.Summary != "" {
 		b.WriteString("\n" + d.Summary + "\n")

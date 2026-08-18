@@ -79,6 +79,12 @@ func fragmentsToolDef() llm.ToolDef {
 type Segmenter struct {
 	Client     Chatter
 	MaxRetries int // JSON fix-loop attempts after the first try (default 2)
+	// Collection is what the corpus owner says about reading THIS collection
+	// (Store.IndexHint), appended to the segmentation prompt. Where a fragment
+	// boundary falls depends on knowing what the document IS: a lab panel's
+	// results are one unit and a work order's line items are another, and
+	// nothing on the page says so.
+	Collection string
 
 	// FragBudget is the ceiling a fragment must respect — the EMBEDDER's limit,
 	// in the tokens it counts in. nil → unchecked.
@@ -115,7 +121,7 @@ const segContentHeader = "\n\nCONTENT:\n"
 // SegmentText segments a window of text/code.
 func (sg *Segmenter) SegmentText(ctx context.Context, text, openText string) (SegResult, error) {
 	parts := []llm.ContentPart{
-		llm.TextPart(segPrompt(openText) + segContentHeader + text),
+		llm.TextPart(segPrompt(openText) + HintBlock(sg.Collection) + segContentHeader + text),
 	}
 	return sg.run(ctx, parts, text) // text fallback = the window itself
 }

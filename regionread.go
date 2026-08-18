@@ -930,6 +930,11 @@ func (o *OCR) AskWithHint(hint string) func(context.Context, PageImage, RegionAb
 		default:
 			o.Prompt = Prompt(PromptCrop, WithHint(hint), WithDamage(about.Damage), WithGrid(about.Grid))
 		}
+		// The corpus hint goes on LAST and on every kind, escalation included:
+		// it is context about the collection rather than a question, so it does
+		// not compete with the one being asked, and a turn that decides whether
+		// a page is upside down still benefits from knowing what the page is.
+		o.Prompt += HintBlock(o.Collection)
 		defer func() { o.Prompt, o.TraceCtx = prev, prevCtx }()
 		text, _, shrinks, err := o.PageAsSeen(ctx, img)
 		if err != nil {

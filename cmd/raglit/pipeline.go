@@ -34,7 +34,7 @@ func addLLMFlags(fs *flag.FlagSet) *llmFlags {
 		// SERVER, so it must not be per index or per worker — two indexes calling
 		// the same model are competing for the same slots, and two controllers
 		// each learning "it took one more" would between them ask for two.
-		chans: raglit.NewChannels(),
+		chans:       raglit.NewChannels(),
 		url:         fs.String("llm-url", "", "model base URL (default: config, else OpenAI)"),
 		key:         fs.String("llm-key", "", "API key (default: config or $RAGLIT_LLM_KEY)"),
 		visionModel: fs.String("llm-model", "", "vision model id (default: config)"),
