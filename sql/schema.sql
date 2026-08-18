@@ -41,7 +41,21 @@ CREATE TABLE IF NOT EXISTS documents (
   --
   -- Empty means unknown — a caption written before this column existed. Treated
   -- as stale, because it is exactly as trustworthy as an unverified one.
-  gen_text_hash TEXT NOT NULL DEFAULT ''
+  gen_text_hash TEXT NOT NULL DEFAULT '',
+  -- What the document is ABOUT, and what job it does in the corpus. Comma-
+  -- separated because a tag is a short noun phrase with no comma in it (the
+  -- validator enforces that) and a join table buys nothing at 3–5 tags per
+  -- document that a LIKE and a count cannot already do.
+  --
+  -- gen_content_tags is an OPEN vocabulary and therefore drifts: "lead paint",
+  -- "LBP" and "paint inspection" arrive from three documents meaning one thing.
+  -- Two things hold it together — the identity prompt is seeded with the index's
+  -- established tags (Store.TagContext), and `raglit audit-tags` reports the
+  -- drift that got through so a person can merge it.
+  --
+  -- gen_role_tags is CLOSED (identityRoleKinds), for the same reason gen_kind is.
+  gen_content_tags TEXT NOT NULL DEFAULT '',
+  gen_role_tags    TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS fragments (
   id     INTEGER PRIMARY KEY,
@@ -377,6 +391,10 @@ CREATE TABLE IF NOT EXISTS identity_jobs (
   path        TEXT NOT NULL UNIQUE,
   state       TEXT NOT NULL DEFAULT 'pending',  -- pending|running|done|error
   force       INTEGER NOT NULL DEFAULT 0,       -- replace a machine caption that exists
+  -- tags_only: ask for TAGS and write only those, leaving the caption alone.
+  -- The backfill for a corpus captioned before tags existed, where re-running
+  -- the whole identity would rewrite hundreds of names that were already right.
+  tags_only   INTEGER NOT NULL DEFAULT 0,
   error       TEXT NOT NULL DEFAULT '',
   enqueued_at INTEGER NOT NULL,
   started_at  INTEGER NOT NULL DEFAULT 0,

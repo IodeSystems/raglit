@@ -26,20 +26,22 @@ type Attestation struct {
 }
 
 type Document struct {
-	ID          int64  `db:"id" derived:"documents.id" json:"id"`
-	Path        string `db:"path" derived:"documents.path" json:"path"`
-	Title       string `db:"title" derived:"documents.title" json:"title"`
-	AddedAt     int64  `db:"added_at" derived:"documents.added_at" json:"added_at"`
-	ContentHash string `db:"content_hash" derived:"documents.content_hash" json:"content_hash"`
-	FragMode    string `db:"frag_mode" derived:"documents.frag_mode" json:"frag_mode"`
-	FragRecipe  string `db:"frag_recipe" derived:"documents.frag_recipe" json:"frag_recipe"`
-	GenName     string `db:"gen_name" derived:"documents.gen_name" json:"gen_name"`
-	GenSummary  string `db:"gen_summary" derived:"documents.gen_summary" json:"gen_summary"`
-	GenKind     string `db:"gen_kind" derived:"documents.gen_kind" json:"gen_kind"`
-	GenSource   string `db:"gen_source" derived:"documents.gen_source" json:"gen_source"`
-	GenModel    string `db:"gen_model" derived:"documents.gen_model" json:"gen_model"`
-	GenAt       int64  `db:"gen_at" derived:"documents.gen_at" json:"gen_at"`
-	GenTextHash string `db:"gen_text_hash" derived:"documents.gen_text_hash" json:"gen_text_hash"`
+	ID             int64  `db:"id" derived:"documents.id" json:"id"`
+	Path           string `db:"path" derived:"documents.path" json:"path"`
+	Title          string `db:"title" derived:"documents.title" json:"title"`
+	AddedAt        int64  `db:"added_at" derived:"documents.added_at" json:"added_at"`
+	ContentHash    string `db:"content_hash" derived:"documents.content_hash" json:"content_hash"`
+	FragMode       string `db:"frag_mode" derived:"documents.frag_mode" json:"frag_mode"`
+	FragRecipe     string `db:"frag_recipe" derived:"documents.frag_recipe" json:"frag_recipe"`
+	GenName        string `db:"gen_name" derived:"documents.gen_name" json:"gen_name"`
+	GenSummary     string `db:"gen_summary" derived:"documents.gen_summary" json:"gen_summary"`
+	GenKind        string `db:"gen_kind" derived:"documents.gen_kind" json:"gen_kind"`
+	GenSource      string `db:"gen_source" derived:"documents.gen_source" json:"gen_source"`
+	GenModel       string `db:"gen_model" derived:"documents.gen_model" json:"gen_model"`
+	GenAt          int64  `db:"gen_at" derived:"documents.gen_at" json:"gen_at"`
+	GenTextHash    string `db:"gen_text_hash" derived:"documents.gen_text_hash" json:"gen_text_hash"`
+	GenContentTags string `db:"gen_content_tags" derived:"documents.gen_content_tags" json:"gen_content_tags"`
+	GenRoleTags    string `db:"gen_role_tags" derived:"documents.gen_role_tags" json:"gen_role_tags"`
 }
 
 type DocumentNote struct {
@@ -78,6 +80,7 @@ type IdentityJob struct {
 	Path       string `db:"path" derived:"identity_jobs.path" json:"path"`
 	State      string `db:"state" derived:"identity_jobs.state" json:"state"`
 	Force      int64  `db:"force" derived:"identity_jobs.force" json:"force"`
+	TagsOnly   int64  `db:"tags_only" derived:"identity_jobs.tags_only" json:"tags_only"`
 	Error      string `db:"error" derived:"identity_jobs.error" json:"error"`
 	EnqueuedAt int64  `db:"enqueued_at" derived:"identity_jobs.enqueued_at" json:"enqueued_at"`
 	StartedAt  int64  `db:"started_at" derived:"identity_jobs.started_at" json:"started_at"`
