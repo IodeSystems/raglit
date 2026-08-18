@@ -2,6 +2,8 @@
 
 Status: BUILT 2026-08-01 (`identity.go`, `identityqueue.go`, `raglit identify`,
 `/api/identify`, `/api/identify/queue`).
+TAGS + INDEX IDENTITY 2026-08-18 (`indexdigest.go`, `tagmerge.go`, `raglit about`,
+`raglit audit-tags`, `raglit identify --tags-only`).
 Living doc — prune as the follow-ups land.
 
 ## Goal (from user)
@@ -131,6 +133,88 @@ BM25 can rank, because the summary does.
 - Config — `identity_model` (empty → the vision model, which every home already
   has and which is a chat model), `no_identity` to turn it off.
 
+## Tags, and what an INDEX is (2026-08-18)
+
+Two fields more, asked in the same call, and one level up.
+
+- **`content_tags`** — 3–5 short noun phrases for what the document is ABOUT.
+  OPEN vocabulary, because the subjects of a corpus are not enumerable in
+  advance; bounded in SHAPE instead (1–3 words, ≤40 chars, lowercase, no
+  commas — the column is comma-separated, so a comma in a tag comes back as two
+  tags on the next read, silently and only for whichever documents got one).
+- **`role_tags`** — 1–3 from a CLOSED vocabulary for what job the document does
+  in the corpus: `documentation · reference · overview · specification · guide ·
+  changelog · notes · report · data · other`. Closed for the same reason `kind`
+  is, with `NormalizeRole` mapping the aliases a model emits.
+
+Stored in `documents.gen_content_tags` / `gen_role_tags` and written into the
+identity fragment, so they are searchable by the same path the summary is.
+
+### Drift, and the two halves of holding it together
+
+An open vocabulary drifts: "lead paint", "LBP" and "paint inspection" arrive
+from three documents meaning one thing, and a tag nothing else repeats groups
+nothing.
+
+- **Prospective.** The identity prompt is seeded with the index's established
+  vocabulary — `Store.TagContext`, the top 15 content tags by frequency — so a
+  document is tagged in the terms the corpus already uses. It is a per-call
+  PARAMETER, not a field on the Identifier: one `*Identifier` is shared by every
+  index in a registry and by every slot of the captioning queue, so a field
+  there is a data race AND carries one index's vocabulary into the next. The
+  queue reads it per job in the loader (off a model slot), which is what makes a
+  corpus captioned from empty converge on the terms it establishes as it goes.
+- **Retroactive.** `raglit audit-tags` reports the drift that got through, with
+  a `≈` list of tags sharing a significant WORD (whole words — substrings pair
+  "data" with "metadata", and a proposal nobody trusts is a proposal nobody
+  reads). `--merge "old,other=>new"` applies a collapse. Deliberately not
+  automatic: whether two terms mean the same thing is not something spelling
+  establishes — "lead paint" and "lead paint disclosure" share every significant
+  word and are different facts. The report proposes; a person rules.
+
+### The backfill
+
+`raglit identify --tags-only` fills tags into documents that already have a
+caption. Its own selector (`DocumentsMissingTags`) and its own ask
+(`Identifier.IdentifyTags`, `emit_tags`), because the alternative — a `--force`
+re-identify — rewrites hundreds of captions that are already right, a person's
+among them. It writes the two columns and NOTHING else: the caption, its author,
+and `gen_text_hash` are left exactly as they stand. The hash matters: stamping it
+with text no caption was read from would claim the caption is current and silence
+the staleness re-arm in `commitDoc`.
+
+Same queue, same rows, same resumability — `identity_jobs.tags_only`, with the
+opposite keep rule (an existing caption is the precondition; existing TAGS are
+the reason to decline).
+
+### What an index is
+
+`identity.go` answers "what is this document". Nothing answered "what is in this
+index", and the absence had a specific symptom: an agent searching a corpus for a
+topic it does not hold gets an empty result, which is indistinguishable from a
+badly phrased query — so it rephrases and searches again, several times, against
+a corpus that was never going to have it. The index knew the answer and never
+said it.
+
+Two forms, because they fail differently (`indexdigest.go`):
+
+- **The digest** — documents, kinds, top content and role tags, counted from
+  what is stored. One query, no model, never stale. This is the one attached to
+  an empty search (`covers`), scoped to the SAME subtree the search was: a
+  whole-index digest shown for a path-scoped query claims coverage the subtree
+  does not have.
+- **The about** — a paragraph a model writes from the CAPTIONS (not the
+  documents; the captions are already a model's account of them). Two paraphrases
+  deep, so it is marked generated wherever it is shown, and stamped with the
+  document count it was written from — a summary of 40 documents shown for an
+  index of 400 is worse than none, and `about_stale` is what makes that
+  detectable.
+
+Surfaced by `raglit about [--write]`, `list_indexes`, and the empty-search
+`covers`. Both MCP backings carry it: the digest was previously computed only in
+the embedded server, which is not the default path — a daemon-routed agent, which
+is most of them, saw none of it.
+
 ### The upstream rule this forced
 
 A caption is downstream of the transcript, so captioning kept finding documents
@@ -164,6 +248,22 @@ and nothing.
 - `cmd/raglit/identifycmd_test.go`: coverage listing names the unnamed; a
   person's ruling sticks and does not rename the file; an unknown kind is
   refused; no model configured says so.
+- `indexdigest_test.go`: the digest counts kinds/tags/untagged; it scopes to the
+  same subtree a search does; `TagContext` is the established vocabulary and is
+  empty on a fresh index; an About written from half the corpus reports stale.
+- `tagmerge_test.go`: the `a,b=>c` spec and its refusals; a merge collapses
+  across the index, deduplicates a document carrying both spellings, reports the
+  tags nobody carried, moves the identity FRAGMENT with the columns, and touches
+  neither the caption nor unrelated documents; `≈` matches whole words only; a
+  tag cannot carry the separator it is stored with.
+- `identityqueue_test.go`: the queue carries the index vocabulary into the
+  prompt (the path that captions a corpus is the path where tags drift, and it
+  was the one the mechanism was missing from); a tags-only job leaves the
+  caption, its author, and its text hash alone, and declines a document that
+  already has tags.
+- `cmd/raglit/audittagscmd_test.go`: the audit reports the vocabulary, names the
+  untagged, and marks `≈` as a proposal; `--merge` applies only what was named;
+  `raglit about` prints the counted digest with no model configured.
 - Live, against the configured endpoint: a text document ingested with `raglit
   index` came back captioned "2021-05-25 Purchase and Sale Agreement
   (Ardley/Brannock)", kind `agreement`; a person's `--name` superseded it; a
@@ -171,6 +271,18 @@ and nothing.
   search hit on the summary printed marked.
 
 ## Open / not done
+
+- **The `about` paragraph is not regenerated on its own.** It goes stale as the
+  corpus grows and says so (`about_stale`), but nothing rewrites it — `raglit
+  about --write` is the manual answer. A hook on the identity queue draining
+  would be the obvious place.
+- **Merges are not recorded.** `--merge` rewrites the tags and leaves no trace
+  that a person ruled two terms equivalent, so the next corpus re-derives the
+  ruling from nothing. The judgement trail (`raglit mark`) is the shape this
+  should take if it matters.
+- **`≈` is lexical only.** It cannot see that "escrow closing" and "settlement"
+  are the same thing. A model pass over the tag list would propose those, and
+  would still be a proposal.
 
 - **The summary is NOT embedded**, even on an `--embed` index — lexical indexing
   is unambiguously right, and whether a paraphrase belongs in the same vector
