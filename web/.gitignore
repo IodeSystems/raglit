@@ -1,7 +1,8 @@
 node_modules/
-
-# dist is NOT ignored. It is committed on purpose: `go install
-# github.com/iodesystems/raglit/cmd/raglit@latest` has to work on a machine with
-# no node, and //go:embed only sees files present in the module.
-# Generated — never hand-edit. Rebuild with `make web`.
 *.tsbuildinfo
+
+# dist is GENERATED and no longer committed (2026-08-19 — embed.go says why).
+# .gitkeep is committed and must stay: //go:embed of a missing or empty
+# directory does not compile, so a clean checkout needs one file here.
+dist/*
+!dist/.gitkeep
