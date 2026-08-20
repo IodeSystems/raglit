@@ -199,7 +199,18 @@ export interface State {
   orphaned?: Entry[]
 }
 
+/**
+ * One row of the asset list, and it is FLAT — mirroring the Go field for field.
+ *
+ * `asset` is the root-relative path and the handle every other operation takes,
+ * not a nested Asset. This was written as `{asset: Asset}` first, which
+ * typechecked perfectly and would have rendered "[object Object]" against a live
+ * daemon: the types in this file are a mirror, and inventing a shape here is
+ * exactly the translation-layer hazard the file header warns about.
+ */
 export interface AssetRef {
-  asset: Asset
-  stats?: Stats
+  asset: string
+  kind?: string
+  producer?: string
+  stats: Stats
 }

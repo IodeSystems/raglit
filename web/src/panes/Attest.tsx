@@ -1,24 +1,10 @@
 import { Link, useParams } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
+import { type Stats, ruled as ruledCount, useAssets } from "@iodesystems/attest-react";
 
-import { getJSON } from "../api";
+import { raglitTransport } from "./attestTransport";
 
-export type Stats = {
-  total?: number;
-  confirmed?: number;
-  corrected?: number;
-  affirmed?: number;
-  unclear?: number;
-  unsupported?: number;
-  untouched?: number;
-};
-
-type AssetRef = {
-  asset: string;
-  kind?: string;
-  producer?: string;
-  stats?: Stats;
-};
+export type { Stats };
 
 // The review workbench's asset list, per index.
 //
@@ -33,20 +19,8 @@ type AssetRef = {
 // thing Assets() resolves server-side to avoid.
 export function Attest() {
   const { index } = useParams({ from: "/i/$index" });
-  const [assets, setAssets] = useState<AssetRef[] | null>(null);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let live = true;
-    setAssets(null);
-    setError("");
-    getJSON<{ assets: AssetRef[] }>(`/api/attest/${encodeURIComponent(index)}/assets`)
-      .then((r) => live && setAssets(r.assets ?? []))
-      .catch((e: unknown) => live && setError(String(e)));
-    return () => {
-      live = false;
-    };
-  }, [index]);
+  const transport = useMemo(() => raglitTransport(index), [index]);
+  const { assets, error } = useAssets(transport);
 
   if (error) {
     return (
@@ -78,15 +52,24 @@ export function Attest() {
             <th>Asset</th>
             <th>Producer</th>
             <th className="num">Units</th>
+            {/*
+              TWO COLUMNS, NOT ONE, AND THIS IS THE PORT'S FIRST CORRECTION.
+              This table had a single "Ruled" column computed as total - untouched,
+              which counts a blanket affirmation as an individual ruling and
+              overstates how deeply the asset was reviewed. That is the exact
+              distinction confirmed/affirmed exists to keep. `ruled()` from the core
+              counts only what somebody went to individually; "accounted" is the
+              other axis and both are needed to say what a pass was.
+            */}
             <th className="num">Ruled</th>
-            <th>Progress</th>
+            <th>Accounted for</th>
           </tr>
         </thead>
         <tbody>
           {assets.map((a) => {
-            const s = a.stats ?? {};
-            const total = s.total ?? 0;
-            const ruled = total - (s.untouched ?? 0);
+            const s = a.stats;
+            const total = s?.total ?? 0;
+            const accounted = total - (s?.untouched ?? 0);
             return (
               <tr key={a.asset}>
                 <td>
@@ -94,11 +77,13 @@ export function Attest() {
                     {a.asset}
                   </Link>
                 </td>
-                <td className="muted">{a.producer || ""}</td>
+                <td className="muted">{a.producer ?? ""}</td>
                 <td className="num">{total}</td>
-                <td className="num">{ruled}</td>
+                <td className="num" title="checked, corrected or disputed one at a time — a sweep is not counted here">
+                  {s ? ruledCount(s) : 0}
+                </td>
                 <td>
-                  <Progress ruled={ruled} total={total} />
+                  <Progress ruled={accounted} total={total} />
                 </td>
               </tr>
             );
