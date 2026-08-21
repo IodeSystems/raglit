@@ -227,6 +227,92 @@ func TestExtractJSON(t *testing.T) {
 	}
 }
 
+// The first BALANCED object, not the first brace to the last one.
+//
+// These are the replies that were actually failing in the field, not invented
+// shapes: 239 of 290 failed identity jobs on the delano index reported
+// `invalid character 'X' after top-level value`, which is what json says when
+// it is handed one object followed by anything at all.
+func TestExtractJSON_StopsAtTheEndOfTheFirstObject(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"a second object after the first": {
+			`{"name":"A deed"}` + "\n" + `{"name":"A deed"}`,
+			`{"name":"A deed"}`,
+		},
+		"objects run together with a comma": {
+			`{"name":"A deed"},{"name":"another"}`,
+			`{"name":"A deed"}`,
+		},
+		"a trailing note after the answer": {
+			`{"name":"A deed"}` + "\n\nLet me know if you want more detail.",
+			`{"name":"A deed"}`,
+		},
+		"prose with braces before the answer": {
+			`I will use the shape {like this}: {"name":"A deed"}`,
+			`{"name":"A deed"}`,
+		},
+		"a nested object is not cut short": {
+			`{"a":{"b":{"c":1}},"d":2} trailing`,
+			`{"a":{"b":{"c":1}},"d":2}`,
+		},
+		// A summary quoting a document is the common case here, and legal text
+		// carries braces. Counting one inside a string as structure ends the
+		// object early and produces JSON that is invalid for a reason nothing in
+		// the reply explains.
+		"braces inside a string are content": {
+			`{"summary":"the clause reads {redacted} in the original"} and that is all`,
+			`{"summary":"the clause reads {redacted} in the original"}`,
+		},
+		"an escaped quote does not end the string": {
+			`{"summary":"he said \"no\" twice"}x`,
+			`{"summary":"he said \"no\" twice"}`,
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := extractJSON(c.in); got != c.want {
+				t.Errorf("extractJSON(%q)\n = %q\nwant %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// When a reply holds no object at all, hand back the reply. The caller reports
+// what it could not parse, and the useful version of that message quotes what
+// the model actually said.
+func TestExtractJSON_NoObject(t *testing.T) {
+	for _, in := range []string{"/home/nthalk/some/path", "I cannot answer that.", ""} {
+		if got := extractJSON(in); got != in {
+			t.Errorf("extractJSON(%q) = %q, want it unchanged", in, got)
+		}
+	}
+}
+
+// An unclosed fence is not a fence. Stripping the opening marker and keeping
+// everything after it turns a reply that merely MENTIONS one into a truncated
+// reply, and the object that followed goes missing.
+func TestExtractJSON_UnclosedFence(t *testing.T) {
+	in := "use ```json like so\n" + `{"a":1}`
+	if got, want := extractJSON(in), `{"a":1}`; got != want {
+		t.Errorf("extractJSON(%q) = %q, want %q", in, got, want)
+	}
+}
+
+// A malformed object still comes back as the OBJECT. A raw newline inside a
+// string literal is the model's error, not the extractor's, and the validator's
+// message about it is only useful if it is pointed at the object rather than at
+// the whole reply.
+func TestExtractJSON_MalformedObjectIsStillIsolated(t *testing.T) {
+	in := "here: {\"summary\":\"line one\nline two\"} — done"
+	got := extractJSON(in)
+	if !strings.HasPrefix(got, "{") || !strings.HasSuffix(got, "}") {
+		t.Errorf("extractJSON(%q) = %q, want just the object", in, got)
+	}
+	if strings.Contains(got, "here:") || strings.Contains(got, "done") {
+		t.Errorf("the prose came back too: %q", got)
+	}
+}
+
 // A fragment that stitches across a page boundary must record WHERE the next
 // page begins inside it.
 //

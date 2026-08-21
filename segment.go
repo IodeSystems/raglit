@@ -266,23 +266,121 @@ Rules:
 	return p
 }
 
-// extractJSON pulls the first {...} object out of a model reply, tolerating
-// ```json fences and surrounding prose.
+// extractJSON pulls the FIRST balanced {...} object out of a model reply,
+// tolerating ```json fences and surrounding prose.
+//
+// It used to take the first `{` to the LAST `}`, which is a different thing and
+// is wrong whenever a reply carries anything after the object it was asked for.
+// A model that answers twice — the object, then a second object, or a trailing
+// note — produced a span holding both, and `json.Unmarshal` reported
+// `invalid character '{' after top-level value` (or `','`, depending on what
+// followed). Measured on the delano index 2026-08-19: **290 of 817 identity jobs
+// had failed, 239 of them with exactly that**, and nothing surfaced it until the
+// activity pane existed. The FDA corpus hit the mirror image — a reply with no
+// object at all came back whole, so the error named the first character of the
+// prose (`'/' looking for beginning of value`) rather than saying no JSON was
+// found.
+//
+// Balanced means string-aware: a `{` or `}` inside a JSON string is content, not
+// structure, and a legal document quoted inside a summary field has braces in it
+// often enough to matter.
+//
+// The retry loop cannot paper over this. A truncated or doubled answer is not
+// repetition, so the sampler never changes, and every attempt fails identically
+// until the attempts run out — three model calls to arrive at the same message.
 func extractJSON(s string) string {
 	s = strings.TrimSpace(s)
-	if i := strings.Index(s, "```"); i >= 0 {
-		s = s[i+3:]
-		s = strings.TrimPrefix(s, "json")
-		if j := strings.Index(s, "```"); j >= 0 {
-			s = s[:j]
+	if inner, ok := insideFence(s); ok {
+		s = inner
+	}
+	// Prefer the first candidate that actually parses. A reply whose first
+	// balanced object is malformed but whose second is fine is not a shape worth
+	// designing for, but preferring valid costs nothing and makes the common
+	// "prose containing braces, then the real answer" case work.
+	var firstBalanced string
+	for i := 0; i < len(s); i++ {
+		if s[i] != '{' {
+			continue
+		}
+		end, ok := matchBrace(s, i)
+		if !ok {
+			// Unbalanced from here on; nothing later can close either.
+			break
+		}
+		cand := s[i:end]
+		if json.Valid([]byte(cand)) {
+			return cand
+		}
+		if firstBalanced == "" {
+			firstBalanced = cand
 		}
 	}
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start >= 0 && end > start {
-		return strings.TrimSpace(s[start : end+1])
+	// Nothing parsed. Returning the first balanced object still hands the caller
+	// the thing that was MEANT to be JSON, so the error names what is wrong with
+	// it — a raw newline in a string literal, say — instead of quoting the whole
+	// reply back and burying it.
+	if firstBalanced != "" {
+		return firstBalanced
 	}
-	return strings.TrimSpace(s)
+	return s
+}
+
+// insideFence returns the contents of the first ```…``` block, if the reply has
+// a closed one. An UNCLOSED fence is left alone: the old code stripped the
+// opening marker and kept everything after it, which turns a reply that merely
+// mentions a fence into a truncated one.
+func insideFence(s string) (string, bool) {
+	i := strings.Index(s, "```")
+	if i < 0 {
+		return "", false
+	}
+	rest := s[i+3:]
+	// The info string ("json", "JSON", "") runs to the end of that line.
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		if info := strings.TrimSpace(rest[:nl]); info == "" || !strings.ContainsAny(info, "{}\"") {
+			rest = rest[nl+1:]
+		}
+	}
+	j := strings.Index(rest, "```")
+	if j < 0 {
+		return "", false
+	}
+	return strings.TrimSpace(rest[:j]), true
+}
+
+// matchBrace returns the index just past the `}` closing the object that opens
+// at start, tracking string literals and their escapes so braces inside a value
+// do not count as structure.
+func matchBrace(s string, start int) (int, bool) {
+	depth := 0
+	inStr := false
+	esc := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // Assembler stitches per-unit SegResults into finalized fragments, deferring the
