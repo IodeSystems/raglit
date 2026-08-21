@@ -21,10 +21,16 @@
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink);
     font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
-  header { position:sticky; top:0; z-index:5; display:flex; gap:12px; align-items:center;
+  /* Scoped to .pageheader / .pagemain rather than the bare elements, 2026-08-19.
+     MUI's AppBar renders a <header> and the new shell's content region is a
+     <main>, so bare-element layout rules here reached inside the redesigned
+     shell and centred it — a stylesheet meant for the page it replaced styling
+     the page that replaced it. The unconverted scopes (Overview, ProjectShell)
+     opt in by class until they are converted too. */
+  .pageheader { position:sticky; top:0; z-index:5; display:flex; gap:12px; align-items:center;
     padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px; }
-  header h1 span { color:var(--muted); font-weight:400; }
+  .pageheader h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px; }
+  .pageheader h1 span { color:var(--muted); font-weight:400; }
   .grow { flex:1; }
   select, button { font:inherit; color:inherit; background:var(--panel);
     border:1px solid var(--line); border-radius:7px; padding:5px 10px; cursor:pointer; }
@@ -32,7 +38,7 @@
   button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
   button:disabled { opacity:.45; cursor:default; }
   label.toggle { display:flex; align-items:center; gap:6px; color:var(--muted); cursor:pointer; }
-  main { padding:16px; max-width:1200px; margin:0 auto; }
+  .pagemain { padding:16px; max-width:1200px; margin:0 auto; }
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:18px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
   .card .n { font-size:22px; font-weight:650; }

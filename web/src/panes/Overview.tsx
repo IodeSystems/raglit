@@ -38,7 +38,7 @@ export function Overview() {
   // not have. Without this the overview rendered with no chrome at all.
   return (
     <>
-      <header>
+      <header className="pageheader">
         <h1>
           raglit <span>review</span>
         </h1>
@@ -48,7 +48,7 @@ export function Overview() {
         <div className="grow" />
       </header>
 
-      <main>
+      <main className="pagemain">
         {error && <div className="empty err">{error}</div>}
         {!data && !error && <div className="empty">loading…</div>}
         {data && !projects.length && (

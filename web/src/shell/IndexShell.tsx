@@ -1,25 +1,34 @@
 import { Link, Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import AppBar from "@mui/material/AppBar";
+import Box from "@mui/material/Box";
+import InputBase from "@mui/material/InputBase";
+import MenuItem from "@mui/material/MenuItem";
+import Paper from "@mui/material/Paper";
+import Select from "@mui/material/Select";
+import Toolbar from "@mui/material/Toolbar";
+import Typography from "@mui/material/Typography";
 
 import { listIndexes, type IndexInfo } from "../api";
+import { DRAWER_WIDTH, NavDrawer } from "./NavDrawer";
 
-// Everything below /i/:index — the header, the index picker, the search box and
-// the tab bar — rendered once and kept mounted while the routes underneath it
-// change.
+// Everything below /i/:index — the app bar, the scope switcher, the search box
+// and the nav drawer — rendered once and kept mounted while the routes
+// underneath it change.
 //
 // This is the reason the tree is nested rather than flat. The search box lives
 // HERE, so it holds its text and focus while you walk from a hit into a document
 // and back out; a flat tree would remount it on every navigation and lose both.
+//
+// What changed 2026-08-19: the header used to carry a wordmark, a four-part
+// breadcrumb AND a raw <select> holding the full index name — the same fact in
+// two idioms, side by side, with the search box wrapping onto its own row
+// underneath at anything narrower than a desktop. One switcher now says where
+// you are and changes it; see plan/ui-redesign.md §5.
 export function IndexShell() {
   const { index } = useParams({ from: "/i/$index" });
   const navigate = useNavigate();
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
-  // Split the same way the daemon does (cmd/raglit/namespace.go: nsSep is "__").
-  // An index with no separator has no project — it is not "a project called
-  // default", it is one nobody namespaced — so the crumb shows only the index.
-  const sep = index.indexOf("__");
-  const project = sep > 0 ? index.slice(0, sep) : "";
-  const local = sep > 0 ? index.slice(sep + 2) : index;
 
   useEffect(() => {
     listIndexes()
@@ -34,80 +43,96 @@ export function IndexShell() {
   };
 
   return (
-    <>
-      <header>
-        <h1>
-          <Link to="/">raglit</Link> <span>review</span>
-        </h1>
-        {/* The project half of the name, as a link. `delano-v-mckinnon__default`
-            is a project and an index run together, and until now the only way to
-            reach the project's other indexes was to know they existed. */}
-        <nav className="crumbs">
-          <Link to="/">projects</Link>
-          <span className="sep">/</span>
-          {project ? (
-            <>
-              <Link to="/p/$project" params={{ project }}>
-                {project}
-              </Link>
-              <span className="sep">/</span>
-              <strong>{local}</strong>
-            </>
-          ) : (
-            <strong>{local}</strong>
-          )}
-        </nav>
-        <select
-          title="index"
-          value={index}
-          onChange={(e) => switchIndex(e.target.value)}
-        >
-          {/* The index from the URL is always an option, even if /indexes has
-              not answered yet or does not know it. Otherwise a deep link to an
-              index renders a picker showing some OTHER index while the page
-              below it shows the right one. */}
-          {!indexes.some((i) => i.name === index) && <option value={index}>{index}</option>}
-          {indexes.map((i) => (
-            <option key={i.name} value={i.name}>
-              {i.name}
-            </option>
-          ))}
-        </select>
-        <ShellSearch index={index} />
-        <div className="grow" />
-      </header>
+    <Box sx={{ display: "flex" }}>
+      <AppBar
+        position="fixed"
+        elevation={0}
+        color="default"
+        sx={{ borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}
+      >
+        <Toolbar variant="dense" sx={{ minHeight: 56, gap: 1.5 }}>
+          <Typography
+            component={Link}
+            to="/"
+            sx={{
+              fontWeight: 650,
+              fontSize: 15,
+              letterSpacing: ".2px",
+              textDecoration: "none",
+              color: "text.primary",
+              flexShrink: 0,
+            }}
+          >
+            raglit
+          </Typography>
 
-      <main>
-        <nav className="tabs">
-          {/* activeOptions.exact on the dashboard only: "/i/x" is a prefix of
-              every other route here, so without it every tab reads as active. */}
-          <Link to="/i/$index" params={{ index }} activeProps={{ className: "on" }}
-                activeOptions={{ exact: true }}>
-            Dashboard
-          </Link>
-          <Link to="/i/$index/health" params={{ index }} activeProps={{ className: "on" }}>
-            Health
-          </Link>
-          <Link to="/i/$index/jobs" params={{ index }} activeProps={{ className: "on" }}>
-            Ingest jobs
-          </Link>
-          <Link to="/i/$index/d" params={{ index }} activeProps={{ className: "on" }}>
-            Documents
-          </Link>
-          <Link to="/i/$index/search" params={{ index }} search={{ q: "", mode: "bm25" }}
-                activeProps={{ className: "on" }}>
-            Search
-          </Link>
-          <Link to="/i/$index/branches" params={{ index }} activeProps={{ className: "on" }}>
-            Branches
-          </Link>
-          <Link to="/i/$index/attest" params={{ index }} activeProps={{ className: "on" }}>
-            Review
-          </Link>
-        </nav>
+          {/* One control, not a breadcrumb AND a picker. It names the scope and
+              changes it, which is the only thing the pair did between them. */}
+          <Select
+            value={index}
+            size="small"
+            variant="outlined"
+            onChange={(e) => switchIndex(e.target.value)}
+            sx={{ minWidth: 240, "& .MuiSelect-select": { py: 0.6, fontSize: 14 } }}
+            renderValue={(v) => <ScopeLabel name={v} />}
+          >
+            {/* The index from the URL is always an option, even if /indexes has
+                not answered yet or does not know it. Otherwise a deep link to an
+                index renders a picker showing some OTHER index while the page
+                below it shows the right one. */}
+            {!indexes.some((i) => i.name === index) && (
+              <MenuItem value={index}>
+                <ScopeLabel name={index} />
+              </MenuItem>
+            )}
+            {indexes.map((i) => (
+              <MenuItem key={i.name} value={i.name}>
+                <ScopeLabel name={i.name} />
+              </MenuItem>
+            ))}
+          </Select>
+
+          <ShellSearch index={index} />
+          <Box sx={{ flex: 1 }} />
+        </Toolbar>
+      </AppBar>
+
+      <NavDrawer index={index} />
+
+      <Box
+        component="main"
+        sx={{ flexGrow: 1, minWidth: 0, mt: "56px", ml: `${DRAWER_WIDTH}px`, p: 2 }}
+      >
         <Outlet />
-      </main>
-    </>
+      </Box>
+    </Box>
+  );
+}
+
+// `delano-v-mckinnon__default` is a project and an index run together. Split the
+// same way the daemon does (cmd/raglit/namespace.go: nsSep is "__"). An index
+// with no separator has no project — it is not "a project called default", it is
+// one nobody namespaced — so only the index shows.
+function ScopeLabel({ name }: { name: string }) {
+  const sep = name.indexOf("__");
+  const project = sep > 0 ? name.slice(0, sep) : "";
+  const local = sep > 0 ? name.slice(sep + 2) : name;
+  return (
+    <Box component="span" sx={{ display: "inline-flex", gap: 0.5, alignItems: "baseline" }}>
+      {project && (
+        <>
+          <Box component="span" sx={{ color: "text.secondary" }}>
+            {project}
+          </Box>
+          <Box component="span" sx={{ color: "text.secondary" }}>
+            /
+          </Box>
+        </>
+      )}
+      <Box component="span" sx={{ fontWeight: 600 }}>
+        {local}
+      </Box>
+    </Box>
   );
 }
 
@@ -124,8 +149,9 @@ function ShellSearch({ index }: { index: string }) {
   useEffect(() => setQ(urlQ), [urlQ]);
 
   return (
-    <form
-      className="shellsearch"
+    <Paper
+      component="form"
+      variant="outlined"
       onSubmit={(e) => {
         e.preventDefault();
         navigate({
@@ -134,14 +160,16 @@ function ShellSearch({ index }: { index: string }) {
           search: { q: q.trim(), mode: "bm25" },
         });
       }}
+      sx={{ display: "flex", alignItems: "center", px: 1, flex: 1, maxWidth: 560, bgcolor: "transparent" }}
     >
-      <input
+      <InputBase
         type="search"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="search this index — words from the document, not a question"
         autoComplete="off"
+        sx={{ flex: 1, fontSize: 14 }}
       />
-    </form>
+    </Paper>
   );
 }

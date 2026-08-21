@@ -438,3 +438,89 @@ export const addNote = (
 
 export const deleteNote = (index: string, id: number) =>
   postJSON<void>("/api/notes/delete", { index, id });
+
+// ---------------------------------------------------------------------------
+// Schemaed documents, and the OTHER queue.
+//
+// The daemon has served all of this for a while and the UI read none of it —
+// see plan/ui-redesign.md §1, which measured the UI reading 20 of 41 endpoints.
+
+// A registered document type: what a form of this corpus looks like, and how to
+// read one. Which fields a work order has is a property of the CORPUS, so this
+// vocabulary is per-index and authored, never raglit's.
+export type DocTypeInfo = {
+  name: string;
+  description?: string;
+  // The extraction instruction. It travels with the schema because a schema
+  // alone produces a confidently filled-in form.
+  prompt?: string;
+  schema?: unknown;
+  // The documents the schema was proposed from, kept so a revision can be judged
+  // against the same examples rather than whatever is at hand.
+  gold?: string[];
+  model?: string;
+  created_at?: number;
+  updated_at?: number;
+};
+
+// Extraction coverage per type. `stale` is counted APART from `extracted` on
+// purpose: "88 of 88 extracted" over a schema edited yesterday is a coverage
+// report that lies.
+export type FieldsCoverage = {
+  type: string;
+  resolved: number;
+  extracted: number;
+  stale?: number;
+};
+
+export const listDocTypes = (index: string) =>
+  getJSON<{ types: DocTypeInfo[]; coverage?: FieldsCoverage[] }>("/api/doc-types", { index });
+
+// One document's record: the type's schema, filled out. `source` is "person"
+// when somebody ruled on it, and a person's is never regenerated over.
+export type DocFields = {
+  type?: string;
+  fields?: Record<string, unknown>;
+  source?: string;
+  by?: string;
+  model?: string;
+  at?: number;
+  type_hash?: string;
+  text_hash?: string;
+};
+
+export const getFields = (index: string, path: string) =>
+  getJSON<DocFields & { index: string; path: string }>("/api/fields", { index, path });
+
+// The identity queue — captioning, tags and extraction. A DIFFERENT table from
+// ingest_jobs, which is why an index can be busy captioning while the jobs view
+// shows nothing outstanding. Modes: identity | tags | fields.
+export type IdentityJob = {
+  id: number;
+  path: string;
+  state: string; // pending|running|done|skipped|error
+  force?: boolean;
+  mode?: string;
+  error?: string;
+  enqueued_at?: number;
+  started_at?: number;
+  finished_at?: number;
+};
+
+// `skipped` is documents there was nothing to caption for — a scanned page with
+// forty characters on it. Its own state rather than a failure: nothing went
+// wrong and nothing will go better next time.
+export type IdentityQueueStatus = {
+  pending: number;
+  running: number;
+  done: number;
+  skipped: number;
+  failed: number;
+};
+
+export const listIdentityJobs = (index: string, state?: string, limit = 100) =>
+  getJSON<{ queue: IdentityQueueStatus; jobs: IdentityJob[] }>("/api/identity-jobs", {
+    index,
+    state,
+    limit,
+  });

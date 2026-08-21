@@ -54,14 +54,17 @@ generate: bin/sqlc $(PLUGIN_SRC)/bin/sqlc-go-codegen-metaquery ## regenerate int
 	./bin/sqlc generate
 	@echo "regenerated internal/db — run 'make test' before committing"
 
-# The review UI is a React/vite app in web/, and web/dist is COMMITTED and
-# //go:embed'd (web/embed.go says why). So `web` is not part of `build`: a Go
-# build must keep working on a machine with no node, which is the whole reason
-# the output is in the tree.
+# The review UI is a React/vite app in web/. web/dist is //go:embed'd and, since
+# 2026-08-19, is GENERATED AND NOT COMMITTED (web/embed.go says why).
 #
-# Run it after changing anything under web/src, and commit what it writes. A dist
-# that lags its source is a UI fix that does not appear, with a green build.
-web: ## rebuild the embedded review UI (commit web/dist afterwards)
+# `web` is deliberately not a prerequisite of `build`/`install`: a Go-only change
+# should not shell out to npm, and a Go build must keep working on a machine with
+# no node. Without a bundle the binary compiles and serves a page that SAYS the
+# UI was not built — never a blank one.
+#
+# `release` DOES depend on it: a shipped binary with no UI is the one case where
+# the honest page is not good enough.
+web: ## rebuild the embedded review UI (dist is generated, not committed)
 	cd web && npm ci && npm run build
 
 web-dev: ## vite dev server against a running daemon (RAGLIT_DAEMON=url to point it)
@@ -75,7 +78,7 @@ install: ## install a self-updating raglit to $(GOBIN)
 	go build -ldflags "$(LDFLAGS)" -o $(GOBIN)/raglit ./cmd/raglit
 	@echo "installed $(GOBIN)/raglit (self-updating from $(SRCDIR))"
 
-release: ## install WITHOUT the source stamp — never self-updates
+release: web ## install WITHOUT the source stamp — never self-updates (builds the UI first)
 	go install ./cmd/raglit
 
 test:

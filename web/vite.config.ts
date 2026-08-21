@@ -34,6 +34,10 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: "dist",
+    // Wipes the directory, INCLUDING dist/.gitkeep — which is the one file in
+    // there that is committed, and which //go:embed needs present for a clean
+    // checkout to compile at all (web/embed.go). The build script writes it back
+    // immediately after; do not drop that step.
     emptyOutDir: true,
     // Named without a hash prefix that go:embed would skip. Hashes stay in the
     // middle of the filename, where they still bust a browser cache.

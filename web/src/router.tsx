@@ -10,8 +10,10 @@ import { IndexShell } from "./shell/IndexShell";
 import { ProjectShell } from "./shell/ProjectShell";
 import { DocShell } from "./shell/DocShell";
 import { Dashboard } from "./panes/Dashboard";
+import { Types } from "./panes/Types";
 import { Overview } from "./panes/Overview";
 import { Project } from "./panes/Project";
+import { Activity } from "./panes/Activity";
 import { Branches } from "./panes/Branches";
 import { Health } from "./panes/Health";
 import { Jobs } from "./panes/Jobs";
@@ -211,6 +213,20 @@ const branchesRoute = createRoute({
   component: Branches,
 });
 
+// Two surfaces the daemon has served for a while and the UI did not read at
+// all — see plan/ui-redesign.md §1.
+const typesRoute = createRoute({
+  getParentRoute: () => indexRoute,
+  path: "types",
+  component: Types,
+});
+
+const activityRoute = createRoute({
+  getParentRoute: () => indexRoute,
+  path: "activity",
+  component: Activity,
+});
+
 const attestRoute = createRoute({
   getParentRoute: () => indexRoute,
   path: "attest",
@@ -253,6 +269,8 @@ const routeTree = rootRoute.addChildren([
       notesRoute,
       emailRoute,
     ]),
+    typesRoute,
+    activityRoute,
     branchesRoute,
     attestRoute,
     attestAssetRoute,

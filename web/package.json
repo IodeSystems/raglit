@@ -5,11 +5,17 @@
   "description": "The raglit review SPA. Built to web/dist, which is committed and embedded into the binary — see plan/spa-ui.md.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node -e \"require('fs').writeFileSync('dist/.gitkeep','')\"",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@iodesystems/attest-core": "file:packages/attest-core",
+    "@iodesystems/attest-react": "file:packages/attest-react",
+    "@mui/icons-material": "^9.3.1",
+    "@mui/material": "^9.3.1",
     "@tanstack/react-router": "^1.95.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

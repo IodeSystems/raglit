@@ -11,7 +11,7 @@ export function ProjectShell() {
 
   return (
     <>
-      <header>
+      <header className="pageheader">
         <h1>
           <Link to="/">raglit</Link> <span>review</span>
         </h1>
@@ -24,7 +24,7 @@ export function ProjectShell() {
         <div className="grow" />
       </header>
 
-      <main>
+      <main className="pagemain">
         <nav className="tabs">
           <Link
             to="/p/$project"
