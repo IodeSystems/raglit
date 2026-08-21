@@ -136,15 +136,60 @@ type Problem struct {
 // more than one that was retried into place. A caller rendering only the first
 // screen still sees the things that lose data.
 func (s *Store) Problems(ctx context.Context) ([]Problem, error) {
+	// A withdrawn document is not an outstanding problem. Somebody looked at it,
+	// ruled it out of the corpus, and recorded why — that IS the resolution, and
+	// reporting it again asks them to rule twice.
+	//
+	// Done here rather than in each query. Four of the eleven scans carried a
+	// `NOT EXISTS (SELECT 1 FROM withdrawals …)` clause and six did not, so
+	// withdrawing a 0-byte file left it sitting under "The file has no content"
+	// with a Withdraw button that had already been pressed. Which scans
+	// remembered the clause was not a decision about those problem kinds; it was
+	// whichever ones happened to be written after the withdrawal table existed.
+	// One place means the next scan added here cannot forget.
+	withdrawn, err := s.withdrawnPaths(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("raglit: problems (withdrawn): %w", err)
+	}
 	var out []Problem
 	for _, q := range problemQueries {
 		ps, err := s.problemsFrom(ctx, q)
 		if err != nil {
 			return nil, fmt.Errorf("raglit: problems (%s): %w", q.kind, err)
 		}
-		out = append(out, ps...)
+		for _, p := range ps {
+			// ProblemWithdrawn is the LIST of withdrawals — filtering it against
+			// them would empty the one group that is supposed to be full.
+			if q.kind != ProblemWithdrawn && withdrawn[p.Subject] {
+				continue
+			}
+			out = append(out, p)
+		}
 	}
 	return out, nil
+}
+
+// withdrawnPaths is the set of paths ruled out of the corpus.
+//
+// Keyed by path, which is what both halves of the report join on: a
+// document-based scan yields `documents.path` and a job-based scan yields
+// `ingest_jobs.url`, and the two withdrawal clauses that already existed
+// compared against each of those in turn.
+func (s *Store) withdrawnPaths(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT path FROM withdrawals`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out[p] = true
+	}
+	return out, rows.Err()
 }
 
 type problemQuery struct {

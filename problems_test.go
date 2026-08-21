@@ -563,3 +563,58 @@ func TestDegradedOnlyReportsTheLatestRun(t *testing.T) {
 		t.Error("a document whose latest run degraded must still be reported")
 	}
 }
+
+// Withdrawing a 0-byte file clears it from the report.
+//
+// The case the user hit: three copies of an empty .docx sat under "The file has
+// no content" with Re-ingest and Withdraw offered, and pressing Withdraw left
+// them exactly where they were. The empty-source scan reads ingest_jobs and
+// carried no withdrawal clause — four of the eleven scans had one, six did not,
+// and which was which tracked nothing except the order they were written in.
+//
+// A withdrawal IS the resolution for a document that should not be in the
+// corpus. Reporting it afterwards asks somebody to rule on it twice, and an
+// empty report stops being achievable — which is the whole point of the report.
+func TestProblemsDropsEmptySourceForWithdrawnDocuments(t *testing.T) {
+	s := testStore(t)
+	const url = "/evidence/Order on Motion to Continue.docx"
+	id, err := s.Enqueue(url, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What the worker records for a file that is there and is zero bytes: the
+	// job COMPLETES, carrying mode `empty`. Having no content is a fact about
+	// the document, not a failure of the importer.
+	if err := s.completeJob(id, 0, "empty"); err != nil {
+		t.Fatal(err)
+	}
+	if k := kinds(mustProblems(t, s)); k[ProblemEmptySource] != 1 {
+		t.Fatalf("an empty file should be reported before it is ruled on (%d)", k[ProblemEmptySource])
+	}
+
+	if err := s.Withdraw(Withdrawal{Path: url, Reason: "the file has been empty since 2023"}); err != nil {
+		t.Fatal(err)
+	}
+	k := kinds(mustProblems(t, s))
+	if k[ProblemEmptySource] != 0 {
+		t.Errorf("withdrawn and still reported as having no content (%d)", k[ProblemEmptySource])
+	}
+	if k[ProblemWithdrawn] != 1 {
+		t.Errorf("the withdrawal itself went missing (%d)", k[ProblemWithdrawn])
+	}
+}
+
+// The filter is central, so it must not eat the one group that is a list OF
+// withdrawals. Pinned because the obvious implementation — drop every problem
+// whose subject is withdrawn — empties it.
+func TestProblemsWithdrawnGroupSurvivesTheWithdrawalFilter(t *testing.T) {
+	s := testStore(t)
+	for _, p := range []string{"/a.md", "/b.md"} {
+		if err := s.Withdraw(Withdrawal{Path: p, Reason: "not evidence"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if k := kinds(mustProblems(t, s)); k[ProblemWithdrawn] != 2 {
+		t.Errorf("withdrawn group = %d, want 2", k[ProblemWithdrawn])
+	}
+}
