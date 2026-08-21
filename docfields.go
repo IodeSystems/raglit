@@ -325,6 +325,7 @@ func (id *Identifier) ExtractFields(ctx context.Context, text string, t DocType,
 	sub := &Identifier{
 		Client: id.Client, Model: id.Model, MaxRetries: id.MaxRetries,
 		validator: newValidator(td),
+		maxTokens: fieldsMaxTokens,
 	}
 	var out DocFields
 	err := sub.ask(ctx, b.String(), extractToolName, schemaShapeHint(t.Schema), func(js string) error {

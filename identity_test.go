@@ -2,7 +2,9 @@ package raglit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -464,5 +466,100 @@ func TestNormalizeKind_NotesCoversWorkProduct(t *testing.T) {
 		if got, _ := NormalizeKind(in); got != want {
 			t.Errorf("NormalizeKind(%q) = %q; want %q", in, got, want)
 		}
+	}
+}
+
+// capChatter records the answer ceiling each ask was made under.
+type capChatter struct {
+	reply string
+	caps  []int
+}
+
+func (c *capChatter) ChatStream(_ context.Context, _ []llm.Message, _ []llm.ToolDef,
+	opts *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	max := 0
+	if opts != nil {
+		max = opts.MaxTokens
+	}
+	c.caps = append(c.caps, max)
+	return streamReply(c.reply), nil
+}
+
+// The answer ceiling is not one number for every ask, and was.
+//
+// Identity and tags are three short fields, so 800 is right and generous. A type
+// proposal writes a whole JSON Schema and an extraction fills one out — both as
+// long as the corpus owner's schema, which raglit does not get to bound. Under
+// one constant a proposal from three real documents came back cut off mid-JSON
+// (`unexpected end of JSON input`), and every extraction in raglit was capped at
+// a size a form with an array of observations exceeds routinely.
+//
+// The retry loop cannot rescue either: truncation is not repetition, so the
+// sampler never changes and every attempt is cut off in the same place.
+func TestAnswerCap_IsPerAskAndNotOneConstant(t *testing.T) {
+	t.Run("identity keeps the short-answer cap", func(t *testing.T) {
+		c := &capChatter{reply: `{"name":"A Deed","summary":"A statutory warranty deed dated 1994-03-02 conveying Lot 4 of the Brannock plat from A. Smith to B. Jones.","kind":"deed","content_tags":["lot 4","warranty deed","brannock plat"],"role_tags":["reference"]}`}
+		if _, err := NewIdentifier(c, "m").Identify(context.Background(),
+			IdentityAsk{Text: strings.Repeat("the document says something. ", 40)}); err != nil {
+			t.Fatal(err)
+		}
+		if len(c.caps) != 1 || c.caps[0] != identityMaxTokens {
+			t.Errorf("identity asked under %v, want [%d]", c.caps, identityMaxTokens)
+		}
+	})
+
+	t.Run("tags keep it too", func(t *testing.T) {
+		c := &capChatter{reply: `{"content_tags":["lot 4","warranty deed","brannock plat"],"role_tags":["reference"]}`}
+		if _, _, err := NewIdentifier(c, "m").IdentifyTags(context.Background(),
+			IdentityAsk{Text: strings.Repeat("the document says something. ", 40)}); err != nil {
+			t.Fatal(err)
+		}
+		if len(c.caps) != 1 || c.caps[0] != identityMaxTokens {
+			t.Errorf("tags asked under %v, want [%d]", c.caps, identityMaxTokens)
+		}
+	})
+
+	t.Run("a type proposal gets room for a schema", func(t *testing.T) {
+		s := storeWithDocs(t, 2)
+		c := &capChatter{reply: `{"description":"a garage's repair order",` +
+			`"prompt":"The RO number is top right.","schema":` + workOrderSchema + `}`}
+		s.SetIdentifier(NewIdentifier(c, "m"))
+		if _, err := s.ProposeDocType(context.Background(), "work order",
+			[]string{"/corpus/scan_000.pdf"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(c.caps) != 1 || c.caps[0] != proposeMaxTokens {
+			t.Errorf("the proposal asked under %v, want [%d]", c.caps, proposeMaxTokens)
+		}
+	})
+
+	t.Run("an extraction gets room for the record", func(t *testing.T) {
+		c := &capChatter{reply: `{"order_number":"4471","customer":"A. Smith"}`}
+		id := NewIdentifier(c, "m")
+		dt := DocType{Name: "work order", Schema: json.RawMessage(workOrderSchema)}
+		if _, err := id.ExtractFields(context.Background(),
+			strings.Repeat("the work order says something. ", 40), dt, ""); err != nil {
+			t.Fatal(err)
+		}
+		if len(c.caps) != 1 || c.caps[0] != fieldsMaxTokens {
+			t.Errorf("the extraction asked under %v, want [%d]", c.caps, fieldsMaxTokens)
+		}
+	})
+}
+
+// A cut-off answer must say WHICH ceiling it hit. The validator can only report
+// that the arguments did not parse, which sends the reader after the model
+// instead of after the cap.
+func TestAnswerCutOff_NamesTheCapAndNotJustTheSymptom(t *testing.T) {
+	// A reply that stops mid-object is what a truncated tool call looks like.
+	c := &capChatter{reply: `{"name":"A Deed","summary":"a deed conv`}
+	_, err := NewIdentifier(c, "m").Identify(context.Background(),
+		IdentityAsk{Text: strings.Repeat("the document says something. ", 40)})
+	if err == nil {
+		t.Fatal("a truncated answer was accepted")
+	}
+	if !strings.Contains(err.Error(), "cut off") ||
+		!strings.Contains(err.Error(), fmt.Sprint(identityMaxTokens)) {
+		t.Errorf("the error does not name the cap: %v", err)
 	}
 }

@@ -298,6 +298,10 @@ type Identifier struct {
 	MaxRetries int // JSON fix-loop attempts after the first try (default 2)
 
 	validator *agent.SchemaValidator
+	// maxTokens caps THIS Identifier's answer; 0 means identityMaxTokens.
+	// Per-ask rather than a constant because two asks emit an answer whose size
+	// is the corpus owner's and not raglit's — see identityMaxTokens.
+	maxTokens int
 }
 
 // newValidator builds a validator over one tool def — the per-call form, for an
@@ -367,10 +371,27 @@ const (
 	identityHeadChars = 12000
 	identityTailChars = 4000
 
-	// identityMaxTokens caps the answer. Unlike transcription this is not a
-	// re-emission of the input — it is three short fields — so the cap is a
-	// constant, and anything past it is not a caption any more.
+	// identityMaxTokens caps the answer to the IDENTITY and TAGS asks. Unlike
+	// transcription those are not a re-emission of the input — they are three
+	// short fields — so the cap is a constant, and anything past it is not a
+	// caption any more.
+	//
+	// It is NOT the cap for every ask, and was, which is how a schema proposal
+	// came back cut off mid-JSON. Two asks emit an answer whose size is the
+	// CORPUS OWNER's and not raglit's: a type proposal writes a whole schema,
+	// and an extraction fills one out. Neither is bounded by anything raglit
+	// knows, so each carries its own cap below and sets Identifier.maxTokens.
 	identityMaxTokens = 800
+
+	// proposeMaxTokens caps a type proposal: a description, the reading
+	// instructions, and a JSON Schema over however many fields the examples
+	// turn out to have.
+	proposeMaxTokens = 4000
+
+	// fieldsMaxTokens caps an extraction. The record is as long as the schema
+	// somebody registered — a form with an array of observations, each a
+	// paragraph, is the case this exists for.
+	fieldsMaxTokens = 8000
 
 	// identityMaxNameChars is the longest caption worth storing. A name is a
 	// caption for a list, not an abstract; past this the model has written a
@@ -590,10 +611,19 @@ func (id *Identifier) ask(ctx context.Context, prompt, tool, shape string, accep
 	return id.askWith(ctx, id.validator, prompt, tool, shape, accept)
 }
 
+// answerCap is how many tokens THIS ask may spend on its answer. See
+// identityMaxTokens for why this is not one number for every ask.
+func (id *Identifier) answerCap() int {
+	if id.maxTokens > 0 {
+		return id.maxTokens
+	}
+	return identityMaxTokens
+}
+
 func (id *Identifier) askWith(ctx context.Context, validator *agent.SchemaValidator,
 	prompt, tool, shape string, accept func(js string) error) error {
 	msgs := []llm.Message{{Role: "user", Parts: []llm.ContentPart{llm.TextPart(prompt)}}}
-	opts := &llm.ChatOpts{MaxTokens: identityMaxTokens}
+	opts := &llm.ChatOpts{MaxTokens: id.answerCap()}
 	var lastErr error
 	for attempt := 0; attempt <= id.MaxRetries; attempt++ {
 		out, rep, err := collectStream(ctx, id.Client, msgs, opts)
@@ -625,7 +655,26 @@ func (id *Identifier) askWith(ctx context.Context, validator *agent.SchemaValida
 			llm.Message{Role: "user", Content: fmt.Sprintf(
 				"That was not valid: %v. Output ONLY the JSON object %s.", lastErr, shape)})
 	}
-	return lastErr
+	return id.explainCap(lastErr)
+}
+
+// explainCap names the cause when an answer ended mid-JSON.
+//
+// The validator can only report that the arguments did not parse, which is the
+// SYMPTOM. A JSON object that stops in the middle stopped because the answer ran
+// out of room, and the reader needs to be told which ceiling it hit — otherwise
+// the message reads as a broken model and the fix (a smaller ask, or a bigger
+// cap for this kind of ask) is invisible. `indextext.go` records the segmenter
+// learning this the slow way.
+//
+// The retry loop cannot recover it on its own: truncation is not repetition, so
+// the sampler change never fires and every attempt is cut off at the same place.
+func (id *Identifier) explainCap(err error) error {
+	if err == nil || !strings.Contains(err.Error(), "unexpected end of JSON input") {
+		return err
+	}
+	return fmt.Errorf("%w — the answer was cut off at the %d-token cap, so it is not the model that is wrong: this ask is too big for its ceiling",
+		err, id.answerCap())
 }
 
 // identityJSONShape is the shape quoted back at the model on a retry.

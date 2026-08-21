@@ -338,6 +338,7 @@ func (s *Store) ProposeDocType(ctx context.Context, name string, goldPaths []str
 		Client: s.identifier.Client, Model: s.identifier.Model,
 		MaxRetries: s.identifier.MaxRetries,
 		validator:  newValidator(proposeTypeToolDef()),
+		maxTokens:  proposeMaxTokens,
 	}
 	err := id.ask(ctx, b.String(), "emit_doc_type",
 		`{"description":"...","prompt":"...","schema":{...}}`,
