@@ -7,7 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/iodesystems/agentkit v0.5.0
 	github.com/iodesystems/gwag v0.0.0-00010101000000-000000000000
-	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
+	github.com/iodesystems/sqlc-go-codegen-metaquery v0.1.0
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/pdfcpu/pdfcpu v0.13.0
 	golang.org/x/image v0.41.0
