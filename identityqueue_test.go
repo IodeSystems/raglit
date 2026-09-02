@@ -3,6 +3,7 @@ package raglit
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -639,5 +640,53 @@ func TestDocumentsMissingTags_SelectsCaptionedDocumentsOnly(t *testing.T) {
 	n, err := s.EnqueueMissingTags(false)
 	if err != nil || n != 1 {
 		t.Fatalf("enqueued %d, %v — want 1", n, err)
+	}
+}
+
+// A Drain reclaims orphans before it starts, whoever called it.
+//
+// ReclaimIdentityJobs was correct and was wired into ONE of the four places a
+// drain happens — `serve.go`. The CLI paths a person actually types,
+// `raglit identify` and `raglit fields`, never called it, so a row left running
+// by an interrupted sweep stayed running forever: not pending, so no drain
+// claimed it; not terminal, so no report counted it failed.
+//
+// Measured on the FDA corpus: two interrupted sweeps stranded 6 documents, and a
+// later full sweep reported "identified 66 document(s)" while those 6 stayed
+// uncaptioned and unmentioned. The queue read as busy with nothing running.
+func TestDrain_ReclaimsOrphansBeforeWorking(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	s.SetIdentifier(NewIdentifier(&capChatter{reply: `{"name":"A deed",` +
+		`"summary":"A statutory warranty deed dated 1994 conveying Lot 4 to B. Jones.",` +
+		`"kind":"deed","content_tags":["lot 4","warranty deed","brannock plat"],` +
+		`"role_tags":["reference"]}`}, "m"))
+
+	if _, err := s.EnqueueMissingIdentities(false); err != nil {
+		t.Fatal(err)
+	}
+	// Strand it exactly the way a killed process does: running, owned by a pid
+	// that is not here any more. 1 is init, which is alive and not us — so a pid
+	// that cannot be running this test is needed. os.Getpid()+(1<<21) is past
+	// any legal pid on Linux.
+	dead := int64(os.Getpid()) + (1 << 21)
+	if _, err := s.db.Exec(
+		`UPDATE identity_jobs SET state='running', owner_pid=?`, dead); err != nil {
+		t.Fatal(err)
+	}
+
+	var reclaimed int
+	w := &IdentityWorker{Store: s, Slots: 1, OnReclaim: func(n int) { reclaimed = n }}
+	if _, err := w.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reclaimed != 1 {
+		t.Errorf("reclaimed %d, want 1 — the stranded row was not requeued", reclaimed)
+	}
+	q, err := s.IdentityQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Running != 0 || q.Done != 1 {
+		t.Errorf("queue = %+v, want the orphan worked to done and nothing left running", q)
 	}
 }

@@ -535,6 +535,10 @@ type IdentityWorker struct {
 	// OnDone, when set, is called for each finished job — for a CLI that wants
 	// to print progress. Called from the committer, one at a time.
 	OnDone func(job IdentityJob, id DocIdentity, err error)
+	// OnReclaim, when set, reports rows requeued from a dead process at the top
+	// of a Drain. Worth saying out loud: those documents are about to be redone,
+	// so a count that does not match what was asked for has an explanation.
+	OnReclaim func(n int)
 }
 
 // identityTask is one job in flight between the pipeline's stages.
@@ -633,6 +637,25 @@ func (w *IdentityWorker) loadJobPrecondition(t *identityTask, job IdentityJob, c
 // (successfully or not). This is the whole sweep for a CLI; Run is the daemon's
 // version, which waits for more work instead of returning.
 func (w *IdentityWorker) Drain(ctx context.Context) (int, error) {
+	// Orphans first. A row left 'running' by a process that is gone is work
+	// nobody is doing and nothing retries: it is not pending, so no drain claims
+	// it, and it is not terminal, so no report counts it as failed. It simply
+	// sits, and the queue reads as busy forever.
+	//
+	// Reclaiming lived only in `serve.go`, so the CLI drains — `raglit identify`
+	// and `raglit fields`, the paths a person actually types — never did it.
+	// Measured on the FDA corpus: two interrupted sweeps left 6 documents stuck,
+	// and a later full sweep reported "identified 66 document(s)" while those 6
+	// stayed exactly where they were, uncaptioned and unmentioned.
+	//
+	// Here rather than at each call site for the same reason the withdrawal
+	// filter moved into Problems(): whoever adds the next caller cannot forget
+	// it. Rows owned by a LIVE pid, and by this process, are left alone.
+	if w.Store != nil {
+		if n, err := w.Store.ReclaimIdentityJobs(); err == nil && n > 0 && w.OnReclaim != nil {
+			w.OnReclaim(n)
+		}
+	}
 	// Until it is EMPTY, not until one pass ends. A finished caption can queue
 	// the extraction it established (see the chaining in run), and the loader
 	// for this pass has already seen an empty queue and stopped by then — so a

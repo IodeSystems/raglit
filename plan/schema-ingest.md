@@ -56,12 +56,30 @@ FDA publishes, next to each file, its own metadata: company name, FEI number,
 record date, record type, state, establishment type. It is INDEPENDENT of
 anything read off the page, so an extraction can be scored rather than admired.
 
-- **Usable as truth**: `fei_number`, `firm_name`, the inspection date.
-- **NOT usable**: `establishment_type`. Measured on 193899 — FDA's listing says
+The answer key is NARROWER than it first looks, and both narrowings were found
+by reading disagreements rather than by planning:
+
+- **Usable as truth**: `fei_number` (an exact string, published beside the file
+  and read off the page) and `firm_name` (normalised — FDA's feed is
+  HTML-escaped, `Becton Dickinson &amp; Company`, and a naive compare marks a
+  correct reading wrong).
+- **NOT usable — `establishment_type`.** Measured on 193899: FDA's listing says
   `Shell Egg Producer`, the document's own TYPE ESTABLISHMENT INSPECTED cell
   says "Steamed and frozen processed egg products, fish based surimi products".
-  Both are right. Scoring the page against the category would mark a correct
-  reading wrong, which is worse than not scoring it.
+  Both are right; the category is coarser than the page.
+- **NOT usable — the DATE.** Measured on 106817: the document says the
+  inspection ran 5/15/2017–7/6/2017 and was issued 7/6/2017, and FDA's
+  `field_record_date` says 09/27/2018. It is a RECORD date, not an inspection
+  date. This plan originally listed it as usable truth; it is not.
+- **No key at all — `observations`.** The half of the form with the most content
+  and the least verification, and a nested array is exactly what
+  `agent.SchemaValidator` does not enforce. A fabricated observation list is
+  what this run cannot catch, and the result says so rather than reporting a
+  coverage number over it.
+
+Two fields, then. Scoring the other three would mark correct readings wrong,
+which is worse than not scoring them. `score.py` in the corpus directory carries
+each of these reasons next to the field it excludes.
 
 ## Set up (✅)
 
@@ -246,7 +264,67 @@ chains each extraction as the caption closes.
   job and the corpus will fill in records for documents that are not forms.
   This is the cheapest possible check and it gates everything after it.
 
-### ◻ 5. Extract, then SCORE
+### ✅ 5. RESULTS, 2026-08-22
+
+50 documents, 325 pages, **all 50 captioned, 0 identity errors** — against 100%
+failure before the `extractJSON` fix. That is the live proof that was missing.
+
+**Extraction is not the weak link. Resolution is.**
+
+| | |
+|---|---|
+| 483s in the corpus | 40 |
+| resolved as type `483` | **24 (60%)** |
+| extracted | 24 |
+| `fei_number` | 23 right · **0 wrong** · 1 blank |
+| `firm_name` | 21 exact · 3 flagged · 0 blank |
+| near-misses correctly declined | **10 of 10** |
+
+**Zero wrong values in 24 records.** All three flagged `firm_name` rows are
+disagreements with the ANSWER KEY, not misreadings:
+
+- `Aurobindo Pharma Limited Unit IX` vs FDA's `Aurobindo Pharma Unit 9` — the
+  page uses a roman numeral, the listing normalised it.
+- `SMS PHARMACEUTICALS LIMITED, Unit-VII` vs FDA's `SMS Pharmaceutical Limited
+  - Unit VII` — the listing dropped the plural.
+- `Cal-Maine Foods, Inc.` vs FDA's `Cal-Main Foods, Inc.` — **the listing has a
+  typo.** Cal-Maine is the company.
+
+So the assumption recorded at the bottom of this plan — "that FDA's listing
+metadata is correct; nothing here checks IT" — is now MEASURED AND FALSE. The
+answer key has errors in it, and the reading was right where they disagreed.
+
+The one blank `fei_number` is the designed failure, not a miss: page 1 of 83317
+carries the `FEI NUMBER` label with no value beside it in the transcript, and the
+model left it empty rather than inventing one.
+
+**The negative case is perfect.** All ten near-misses — 483 Responses, Untitled
+Letters, State Referral Letters, EIRs, Amended 483s — declined the type. Zero
+over-claims. The empty enum member does its job.
+
+**The finding that matters: 16 of 40 genuine 483s resolved NO type.** They are
+captioned correctly and carry no `doc_type`, so no extraction ever chained, and
+**nothing anywhere reports it** — a document that should have a record and does
+not looks exactly like one that was never meant to have one. No era pattern; the
+misses are scattered across 2016–2024, so it is not degraded scans. This is the
+sharp version of the open item at the end of `schemaed-documents.md`.
+
+**`doc_type` beat `kind`.** 193608 came back `kind=court filing` — plainly wrong
+for an FDA inspection form — and still resolved `doc_type=483` and extracted
+correctly. The per-corpus authored vocabulary outperformed the general closed
+one, which is an argument for the schemaed-documents design. Related: 20 of the
+483s landed on `kind=certification`, a term that fits nothing in this corpus
+well. `document-identity.md` says a corpus that keeps reaching for an awkward
+term means the vocabulary is wrong; this is that signal.
+
+- **next**: find why resolution misses 40%. The identity call is shown the type
+  NAME and its one-line description; whether the description proposed from two
+  gold documents generalises is the first thing to test.
+- **optional**: a `doc_type` coverage warning — "16 documents look like a
+  registered type and carry none" is computable and would have said this without
+  a corpus built to measure it.
+
+### ◻ 5b. Extract, then SCORE (superseded by the results above)
 
 - **next**: `raglit fields`, then a scorer over `truth.json`: exact match on
   `fei_number`, normalised match on `firm_name`, date within the inspection

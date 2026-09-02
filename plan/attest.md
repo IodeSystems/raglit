@@ -114,6 +114,7 @@ photocopy strip a document of its evidence.
 | **raglit** | `Time{start,end}` — audio | ✅ shipped, `cmd/raglit/attestaudio.go` |
 | **oidio** | `Time{start,end}` | ❌ **NOT SHIPPED.** The standalone's plan recorded this as done; oidio's history contains no attest code on any branch. Its `internal/verify` (514 lines, Go serving hand-written HTML) is still its own separate implementation. |
 | **kgraph** | (fact, source) edge | ❌ separate implementation, `attest.go`, 378 lines, own vocabulary |
+| **oidio** | party identity — who a turn IS | ❌ `internal/speakers`, 1,816 lines. The bolt-on that says this belongs here; see Attestation PARTIES below. |
 | **caselit** | (sentence, claim) binding | ◻ next — see below |
 
 ## Active work
@@ -135,6 +136,81 @@ unification of the last of the three.
 both and normalise, or a migration must rewrite logs that are append-only by
 design and therefore should not be rewritten. Accepting both on read is the
 honest option.
+
+### ◻ Attestation PARTIES — the identity a unit is attributed TO
+
+Raised 2026-09-01 (USER), from kgraph: party names sit in oidio as a bolt-on for
+attestation data and **should be available via raglit attestation** instead.
+They are not in this plan at all today, and the gap is a whole concept rather
+than a field.
+
+**Attest knows two people and neither is this one.** `Auth` is the principal a
+verdict was authorized under; `By` is the person who performed it. Both are about
+who RULED. Nothing here names who a unit is ABOUT — the speaker of a turn, the
+party a page concerns, the person a claim is attributed to — and that identity is
+exactly what a producer currently invents for itself:
+
+- **oidio** — `internal/speakers`, 1,816 lines of clustering, proposal and review
+  whose whole output is "this cluster is that person". The identity it lands on
+  goes into the transcript and nowhere durable.
+- **kgraph** — party identity is authored into fact text and into ten fixture
+  files, which is the reason that repo is staying remote-less (2026-09-01).
+- **caselit** — a binding's claim is about somebody, and nothing records who.
+
+**The bug this plan already half-diagnosed is the same bug.** Under settled
+decisions: *"oidio's original bug was one `speaker` field holding both the
+diarizer's grouping and the human's correction, which made a local fix and a
+global identity claim indistinguishable."* That names the collision and then
+fixes only the near half — a correction became a log entry, and the **global
+identity claim still has no home**. A party is that home.
+
+**Why it is not a per-unit verdict.** A verdict rules on ONE unit; a party spans
+them. "Turns 4, 9 and 31 are the same person" and "that person is X" are two
+different claims, and only the second is PII. Modelling identity as a repeated
+per-unit field means correcting a name touches every unit that carries it, which
+is the thing content addressing exists to avoid.
+
+**Shape, proposed:**
+
+- A **party** is a durable identity with an id, declared once per corpus, and a
+  **party assignment** is a log entry binding units to it — appended, never a
+  field on the immutable unit, exactly as every other human change here is.
+- The two claims stay separable: *these units are one voice* (a grouping, which a
+  machine may propose) and *that voice is this person* (an identification, which
+  only a person may make). Collapsing them recreates oidio's bug one level up.
+- `Resolve(reading, log) → State` stays the only reader, so a party resolves
+  through the same door as a verdict and no consumer re-implements the algebra.
+
+- **next** — the shape above is settled; nothing is built. A party file beside
+  the verdict log, a party-assignment log entry, and `Resolve` returning parties
+  alongside verdicts so no consumer re-implements the algebra.
+- **risks** — **this is PII and it is the first PII in attest.** A verdict is a
+  professional judgement; a party record is a named human being, in a sidecar
+  that syncs between machines. Whatever else is decided, a party record must be
+  separable from the verdict log so an asset can be handed over with its rulings
+  and without its identities. **This is also a second identity system inside one
+  package** — `Auth`/`By` name people too — and the failure mode is the two
+  drifting into one loosely-typed "name" field.
+- **DECIDED 2026-09-01, both by following constraints already on the table:**
+  1. **A party is CORPUS-SCOPED.** Asset-scoped was the safe answer and it is
+     nearly useless: the whole reason this exists is that oidio, raglit and
+     caselit each invent their own idea of who somebody is, and an identity that
+     cannot cross a hearing, a deposition and a page does not fix that. The PII
+     objection is real and is answered by SEPARATION rather than by scope — the
+     party registry is its own file, so an asset can be handed over with its
+     rulings and without its identities. That separation is required, not
+     optional.
+  2. **attest owns a MINIMAL party; kgraph opts in.** A party here is an id, a
+     display name, and nothing else — no aliases, no `same_as`, no merge rules.
+     kgraph's `entity` keeps all of that and gains an optional link to a party id.
+     **The dependency then points the way it already points**: kgraph and caselit
+     already depend on raglit, so they may reference a party; attest references
+     nothing, so oidio's "depends on nothing" is preserved, which was the stated
+     cost of making `raglit/attest` canonical. The inverse — attest importing
+     kgraph — would invert it and is refused.
+     This is not two identity systems: it is one identity with one owner, and one
+     richer model that points AT it. `entity` remains the place aliases and
+     `same_as` live, because those are corpus-graph concerns and always were.
 
 ### ◻ caselit's locator: a binding — Carl's call, 2026-08-20
 

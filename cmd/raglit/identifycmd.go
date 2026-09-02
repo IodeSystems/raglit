@@ -175,6 +175,9 @@ func drainIdentityLocally(ctx context.Context, st *raglit.Store, lf *llmFlags, h
 	st.SetIdentifier(id)
 	cfg, _, _ := raglit.LoadConfig(home)
 	w := &raglit.IdentityWorker{Store: st, Slots: cfg.IdentitySlots}
+	w.OnReclaim = func(n int) {
+		fmt.Printf("requeued %d job(s) left running by a process that is gone\n", n)
+	}
 	done, failed := 0, 0
 	w.OnDone = func(job raglit.IdentityJob, got raglit.DocIdentity, err error) {
 		if err != nil {
