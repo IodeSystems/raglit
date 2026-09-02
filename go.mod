@@ -10,7 +10,7 @@ require (
 	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/pdfcpu/pdfcpu v0.13.0
-	golang.org/x/image v0.41.0
+	golang.org/x/image v0.45.0
 	golang.org/x/text v0.37.0
 	modernc.org/sqlite v1.55.0
 )
