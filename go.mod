@@ -9,7 +9,7 @@ require (
 	github.com/iodesystems/gwag v0.0.0-00010101000000-000000000000
 	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
 	github.com/mark3labs/mcp-go v0.55.1
-	github.com/pdfcpu/pdfcpu v0.13.0
+	github.com/pdfcpu/pdfcpu v0.15.0
 	golang.org/x/image v0.41.0
 	golang.org/x/text v0.37.0
 	modernc.org/sqlite v1.55.0
