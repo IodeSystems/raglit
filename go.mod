@@ -59,5 +59,3 @@ require (
 )
 
 replace github.com/iodesystems/sqlc-go-codegen-metaquery => ../sqlc-go-codegen-metaquery
-
-replace github.com/iodesystems/gwag/v2 => ../gwag
