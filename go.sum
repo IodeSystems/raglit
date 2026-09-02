@@ -1,7 +1,7 @@
 connectrpc.com/connect v1.19.2 h1:McQ83FGdzL+t60peksi0gXC7MQ/iLKgLduAnThbM0mo=
 connectrpc.com/connect v1.19.2/go.mod h1:tN20fjdGlewnSFeZxLKb0xwIZ6ozc3OQs2hTXy4du9w=
-github.com/IodeSystems/graphql-go v1.1.0 h1:muFGJhm2XJJklLzBlO1ywJK0qk3jDjmR3Z3I/uS3CfM=
-github.com/IodeSystems/graphql-go v1.1.0/go.mod h1:7oZRIAci6oI/9OWVzieu55A0iz6q41p1xlKF+kWfVFw=
+github.com/IodeSystems/graphql-go/v2 v2.0.0 h1:7TEHHkaCnPc6D4lFjLgRN8VTr5navIfTYW3QSwb+eVE=
+github.com/IodeSystems/graphql-go/v2 v2.0.0/go.mod h1:vrEXrgzKilq1O94caK33IaNVF/oOiAxDSf9LuORW7+k=
 github.com/bufbuild/protocompile v0.14.1 h1:iA73zAf/fyljNjQKwYzUHD6AD4R8KMasmwa/FBatYVw=
 github.com/bufbuild/protocompile v0.14.1/go.mod h1:ppVdAIhbr2H8asPk6k4pY7t9zB1OU5DoEw9xY/FUi1c=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

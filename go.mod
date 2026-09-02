@@ -6,7 +6,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.39.0
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/iodesystems/agentkit v0.5.0
-	github.com/iodesystems/gwag v0.0.0-00010101000000-000000000000
+	github.com/iodesystems/gwag/v2 v2.0.0
 	github.com/iodesystems/sqlc-go-codegen-metaquery v0.0.0
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/pdfcpu/pdfcpu v0.13.0
@@ -17,7 +17,7 @@ require (
 
 require (
 	connectrpc.com/connect v1.19.2 // indirect
-	github.com/IodeSystems/graphql-go v1.1.0 // indirect
+	github.com/IodeSystems/graphql-go/v2 v2.0.0 // indirect
 	github.com/bufbuild/protocompile v0.14.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -60,4 +60,4 @@ require (
 
 replace github.com/iodesystems/sqlc-go-codegen-metaquery => ../sqlc-go-codegen-metaquery
 
-replace github.com/iodesystems/gwag => ../gwag
+replace github.com/iodesystems/gwag/v2 => ../gwag
