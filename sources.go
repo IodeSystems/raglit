@@ -1,0 +1,261 @@
+package raglit
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+)
+
+// Source selection — resolve a project's config.Indexes to the concrete files to
+// ingest. Rules layer project → index → root (ignore is UNIONed and always wins;
+// include is overridable per root), plus each root's .gitignore and a built-in
+// default that drops dot-entries and common vendor dirs.
+
+// builtinIgnore is always applied: dot-files/dirs anywhere, plus node_modules and
+// vendor trees. (Dot-dirs are also pruned during a non-git walk for speed.)
+//
+// `*.raglit-transcription.md` is raglit's OWN output, written beside a document
+// when writeback is on. Indexing it would be a backlog that grows every time the
+// indexer runs: the file is ingested, which writes a transcription OF the
+// transcription, and so on. Generated output is never a source.
+//
+// `*.raglit-regions.json` is the same rule for the region read — a record of
+// where a document's text was cropped from, which is about the document and is
+// not itself one.
+var builtinIgnore = []string{".*", "**/.*", "**/node_modules/**", "**/vendor/**",
+	"*" + transcriptionSuffix, "**/*" + transcriptionSuffix,
+	"*" + regionsSuffix, "**/*" + regionsSuffix}
+
+// generatedSuffixes are the files raglit itself writes beside a document. The
+// same list builtinIgnore expresses as globs, in the form a single path can be
+// tested against.
+//
+// It exists because builtinIgnore only guards `sync`, which resolves configured
+// roots through PlanSources. Every other way in — `raglit ingest <dir>`,
+// `raglit index <dir>`, a POST to /ingest — walks the filesystem itself and
+// applies no ignore rules at all, which is how eight transcriptions of documents
+// in this corpus came to be indexed as documents. Measured: one of them was
+// captioned "Transcription of dace-ROS-disputed.pdf", body text
+// "T EN M CU DO AL CI FI OF UN".
+//
+// The rule belongs where nothing can go around it, so IsGeneratedSidecar is
+// checked at Enqueue — the one point every ingest path passes through.
+//
+// The mail-attachment directory is deliberately NOT here: an attachment is a
+// document that arrived inside another file, and indexing it is the point.
+var generatedSuffixes = []string{transcriptionSuffix, regionsSuffix}
+
+// imageDocumentFloorPx is the smallest image that can be a PAGE.
+//
+// A scanned letter page at the 200 DPI raglit renders is 1700x2200 — 3.7
+// megapixels. An email signature logo is 342x174 — 60 KILOpixels, sixty times
+// smaller, and there were 31 of them indexed as documents in one corpus,
+// captioned "Larkin-Vole Real Estate Co logo" by a model doing its best with
+// what it was handed. They arrived as mail attachments, which is how they got
+// past every rule about what a document is.
+//
+// A quarter of a megapixel is deliberately far below any real page and far above
+// any icon: a phone photograph of a document is several megapixels, a fax at 100
+// DPI is still ~0.9. Nothing that clears this floor is being excluded for being
+// small; the floor exists to say that a 342x174 graphic is not a document, which
+// is a claim about what it IS, not about how much text it happens to carry.
+const imageDocumentFloorPx = 250_000
+
+// ImageTooSmallToBeAPage reports whether an image is below the floor, with its
+// dimensions for the message. Undecodable images pass — a format this build
+// cannot read is not evidence of anything, and the OCR path will say so better.
+func ImageTooSmallToBeAPage(data []byte) (bool, string) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return false, ""
+	}
+	if px := cfg.Width * cfg.Height; px < imageDocumentFloorPx {
+		return true, fmt.Sprintf("%dx%d (%d px)", cfg.Width, cfg.Height, px)
+	}
+	return false, ""
+}
+
+// IsGeneratedSidecar reports whether a path is raglit's own output rather than a
+// source document. Generated output is never a source: indexing a transcription
+// produces a transcription of the transcription, and the backlog grows every
+// time the indexer runs.
+func IsGeneratedSidecar(path string) bool {
+	for _, suf := range generatedSuffixes {
+		if strings.HasSuffix(path, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// PlanSources returns, per index name, the absolute file paths its configured
+// roots + rules select. baseDir is the project directory (relative roots resolve
+// against it). It shells out to `git ls-files` for a root's .gitignore semantics
+// when the root is a git work tree and cfg.Gitignore isn't false.
+func PlanSources(cfg Config, baseDir string) (map[string][]string, error) {
+	useGitignore := cfg.Gitignore == nil || *cfg.Gitignore
+	out := map[string][]string{}
+	for name, idx := range cfg.Indexes {
+		seen := map[string]bool{}
+		var files []string
+		for _, root := range idx.Roots {
+			rootDir := root.Path
+			if !filepath.IsAbs(rootDir) {
+				rootDir = filepath.Join(baseDir, rootDir)
+			}
+			include := root.Include
+			if len(include) == 0 {
+				include = idx.Include
+			}
+			ignore := concatStrings(builtinIgnore, cfg.Ignore, idx.Ignore, root.Ignore)
+
+			cands, err := candidateFiles(rootDir, useGitignore)
+			if err != nil {
+				return nil, err
+			}
+			for _, abs := range cands {
+				rel, err := filepath.Rel(rootDir, abs)
+				if err != nil {
+					rel = filepath.Base(abs)
+				}
+				rel = filepath.ToSlash(rel)
+				if len(include) > 0 && !matchAny(include, rel) {
+					continue
+				}
+				if matchAny(ignore, rel) {
+					continue
+				}
+				if !seen[abs] {
+					seen[abs] = true
+					files = append(files, abs)
+				}
+			}
+		}
+		sort.Strings(files)
+		out[name] = files
+	}
+	return out, nil
+}
+
+// candidateFiles lists the files under rootDir before include/ignore filtering:
+// git-tracked + untracked-not-ignored when it's a git work tree (so .gitignore is
+// honored by git itself), else a plain walk that prunes dot-dirs.
+func candidateFiles(rootDir string, useGitignore bool) ([]string, error) {
+	if useGitignore && isGitWorkTree(rootDir) {
+		out, err := exec.Command("git", "-C", rootDir, "ls-files", "--cached", "--others", "--exclude-standard", "-z").Output()
+		if err == nil {
+			var files []string
+			for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+				if rel != "" {
+					files = append(files, filepath.Join(rootDir, rel))
+				}
+			}
+			return files, nil
+		}
+		// git failed — fall back to a walk.
+	}
+	return walkFiles(rootDir)
+}
+
+func isGitWorkTree(dir string) bool {
+	return exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree").Run() == nil
+}
+
+func walkFiles(rootDir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(rootDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != rootDir && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		files = append(files, p)
+		return nil
+	})
+	return files, err
+}
+
+// matchAny reports whether rel (a slash path relative to its root) matches any
+// glob. A glob with no "/" matches the basename (gitignore-style); one with "/"
+// matches the whole relative path. "**" spans separators, "*" doesn't, "?" is one.
+func matchAny(patterns []string, rel string) bool {
+	for _, pat := range patterns {
+		target := rel
+		if !strings.Contains(pat, "/") {
+			target = path.Base(rel)
+		}
+		if globRegexp(pat).MatchString(target) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	globMu    sync.Mutex
+	globCache = map[string]*regexp.Regexp{}
+)
+
+func globRegexp(pattern string) *regexp.Regexp {
+	globMu.Lock()
+	defer globMu.Unlock()
+	if re, ok := globCache[pattern]; ok {
+		return re
+	}
+	re := regexp.MustCompile(globToRegexp(pattern))
+	globCache[pattern] = re
+	return re
+}
+
+func globToRegexp(glob string) string {
+	var b strings.Builder
+	b.WriteString("^")
+	for i := 0; i < len(glob); i++ {
+		switch c := glob[i]; c {
+		case '*':
+			if i+1 < len(glob) && glob[i+1] == '*' {
+				i++ // consume the second '*'
+				if i+1 < len(glob) && glob[i+1] == '/' {
+					i++                       // consume the slash
+					b.WriteString("(?:.*/)?") // **/ → an optional directory prefix (so **/x matches x at root too)
+				} else {
+					b.WriteString(".*") // bare ** → anything, separators included
+				}
+			} else {
+				b.WriteString("[^/]*") // * → within a path segment
+			}
+		case '?':
+			b.WriteString("[^/]")
+		case '.', '+', '(', ')', '|', '[', ']', '{', '}', '^', '$', '\\':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteString("$")
+	return b.String()
+}
+
+func concatStrings(ss ...[]string) []string {
+	var out []string
+	for _, s := range ss {
+		out = append(out, s...)
+	}
+	return out
+}

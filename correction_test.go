@@ -1,0 +1,155 @@
+package raglit
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// The failure this exists for: identifiers read off 200% crops by a person lived
+// in the .raglit-transcription.md file, which raglit rewrites on every read.
+// They were destroyed twice by ordinary re-reads. A correction has to survive
+// re-reading and be RE-ISSUED into every later render.
+func TestACorrectionSurvivesAndIsReissued(t *testing.T) {
+	dir := t.TempDir()
+	js, err := OpenJudgements(AuditPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := "/corpus/survey.pdf"
+	if err := js.PutPageCorrection(PageCorrection{
+		Doc: doc, Page: 1,
+		Text: "AF 201503110045, surveyor MARA G. DACE",
+		Note: "read at 200% off the native 960 ppi image", By: "carl", At: "2026-07-31",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	machine := []TranscribedPage{{Page: 1, Text: "AF 2015031104, surveyor DACF"}}
+
+	// Every render re-issues it — this is the "not losing the stuff" property.
+	for i, name := range []string{"first render", "render after a re-read"} {
+		got, err := js.PageCorrections(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		md := RenderTranscriptionCorrected(doc, machine, got)
+		if !strings.Contains(md, "MARA G. DACE") {
+			t.Errorf("%s (%d): the correction was not applied:\n%s", name, i, md)
+		}
+		if strings.Contains(md, "DACF,") || strings.Contains(md, "2015031104,") {
+			t.Errorf("%s: the machine read survived alongside the correction", name)
+		}
+		// And the reader can tell a checked page from a machine one.
+		if !strings.Contains(md, "corrected by hand") || !strings.Contains(md, "carl") {
+			t.Errorf("%s: a corrected page must say so and say who:\n%s", name, md)
+		}
+		if !strings.Contains(md, "200%") {
+			t.Errorf("%s: the note on HOW it was established must survive", name)
+		}
+	}
+	js.Close()
+
+	// And it survives losing the database entirely, because it is in the trail.
+	back, err := OpenJudgements(AuditPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer back.Close()
+	got, err := back.PageCorrections(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := got[1]; !ok || !strings.Contains(c.Text, "MARA G. DACE") {
+		t.Errorf("the correction did not survive a rebuild from the audit trail: %+v", got)
+	}
+}
+
+// An uncorrected render must be unchanged — corrections are additive.
+func TestNoCorrectionsRendersExactlyAsBefore(t *testing.T) {
+	pages := []TranscribedPage{{Page: 1, Text: "some text"}}
+	if RenderTranscriptionCorrected("/x.pdf", pages, nil) != RenderTranscription("/x.pdf", pages) {
+		t.Error("rendering with no corrections diverged from the plain render")
+	}
+}
+
+// The generated file has to say it is generated. It collected hand edits twice
+// because its header described it as raglit's output without saying edits die.
+func TestTheExportSaysEditsAreLost(t *testing.T) {
+	md := RenderTranscription("/x.pdf", []TranscribedPage{{Page: 1, Text: "t"}})
+	for _, want := range []string{"GENERATED FILE", "lost", "--correct"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("the export must warn (%q missing):\n%s", want, md[:400])
+		}
+	}
+}
+
+// The daemon has no working directory in the corpus and cannot use ProjectDir().
+// What it always has is the document's absolute path, and the corpus layout
+// answers the rest.
+func TestTheProjectIsFoundFromTheDocumentPath(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "matter")
+	deep := filepath.Join(proj, "documents", "records")
+	if err := os.MkdirAll(filepath.Join(proj, ProjectHomeName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := filepath.Join(deep, "survey.pdf")
+
+	if got := ProjectDirForDoc(doc); got != proj {
+		t.Errorf("got %q, want %q", got, proj)
+	}
+	// A document under no project is a real state, not an error.
+	if got := ProjectDirForDoc(filepath.Join(root, "loose.pdf")); got != "" {
+		t.Errorf("want no project for a loose file, got %q", got)
+	}
+}
+
+// An INGEST must re-issue corrections too. Writing an uncorrected export from
+// the ingest path would undo checked work exactly as the old unconditional
+// overwrite did — the same loss arriving through the other door.
+func TestAnIngestWritebackReissuesCorrections(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ProjectHomeName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := filepath.Join(root, "survey.pdf")
+	if err := os.WriteFile(doc, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	js, err := OpenJudgements(AuditPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := js.PutPageCorrection(PageCorrection{
+		Doc: doc, Page: 1, Text: "AF 201503110045 MARA G. DACE", By: "carl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	js.Close()
+
+	// A correction must survive into the rendered transcription. INGEST no longer
+	// writes one — see the note in pipeline.go about sidecars — so this is the
+	// `raglit transcribe` path, which is a person asking for the file.
+	js2, err := OpenJudgements(AuditPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer js2.Close()
+	got, err := js2.PageCorrections(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("found %d correction(s), want 1", len(got))
+	}
+	md := RenderTranscriptionCorrected(doc, []TranscribedPage{{Page: 1, Text: "AF 2015031104 DACF"}}, got)
+	if !strings.Contains(md, "MARA G. DACE") {
+		t.Errorf("the transcription dropped the correction:\n%s", md)
+	}
+}

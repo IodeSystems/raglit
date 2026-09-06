@@ -1,0 +1,381 @@
+package raglit
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strings"
+	"testing"
+)
+
+// fakeEmbedder returns a deterministic 3-d vector keyed on which topic words a
+// text contains — enough to make cosine ranking observable without a network.
+type fakeVecClient struct{ calls int }
+
+func (c *fakeVecClient) Embed(_ context.Context, _ string, input []string) ([][]float32, error) {
+	c.calls++
+	out := make([][]float32, len(input))
+	for i, t := range input {
+		t = strings.ToLower(t)
+		// axes: [auth, deploy, billing]
+		v := []float32{0, 0, 0}
+		if strings.Contains(t, "token") || strings.Contains(t, "auth") || strings.Contains(t, "refresh") {
+			v[0] = 1
+		}
+		if strings.Contains(t, "deploy") || strings.Contains(t, "rollback") {
+			v[1] = 1
+		}
+		if strings.Contains(t, "invoice") || strings.Contains(t, "billing") {
+			v[2] = 1
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func TestVecSearch_RanksByCosine(t *testing.T) {
+	s := openMem(t)
+	s.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
+	ctx := context.Background()
+
+	must(t, s.Ingest(ctx, Document{Path: "auth.md", Title: "Auth", Fragments: []Fragment{
+		{Page: 1, Text: "access token refresh flow"},
+	}}))
+	must(t, s.Ingest(ctx, Document{Path: "deploy.md", Title: "Deploy", Fragments: []Fragment{
+		{Page: 1, Text: "blue green deploy rollback"},
+	}}))
+
+	hits, err := s.VecSearch(ctx, "how does token refresh work", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("no vector hits")
+	}
+	if hits[0].Path != "auth.md" {
+		t.Fatalf("cosine ranked wrong doc first: %+v", hits[0])
+	}
+	// The auth vector aligns with the query axis → cosine ≈ 1.
+	if math.Abs(hits[0].Score-1) > 1e-5 {
+		t.Errorf("expected cosine ≈ 1 for aligned vectors, got %v", hits[0].Score)
+	}
+}
+
+func TestHybridSearch_FusesLexicalAndVector(t *testing.T) {
+	s := openMem(t)
+	s.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
+	ctx := context.Background()
+	must(t, s.Ingest(ctx, Document{Path: "auth.md", Title: "Auth", Fragments: []Fragment{
+		{Page: 1, Text: "access token refresh rotates"},
+	}}))
+	must(t, s.Ingest(ctx, Document{Path: "deploy.md", Title: "Deploy", Fragments: []Fragment{
+		{Page: 1, Text: "blue green deploy rollback"},
+	}}))
+	hits, err := s.HybridSearch(ctx, "token refresh", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Path != "auth.md" {
+		t.Fatalf("hybrid did not rank auth first: %+v", hits)
+	}
+}
+
+func TestVecSearch_RequiresEmbedder(t *testing.T) {
+	s := openMem(t)
+	if _, err := s.VecSearch(context.Background(), "q", 5); err == nil {
+		t.Fatal("VecSearch without an embedder should error")
+	}
+}
+
+func TestEncodeDecodeVec_RoundTrips(t *testing.T) {
+	v := []float32{0.1, -0.5, 1.0, 0}
+	got := decodeVec(encodeVec(v))
+	if len(got) != len(v) {
+		t.Fatalf("len %d != %d", len(got), len(v))
+	}
+	for i := range v {
+		if got[i] != v[i] {
+			t.Errorf("element %d: %v != %v", i, got[i], v[i])
+		}
+	}
+}
+
+// countingVecClient records the size of each request it receives.
+type countingVecClient struct {
+	batches []int // total input chars per request
+	items   []int // inputs per request
+}
+
+func (c *countingVecClient) Embed(_ context.Context, _ string, texts []string) ([][]float32, error) {
+	n := 0
+	for _, t := range texts {
+		n += len(t)
+	}
+	c.batches = append(c.batches, n)
+	c.items = append(c.items, len(texts))
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = []float32{1, 0}
+	}
+	return out, nil
+}
+
+// The failure this exists for. The caller batched by ITEM COUNT — sixteen at a
+// time — and the server bounds the WHOLE REQUEST. Sixteen ordinary fragments
+// came to 35,871 tokens against a batch limit of 8192, and every document with
+// large fragments failed with a 500 that looked like an upstream fault.
+func TestEmbedDocsSplitsByRequestSizeNotItemCount(t *testing.T) {
+	c := &countingVecClient{}
+	e := NewEmbedder(c, "m")
+	e.BatchLimitChars = 1000
+
+	texts := make([]string, 16)
+	for i := range texts {
+		texts[i] = strings.Repeat("x", 400) // 16 x 400 = 6400 chars, 6.4x the budget
+	}
+	vecs, err := e.EmbedDocs(context.Background(), texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vecs) != 16 {
+		t.Fatalf("want a vector per input, got %d", len(vecs))
+	}
+	if len(c.batches) < 2 {
+		t.Fatalf("everything went in one request (%v chars) — the budget was ignored", c.batches)
+	}
+	for i, n := range c.batches {
+		if n > e.BatchLimitChars && c.items[i] > 1 {
+			t.Errorf("request %d carried %d chars, over the %d budget with %d items",
+				i, n, e.BatchLimitChars, c.items[i])
+		}
+	}
+}
+
+// A single input bigger than the whole budget still goes, alone. Refusing it
+// here would silently drop a fragment; letting the endpoint answer turns it into
+// a real error about that fragment.
+func TestEmbedDocsSendsAnOversizedInputAlone(t *testing.T) {
+	c := &countingVecClient{}
+	e := NewEmbedder(c, "m")
+	e.BatchLimitChars = 100
+	if _, err := e.EmbedDocs(context.Background(), []string{strings.Repeat("y", 5000), "small"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.items) != 2 || c.items[0] != 1 {
+		t.Errorf("want the oversized input alone in its own request, got items=%v", c.items)
+	}
+}
+
+// Order must survive chunking: vector i belongs to text i.
+func TestEmbedDocsPreservesOrderAcrossChunks(t *testing.T) {
+	e := NewEmbedder(&countingVecClient{}, "m")
+	e.BatchLimitChars = 50
+	texts := []string{"aaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbb", "cccccccccccccccccccc"}
+	vecs, err := e.EmbedDocs(context.Background(), texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vecs) != len(texts) {
+		t.Fatalf("want %d vectors, got %d", len(texts), len(vecs))
+	}
+}
+
+// The limit is a fact about the endpoint, so it is probed once and remembered —
+// keyed by MODEL, because a number probed for one model is a guess about
+// another.
+func TestEmbedLimitIsProbedOnceAndKeyedByModel(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	probes := 0
+	lim := func(max int) *Embedder {
+		e := NewEmbedder(&limitedVecClient{max: max, probes: &probes}, "m1")
+		return e
+	}
+	got := s.EmbedLimitChars(context.Background(), lim(4096), 0)
+	if got <= 0 {
+		t.Fatalf("probe returned %d", got)
+	}
+	after := probes
+	if again := s.EmbedLimitChars(context.Background(), lim(4096), 0); again != got {
+		t.Errorf("second call re-probed to a different answer: %d then %d", got, again)
+	}
+	if probes != after {
+		t.Errorf("the stored limit was ignored: %d more probes", probes-after)
+	}
+	// The stored key is per MODEL, so a second model gets its own answer rather
+	// than inheriting one probed for different weights.
+	e2 := NewEmbedder(&limitedVecClient{max: 1024, probes: &probes}, "m2")
+	got2 := s.EmbedLimitChars(context.Background(), e2, 0)
+	if got2 <= 0 {
+		t.Fatalf("second model got no limit: %d", got2)
+	}
+	if _, ok := s.Meta(embedLimitKey("m2")); !ok {
+		t.Error("the second model's limit was not stored under its own key")
+	}
+	if got2 >= got {
+		t.Errorf("a model with a smaller window got a limit of %d against the first model's %d", got2, got)
+	}
+}
+
+// An explicit setting wins: an operator who knows the number should not wait for
+// a probe, and an endpoint that truncates silently cannot be probed at all.
+func TestConfiguredEmbedLimitBeatsTheProbe(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	probes := 0
+	e := NewEmbedder(&limitedVecClient{max: 4096, probes: &probes}, "m")
+	if got := s.EmbedLimitChars(context.Background(), e, 777); got != 777 {
+		t.Errorf("configured limit ignored: %d", got)
+	}
+	if probes != 0 {
+		t.Errorf("probed despite an explicit limit: %d probes", probes)
+	}
+}
+
+// Probing without correcting the back catalogue leaves a corpus whose old
+// documents fail to embed and whose new ones do not.
+func TestOversizedDocsFindsWhatMustBeRefragmented(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Ingest(context.Background(), Document{Path: "big.pdf", Title: "Big",
+		Fragments: []Fragment{{Text: strings.Repeat("x", 9000)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest(context.Background(), Document{Path: "small.pdf", Title: "Small",
+		Fragments: []Fragment{{Text: "short"}}}); err != nil {
+		t.Fatal(err)
+	}
+	over, err := s.OversizedDocs(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := over["big.pdf"]; !ok {
+		t.Errorf("the oversized document was not found: %v", over)
+	}
+	if _, ok := over["small.pdf"]; ok {
+		t.Error("a document within the limit was listed")
+	}
+	// Clearing the hash is the dedup lever; the document and its pages survive.
+	if err := s.MarkForReingest("big.pdf"); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s.DocumentHash("big.pdf"); h != "" {
+		t.Errorf("content hash not cleared: %q", h)
+	}
+}
+
+// limitedVecClient accepts inputs up to max chars and rejects longer ones, like
+// an endpoint that reports rather than truncates.
+type limitedVecClient struct {
+	max    int
+	probes *int
+}
+
+func (c *limitedVecClient) Embed(_ context.Context, _ string, texts []string) ([][]float32, error) {
+	if c.probes != nil {
+		*c.probes++
+	}
+	for _, t := range texts {
+		if len(t) > c.max {
+			return nil, fmt.Errorf("input too large: %d > %d", len(t), c.max)
+		}
+	}
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = []float32{1, 0}
+	}
+	return out, nil
+}
+
+// A model whose native context is documented needs no probe — and must not be
+// given another model's number.
+func TestKnownModelsUseTheirNativeContext(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	probes := 0
+	e := NewEmbedder(&limitedVecClient{max: 999999, probes: &probes}, "nomic-embed-text")
+	got := s.EmbedLimitChars(context.Background(), e, 0)
+	if want := TokensToChars(8192); got != want {
+		t.Errorf("nomic native limit = %d chars, want %d", got, want)
+	}
+	if probes != 0 {
+		t.Errorf("probed a model whose context is documented: %d probes", probes)
+	}
+}
+
+// The guarantee: whatever the text, a fragment inside the char budget is inside
+// the token cap. Measured ground truth — 16,500 chars of "a " is 8,252 tokens —
+// so the budget has to hold at two characters per token, not four.
+func TestCharBudgetHoldsForTheDensestText(t *testing.T) {
+	budget := TokensToChars(8192)
+	dense := strings.Repeat("a ", budget)[:budget]
+	if got := EstimateTokens(dense); got > 8192 {
+		t.Errorf("a fragment at the char budget estimates %d tokens, over the 8192 cap", got)
+	}
+	// And the estimator must never under-report against the measured truth.
+	if got := EstimateTokens(strings.Repeat("a ", 8250)[:16500]); got < 8252 {
+		t.Errorf("estimator says %d tokens for text measured at 8252 — it under-reports", got)
+	}
+}
+
+// The endpoint states its own limit when it refuses. That figure beats a table
+// and beats a probe, because it is not an inference.
+func TestLearnLimitFromTheEndpointsOwnRejection(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// The exact wording captured from the live endpoint.
+	msg := "input (8302 tokens) is too large to process. increase the physical batch size (current batch size: 8192)"
+	got, ok := s.LearnLimitFromError("some-model", msg)
+	if !ok {
+		t.Fatalf("did not parse the stated limit from %q", msg)
+	}
+	if want := TokensToChars(8192); got != want {
+		t.Errorf("learned %d chars, want %d", got, want)
+	}
+	// And it must be remembered, so the next ingest is sized correctly.
+	if v, ok := s.Meta(embedLimitKey("some-model")); !ok || v == "" {
+		t.Error("the learned limit was not stored")
+	}
+	// Unrelated errors must not be mistaken for a limit.
+	if _, ok := s.LearnLimitFromError("m", "connection reset by peer"); ok {
+		t.Error("a transport error was read as a limit")
+	}
+}
+
+// The wording says "batch size" but the limit is PER INPUT — measured, sixteen
+// inputs totalling 48k tokens pass while a single 8.3k input fails. The parser
+// must read it as the per-input ceiling, which is what the number means.
+func TestPerInputLimitParsesTheStatedNumber(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"input (35871 tokens) is too large to process. increase the physical batch size (current batch size: 8192)", 8192, true},
+		{"increase the physical batch size (current batch size: 512)", 512, true},
+		{"request (200012 tokens) exceeds the available context size (180224 tokens), try increasing it", 0, false},
+		{"", 0, false},
+	} {
+		got, ok := perInputTokenLimit(tc.in)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("perInputTokenLimit(%.40q) = %d,%v want %d,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}

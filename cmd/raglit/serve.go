@@ -1,0 +1,955 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/iodesystems/raglit"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+const version = "0.1.0"
+
+// runServe exposes the home's indexes as a stdio MCP server. It hosts a SET of
+// named indexes (Slice G): search defaults to ALL of them (RRF-merged, each hit
+// tagged with its index), ingest targets one, and index_status/list_indexes
+// report across them. The search result shape stays what ragnotify.ParseHits
+// consumes, so one server still drives both the explicit tool and the proactive
+// (live-watch) channel — an agent scopes the watch by passing `index`.
+func runServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	_, homeOf := addStoreFlags(fs)
+	lf := addLLMFlags(fs)
+	client := addClientFlags(fs) // --daemon + --embedded
+	defLimit := fs.Int("n", 8, "default max results")
+	embed := fs.Bool("embed", false, "embedded mode: embed ingested fragments")
+	fs.Parse(args)
+
+	// DEFAULT: proxy the MCP tools to the shared per-user daemon, auto-starting it
+	// if none is running — so N Claude sessions are N thin clients to ONE daemon
+	// (single writer + worker pool + LLM caller), not N processes fighting over the
+	// same index. --embedded opts out and runs the index in-process (single-session).
+	durl, ns, err := client(homeOf, false)
+	if err != nil {
+		return err
+	}
+	if durl != "" {
+		s := server.NewMCPServer("raglit", version)
+		addRaglitTools(s, daemonToolHandlers(durl, *defLimit, ns, projectShared(homeOf)))
+		return server.ServeStdio(s)
+	}
+
+	reg, err := raglit.OpenRegistry(homeOf())
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+	lf.resolve(homeOf())
+	if *embed {
+		if err := lf.requireEmbed(); err != nil {
+			return err
+		}
+		reg.SetEmbedder(lf.embedder())
+	}
+	if ie := buildImageEmbedder(homeOf()); ie != nil {
+		reg.SetImageEmbedder(ie)
+	}
+	reg.SetIdentifier(lf.identifier(homeOf()))
+
+	// One background loop drains every index's queue round-robin (per-index
+	// workers cached). A configured model gives PDF OCR + LLM text segmentation.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runIngestRunners(ctx, reg, lf, homeOf(), nil) // embedded serve: single index, no shared pool
+	go runIdentityWorkers(ctx, reg, homeOf())
+
+	s := server.NewMCPServer("raglit", version)
+	addRaglitTools(s, toolHandlers{
+		search:        searchHandler(reg, *defLimit),
+		searchFigures: searchFiguresHandler(reg, *defLimit),
+		ingest:        ingestHandler(reg),
+		status:        statusHandler(reg),
+		listIndexes:   listHandler(reg),
+		listDocuments: listDocumentsHandler(reg),
+		getDocument:   getDocumentHandler(reg),
+		getFields:     getFieldsHandler(reg),
+		ocr:           ocrHandler(buildToolOCR(lf, homeOf())),
+	})
+	return server.ServeStdio(s)
+}
+
+// toolHandlers is raglit's MCP tool surface, supplied either from the local
+// registry (embedded mode) or as daemon proxies (client mode — serveclient.go).
+type toolHandlers struct {
+	search        server.ToolHandlerFunc
+	searchFigures server.ToolHandlerFunc
+	ingest        server.ToolHandlerFunc
+	status        server.ToolHandlerFunc
+	listIndexes   server.ToolHandlerFunc
+	listDocuments server.ToolHandlerFunc
+	getDocument   server.ToolHandlerFunc
+	getFields     server.ToolHandlerFunc
+	ocr           server.ToolHandlerFunc
+}
+
+// addRaglitTools registers the tool definitions once, backed by the given
+// handlers. One tool contract, either backing.
+func addRaglitTools(s *server.MCPServer, h toolHandlers) {
+	s.AddTool(
+		mcp.NewTool("search",
+			mcp.WithDescription(
+				"Search the document index(es). Returns ranked fragments as JSON "+
+					"{hits:[{index,doc_id,title,page,score,snippet,origin}]}, best first. A hit "+
+					"with origin=\"identity\" is the document's GENERATED caption/summary, and one "+
+					"with origin=\"fields\" is its document type's schema filled out FROM it — "+
+					"both are a model's reading, so use them to find the document and cite the "+
+					"document, never them (get_fields returns the whole record). When hits are "+
+					"empty, the response carries a \"covers\" digest per index — {index, path, "+
+					"documents, kinds, content, roles}, counted from the documents themselves and "+
+					"scoped to the same `path` as the search — so you can tell the topic is ABSENT "+
+					"from this corpus rather than re-querying. `index` selects one index or a "+
+					"comma-separated set; omit it to search ALL (results merged with reciprocal-rank "+
+					"fusion, each hit tagged by index)."),
+			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language or keyword query")),
+			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
+			mcp.WithString("path", mcp.Description("constrain to documents whose path starts with this prefix (a subtree; use a trailing / for a clean directory)")),
+			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
+		),
+		h.search,
+	)
+	s.AddTool(
+		mcp.NewTool("search_figures",
+			mcp.WithDescription(
+				"Semantic search over FIGURES (diagrams/charts/tables the VLM described while "+
+					"OCR'ing). Returns ranked figures as JSON {figures:[{index,media_id,path,title,"+
+					"page,description,image_path,fragment_id,score}]}, best first. Each figure is "+
+					"embedded by its description (or its image, when an image embedder is configured). "+
+					"Needs an --embed'd index. `index` selects one/comma-separated set; omit = all."),
+			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language query about a figure's content")),
+			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
+			mcp.WithString("path", mcp.Description("constrain to documents whose path starts with this prefix (a subtree)")),
+			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
+		),
+		h.searchFigures,
+	)
+	s.AddTool(
+		mcp.NewTool("ingest",
+			mcp.WithDescription(
+				"Queue a URL for LAZY ingestion into an index (returns a job id; a background "+
+					"worker fetches + segments + indexes it). file://<path> or http(s)://... ; "+
+					"PDFs are OCR'd when a vision model is configured. `index` names the target "+
+					"index (default \"default\", created if new). Poll index_status."),
+			mcp.WithString("url", mcp.Required(), mcp.Description("file://<path> or http(s)://<url>")),
+			mcp.WithString("index", mcp.Description("target index (default \"default\")")),
+			mcp.WithString("title", mcp.Description("optional document title")),
+		),
+		h.ingest,
+	)
+	s.AddTool(
+		mcp.NewTool("index_status",
+			mcp.WithDescription(
+				"Report index + ingest-queue status as JSON: documents/fragments, "+
+					"done/running/pending/failed job counts, a recent rate (jobs/min), and "+
+					"pending items each with an ETA. `index` selects one; omit to aggregate all."),
+			mcp.WithString("index", mcp.Description("index name; empty = aggregate all")),
+		),
+		h.status,
+	)
+	s.AddTool(
+		mcp.NewTool("get_fields",
+			mcp.WithDescription(
+				"Get a document's EXTRACTED FIELDS as JSON {index,path,type,fields,source,model}. "+
+					"An index may register document TYPES — receipts, work orders, lab reports, "+
+					"whatever that corpus is made of — each with a schema; a document that "+
+					"resolves as one has that schema filled out from its text. `fields` is the "+
+					"filled-out record. It is a model's READING of the document, not the "+
+					"document's own words: cite the document, not this. A document that is not "+
+					"one of the index's types returns type=\"\" and no fields, which is the "+
+					"normal case rather than an error. `path` is a document path (the doc_id "+
+					"from a search hit) or a unique filename substring."),
+			mcp.WithString("path", mcp.Required(), mcp.Description("document path, or a unique filename substring")),
+			mcp.WithString("index", mcp.Description("index name; empty = the default index")),
+		),
+		h.getFields,
+	)
+	s.AddTool(
+		mcp.NewTool("list_indexes",
+			mcp.WithDescription(
+				"List the available indexes with their document/fragment counts and what each one "+
+					"HOLDS: {name, documents, fragments, about, kinds, content, roles}. `kinds`, "+
+					"`content` and `roles` are counted from the documents themselves — [{tag,count}], "+
+					"most common first. `about` is a model's paragraph written from the documents' "+
+					"generated captions, so it is a paraphrase of a paraphrase: use it to CHOOSE an "+
+					"index, never to state what the corpus contains. `about_stale` marks one written "+
+					"when the index held materially fewer documents."),
+		),
+		h.listIndexes,
+	)
+	s.AddTool(
+		mcp.NewTool("list_documents",
+			mcp.WithDescription(
+				"List indexed documents (filenames/paths) with their fragment/page counts as JSON "+
+					"{documents:[{index,path,title,fragments,pages,vision,frag_mode}]}. `name` filters to documents "+
+					"whose path or title contains that substring (case-insensitive). `index` selects one "+
+					"index or a comma-separated set; omit to list across ALL. Use this to find a document, "+
+					"then get_document to read its text."),
+			mcp.WithString("name", mcp.Description("case-insensitive substring filter over path/title; empty = all")),
+			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
+		),
+		h.listDocuments,
+	)
+	s.AddTool(
+		mcp.NewTool("get_document",
+			mcp.WithDescription(
+				"Get a document's indexed TEXT (reassembled from fragments in page order) as JSON "+
+					"{index,path,title,pages:[{page,text}],text,truncated}. `path` is a document path "+
+					"(the doc_id from a search hit) OR a unique filename substring — ambiguous matches "+
+					"return an error listing the candidates. Optional `page` (single) or `from`/`to` "+
+					"(inclusive page range); `max_chars` caps the WHOLE response — `text` and the "+
+					"`pages` array are cut at the same offset, so it bounds what you take back. "+
+					"`index` restricts the lookup; omit to resolve across all indexes."),
+			mcp.WithString("path", mcp.Required(), mcp.Description("document path or a unique filename substring")),
+			mcp.WithNumber("page", mcp.Description("single page to return (overrides from/to)")),
+			mcp.WithNumber("from", mcp.Description("first page of an inclusive range")),
+			mcp.WithNumber("to", mcp.Description("last page of an inclusive range")),
+			mcp.WithNumber("max_chars", mcp.Description("cap on the returned text, pages included (0 = uncapped)")),
+			mcp.WithString("index", mcp.Description("restrict lookup to this index (or comma-separated set); empty = all")),
+		),
+		h.getDocument,
+	)
+	// ocr tool: any document → paged text, via the format router (extract.go).
+	// A PDF uses its text layer where present and OCRs the scanned pages; office/
+	// markup goes through pandoc; images run the OCR cascade; text is read. Useful
+	// even with no vision model (text-layer / pandoc / plain paths).
+	s.AddTool(
+		mcp.NewTool("ocr",
+			mcp.WithDescription(
+				"Extract a document to paged text. Give `path` (file://… or a local path) OR "+
+					"base64 `data` (+ optional `mime`). Handles PDF (text layer where present, "+
+					"OCR the scanned pages), office/markup (docx, odt, epub, html, pptx via "+
+					"pandoc), images (OCR), and plain text. Returns JSON "+
+					"{pages:[{page,text,engine}], engines:{<engine>:count}} where engine is "+
+					"\"text\" (text layer / pandoc / plain), the cheap OCR engine's name, or "+
+					"\"vision\". Owns format detection + extraction — the caller just sends bytes."),
+			mcp.WithString("path", mcp.Description("file://<path> or a local path to a document")),
+			mcp.WithString("data", mcp.Description("base64-encoded document bytes (alternative to path)")),
+			mcp.WithString("mime", mcp.Description("content type hint, e.g. application/pdf, image/png, or a docx type")),
+		),
+		h.ocr,
+	)
+}
+
+// runIdentityWorkers drains every index's captioning queue.
+//
+// It used to run ONE INDEX AT A TIME, with a hand-set slot count, because "the
+// slot budget belongs to the endpoint, not to an index". That reasoning was
+// right about the problem and wrong about where the budget lives: it belongs to
+// the MODEL. Two indexes captioning at once are competing for the identity
+// model's channel, which now counts them — so they no longer have to be
+// serialised here to avoid over-asking, and a caption no longer waits on an
+// index it has nothing to do with.
+//
+// Still separate from the ingest runners because the work is different: an
+// ingest job is minutes of OCR over many pages, a caption is one bounded call,
+// and putting captions on the ingest queue would make a 400-document sweep block
+// every incoming document behind it.
+func runIdentityWorkers(ctx context.Context, reg *raglit.Registry, home raglit.Home) {
+	cfg, _, _ := raglit.LoadConfig(home)
+	slots := cfg.IdentitySlots
+	for ctx.Err() == nil {
+		var wg sync.WaitGroup
+		var did atomic.Bool
+		for _, name := range reg.Names() {
+			if ctx.Err() != nil {
+				break
+			}
+			st, err := reg.Existing(name)
+			if err != nil {
+				continue
+			}
+			// A row left 'running' by a dead process is work nobody is doing.
+			if n, err := st.ReclaimIdentityJobs(); err == nil && n > 0 {
+				log.Printf("raglit: identity queue %s: requeued %d orphaned job(s)", name, n)
+			}
+			q, err := st.IdentityQueue()
+			if err != nil || q.Pending == 0 {
+				continue
+			}
+			log.Printf("raglit: identity queue %s: %d pending", name, q.Pending)
+			// Indexes drain CONCURRENTLY now. They used to go one at a time,
+			// because two indexes each draining "two at a time" was four requests
+			// at a server that ran two — a real problem, solved in the wrong
+			// place. The identity model's admission channel counts every caller
+			// in this process, so over-asking is bounded where the resource
+			// actually is, and a 400-document sweep on one index no longer holds
+			// every other index's captions behind it.
+			wg.Add(1)
+			go func(name string, st *raglit.Store) {
+				defer wg.Done()
+				n, werr := (&raglit.IdentityWorker{Store: st, Slots: slots}).Drain(ctx)
+				if werr != nil && !errors.Is(werr, raglit.ErrNoIdentifier) {
+					log.Printf("raglit: identity queue %s: %v", name, werr)
+				}
+				if n > 0 {
+					did.Store(true)
+					log.Printf("raglit: identity queue %s: %d done", name, n)
+				}
+			}(name, st)
+		}
+		wg.Wait()
+		if !did.Load() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+}
+
+func effectiveSlots(n int) int {
+	if n <= 0 {
+		return raglit.DefaultIdentitySlots
+	}
+	return n
+}
+
+// runIngestRunners drains every index's queue with a pool of runners.
+//
+// ONE pool, and deliberately generous: the thing that limits concurrency is no
+// longer here. It is the per-MODEL admission channel (raglit/modelchan.go), and
+// a runner blocked in Acquire costs a goroutine and nothing else.
+//
+// This replaces a two-lane scheduler with per-lane slot counts, which replaced a
+// single serial loop. The lanes fixed the right problem the wrong way: a slow
+// scan really must not hold up a text file, but the reason it did was never that
+// the two were the same KIND of work — it was that vision, segmentation and
+// embedding were all being counted against one "the GPU admits one" slot. They
+// are three models, usually on three cards. Gate each model and the lane
+// classification has nothing left to decide: a transcription and an embedding
+// take different channels and simply proceed.
+//
+// What survives from the lanes is the shape, not the limit: a claimer per pass
+// walking indexes in turn, resuming where it stopped so one busy index cannot
+// take every turn.
+func runIngestRunners(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home, pool *raglit.Pool) {
+	// Strand nothing on upgrade: rows queued before lanes existed carry an empty
+	// lane, which nothing now reads — but the backfill also proves the column is
+	// present, and costs one query per index at startup.
+	for _, name := range reg.Names() {
+		if st, err := reg.Existing(name); err == nil {
+			_, _ = st.BackfillLanes()
+		}
+	}
+	runQueue(ctx, reg, ingestRunners, func(st *raglit.Store) *raglit.Worker {
+		return buildWorker(st, lf, home, pool)
+	})
+}
+
+// runQueue is runIngestRunners with the worker construction injected, so a test
+// can supply one whose fetch and model calls it controls — and so assert the
+// property this exists for: that a document waiting on one model does not hold
+// up a document that needs a different one.
+func runQueue(ctx context.Context, reg *raglit.Registry, runners int,
+	newWorker func(*raglit.Store) *raglit.Worker) {
+	if runners < 1 {
+		runners = 1
+	}
+	type claimed struct {
+		index string
+		job   *raglit.Job
+	}
+	ch := make(chan claimed)
+	free := make(chan struct{}, runners)
+	for i := 0; i < runners; i++ {
+		free <- struct{}{}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < runners; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			workers := map[string]*raglit.Worker{}
+			for c := range ch {
+				if st, err := reg.Existing(c.index); err == nil {
+					w := workers[c.index]
+					if w == nil {
+						w = newWorker(st)
+						workers[c.index] = w
+					}
+					if err := w.ProcessJob(ctx, c.job); err != nil {
+						log.Printf("raglit: queue %s: job %d: %v", c.index, c.job.ID, err)
+					}
+				}
+				free <- struct{}{}
+			}
+		}()
+	}
+
+	// A slot token is taken BEFORE claiming, because the claim is what writes
+	// `running` to the row: claiming ahead of a free runner makes the queue
+	// report work that nothing is doing.
+	cursor := 0
+	for ctx.Err() == nil {
+		select {
+		case <-free:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		names := reg.Names()
+		got := false
+		for range names {
+			if ctx.Err() != nil || len(names) == 0 {
+				break
+			}
+			name := names[cursor%len(names)]
+			cursor++
+			st, err := reg.Existing(name)
+			if err != nil {
+				continue
+			}
+			job, err := st.ClaimNext()
+			if err != nil || job == nil {
+				continue
+			}
+			select {
+			case ch <- claimed{index: name, job: job}:
+				got = true
+			case <-ctx.Done():
+				_ = st.RequeueJob(job.ID)
+				free <- struct{}{}
+			}
+			break
+		}
+		if !got {
+			free <- struct{}{}
+			select {
+			case <-ctx.Done():
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+	}
+	close(ch)
+	wg.Wait()
+}
+
+// ingestRunners is how many documents may be in flight at once.
+//
+// Not a capacity claim — the model channels are that. It is how many documents
+// can be PARTWAY through, and it wants to be comfortably more than the number of
+// models, so that a document waiting on the vision channel never occupies the
+// slot a document needing only embedding could use. Runners are goroutines; the
+// scarce thing is downstream.
+const ingestRunners = 8
+
+// selectIndexes resolves the `index` argument to a concrete set of names: empty
+// → all; else the comma-separated list. A member ending in "*" is a prefix
+// wildcard, expanded against the existing indexes — clients pass "<project>__*"
+// to scope "all" to their own namespace. Non-wildcard names pass through (an
+// unknown one is opened empty → no hits).
+func selectIndexes(reg *raglit.Registry, arg string) []string {
+	arg = strings.TrimSpace(arg)
+	if arg == "" || arg == "all" {
+		return reg.Names()
+	}
+	var out []string
+	for _, n := range strings.Split(arg, ",") {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if prefix, ok := strings.CutSuffix(n, "*"); ok {
+			for _, nm := range reg.Names() {
+				if strings.HasPrefix(nm, prefix) {
+					out = append(out, nm)
+				}
+			}
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// coversTopTags is how much of an index's vocabulary an empty search reports:
+// enough to recognise the corpus, short enough that it is not itself a wall of
+// text where a result list was expected.
+const coversTopTags = 10
+
+// coversFor is the digest attached to a search that found nothing, scoped to
+// the same indexes and the same subtree the search was.
+//
+// Shared by the two backings (this server and the daemon's HTTP search), for
+// the same reason the tool definitions are: an agent must not get a different
+// answer for having reached raglit through the daemon, which is the DEFAULT
+// path and was the one this was missing from.
+func coversFor(reg *raglit.Registry, names []string, path string) []raglit.IndexDigest {
+	var covers []raglit.IndexDigest
+	for _, name := range names {
+		st, err := reg.Get(name)
+		if err != nil {
+			continue
+		}
+		d, err := st.IndexDigestFor(path, coversTopTags)
+		if err != nil || d.Empty() {
+			continue
+		}
+		d.Name = name
+		// The schemaed documents too: an empty search for an invoice number in a
+		// corpus that holds no invoices is answered by saying which types it DOES
+		// hold, and that is not derivable from the tag histogram.
+		d.Types, _ = st.FieldsCoverage()
+		covers = append(covers, d)
+	}
+	return covers
+}
+
+func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		q, err := req.RequireString("query")
+		if err != nil {
+			return mcp.NewToolResultError("query is required"), nil
+		}
+		limit := req.GetInt("limit", defLimit)
+		path := req.GetString("path", "")
+		names := selectIndexes(reg, req.GetString("index", ""))
+
+		// Search each selected index; over-fetch, then RRF-merge across indexes.
+		lists := map[string][]raglit.Hit{}
+		for _, name := range names {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			hits, err := st.SearchPath(q, path, limit*2)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("search", err), nil
+			}
+			lists[name] = hits
+		}
+		merged := rrfMerge(lists, limit)
+
+		// When search finds nothing, say what the index DOES hold. An empty
+		// result is indistinguishable from a badly phrased query, so an agent
+		// rephrases and searches again — four times, against a corpus that was
+		// never going to have the topic. The digest is counted, not generated,
+		// and scoped to the same subtree the search was: a whole-index digest
+		// shown for a path-scoped search claims coverage the subtree lacks.
+		if len(merged) == 0 {
+			covers := coversFor(reg, names, path)
+			if len(covers) > 0 {
+				b, err := json.Marshal(struct {
+					Hits   []any                `json:"hits"`
+					Covers []raglit.IndexDigest `json:"covers"`
+				}{[]any{}, covers})
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("encode", err), nil
+				}
+				return mcp.NewToolResultText(string(b)), nil
+			}
+		}
+
+		b, err := json.Marshal(taggedHits(merged))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// getFieldsHandler returns one document's extracted fields.
+func getFieldsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		ref, err := req.RequireString("path")
+		if err != nil {
+			return mcp.NewToolResultError("path is required"), nil
+		}
+		name := strings.TrimSpace(req.GetString("index", ""))
+		if name == "" {
+			name = "default"
+		}
+		st, err := reg.Get(name)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("open index", err), nil
+		}
+		ms, err := st.MatchDocuments(ref)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("resolve", err), nil
+		}
+		if len(ms) == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("no document matches %q", ref)), nil
+		}
+		if len(ms) > 1 {
+			var b strings.Builder
+			fmt.Fprintf(&b, "%q is ambiguous — matches %d documents:\n", ref, len(ms))
+			for i, m := range ms {
+				if i == 8 {
+					fmt.Fprintf(&b, "  … and %d more\n", len(ms)-8)
+					break
+				}
+				fmt.Fprintf(&b, "  %s\n", m.Path)
+			}
+			return mcp.NewToolResultError(b.String()), nil
+		}
+		path := ms[0].Path
+		f, err := st.DocumentFields(path)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("fields", err), nil
+		}
+		b, err := json.Marshal(struct {
+			Index string `json:"index"`
+			Path  string `json:"path"`
+			raglit.DocFields
+		}{name, path, f})
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// taggedFigure is a figure hit tagged with the index it came from.
+type taggedFigure struct {
+	Index string `json:"index"`
+	raglit.FigureHit
+}
+
+func searchFiguresHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		q, err := req.RequireString("query")
+		if err != nil {
+			return mcp.NewToolResultError("query is required"), nil
+		}
+		limit := req.GetInt("limit", defLimit)
+		path := req.GetString("path", "")
+		var all []taggedFigure
+		for _, name := range selectIndexes(reg, req.GetString("index", "")) {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			figs, err := st.SearchFiguresPath(ctx, q, path, limit)
+			if err != nil {
+				// No embedder → skip this index rather than failing the whole call.
+				continue
+			}
+			for _, f := range figs {
+				all = append(all, taggedFigure{Index: name, FigureHit: f})
+			}
+		}
+		sort.SliceStable(all, func(i, j int) bool { return all[i].Score > all[j].Score })
+		if len(all) > limit {
+			all = all[:limit]
+		}
+		if all == nil {
+			all = []taggedFigure{}
+		}
+		b, err := json.Marshal(map[string]any{"figures": all})
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func ingestHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		url, err := req.RequireString("url")
+		if err != nil {
+			return mcp.NewToolResultError("url is required"), nil
+		}
+		name := req.GetString("index", "default")
+		st, err := reg.Get(name)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("open index", err), nil
+		}
+		id, err := st.Enqueue(url, req.GetString("title", ""))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("enqueue", err), nil
+		}
+		b, _ := json.Marshal(map[string]any{"job_id": id, "index": name, "state": "pending", "url": url})
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func statusHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		names := selectIndexes(reg, req.GetString("index", ""))
+		agg := raglit.NewStatus()
+		for _, name := range names {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			s, err := st.IndexStatus()
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("status", err), nil
+			}
+			agg.Documents += s.Documents
+			agg.Fragments += s.Fragments
+			agg.Done += s.Done
+			agg.Running += s.Running
+			agg.Pending += s.Pending
+			agg.Failed += s.Failed
+			if s.RatePerMin > agg.RatePerMin {
+				agg.RatePerMin = s.RatePerMin
+			}
+			agg.Items = append(agg.Items, s.Items...)
+		}
+		b, err := json.Marshal(agg)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func listHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		type idx struct {
+			Name      string `json:"name"`
+			Documents int    `json:"documents"`
+			Fragments int    `json:"fragments"`
+			// What the index is ABOUT, so choosing between several does not
+			// require searching each one to find out what it holds.
+			About      string            `json:"about,omitempty"`
+			AboutStale bool              `json:"about_stale,omitempty"`
+			Kinds      []raglit.TagCount `json:"kinds,omitempty"`
+			Content    []raglit.TagCount `json:"content,omitempty"`
+			Roles      []raglit.TagCount `json:"roles,omitempty"`
+		}
+		out := struct {
+			Indexes []idx `json:"indexes"`
+		}{Indexes: []idx{}}
+		for _, name := range reg.Names() {
+			st, err := reg.Get(name)
+			if err != nil {
+				continue
+			}
+			s, _ := st.IndexStatus()
+			e := idx{Name: name, Documents: s.Documents, Fragments: s.Fragments}
+			if d, err := st.IndexDigest(); err == nil {
+				e.About, e.AboutStale = d.About, d.AboutStale
+				e.Kinds, e.Content, e.Roles = d.Kinds, d.Content, d.Roles
+			}
+			out.Indexes = append(out.Indexes, e)
+		}
+		b, _ := json.Marshal(out)
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// listDocumentsHandler lists documents across the selected indexes, filtered by
+// an optional case-insensitive name substring, each tagged with its index.
+func listDocumentsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := strings.ToLower(strings.TrimSpace(req.GetString("name", "")))
+		type docOut struct {
+			Index     string `json:"index"`
+			Path      string `json:"path"`
+			Title     string `json:"title"`
+			Fragments int    `json:"fragments"`
+			Pages     int    `json:"pages"`
+			Vision    int    `json:"vision"`
+			FragMode  string `json:"frag_mode"`
+		}
+		out := struct {
+			Documents []docOut `json:"documents"`
+		}{Documents: []docOut{}}
+		for _, idx := range selectIndexes(reg, req.GetString("index", "")) {
+			st, err := reg.Get(idx)
+			if err != nil {
+				continue
+			}
+			docs, err := st.Documents()
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("list_documents", err), nil
+			}
+			for _, d := range docs {
+				if name != "" && !strings.Contains(strings.ToLower(d.Path), name) &&
+					!strings.Contains(strings.ToLower(d.Title), name) {
+					continue
+				}
+				out.Documents = append(out.Documents, docOut{
+					Index: idx, Path: d.Path, Title: d.Title,
+					Fragments: d.Fragments, Pages: d.Pages, Vision: d.Vision, FragMode: d.FragMode,
+				})
+			}
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// getDocumentHandler returns a document's indexed text. It resolves `path` (an
+// exact path or a unique filename substring) across the selected indexes: no
+// match → error, multiple → an ambiguity error listing candidates, one → its
+// reassembled text (optionally page-ranged and length-capped).
+func getDocumentHandler(reg *raglit.Registry) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		ref, err := req.RequireString("path")
+		if err != nil {
+			return mcp.NewToolResultError("path is required"), nil
+		}
+		// Resolve candidates across the selected indexes.
+		type cand struct{ index, path, title string }
+		var cands []cand
+		for _, idx := range selectIndexes(reg, req.GetString("index", "")) {
+			st, err := reg.Get(idx)
+			if err != nil {
+				continue
+			}
+			ms, err := st.MatchDocuments(ref)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("resolve", err), nil
+			}
+			for _, m := range ms {
+				cands = append(cands, cand{idx, m.Path, m.Title})
+			}
+		}
+		if len(cands) == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("no document matches %q", ref)), nil
+		}
+		if len(cands) > 1 {
+			var b strings.Builder
+			fmt.Fprintf(&b, "%q is ambiguous — matches %d documents:\n", ref, len(cands))
+			for i, c := range cands {
+				if i == 8 {
+					fmt.Fprintf(&b, "  … and %d more\n", len(cands)-8)
+					break
+				}
+				fmt.Fprintf(&b, "  [%s] %s\n", c.index, c.path)
+			}
+			b.WriteString("pass a more specific path (or set index).")
+			return mcp.NewToolResultError(b.String()), nil
+		}
+
+		c := cands[0]
+		from, to := req.GetInt("from", 0), req.GetInt("to", 0)
+		if p := req.GetInt("page", 0); p > 0 {
+			from, to = p, p
+		}
+		st, err := reg.Get(c.index)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("open index", err), nil
+		}
+		content, err := st.DocText(c.path, from, to, req.GetInt("max_chars", 0))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("get_document", err), nil
+		}
+		payload := struct {
+			Index string `json:"index"`
+			raglit.DocContent
+		}{Index: c.index, DocContent: content}
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("encode", err), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// indexedHit pairs a hit with the index it came from.
+type indexedHit struct {
+	index string
+	hit   raglit.Hit
+}
+
+// rrfMerge fuses the per-index ranked lists into one, reciprocal-rank fusion
+// (scale-free, so cross-index scores needn't be comparable), best first.
+func rrfMerge(lists map[string][]raglit.Hit, limit int) []indexedHit {
+	const k = 60.0
+	type acc struct {
+		ih    indexedHit
+		score float64
+	}
+	m := map[string]*acc{}
+	for idx, hits := range lists {
+		for rank, h := range hits {
+			key := fmt.Sprintf("%s\x00%d", idx, h.ID)
+			a := m[key]
+			if a == nil {
+				a = &acc{ih: indexedHit{idx, h}}
+				m[key] = a
+			}
+			a.score += 1.0 / (k + float64(rank))
+		}
+	}
+	out := make([]*acc, 0, len(m))
+	for _, a := range m {
+		out = append(out, a)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	res := make([]indexedHit, len(out))
+	for i, a := range out {
+		res[i] = a.ih
+	}
+	return res
+}
+
+// taggedHits renders merged hits in the ragnotify.ParseHits shape, plus an
+// `index` tag per hit.
+func taggedHits(hits []indexedHit) any {
+	type outHit struct {
+		Index   string  `json:"index"`
+		DocID   string  `json:"doc_id"`
+		Title   string  `json:"title"`
+		Page    int     `json:"page"`
+		Score   float64 `json:"score"`
+		Snippet string  `json:"snippet"`
+		// Origin marks a hit on GENERATED text — the document's caption and
+		// summary (identity.go), not its own words. It ranks in the same list
+		// because that is what makes a badly named document findable, and it is
+		// labelled because an agent quoting it would be quoting a paraphrase.
+		Origin string `json:"origin,omitempty"`
+		// Caveat is the one line an agent must not miss before quoting: this text
+		// is a model's account of a picture, or how it was read was never
+		// recorded. Empty for an ordinary transcription — a caveat on every row
+		// is a caveat on none.
+		//
+		// Origin cannot carry this. It marks a fragment only when EVERY page it
+		// touches is ≥90% description, so a survey sheet measured at 88% — whose
+		// whole indexed text is a model's account of a map, down to which
+		// annotation arrow is which colour — arrives with Origin empty and reads
+		// as the record.
+		Caveat string `json:"caveat,omitempty"`
+		// Trust is the same fact structured: method, level, described %, and the
+		// per-facet confidences. A facet that is absent is NOT claimed.
+		Trust *raglit.HitTrust `json:"trust,omitempty"`
+	}
+	out := struct {
+		Hits []outHit `json:"hits"`
+	}{Hits: []outHit{}}
+	for _, ih := range hits {
+		h := ih.hit
+		title := h.Title
+		if title == "" {
+			title = h.Path
+		}
+		out.Hits = append(out.Hits, outHit{
+			Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
+			Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
+			Caveat: h.Caveat(), Trust: h.Trust,
+		})
+	}
+	return out
+}

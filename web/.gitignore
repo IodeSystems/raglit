@@ -1,0 +1,8 @@
+node_modules/
+*.tsbuildinfo
+
+# dist is GENERATED and no longer committed (2026-08-19 — embed.go says why).
+# .gitkeep is committed and must stay: //go:embed of a missing or empty
+# directory does not compile, so a clean checkout needs one file here.
+dist/*
+!dist/.gitkeep

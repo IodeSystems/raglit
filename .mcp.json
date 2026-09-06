@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "poly-lsp": {
+      "command": "poly-lsp-mcp",
+      "args": ["mcp", "--root", "."]
+    },
+    "raglit": {
+      "command": "raglit",
+      "args": ["serve", "--home", "./.raglit"]
+    }
+  }
+}

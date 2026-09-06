@@ -1,0 +1,27 @@
+# build output
+/raglit
+/cmd/raglit/raglit
+/bin/
+
+# local index homes / sqlite artifacts
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+/raglit-home/
+/.raglit/
+
+# poly-lsp-mcp workspace cache
+/.poly-lsp-mcp/
+go.work
+go.work.sum
+
+# Bench fixtures are RENDERED PAGES OF REAL RECORDS and are never committed.
+# `bench/make-fixtures.sh` regenerates them from an operator's own corpus. Two
+# were committed anyway and went out with a public repository, which no amount of
+# scrubbing the prose could reach — an image does not care what the text around
+# it says.
+bench/probes/*/_fixture/
+
+# Benchmark run output. It carries the absolute paths of whoever ran it, and a
+# run is not a source file — it is evidence of one afternoon on one machine.
+out/
