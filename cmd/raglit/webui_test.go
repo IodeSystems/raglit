@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/iodesystems/raglit/web"
 )
 
 // The document path is ONE encoded segment — slashes and all. That is the rule
@@ -27,6 +29,9 @@ func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 // in the encoder rather than at their own URL.
 
 func TestSPA_RoutesServeTheDocument(t *testing.T) {
+	if !web.Built() {
+		t.Skip("web/dist is generated and not committed — run `make web` first")
+	}
 	srv, _ := gatTestServer(t)
 
 	// Every one of these is an unknown URL as far as chi is concerned, and every
@@ -106,6 +111,9 @@ func TestSPA_APIStillAnswers(t *testing.T) {
 // document. A JS file answered with HTML is a blank page and a syntax error in
 // the console.
 func TestSPA_ServesItsAssets(t *testing.T) {
+	if !web.Built() {
+		t.Skip("web/dist is generated and not committed — run `make web` first")
+	}
 	srv, _ := gatTestServer(t)
 
 	res, err := http.Get(srv.URL + "/")
