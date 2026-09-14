@@ -69,6 +69,20 @@ type Config struct {
 	FragWindow int `json:"frag_window,omitempty"`
 	FragStride int `json:"frag_stride,omitempty"`
 	FragFloor  int `json:"frag_floor,omitempty"`
+	// TranscriptionModel and DescribeModel are the per-kind ingest models (F11):
+	// when ingest descends a page into zones, it reads each zone with the model
+	// for its KIND — text zones go to the transcription model, diagram/figure
+	// zones to the multimodal describer. A transcription model (chandra-ocr-2)
+	// reads drawings poorly and a describer is wasted on paragraphs, so one
+	// VisionModel covering both roles costs whichever side it was chosen for.
+	//
+	// Both empty → routing is a no-op: every zone is read by VisionModel exactly
+	// as today, which is the live default (init does not ask for these). Set
+	// only one and the other kind keeps reading VisionModel; set both and a page
+	// can be split across two models. A zone whose kind is neither text nor
+	// diagram/figure falls back to VisionModel either way.
+	TranscriptionModel string `json:"transcription_model,omitempty"`
+	DescribeModel      string `json:"describe_model,omitempty"`
 	// IdentityModel names the chat model that says what a document IS — a
 	// caption, a summary and a kind, asked once per document on the assembled
 	// transcript (identity.go). Empty → the vision model, which is already
@@ -403,6 +417,14 @@ func SaveConfig(h Home, cfg Config) error {
 		return err
 	}
 	return os.WriteFile(h.ConfigPath(), b, 0o600)
+}
+
+// PerKindModelsConfigured reports whether either per-kind ingest model is set.
+// While both are empty the F11 routing is a no-op: every zone is read by the
+// one VisionModel, unchanged from today, and callers do not need to branch at
+// all on zone kind.
+func (c Config) PerKindModelsConfigured() bool {
+	return c.TranscriptionModel != "" || c.DescribeModel != ""
 }
 
 // Inited reports whether a home has a usable config.

@@ -36,3 +36,46 @@ func TestConfigRoundTripAndInited(t *testing.T) {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", got, want)
 	}
 }
+
+// F11: the config names two DISTINCT ingest models — a transcription model for
+// text zones and a multimodal describer for diagram/figure zones — so the
+// single VisionModel no longer covers both roles.
+func TestConfigPerKindModelsRoundTrip(t *testing.T) {
+	home := Home(filepath.Join(t.TempDir(), "h"))
+
+	cfg := Config{
+		BaseURL:            "https://api.openai.com/v1",
+		APIKey:             "sk-secret",
+		VisionModel:        "gpt-4o",
+		EmbedModel:         "text-embedding-3-small",
+		TranscriptionModel: "chandra-ocr-2",
+		DescribeModel:      "Qwen3-6-27B-MPT",
+	}
+	if err := SaveConfig(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := LoadConfig(home)
+	if err != nil || !ok {
+		t.Fatalf("load after save: ok=%v err=%v", ok, err)
+	}
+	if got.TranscriptionModel != "chandra-ocr-2" || got.DescribeModel != "Qwen3-6-27B-MPT" {
+		t.Fatalf("per-kind models lost in round-trip: %+v", got)
+	}
+	if !got.PerKindModelsConfigured() {
+		t.Fatal("config with both per-kind models must report PerKindModelsConfigured")
+	}
+
+	// The live default: init writes no per-kind models, and a config without
+	// them round-trips empty — the routing surface exists but is off.
+	bare := Config{BaseURL: "u", APIKey: "k", VisionModel: "gpt-4o", EmbedModel: "e"}
+	if err := SaveConfig(home, bare); err != nil {
+		t.Fatal(err)
+	}
+	got2, _, _ := LoadConfig(home)
+	if got2.TranscriptionModel != "" || got2.DescribeModel != "" {
+		t.Fatalf("empty per-kind models must stay empty: %+v", got2)
+	}
+	if got2.PerKindModelsConfigured() {
+		t.Fatal("no per-kind models configured — routing must be a no-op")
+	}
+}
