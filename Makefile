@@ -54,17 +54,20 @@ generate: bin/sqlc $(PLUGIN_SRC)/bin/sqlc-go-codegen-metaquery ## regenerate int
 	./bin/sqlc generate
 	@echo "regenerated internal/db — run 'make test' before committing"
 
-# The review UI is a React/vite app in web/. web/dist is //go:embed'd and, since
-# 2026-08-19, is GENERATED AND NOT COMMITTED (web/embed.go says why).
+# The review UI is a React/vite app in web/. web/dist is //go:embed'd; the real
+# vite build is GENERATED (web/embed.go says why), and only a two-file
+# PLACEHOLDER bundle is committed so a clean checkout compiles, serves a page,
+# and passes the SPA tests without node.
 #
 # `web` is deliberately not a prerequisite of `build`/`install`: a Go-only change
 # should not shell out to npm, and a Go build must keep working on a machine with
-# no node. Without a bundle the binary compiles and serves a page that SAYS the
-# UI was not built — never a blank one.
+# no node. The committed placeholder is what that binary serves until someone
+# runs `make web`; if dist/index.html were deleted entirely the binary would
+# serve a page that SAYS the UI was not built — never a blank one.
 #
 # `release` DOES depend on it: a shipped binary with no UI is the one case where
 # the honest page is not good enough.
-web: ## rebuild the embedded review UI (dist is generated, not committed)
+web: ## rebuild the embedded review UI (replaces the committed placeholder in dist)
 	cd web && npm ci && npm run build
 
 web-dev: ## vite dev server against a running daemon (RAGLIT_DAEMON=url to point it)

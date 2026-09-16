@@ -30,7 +30,7 @@ func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 func TestSPA_RoutesServeTheDocument(t *testing.T) {
 	if !web.Built() {
-		t.Skip("web/dist is generated and not committed — run `make web` first")
+		t.Skip("web/dist holds no index.html — the committed placeholder is missing, run `make web`")
 	}
 	srv, _ := gatTestServer(t)
 
@@ -112,7 +112,7 @@ func TestSPA_APIStillAnswers(t *testing.T) {
 // the console.
 func TestSPA_ServesItsAssets(t *testing.T) {
 	if !web.Built() {
-		t.Skip("web/dist is generated and not committed — run `make web` first")
+		t.Skip("web/dist holds no index.html — the committed placeholder is missing, run `make web`")
 	}
 	srv, _ := gatTestServer(t)
 

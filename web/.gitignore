@@ -1,8 +1,12 @@
 node_modules/
 *.tsbuildinfo
 
-# dist is GENERATED and no longer committed (2026-08-19 — embed.go says why).
-# .gitkeep is committed and must stay: //go:embed of a missing or empty
-# directory does not compile, so a clean checkout needs one file here.
+# dist holds a committed PLACEHOLDER bundle (index.html + assets/app.js) so the
+# SPA tests run on a clean checkout; `make web` wipes it and replaces it with
+# the real vite build, which must not re-commit over the placeholder. The two
+# un-ignores keep the placeholder in git across that wipe — embed.go says why.
 dist/*
 !dist/.gitkeep
+!dist/index.html
+!dist/assets/
+!dist/assets/app.js

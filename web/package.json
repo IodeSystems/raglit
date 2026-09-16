@@ -2,7 +2,7 @@
   "name": "raglit-web",
   "private": true,
   "type": "module",
-  "description": "The raglit review SPA. Built to web/dist, which is committed and embedded into the binary — see plan/spa-ui.md.",
+  "description": "The raglit review SPA. Built to web/dist, whose placeholder files are committed (the real bundle is generated) and embedded into the binary — see web/embed.go.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node -e \"require('fs').writeFileSync('dist/.gitkeep','')\"",

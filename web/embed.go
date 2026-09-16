@@ -14,14 +14,18 @@ import (
 	"testing/fstest"
 )
 
-// dist is the vite build output. It is NOT committed (2026-08-19).
+// dist holds the vite build output. The REAL bundle is generated and NOT
+// committed (2026-08-19); what IS committed is a two-file placeholder —
+// index.html plus assets/app.js — so that `go install …/cmd/raglit@latest`
+// serves a page on a machine with no node, and the SPA tests in
+// cmd/raglit/webui_test.go RUN rather than skip on every clean checkout.
 //
-// It used to be, so that `go install …/cmd/raglit@latest` would serve a UI on a
-// machine with no node. That traded a working install for a generated bundle in
-// the tree, rewritten on every UI change; adopting MUI multiplies its size, so
-// the trade stopped being worth it. `dist/.gitkeep` IS committed — it is what
-// keeps this embed pattern matching something in a clean checkout, since a
-// //go:embed of an empty or missing directory does not compile.
+// The full bundle used to be committed for exactly that reason; adopting MUI
+// multiplied its size until the trade stopped being worth it, so only the
+// placeholder stays in the tree. `make web` wipes dist (emptyOutDir) and
+// rebuilds the real thing over it — web/.gitignore keeps the two placeholder
+// files un-ignored across that wipe, and the hashed assets replace them on the
+// next commit.
 //
 // Deliberately NOT behind a build tag. `rebuildRaglit` (cmd/raglit/selfbuild.go)
 // re-invokes `go build` with no tags when the tree changes, so a tagged embed
@@ -41,9 +45,11 @@ var ErrNotBuilt = errors.New("raglit: the review UI was not built into this bina
 
 // Dist is the built bundle, rooted at the directory holding index.html.
 //
-// When dist holds no index.html the binary was built without running the UI
-// build, and this serves a page that SAYS so. A blank page or a 404 would read
-// as a broken daemon; the one thing a reader needs here is the build command.
+// With a clean checkout dist holds only the committed placeholder, which IS an
+// index.html — so Built() is true and the tests run everywhere. This branch is
+// for a tree where someone deleted dist/index.html: serve a page that SAYS the
+// UI was not built rather than a blank one or a 404. The one thing a reader
+// needs here is the build command.
 func Dist() (fs.FS, error) {
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {
@@ -55,8 +61,9 @@ func Dist() (fs.FS, error) {
 	return sub, nil
 }
 
-// Built reports whether a real bundle is embedded, so a caller that wants to
-// warn once at startup can, rather than waiting for somebody to open a browser.
+// Built reports whether an index.html is embedded — the committed placeholder
+// counts, which is deliberate: it is what keeps the SPA tests running on every
+// clean checkout instead of skipping them.
 func Built() bool {
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {
@@ -83,8 +90,8 @@ const notBuiltPage = `<!doctype html>
 </style>
 <h1>The review UI is not in this binary</h1>
 <p>The daemon is running and its API is serving normally — this is only the web
-   interface. <code>web/dist</code> is generated and is no longer committed, so a
-   binary built without the frontend build has no bundle to serve.</p>
+   interface. The committed placeholder in <code>web/dist</code> is missing from
+   this tree, so there is no bundle to serve.</p>
 <pre>make web     # build the bundle
 make install # rebuild raglit with it embedded</pre>
 <p class="muted">Everything the UI reads is available over the API and the CLI in
