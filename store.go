@@ -105,6 +105,27 @@ func (s *Store) SetDocumentHash(path, hash string) error {
 	return s.q.SetDocumentHash(context.Background(), gen.SetDocumentHashParams{ContentHash: hash, Path: path})
 }
 
+// FindPathByHash returns the path of a DIFFERENT document row that stores the
+// same content hash, or ("", nil) when there is no such row.
+//
+// It is the lookup reconciliation uses when a job's source path no longer
+// resolves: the bytes may simply have MOVED, and a document already indexed
+// under the new path carries the hash that identifies them. Excluding the
+// caller's own path is what keeps a plain re-ingest (same path, same content)
+// from finding itself and "moving" onto itself.
+func (s *Store) FindPathByHash(hash, path string) (string, error) {
+	return s.q.FindPathByHash(context.Background(), gen.FindPathByHashParams{ContentHash: hash, Path: path})
+}
+
+// SetJobURL re-points a job at a new URL. Reconciliation uses it when a job's
+// stored source path no longer resolves but the same content is indexed at
+// another path: the job's identity (its id) is unchanged, only the pointer it
+// follows moves, so a subsequent retry ingests the document under the job's
+// existing identity.
+func (s *Store) SetJobURL(id int64, url string) error {
+	return s.q.SetJobURL(context.Background(), gen.SetJobURLParams{Url: url, ID: id})
+}
+
 // SetEmbedder enables vector search: fragments are embedded on Ingest and
 // VecSearch/HybridSearch become available. nil disables it.
 func (s *Store) SetEmbedder(e *Embedder) { s.embedder = e }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,6 +170,23 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	if reason, ok := w.Store.WithdrawnReason(job.URL); ok {
 		sl.Skip("withdrawn", reason)
 		return 0, "withdrawn", nil
+	}
+	// A job whose stored source path no longer resolves is not fetched.
+	//
+	// Checked BEFORE the fetch, because the fetch is the very act that would
+	// fail on the missing path — and a failure here is a fact about the SOURCE,
+	// not the importer. A retry that re-opened a deleted file would surface as a
+	// fetch/extraction error, which sends a reader to check the network or the
+	// model when the truth is that the file is gone. That also burns a queue
+	// slot on a path that will fail identically every time it is retried.
+	//
+	// Reconciliation answers what the file became: it MOVED (the same content
+	// is indexed under another path — re-point the job and go on) or it is GONE
+	// (complete it in a terminal state, not an error). The gate fires ONLY on
+	// the missing-path case: a live source path is fetched exactly as before,
+	// and any failure on a live path stays an ordinary failure.
+	if handled, n, mode := w.reconcileMissingSource(ctx, job, sl); handled {
+		return n, mode, nil
 	}
 	f, err := w.fetch(ctx, job.URL)
 	if err != nil {
@@ -341,6 +359,98 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 		}
 	}
 	return n, mode, ierr
+}
+
+// reconcileMissingSource answers what a job's source file became, WITHOUT
+// fetching it. It is the pre-fetch gate's body and returns (handled, n, mode):
+// handled is false when reconciliation does not apply and the ordinary fetch
+// must run.
+//
+// It applies ONLY when both hold:
+//
+//   - the document was already ingested — its stored content hash is
+//     non-empty. A job that never completed has nothing to reconcile: its
+//     source being absent is an ordinary fetch failure, and there is no hash
+//     to look the file up by.
+//   - its stored source path no longer resolves. A live path is fetched
+//     exactly as before; reconciliation never touches the happy path, and any
+//     failure on a live path stays an ordinary failure.
+//
+// When it applies, the file has become one of two things:
+//
+//   - MOVED: a DIFFERENT document row stores the same hash. The job is
+//     re-pointed at that path (its id is unchanged) and handled is returned so
+//     the rest of ingest proceeds from the NEW path. The unchanged-bytes fast
+//     path then skips it as "unchanged", so a re-pointed run costs no
+//     re-fragmenting beyond the short-circuit that any same-content re-ingest
+//     already gets.
+//
+//   - GONE: no other path holds the hash. The job completes in a terminal
+//     state (mode "source-deleted") rather than as an error: it is not an
+//     extraction/OCR failure, it is not in the failed-jobs list to be retried
+//     forever re-failing identically, and it does not burn a queue slot on a
+//     path that will never resolve again.
+func (w *Worker) reconcileMissingSource(ctx context.Context, job *Job, sl *StageLog) (bool, int, string) {
+	prev, err := w.Store.DocumentHash(job.URL)
+	if err != nil || prev == "" {
+		// Never ingested: nothing to reconcile. Let the fetch say what is true.
+		return false, 0, ""
+	}
+	if localPathResolves(job.URL) {
+		// The source path is live: this is the happy path. Fetch it normally.
+		return false, 0, ""
+	}
+	// The stored path is gone. What did it become?
+	if next, err := w.Store.FindPathByHash(prev, job.URL); err == nil && next != "" {
+		// MOVED: the same content is indexed at another path. Re-point the job
+		// (id unchanged) and let the rest of ingest run from there: the fetch
+		// picks up the new URL, and the content-hash dedup skips re-fragmenting
+		// identical bytes.
+		if err := w.Store.SetJobURL(job.ID, next); err == nil {
+			job.URL = next
+			sl.Record("reconcile", "moved", "done",
+				fmt.Sprintf("source path gone; same content indexed at %s — re-pointed", next))
+			return false, 0, ""
+		}
+		// The re-point failed (db). Fall through to the fetch: a real fetch
+		// error on the stale path is closer to the truth than a job that
+		// "succeeded" at a path it does not point at.
+		return false, 0, ""
+	}
+	// GONE: no other path holds these bytes.
+	sl.Skip("reconcile", "source deleted — no other path holds this content")
+	return true, 0, "source-deleted"
+}
+
+// localPathResolves reports whether a job's source URL is a LOCAL path that
+// currently resolves to a readable file. A non-local URL (http/https) is
+// treated as resolving: "missing" is a fact that can be checked without a
+// network call only for local paths, and reconciliation must not reach for the
+// network to decide whether to fetch.
+func localPathResolves(url string) bool {
+	p, ok := localPathOf(url)
+	if !ok {
+		return true
+	}
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
+// localPathOf returns the filesystem path behind a job URL, and ok for the
+// local schemes (file:// and bare path). A remote URL yields ok=false.
+func localPathOf(url string) (string, bool) {
+	u, err := neturl.Parse(url)
+	if err != nil {
+		return "", false
+	}
+	switch u.Scheme {
+	case "file":
+		return fileURLPath(u), true
+	case "":
+		return url, true
+	default:
+		return "", false
+	}
 }
 
 // route decides what a fetched document is, once per ingest.

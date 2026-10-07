@@ -265,6 +265,24 @@ func (q *Queries) GetDocumentHash(ctx context.Context, path string) (string, err
 	return content_hash, err
 }
 
+const findPathByHash = `-- name: FindPathByHash :one
+SELECT path FROM documents
+WHERE content_hash = ? AND content_hash != '' AND path != ?
+ORDER BY id LIMIT 1
+`
+
+func (q *Queries) FindPathByHash(ctx context.Context, arg FindPathByHashParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, findPathByHash, arg.ContentHash, arg.Path)
+	var path string
+	err := row.Scan(&path)
+	return path, err
+}
+
+type FindPathByHashParams struct {
+	ContentHash string `db:"content_hash" derived:"documents.content_hash" json:"content_hash"`
+	Path        string `db:"path" derived:"documents.path" json:"path"`
+}
+
 const getJob = `-- name: GetJob :one
 SELECT id, url, title, state, error, fragments, mode, enqueued_at, started_at, finished_at, owner_pid, lane
 FROM ingest_jobs WHERE id = ?
@@ -1341,6 +1359,20 @@ type SetJobLaneParams struct {
 
 func (q *Queries) SetJobLane(ctx context.Context, arg SetJobLaneParams) error {
 	_, err := q.db.ExecContext(ctx, setJobLane, arg.Lane, arg.ID)
+	return err
+}
+
+const setJobURL = `-- name: SetJobURL :exec
+UPDATE ingest_jobs SET url = ? WHERE id = ?
+`
+
+type SetJobURLParams struct {
+	Url string `db:"url" derived:"ingest_jobs.url" json:"url"`
+	ID  int64  `db:"id" derived:"ingest_jobs.id" json:"id"`
+}
+
+func (q *Queries) SetJobURL(ctx context.Context, arg SetJobURLParams) error {
+	_, err := q.db.ExecContext(ctx, setJobURL, arg.Url, arg.ID)
 	return err
 }
 

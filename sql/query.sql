@@ -71,6 +71,9 @@ SELECT id, url, title, enqueued_at FROM ingest_jobs WHERE state='pending' ORDER 
 SELECT id, url, title, enqueued_at FROM ingest_jobs
 WHERE state='pending' AND lane = ? ORDER BY id LIMIT 1;
 
+-- name: SetJobURL :exec
+UPDATE ingest_jobs SET url = ? WHERE id = ?;
+
 -- name: SetJobLane :exec
 UPDATE ingest_jobs SET lane = ? WHERE id = ?;
 
@@ -172,6 +175,11 @@ SELECT content_hash FROM documents WHERE path = ?;
 
 -- name: SetDocumentHash :exec
 UPDATE documents SET content_hash = ? WHERE path = ?;
+
+-- name: FindPathByHash :one
+SELECT path FROM documents
+WHERE content_hash = ? AND content_hash != '' AND path != ?
+ORDER BY id LIMIT 1;
 
 -- name: SetDocumentFrag :exec
 UPDATE documents SET frag_mode = ?, frag_recipe = ? WHERE id = ?;
