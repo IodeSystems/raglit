@@ -354,11 +354,16 @@ Open:
   second review root). Serves only a document OF the index whose bytes are
   under the index home (`Store.StoragePath`); doc-detail links it. Still no
   review workbench for them.
-- After restarting a daemon on this build: `POST /api/attest/readings?index=<name>`
-  once per index (asset ids are now relative to the narrower root). Done on the
-  :7431 copy (243 written / 414 skipped for lack of region reads).
-- Copied-example captions on a live index regenerate only when the caption queue
-  runs with a model (`raglit identify`); until then the wrong titles show.
+- ⚠ `POST /api/attest/readings?index=<name>` is NOT a re-key: it WRITES a
+  `<file>.reading.json` sidecar beside every document with a region read — into
+  the corpus folder itself. Run 2026-10-20 on the live daemon (all indexes): it
+  put 69 untracked sidecars into 5 code repos (removed the same day) and 243
+  into the delano-v-mckinnon case folder (❓ USER: keep or remove). Run it only
+  on an index whose folder should carry review sidecars. **optional
+  extension:** refuse to write sidecars into a git working tree, or write them
+  under the index home instead.
+- Live daemon restarted on this build 2026-10-20; caption queue started on all
+  indexes (1,052 jobs: missing + copied-example titles).
 - ✅ `/indexes` rows carry `meaning`; Search offers "By meaning"/"Both" only
   where an index in scope has an embedder; the daemon skips indexes without
   one and answers 400 when none can.
