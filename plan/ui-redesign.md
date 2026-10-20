@@ -358,7 +358,7 @@ Open:
   `<file>.reading.json` sidecar beside every document with a region read — into
   the corpus folder itself. Run 2026-10-20 on the live daemon (all indexes): it
   put 69 untracked sidecars into 5 code repos (removed the same day) and 243
-  into the delano-v-mckinnon case folder (❓ USER: keep or remove). Run it only
+  into the delano-v-mckinnon case folder (USER 2026-10-20: keep). Run it only
   on an index whose folder should carry review sidecars. **optional
   extension:** refuse to write sidecars into a git working tree, or write them
   under the index home instead.
