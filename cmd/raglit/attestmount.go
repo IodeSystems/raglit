@@ -55,7 +55,7 @@ func mountAttest(router chi.Router, api huma.API, reg *raglit.Registry) error {
 			continue
 		}
 		svc := &attest.Service{
-			Root: root, Ident: attest.Guest{}, Ev: multiEvidence{root: root},
+			Root: root, Ident: indexIdentity(reg, name), Ev: multiEvidence{root: root},
 			// Keep the index's projection current as rulings are made, rather
 			// than only when somebody remembers to sweep. The log is still the
 			// record; this is the queryable view catching up immediately.
@@ -217,13 +217,13 @@ type attestSweepOut struct{ Body sweepResult }
 
 // attestSweepOp writes readings across an index so its documents can be reviewed.
 func attestWriteReadingsOp(reg *raglit.Registry) func(context.Context, *attestSweepIn) (*attestSweepOut, error) {
-	return func(_ context.Context, in *attestSweepIn) (*attestSweepOut, error) {
+	return func(ctx context.Context, in *attestSweepIn) (*attestSweepOut, error) {
 		if in.Index == "" {
 			return nil, huma.Error400BadRequest("index is required")
 		}
-		st, err := reg.Get(in.Index)
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound("open index", err)
+			return nil, err
 		}
 		root, err := indexRoot(st)
 		if err != nil {
@@ -255,4 +255,36 @@ func projectVerdicts(st *raglit.Store, root string) func(string) error {
 		}
 		return st.PutAttestations(rel, log)
 	}
+}
+
+// indexIdentity is attest's view of the daemon's auth for one index. Auth off →
+// Guest, today's behavior. Auth on → the OIDC principal, reading by the index's
+// read rule and every ruling by its owner only.
+func indexIdentity(reg *raglit.Registry, name string) attest.Identity {
+	if !reg.ACLEnabled() {
+		return attest.Guest{}
+	}
+	return aclIdentity{reg: reg, name: name}
+}
+
+type aclIdentity struct {
+	reg  *raglit.Registry
+	name string
+}
+
+func (a aclIdentity) Principal(ctx context.Context) (string, error) {
+	if p := raglit.PrincipalFrom(ctx); p != "" {
+		return p, nil
+	}
+	return "", fmt.Errorf("no authenticated principal")
+}
+
+func (a aclIdentity) Can(ctx context.Context, _ string, p attest.Permission) (bool, error) {
+	if !a.reg.CanRead(ctx, a.name) {
+		return false, nil
+	}
+	if p == attest.PermRead {
+		return true, nil
+	}
+	return a.reg.ACLOf(a.name).Owner == raglit.PrincipalFrom(ctx), nil
 }

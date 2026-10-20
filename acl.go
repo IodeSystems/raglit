@@ -275,3 +275,11 @@ func (r *Registry) writeExisting(ctx context.Context, name string) (*Store, erro
 	}
 	return r.Write(ctx, name)
 }
+
+// Admin is the principal that owns indexes without an acl.json; "" when access
+// control is off.
+func (r *Registry) Admin() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.admin
+}

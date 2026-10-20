@@ -92,7 +92,7 @@ func splitNS(name string) (ns, local string) {
 }
 
 func listProjectsOp(reg *raglit.Registry, w *watcher) func(context.Context, *struct{}) (*listProjectsOut, error) {
-	return func(_ context.Context, _ *struct{}) (*listProjectsOut, error) {
+	return func(ctx context.Context, _ *struct{}) (*listProjectsOut, error) {
 		// Branch lineage first: a branch is indistinguishable from a plain index
 		// by name, so the only way to know is to ask the registry.
 		parentOf := map[string]string{}
@@ -103,7 +103,7 @@ func listProjectsOp(reg *raglit.Registry, w *watcher) func(context.Context, *str
 		}
 
 		byNS := map[string]*projectRow{}
-		for _, name := range reg.Names() {
+		for _, name := range reg.Readable(ctx, reg.Names()) {
 			ns, local := splitNS(name)
 			p := byNS[ns]
 			if p == nil {
@@ -111,7 +111,7 @@ func listProjectsOp(reg *raglit.Registry, w *watcher) func(context.Context, *str
 				byNS[ns] = p
 			}
 			row := projectIndexRow{Name: name, Local: local, Parent: parentOf[name]}
-			if st, err := reg.Get(name); err == nil {
+			if st, err := reg.Read(ctx, name); err == nil {
 				if s, err := st.IndexStatus(); err == nil {
 					row.Documents, row.Fragments = s.Documents, s.Fragments
 					row.Pending, row.Running, row.Failed = s.Pending, s.Running, s.Failed
@@ -132,7 +132,8 @@ func listProjectsOp(reg *raglit.Registry, w *watcher) func(context.Context, *str
 
 		if w != nil {
 			for _, wi := range w.List() {
-				if p := byNS[wi.Project]; p != nil {
+				// Home is a path on the daemon host: the admin's to see.
+				if p := byNS[wi.Project]; p != nil && requireAdmin(ctx, reg) == nil {
 					p.Home, p.Watching, p.Files = wi.Home, wi.Watching, wi.Files
 				}
 			}

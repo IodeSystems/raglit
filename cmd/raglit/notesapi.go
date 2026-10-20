@@ -26,10 +26,10 @@ type notesOut struct {
 }
 
 func listNotesOp(reg *raglit.Registry) func(context.Context, *notesIn) (*notesOut, error) {
-	return func(_ context.Context, in *notesIn) (*notesOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *notesIn) (*notesOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound("open index", err)
+			return nil, err
 		}
 		ns, err := st.Notes(in.Path)
 		if err != nil {
@@ -58,10 +58,10 @@ type addNoteIn struct {
 type addNoteOut struct{ Body raglit.Note }
 
 func addNoteOp(reg *raglit.Registry) func(context.Context, *addNoteIn) (*addNoteOut, error) {
-	return func(_ context.Context, in *addNoteIn) (*addNoteOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *addNoteIn) (*addNoteOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound("open index", err)
+			return nil, err
 		}
 		n, err := st.AddNote(in.Path, raglit.Note{
 			Body:   in.Body.Body,
@@ -92,10 +92,10 @@ type deleteNoteOut struct {
 // rather than the branch route. The page posts JSON everywhere else and one
 // operation needing a different verb is a papercut with nothing behind it.
 func deleteNoteOp(reg *raglit.Registry) func(context.Context, *deleteNoteIn) (*deleteNoteOut, error) {
-	return func(_ context.Context, in *deleteNoteIn) (*deleteNoteOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *deleteNoteIn) (*deleteNoteOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound("open index", err)
+			return nil, err
 		}
 		if err := st.DeleteNote(in.ID); err != nil {
 			return nil, huma.Error500InternalServerError("delete note", err)

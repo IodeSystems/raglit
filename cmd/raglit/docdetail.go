@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/iodesystems/raglit"
 	"github.com/iodesystems/raglit/attest"
@@ -231,10 +230,10 @@ type docDetailIn struct {
 type docDetailOut struct{ Body DocDetail }
 
 func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*docDetailOut, error) {
-	return func(_ context.Context, in *docDetailIn) (*docDetailOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *docDetailIn) (*docDetailOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound("open index", err)
+			return nil, err
 		}
 		root, _ := indexRoot(st)
 

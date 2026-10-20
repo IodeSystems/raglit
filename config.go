@@ -185,6 +185,29 @@ type Config struct {
 	// Indexes declares named indexes and the source roots + rules that feed them,
 	// for `raglit sync`. Multi-index: one project can define several.
 	Indexes map[string]IndexConfig `json:"indexes,omitempty"`
+	// Auth turns on OIDC for the daemon and tells a client how to get a token.
+	// Nil → no auth, every index readable by anyone who can reach the daemon.
+	Auth *AuthConfig `json:"auth,omitempty"`
+}
+
+// AuthConfig is the daemon's OIDC setup (issuer/audience/admin) and the
+// client's token source (token_command). One block because one config.json
+// serves both sides on a single machine; a remote client sets only
+// token_command.
+type AuthConfig struct {
+	// Issuer is the OIDC issuer URL (discovery at <issuer>/.well-known/
+	// openid-configuration). Empty → the daemon does not authenticate.
+	Issuer string `json:"issuer,omitempty"`
+	// Audience is the token's required aud: the client id (or project id) the
+	// IdP issues raglit tokens for.
+	Audience string `json:"audience,omitempty"`
+	// Admin is the principal ("<iss>#<sub>") that owns every index without an
+	// acl.json — the indexes from before auth. Required when Issuer is set.
+	Admin string `json:"admin,omitempty"`
+	// TokenCommand prints a bearer token on stdout. The client runs it when
+	// $RAGLIT_TOKEN is unset, and again after a 401. A headless client (a
+	// Zitadel machine user) puts its client-credentials exchange here.
+	TokenCommand string `json:"token_command,omitempty"`
 }
 
 // IndexConfig is one index's source definition: the roots to scan and the

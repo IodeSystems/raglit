@@ -69,6 +69,16 @@ func openProjectJudgements(project string) (*raglit.JudgementStore, error) {
 	return raglit.OpenJudgements(raglit.AuditPath(project))
 }
 
+// listRelationsFor guards listRelationsOp: the project directory is a path on the daemon host.
+func listRelationsFor(reg *raglit.Registry) func(context.Context, *relationsIn) (*relationsOut, error) {
+	return func(ctx context.Context, in *relationsIn) (*relationsOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
+		return listRelationsOp(ctx, in)
+	}
+}
+
 func listRelationsOp(_ context.Context, in *relationsIn) (*relationsOut, error) {
 	js, err := openProjectJudgements(in.Project)
 	if err != nil {
@@ -116,6 +126,16 @@ type sliceOut struct {
 type slicesOut struct {
 	Body struct {
 		Slices []sliceOut `json:"slices"`
+	}
+}
+
+// listSlicesFor guards listSlicesOp: the project directory is a path on the daemon host.
+func listSlicesFor(reg *raglit.Registry) func(context.Context, *slicesIn) (*slicesOut, error) {
+	return func(ctx context.Context, in *slicesIn) (*slicesOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
+		return listSlicesOp(ctx, in)
 	}
 }
 
@@ -173,16 +193,19 @@ type materializeOut struct {
 }
 
 func materializeSlicesOp(reg *raglit.Registry) func(context.Context, *materializeIn) (*materializeOut, error) {
-	return func(_ context.Context, in *materializeIn) (*materializeOut, error) {
+	return func(ctx context.Context, in *materializeIn) (*materializeOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		js, err := openProjectJudgements(in.Project)
 		if err != nil {
 			return nil, huma.Error400BadRequest("open judgements", err)
 		}
 		defer js.Close()
 
-		st, err := reg.Get(in.Index)
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 
 		var slices []raglit.Slice
@@ -250,9 +273,9 @@ func rereadOp(reg *raglit.Registry) func(context.Context, *rereadIn) (*rereadOut
 			return nil, huma.Error400BadRequest(fmt.Sprintf(
 				"path %q is relative — the daemon cannot resolve it against your working directory; pass an absolute path", in.Path))
 		}
-		st, err := reg.Get(in.Index)
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		n, err := st.PurgeDocPageCache(ctx, in.Path)
 		if err != nil {
@@ -294,10 +317,10 @@ type sketchOut struct {
 }
 
 func sketchOp(reg *raglit.Registry) func(context.Context, *sketchIn) (*sketchOut, error) {
-	return func(_ context.Context, in *sketchIn) (*sketchOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *sketchIn) (*sketchOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		w, m := in.Width, in.Mod
 		if w <= 0 {
@@ -356,6 +379,9 @@ type correctOut struct {
 
 func correctPageOp(reg *raglit.Registry) func(context.Context, *correctIn) (*correctOut, error) {
 	return func(ctx context.Context, in *correctIn) (*correctOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		if len(in.RawBody) == 0 {
 			return nil, huma.Error400BadRequest("no corrected text in the request body")
 		}
@@ -365,9 +391,9 @@ func correctPageOp(reg *raglit.Registry) func(context.Context, *correctIn) (*cor
 		}
 		defer js.Close()
 
-		st, err := reg.Get(in.Index)
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		// The hook that turns a changed active reading into rows. Registered
 		// before the write, so this correction is the first one it sees.
@@ -416,6 +442,9 @@ type withdrawOut struct {
 
 func withdrawOp(reg *raglit.Registry) func(context.Context, *withdrawIn) (*withdrawOut, error) {
 	return func(ctx context.Context, in *withdrawIn) (*withdrawOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		if strings.TrimSpace(in.Reason) == "" {
 			return nil, huma.Error400BadRequest("a withdrawal needs grounds — without them this is a delete")
 		}
@@ -428,9 +457,9 @@ func withdrawOp(reg *raglit.Registry) func(context.Context, *withdrawIn) (*withd
 			return nil, huma.Error400BadRequest("open judgements", err)
 		}
 		defer js.Close()
-		st, err := reg.Get(in.Index)
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		w := raglit.Withdrawal{Path: in.Path, Reason: in.Reason, By: in.By,
 			At: time.Now().UTC().Format("2006-01-02")}
@@ -463,10 +492,10 @@ type withdrawalsOut struct {
 }
 
 func withdrawalsOp(reg *raglit.Registry) func(context.Context, *withdrawalsIn) (*withdrawalsOut, error) {
-	return func(_ context.Context, in *withdrawalsIn) (*withdrawalsOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *withdrawalsIn) (*withdrawalsOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		ws, err := st.Withdrawals()
 		if err != nil {
@@ -500,9 +529,9 @@ type problemsOut struct {
 
 func problemsOp(reg *raglit.Registry) func(context.Context, *problemsIn) (*problemsOut, error) {
 	return func(ctx context.Context, in *problemsIn) (*problemsOut, error) {
-		st, err := reg.Get(in.Index)
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		ps, err := st.Problems(ctx)
 		if err != nil {
@@ -537,7 +566,10 @@ type restoreIn struct {
 }
 
 func restoreOp(reg *raglit.Registry) func(context.Context, *restoreIn) (*okOut, error) {
-	return func(_ context.Context, in *restoreIn) (*okOut, error) {
+	return func(ctx context.Context, in *restoreIn) (*okOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		proj, err := resolveProjectDir(in.Project, in.Path)
 		if err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
@@ -547,9 +579,9 @@ func restoreOp(reg *raglit.Registry) func(context.Context, *restoreIn) (*okOut, 
 			return nil, huma.Error400BadRequest("open judgements", err)
 		}
 		defer js.Close()
-		st, err := reg.Get(in.Index)
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		if err := js.Restore(in.Path, in.By); err != nil {
 			return nil, huma.Error400BadRequest("record restore", err)
@@ -621,9 +653,9 @@ type identifyOut struct {
 
 func identifyOp(reg *raglit.Registry) func(context.Context, *identifyIn) (*identifyOut, error) {
 	return func(ctx context.Context, in *identifyIn) (*identifyOut, error) {
-		st, err := reg.Get(in.Index)
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		out := &identifyOut{}
 		out.Body.Path = in.Path
@@ -673,10 +705,10 @@ type enqueueIdentityOut struct {
 }
 
 func enqueueIdentityOp(reg *raglit.Registry) func(context.Context, *enqueueIdentityIn) (*enqueueIdentityOut, error) {
-	return func(_ context.Context, in *enqueueIdentityIn) (*enqueueIdentityOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *enqueueIdentityIn) (*enqueueIdentityOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		one := strings.TrimSpace(in.Path) != ""
 		var n int
@@ -731,10 +763,10 @@ type identityJobsOut struct {
 }
 
 func identityJobsOp(reg *raglit.Registry) func(context.Context, *identityJobsIn) (*identityJobsOut, error) {
-	return func(_ context.Context, in *identityJobsIn) (*identityJobsOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *identityJobsIn) (*identityJobsOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		limit := in.Limit
 		if limit <= 0 {
@@ -768,10 +800,10 @@ type forgetIn struct {
 }
 
 func forgetOp(reg *raglit.Registry) func(context.Context, *forgetIn) (*okOut, error) {
-	return func(_ context.Context, in *forgetIn) (*okOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *forgetIn) (*okOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		if err := st.DeleteDocument(in.Path); err != nil {
 			return nil, huma.Error500InternalServerError("forget", err)

@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -154,9 +155,23 @@ func runHttpd(subcmd string, args []string) error {
 		}()
 	}
 
+	// Auth BEFORE the handler is built: mountAttest picks each index's identity
+	// from whether the ACL is on.
+	cfg, _, err := raglit.LoadConfig(cfgHome)
+	if err != nil {
+		return err
+	}
+	authMW, err := daemonAuth(ctx, reg, cfg.Auth)
+	if err != nil {
+		return err
+	}
 	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, gcPol, watch)
 	if err != nil {
 		return err
+	}
+	if authMW != nil {
+		handler = authMW(handler)
+		fmt.Fprintf(os.Stderr, "raglit httpd: OIDC auth on (issuer %s, admin %s)\n", cfg.Auth.Issuer, cfg.Auth.Admin)
 	}
 	// Record runtime state so clients discover this daemon (even on a non-default
 	// port) and `--stop` can signal it. Removed on clean shutdown.
@@ -250,7 +265,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 		return huma.Operation{OperationID: id, Method: method, Path: path, Summary: summary}
 	}
 	gat.Register(api, g, op("health", http.MethodGet, "/api/health", "Liveness probe."), health)
-	gat.Register(api, g, op("tools", http.MethodGet, "/api/tools", "External extractors as the DAEMON sees them (PATH included)."), toolsProbe)
+	gat.Register(api, g, op("tools", http.MethodGet, "/api/tools", "External extractors as the DAEMON sees them (PATH included)."), toolsProbeOp(reg))
 	gat.Register(api, g, op("pageLayout", http.MethodGet, "/api/page-layout", "One page's layout blocks, raw transcription and indexed text."), pageLayoutOp(reg))
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
@@ -271,9 +286,9 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("reocr", http.MethodPost, "/api/reocr", "Re-run the OCR cascade on a saved page image."), reocrOp(reg, lf, home))
 	gat.Register(api, g, op("findDocuments", http.MethodGet, "/api/find-documents", "Find documents by name substring (MCP list_documents)."), findDocumentsOp(reg))
 	gat.Register(api, g, op("getDocument", http.MethodGet, "/api/get-document", "Get a document's indexed text (MCP get_document)."), getDocumentOp(reg))
-	gat.Register(api, g, op("ocr", http.MethodPost, "/api/ocr", "Extract a document (path or base64 data) to paged text (MCP ocr)."), ocrToolOp(lf, home))
-	gat.Register(api, g, op("listRelations", http.MethodGet, "/api/relations", "Rulings on which documents are copies or versions."), listRelationsOp)
-	gat.Register(api, g, op("listSlices", http.MethodGet, "/api/slices", "Declared sub-documents: page ranges of a bundle."), listSlicesOp)
+	gat.Register(api, g, op("ocr", http.MethodPost, "/api/ocr", "Extract a document (path or base64 data) to paged text (MCP ocr)."), ocrToolOp(reg, lf, home))
+	gat.Register(api, g, op("listRelations", http.MethodGet, "/api/relations", "Rulings on which documents are copies or versions."), listRelationsFor(reg))
+	gat.Register(api, g, op("listSlices", http.MethodGet, "/api/slices", "Declared sub-documents: page ranges of a bundle."), listSlicesFor(reg))
 	gat.Register(api, g, op("correctPage", http.MethodPost, "/api/transcribe/correct", "Record a corrected reading for one page."), correctPageOp(reg))
 	gat.Register(api, g, op("sketch", http.MethodPost, "/api/similar/build", "Build page sketches for near-duplicate detection."), sketchOp(reg))
 	gat.Register(api, g, op("reread", http.MethodPost, "/api/reread", "Purge a document's cached page OCR and re-read it."), rereadOp(reg))
@@ -291,13 +306,13 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
 	gat.Register(api, g, op("deleteIndex", http.MethodDelete, "/indexes", "Delete an index (its storage); the shared pool is untouched."), deleteIndexOp(reg))
 	if watch != nil {
-		gat.Register(api, g, op("listWatches", http.MethodGet, "/api/watch", "List project homes watched for auto re-ingest."), listWatchesOp(watch))
-		gat.Register(api, g, op("addWatch", http.MethodPost, "/api/watch", "Register a project home for auto re-ingest on change."), addWatchOp(watch))
-		gat.Register(api, g, op("removeWatch", http.MethodDelete, "/api/watch", "Unregister a watched project home."), removeWatchOp(watch))
+		gat.Register(api, g, op("listWatches", http.MethodGet, "/api/watch", "List project homes watched for auto re-ingest."), listWatchesOp(reg, watch))
+		gat.Register(api, g, op("addWatch", http.MethodPost, "/api/watch", "Register a project home for auto re-ingest on change."), addWatchOp(reg, watch))
+		gat.Register(api, g, op("removeWatch", http.MethodDelete, "/api/watch", "Unregister a watched project home."), removeWatchOp(reg, watch))
 	}
 	if pool != nil {
-		gat.Register(api, g, op("poolStats", http.MethodGet, "/api/pool", "Shared document-pool size (entries + files)."), poolStatsOp(pool))
-		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs to a budget (max_bytes / max_entries / max_age_hours), oldest-accessed first."), poolGCOp(pool, defGC))
+		gat.Register(api, g, op("poolStats", http.MethodGet, "/api/pool", "Shared document-pool size (entries + files)."), poolStatsOp(reg, pool))
+		gat.Register(api, g, op("poolGC", http.MethodPost, "/api/pool/gc", "Evict pooled docs to a budget (max_bytes / max_entries / max_age_hours), oldest-accessed first."), poolGCOp(reg, pool, defGC))
 	}
 
 	gat.Register(api, g, op("listNotes", http.MethodGet, "/api/notes", "What people have said about a document, oldest first."), listNotesOp(reg))
@@ -333,9 +348,9 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	router.NotFound(spa.ServeHTTP)
 	router.Get("/", spa.ServeHTTP)
 	router.Get("/api/page-image", func(w http.ResponseWriter, r *http.Request) {
-		st, err := reg.Get(r.URL.Query().Get("index"))
+		st, err := reg.Read(r.Context(), r.URL.Query().Get("index"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+			http.Error(w, "no such index", http.StatusNotFound)
 			return
 		}
 		img, err := st.PageImagePath(r.URL.Query().Get("path"), queryInt(r, "page", 0))
@@ -392,6 +407,17 @@ type toolsOut struct {
 	}
 }
 
+// toolsProbeOp reports the daemon's environment, which is host detail: admin
+// only when auth is on.
+func toolsProbeOp(reg *raglit.Registry) func(context.Context, *struct{}) (*toolsOut, error) {
+	return func(ctx context.Context, in *struct{}) (*toolsOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
+		return toolsProbe(ctx, in)
+	}
+}
+
 func toolsProbe(_ context.Context, _ *struct{}) (*toolsOut, error) {
 	out := &toolsOut{}
 	out.Body.PID = os.Getpid()
@@ -434,11 +460,11 @@ type listIndexesOut struct {
 }
 
 func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIndexesOut, error) {
-	return func(_ context.Context, _ *struct{}) (*listIndexesOut, error) {
+	return func(ctx context.Context, _ *struct{}) (*listIndexesOut, error) {
 		out := &listIndexesOut{}
 		out.Body.Indexes = []idxRow{}
 		for _, name := range reg.Names() {
-			st, err := reg.Get(name)
+			st, err := reg.Read(ctx, name)
 			if err != nil {
 				continue
 			}
@@ -467,10 +493,10 @@ type getFieldsOut struct {
 }
 
 func getFieldsOp(reg *raglit.Registry) func(context.Context, *getFieldsIn) (*getFieldsOut, error) {
-	return func(_ context.Context, in *getFieldsIn) (*getFieldsOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *getFieldsIn) (*getFieldsOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		ms, err := st.MatchDocuments(in.Path)
 		if err != nil {
@@ -503,10 +529,10 @@ type listDocTypesOut struct {
 }
 
 func listDocTypesOp(reg *raglit.Registry) func(context.Context, *listDocTypesIn) (*listDocTypesOut, error) {
-	return func(_ context.Context, in *listDocTypesIn) (*listDocTypesOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *listDocTypesIn) (*listDocTypesOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		types, err := st.DocTypes()
 		if err != nil {
@@ -533,8 +559,8 @@ type statusOut struct {
 }
 
 func statusOp(reg *raglit.Registry) func(context.Context, *statusIn) (*statusOut, error) {
-	return func(_ context.Context, in *statusIn) (*statusOut, error) {
-		return &statusOut{Body: aggregateStatus(reg, selectIndexes(reg, in.Index))}, nil
+	return func(ctx context.Context, in *statusIn) (*statusOut, error) {
+		return &statusOut{Body: aggregateStatus(reg, reg.Readable(ctx, selectIndexes(reg, in.Index)))}, nil
 	}
 }
 
@@ -573,7 +599,7 @@ type searchOut struct {
 }
 
 func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchIn) (*searchOut, error) {
-	return func(_ context.Context, in *searchIn) (*searchOut, error) {
+	return func(ctx context.Context, in *searchIn) (*searchOut, error) {
 		if in.Query == "" {
 			return nil, huma.Error400BadRequest("q is required")
 		}
@@ -582,8 +608,8 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			limit = defLimit
 		}
 		lists := map[string][]raglit.Hit{}
-		for _, name := range selectIndexes(reg, in.Index) {
-			st, err := reg.Get(name)
+		for _, name := range reg.Readable(ctx, selectIndexes(reg, in.Index)) {
+			st, err := reg.Read(ctx, name)
 			if err != nil {
 				continue
 			}
@@ -608,7 +634,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			})
 		}
 		if len(out.Body.Hits) == 0 {
-			out.Body.Covers = coversFor(reg, selectIndexes(reg, in.Index), in.Path)
+			out.Body.Covers = coversFor(reg, reg.Readable(ctx, selectIndexes(reg, in.Index)), in.Path)
 		}
 		return out, nil
 	}
@@ -648,8 +674,8 @@ func searchFiguresOp(reg *raglit.Registry, defLimit int) func(context.Context, *
 		}
 		out := &searchFiguresOut{}
 		out.Body.Figures = []figureRow{}
-		for _, name := range selectIndexes(reg, in.Index) {
-			st, err := reg.Get(name)
+		for _, name := range reg.Readable(ctx, selectIndexes(reg, in.Index)) {
+			st, err := reg.Read(ctx, name)
 			if err != nil {
 				continue
 			}
@@ -703,16 +729,19 @@ type ingestOut struct {
 }
 
 func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut, error) {
-	return func(_ context.Context, in *ingestIn) (*ingestOut, error) {
+	return func(ctx context.Context, in *ingestIn) (*ingestOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		// The body still wins when both are given, so existing callers are
 		// unaffected; the query parameter is the fallback nobody had.
 		idx := in.Body.Index
 		if idx == "" {
 			idx = in.Index
 		}
-		st, err := reg.Get(idx)
+		st, err := writeIdx(ctx, reg, idx)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		ids := make([]int64, 0, len(in.Body.Targets))
 		for _, t := range in.Body.Targets {
@@ -751,10 +780,10 @@ type jobsOut struct {
 }
 
 func listJobs(reg *raglit.Registry) func(context.Context, *jobsIn) (*jobsOut, error) {
-	return func(_ context.Context, in *jobsIn) (*jobsOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *jobsIn) (*jobsOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound(err.Error())
+			return nil, err
 		}
 		limit := in.Limit
 		if limit <= 0 {
@@ -802,10 +831,10 @@ type okOut struct {
 }
 
 func jobAction(reg *raglit.Registry, action func(*raglit.Store, int64) error) func(context.Context, *jobActionIn) (*okOut, error) {
-	return func(_ context.Context, in *jobActionIn) (*okOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *jobActionIn) (*okOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound(err.Error())
+			return nil, err
 		}
 		if err := action(st, in.Body.ID); err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
@@ -827,10 +856,10 @@ type documentsOut struct {
 }
 
 func documentsOp(reg *raglit.Registry) func(context.Context, *documentsIn) (*documentsOut, error) {
-	return func(_ context.Context, in *documentsIn) (*documentsOut, error) {
-		st, err := reg.Get(in.Index)
+	return func(ctx context.Context, in *documentsIn) (*documentsOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound(err.Error())
+			return nil, err
 		}
 		docs, err := st.Documents()
 		if err != nil {
@@ -858,13 +887,13 @@ type docReviewOut struct {
 }
 
 func docReviewOp(reg *raglit.Registry) func(context.Context, *docReviewIn) (*docReviewOut, error) {
-	return func(_ context.Context, in *docReviewIn) (*docReviewOut, error) {
+	return func(ctx context.Context, in *docReviewIn) (*docReviewOut, error) {
 		if in.Path == "" {
 			return nil, huma.Error400BadRequest("path is required")
 		}
-		st, err := reg.Get(in.Index)
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound(err.Error())
+			return nil, err
 		}
 		title, pages, err := st.DocReview(in.Path)
 		if err != nil {
@@ -896,9 +925,9 @@ type reocrOut struct {
 
 func reocrOp(reg *raglit.Registry, lf *llmFlags, home raglit.Home) func(context.Context, *reocrIn) (*reocrOut, error) {
 	return func(ctx context.Context, in *reocrIn) (*reocrOut, error) {
-		st, err := reg.Get(in.Index)
+		st, err := writeIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound(err.Error())
+			return nil, err
 		}
 		img, err := st.PageImagePath(in.Body.Path, in.Body.Page)
 		if err != nil || img == "" || !isUnder(img, st.PagesRoot()) {
@@ -940,12 +969,12 @@ type findDocumentsOut struct {
 }
 
 func findDocumentsOp(reg *raglit.Registry) func(context.Context, *findDocumentsIn) (*findDocumentsOut, error) {
-	return func(_ context.Context, in *findDocumentsIn) (*findDocumentsOut, error) {
+	return func(ctx context.Context, in *findDocumentsIn) (*findDocumentsOut, error) {
 		out := &findDocumentsOut{}
 		out.Body.Documents = []findDocRow{}
 		name := strings.ToLower(strings.TrimSpace(in.Name))
 		for _, idx := range selectIndexes(reg, in.Index) {
-			st, err := reg.Get(idx)
+			st, err := reg.Read(ctx, idx)
 			if err != nil {
 				continue
 			}
@@ -983,14 +1012,14 @@ type getDocumentOut struct {
 }
 
 func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (*getDocumentOut, error) {
-	return func(_ context.Context, in *getDocumentIn) (*getDocumentOut, error) {
+	return func(ctx context.Context, in *getDocumentIn) (*getDocumentOut, error) {
 		if in.Path == "" {
 			return nil, huma.Error400BadRequest("path is required")
 		}
 		type cand struct{ index, path string }
 		var cands []cand
 		for _, idx := range selectIndexes(reg, in.Index) {
-			st, err := reg.Get(idx)
+			st, err := reg.Read(ctx, idx)
 			if err != nil {
 				continue
 			}
@@ -1012,9 +1041,9 @@ func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (
 		if in.Page > 0 {
 			from, to = in.Page, in.Page
 		}
-		st, err := reg.Get(cands[0].index)
+		st, err := readIdx(ctx, reg, cands[0].index)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("open index", err)
+			return nil, err
 		}
 		content, err := st.DocText(cands[0].path, from, to, in.MaxChars)
 		if err != nil {
@@ -1030,8 +1059,11 @@ type poolStatsOut struct {
 	Body raglit.PoolStats
 }
 
-func poolStatsOp(pool *raglit.Pool) func(context.Context, *struct{}) (*poolStatsOut, error) {
-	return func(_ context.Context, _ *struct{}) (*poolStatsOut, error) {
+func poolStatsOp(reg *raglit.Registry, pool *raglit.Pool) func(context.Context, *struct{}) (*poolStatsOut, error) {
+	return func(ctx context.Context, _ *struct{}) (*poolStatsOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		st, err := pool.Stats()
 		if err != nil {
 			return nil, huma.Error500InternalServerError("pool", err)
@@ -1055,8 +1087,11 @@ type poolGCOut struct {
 
 // poolGCOp runs pool eviction, defaulting to the daemon's configured budget when
 // the request omits a limit.
-func poolGCOp(pool *raglit.Pool, def raglit.GCPolicy) func(context.Context, *poolGCIn) (*poolGCOut, error) {
-	return func(_ context.Context, in *poolGCIn) (*poolGCOut, error) {
+func poolGCOp(reg *raglit.Registry, pool *raglit.Pool, def raglit.GCPolicy) func(context.Context, *poolGCIn) (*poolGCOut, error) {
+	return func(ctx context.Context, in *poolGCIn) (*poolGCOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		pol := def
 		if in.Body.MaxBytes > 0 {
 			pol.MaxBytes = in.Body.MaxBytes
@@ -1084,13 +1119,16 @@ type listBranchesOut struct {
 }
 
 func listBranchesOp(reg *raglit.Registry) func(context.Context, *struct{}) (*listBranchesOut, error) {
-	return func(_ context.Context, _ *struct{}) (*listBranchesOut, error) {
-		bs, err := reg.ListBranches()
+	return func(ctx context.Context, _ *struct{}) (*listBranchesOut, error) {
+		all, err := reg.ListBranches()
 		if err != nil {
 			return nil, huma.Error500InternalServerError("branches", err)
 		}
-		if bs == nil {
-			bs = []raglit.BranchInfo{}
+		bs := []raglit.BranchInfo{}
+		for _, b := range all {
+			if reg.CanRead(ctx, b.Name) {
+				bs = append(bs, b)
+			}
 		}
 		out := &listBranchesOut{}
 		out.Body.Branches = bs
@@ -1113,12 +1151,15 @@ type forkBranchOut struct {
 }
 
 func forkBranchOp(reg *raglit.Registry) func(context.Context, *forkBranchIn) (*forkBranchOut, error) {
-	return func(_ context.Context, in *forkBranchIn) (*forkBranchOut, error) {
+	return func(ctx context.Context, in *forkBranchIn) (*forkBranchOut, error) {
 		parent := in.Body.Parent
 		if parent == "" {
 			parent = "default"
 		}
-		if err := reg.ForkBranch(in.Body.Name, parent); err != nil {
+		if err := reg.ForkBranchAs(ctx, in.Body.Name, parent); err != nil {
+			if errors.Is(err, raglit.ErrNoIndex) {
+				return nil, huma.Error404NotFound(err.Error())
+			}
 			return nil, huma.Error400BadRequest(err.Error())
 		}
 		out := &forkBranchOut{}
@@ -1140,8 +1181,11 @@ type deleteIndexIn struct {
 // every index) and this index is rebuildable from it with no model calls. What
 // governs pool lifetime is Pool.GC, not this.
 func deleteIndexOp(reg *raglit.Registry) func(context.Context, *deleteIndexIn) (*okOut, error) {
-	return func(_ context.Context, in *deleteIndexIn) (*okOut, error) {
-		if err := reg.DeleteIndex(in.Name); err != nil {
+	return func(ctx context.Context, in *deleteIndexIn) (*okOut, error) {
+		if err := reg.DeleteAs(ctx, in.Name, false); err != nil {
+			if e := idxErr(err); errors.Is(err, raglit.ErrNoIndex) || errors.Is(err, raglit.ErrForbidden) {
+				return nil, e
+			}
 			return nil, huma.Error400BadRequest(err.Error())
 		}
 		out := &okOut{}
@@ -1151,8 +1195,11 @@ func deleteIndexOp(reg *raglit.Registry) func(context.Context, *deleteIndexIn) (
 }
 
 func deleteBranchOp(reg *raglit.Registry) func(context.Context, *deleteBranchIn) (*okOut, error) {
-	return func(_ context.Context, in *deleteBranchIn) (*okOut, error) {
-		if err := reg.DeleteBranch(in.Name); err != nil {
+	return func(ctx context.Context, in *deleteBranchIn) (*okOut, error) {
+		if err := reg.DeleteAs(ctx, in.Name, true); err != nil {
+			if e := idxErr(err); errors.Is(err, raglit.ErrNoIndex) || errors.Is(err, raglit.ErrForbidden) {
+				return nil, e
+			}
 			return nil, huma.Error400BadRequest(err.Error())
 		}
 		out := &okOut{}
@@ -1167,8 +1214,11 @@ type listWatchesOut struct {
 	}
 }
 
-func listWatchesOp(w *watcher) func(context.Context, *struct{}) (*listWatchesOut, error) {
-	return func(_ context.Context, _ *struct{}) (*listWatchesOut, error) {
+func listWatchesOp(reg *raglit.Registry, w *watcher) func(context.Context, *struct{}) (*listWatchesOut, error) {
+	return func(ctx context.Context, _ *struct{}) (*listWatchesOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		out := &listWatchesOut{}
 		out.Body.Watches = w.List()
 		if out.Body.Watches == nil {
@@ -1184,8 +1234,11 @@ type addWatchIn struct {
 	}
 }
 
-func addWatchOp(w *watcher) func(context.Context, *addWatchIn) (*okOut, error) {
-	return func(_ context.Context, in *addWatchIn) (*okOut, error) {
+func addWatchOp(reg *raglit.Registry, w *watcher) func(context.Context, *addWatchIn) (*okOut, error) {
+	return func(ctx context.Context, in *addWatchIn) (*okOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		if in.Body.Home == "" {
 			return nil, huma.Error400BadRequest("home is required")
 		}
@@ -1202,8 +1255,11 @@ type removeWatchIn struct {
 	Home string `query:"home"`
 }
 
-func removeWatchOp(w *watcher) func(context.Context, *removeWatchIn) (*okOut, error) {
-	return func(_ context.Context, in *removeWatchIn) (*okOut, error) {
+func removeWatchOp(reg *raglit.Registry, w *watcher) func(context.Context, *removeWatchIn) (*okOut, error) {
+	return func(ctx context.Context, in *removeWatchIn) (*okOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
 		if err := w.Remove(in.Home); err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
 		}
@@ -1226,8 +1282,14 @@ type ocrToolOut struct {
 
 // ocrToolOp is the daemon side of the MCP `ocr` tool: resolve a path/base64 doc
 // to a temp file, run the format router + OCR cascade, return paged text.
-func ocrToolOp(lf *llmFlags, home raglit.Home) func(context.Context, *ocrToolIn) (*ocrToolOut, error) {
+func ocrToolOp(reg *raglit.Registry, lf *llmFlags, home raglit.Home) func(context.Context, *ocrToolIn) (*ocrToolOut, error) {
 	return func(ctx context.Context, in *ocrToolIn) (*ocrToolOut, error) {
+		// Inline data is the caller's own bytes; a path is a file on this host.
+		if in.Body.Path != "" {
+			if err := requireAdmin(ctx, reg); err != nil {
+				return nil, err
+			}
+		}
 		fp, cleanup, err := resolveDoc(in.Body.Path, in.Body.Data, in.Body.Mime)
 		if err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
@@ -1266,9 +1328,9 @@ func pageLayoutOp(reg *raglit.Registry) func(context.Context, *struct {
 		Path  string `query:"path"`
 		Page  int    `query:"page"`
 	}) (*pageLayoutOut, error) {
-		st, err := reg.Get(in.Index)
+		st, err := readIdx(ctx, reg, in.Index)
 		if err != nil {
-			return nil, huma.Error404NotFound(err.Error())
+			return nil, err
 		}
 		page := in.Page
 		if page < 1 {
@@ -1329,12 +1391,18 @@ type emailOut struct {
 // empty thread: "this is not an email" and "this email has no messages" are
 // different facts and a caller must be able to tell them apart.
 func emailThreadOp(reg *raglit.Registry) func(context.Context, *emailIn) (*emailOut, error) {
-	return func(_ context.Context, in *emailIn) (*emailOut, error) {
+	return func(ctx context.Context, in *emailIn) (*emailOut, error) {
 		if in.Path == "" {
 			return nil, huma.Error400BadRequest("path is required")
 		}
-		if _, err := reg.Get(in.Index); err != nil {
-			return nil, huma.Error404NotFound(err.Error())
+		st, err := readIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		// The path is read from this host's disk, so it must be a document OF
+		// the index — not any archive the daemon's user can open.
+		if reg.ACLEnabled() && !indexHolds(st, in.Path) {
+			return nil, huma.Error404NotFound("no such document in this index")
 		}
 		path := strings.TrimPrefix(in.Path, "file://")
 		if !raglit.IsMailArchive(path) {
@@ -1346,7 +1414,6 @@ func emailThreadOp(reg *raglit.Registry) func(context.Context, *emailIn) (*email
 		// Both locations: current extractions live in raglit's storage, and an
 		// archive whose attachments predate the move still has them beside it
 		// until the migration runs.
-		st, _ := reg.Get(in.Index)
 		msgs, err := raglit.EmailMessages(path, raglit.ResolveExtractedAttachments(
 			st.AttachmentDirFor(path), st.LegacyAttachmentDirFor(path)))
 		if err != nil {
