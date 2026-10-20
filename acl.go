@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Index access control.
@@ -282,4 +283,32 @@ func (r *Registry) Admin() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.admin
+}
+
+// TransferOwnership hands an index to another principal — how a maintainer
+// service takes over a project's base. The current owner or the admin may do
+// it; visibility is unchanged. Readers of a branch are unaffected; writers are
+// now the new owner only.
+func (r *Registry) TransferOwnership(ctx context.Context, name, to string) error {
+	if !r.ACLEnabled() {
+		return fmt.Errorf("raglit: access control is off; indexes have no owners")
+	}
+	to = strings.TrimSpace(to)
+	if to == "" {
+		return fmt.Errorf("raglit: the new owner is required")
+	}
+	p := PrincipalFrom(ctx)
+	name = normalizeIndexName(name)
+	admin := p != "" && p == r.Admin()
+	// The admin may move any index, private ones included: that is how one is
+	// recovered from an owner who has left.
+	if p == "" || !r.exists(name) || (!admin && !r.CanRead(ctx, name)) {
+		return ErrNoIndex
+	}
+	a := r.ACLOf(name)
+	if a.Owner != p && !admin {
+		return ErrForbidden
+	}
+	a.Owner = to
+	return writeACL(r.indexHome(name), a)
 }

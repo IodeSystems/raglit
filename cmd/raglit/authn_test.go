@@ -527,3 +527,24 @@ func TestAuth_BrowserLogin(t *testing.T) {
 		t.Errorf("API after logout: %d, want 401", resp3.StatusCode)
 	}
 }
+
+// A maintainer takes over a project base: the owner hands it over, after which
+// only the maintainer writes to it.
+func TestAuth_TransferOwnership(t *testing.T) {
+	srv, fi := authTestServer(t)
+	alice, bob, maint := fi.token(t, "alice", "raglit", fi.key), fi.token(t, "bob", "raglit", fi.key), fi.token(t, "maint", "raglit", fi.key)
+	body := `{"index":"a-pub","owner":"` + fi.principal("maint") + `"}`
+	if code, _ := doAs(t, "POST", srv.URL+"/api/owner", bob, body); code != http.StatusForbidden {
+		t.Errorf("bob transferring alice's index: %d, want 403", code)
+	}
+	if code, b := doAs(t, "POST", srv.URL+"/api/owner", alice, body); code != http.StatusOK {
+		t.Fatalf("alice transferring her index: %d %s", code, clip(b, 300))
+	}
+	up := `{"name":"m.md","text":"maintained"}`
+	if code, _ := doAs(t, "POST", srv.URL+"/api/upload?index=a-pub", alice, up); code != http.StatusForbidden {
+		t.Errorf("former owner writing: %d, want 403", code)
+	}
+	if code, b := doAs(t, "POST", srv.URL+"/api/upload?index=a-pub", maint, up); code != http.StatusOK {
+		t.Errorf("new owner writing: %d %s", code, clip(b, 300))
+	}
+}

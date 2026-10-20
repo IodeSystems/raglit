@@ -81,3 +81,24 @@ func setVisibilityOp(reg *raglit.Registry) func(context.Context, *setVisibilityI
 		return &setVisibilityOut{Body: reg.ACLOf(in.Body.Index)}, nil
 	}
 }
+
+type transferOwnerIn struct {
+	Body struct {
+		Index string `json:"index" required:"true"`
+		Owner string `json:"owner" required:"true" doc:"the new owner's principal, <iss>#<sub>"`
+	}
+}
+
+// transferOwnerOp hands an index to another principal: how a maintainer
+// service takes over a project base. Current owner or admin.
+func transferOwnerOp(reg *raglit.Registry) func(context.Context, *transferOwnerIn) (*setVisibilityOut, error) {
+	return func(ctx context.Context, in *transferOwnerIn) (*setVisibilityOut, error) {
+		if err := reg.TransferOwnership(ctx, in.Body.Index, in.Body.Owner); err != nil {
+			if errors.Is(err, raglit.ErrNoIndex) || errors.Is(err, raglit.ErrForbidden) {
+				return nil, idxErr(err)
+			}
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		return &setVisibilityOut{Body: reg.ACLOf(in.Body.Index)}, nil
+	}
+}

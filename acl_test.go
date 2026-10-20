@@ -144,3 +144,28 @@ func TestACL_DeleteIsOwnerOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestACL_TransferOwnership(t *testing.T) {
+	reg := aclRegistry(t)
+	if _, err := reg.Write(as("alice"), "base"); err != nil {
+		t.Fatal(err)
+	}
+	must(t, reg.SetVisibility(as("alice"), "base", Public))
+	if err := reg.TransferOwnership(as("bob"), "base", "bob"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("bob taking alice's index: err=%v", err)
+	}
+	must(t, reg.TransferOwnership(as("alice"), "base", "maintainer"))
+	if a := reg.ACLOf("base"); a.Owner != "maintainer" || a.Visibility != Public {
+		t.Fatalf("after transfer: %+v", a)
+	}
+	if _, err := reg.Write(as("alice"), "base"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("former owner writing: err=%v", err)
+	}
+	// The admin may move any index — a private one too — e.g. to recover one
+	// from a departed owner.
+	must(t, reg.SetVisibility(as("maintainer"), "base", Private))
+	must(t, reg.TransferOwnership(as("admin"), "base", "alice"))
+	if _, err := reg.Write(as("alice"), "base"); err != nil {
+		t.Fatal(err)
+	}
+}
