@@ -1,0 +1,42 @@
+/* Activity, Jobs and Health: the operations panes.
+   Failures are shown calmly: a short sentence in the body colour with a small
+   amber dot, the raw text one click away. A page of 289 failed rows in red is
+   a wall nobody reads; the count and the Retry button carry the signal. */
+
+.ops .errline-summary { color:var(--ink); font-size:var(--fs-sm); }
+.ops .errline-summary::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+  background:var(--warn); margin-right:var(--sp-2); vertical-align:middle; }
+
+/* Badges: a failed state is amber text, not red, in these panes. */
+.ops .badge.error { color:var(--warn); }
+
+.ops-head { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); margin-bottom:var(--sp-3); }
+.ops-head .grow { flex:1; }
+.ops-note { font-size:var(--fs-sm); color:var(--muted); }
+
+/* A Retry button is the action a reader came for, so it is the one with a
+   filled background. */
+.act.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.act.primary:hover:not(:disabled) { filter:brightness(1.1); border-color:var(--accent); }
+
+/* Document names in prose type; the path under it in small muted text. */
+.ops .doc-name { font-weight:500; text-decoration:none; color:var(--link); word-break:break-word; }
+.ops .doc-path { font-size:var(--fs-xs); color:var(--muted); word-break:break-all; }
+
+/* Health groups. */
+.ops .prob .subj { font-family:var(--font-body); font-size:var(--fs-md); word-break:break-word; }
+.ops .probgroup > h3 { display:flex; align-items:baseline; gap:var(--sp-2); flex-wrap:wrap; padding:var(--sp-3) var(--sp-3) 0; }
+.ops .probgroup > h3 .count { font-weight:400; color:var(--muted); }
+.ops .probgroup > .why, .ops .probgroup > .ops-head, .ops .probgroup > .errline { padding:0 var(--sp-3); }
+.ops .probgroup > .ops-head { margin-bottom:var(--sp-2); }
+
+/* Jobs table: the detail column wraps; on a phone the table scrolls inside its panel. */
+.ops td.detail { min-width:220px; max-width:420px; }
+.ops td.target { max-width:360px; }
+.ops td.target .doc-name { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ops .stage-detail { font-size:var(--fs-sm); color:var(--muted); white-space:pre-wrap; word-break:break-word; }
+
+@media (max-width:720px) {
+  .ops td.detail { min-width:160px; }
+  .ops td.target { max-width:60vw; }
+}

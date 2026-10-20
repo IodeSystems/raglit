@@ -10,6 +10,8 @@ import Typography from "@mui/material/Typography";
 
 import { listDocTypes, type DocTypeInfo, type FieldsCoverage } from "../api";
 import { mono } from "../theme";
+import { Details } from "../ui/Details";
+import { humanizeError } from "../ui/display";
 
 // Types & fields — the schemaed-documents feature, which until now existed only
 // at the CLI.
@@ -52,24 +54,41 @@ export function Types() {
 
       {err && (
         <Alert severity="warning" sx={{ mb: 2 }}>
-          The daemon did not answer <code>/api/doc-types</code> ({err}). If it is running an older
-          build than this page, restart it on the current binary — <code>raglit daemon --restart</code>.
+          Document types could not be loaded. {humanizeError(err).summary}
+          <Details>
+            <pre>{err}</pre>
+            <div>
+              If the server is older than this page, restart it on the current version:
+            </div>
+            <pre>raglit daemon --restart</pre>
+          </Details>
         </Alert>
       )}
 
       {!err && types.length === 0 && (
         <Paper variant="outlined" sx={{ p: 2 }}>
-          <Typography sx={{ mb: 1 }}>No document types are registered for this index.</Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            A type is authored from documents that ARE one: raglit reads the examples and proposes
-            the fields and the reading instructions, and a person reviews them before anything is
-            registered. Which fields a form has is a property of this corpus, not of raglit.
+          <Typography sx={{ mb: 1, fontWeight: 600 }}>No document types yet</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1, maxWidth: "70ch" }}>
+            A document type describes a form that appears again and again in this collection, such
+            as an invoice, a work order or a lab report, and the fields to read from each one.
+            When a type is set up, every matching document is turned into a record with those
+            fields filled in, and its progress shows here.
           </Typography>
-          <Box component="pre" sx={{ fontFamily: mono, fontSize: 13, m: 0, p: 1.5, borderRadius: 1,
-                                     bgcolor: (t) => t.palette.roles.chip, overflowX: "auto" }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1, maxWidth: "70ch" }}>
+            A type is made from a few example documents. The system suggests the fields, and a
+            person checks them before the type is used.
+          </Typography>
+          {/* The commands are for whoever administers the index, so they sit in
+              the disclosure, not in the main text (decision: no CLI in the main
+              view). The block uses the shared code colours, readable in both
+              themes (F1). */}
+          <Details summary="How to set one up (for administrators)">
+            <div>Suggest a type from three example documents, then register it after review:</div>
+            <pre>
 {`raglit doctype propose "lab report" DOC1 DOC2 DOC3
 raglit doctype add --file lab.json "lab report"`}
-          </Box>
+            </pre>
+          </Details>
         </Paper>
       )}
 
@@ -94,7 +113,7 @@ function TypeCard({ type, coverage }: { type: DocTypeInfo; coverage?: FieldsCove
         <Typography sx={{ fontWeight: 600, fontSize: 15 }}>{type.name}</Typography>
         <Box sx={{ flex: 1 }} />
         <Typography variant="body2" color="text.secondary">
-          {extracted} of {resolved} extracted
+          {extracted.toLocaleString()} of {resolved.toLocaleString()} read into records
         </Typography>
         {/* Stale is its OWN number, never folded into extracted. An extraction
             that answers a previous schema still reads as a complete record — the
@@ -102,7 +121,8 @@ function TypeCard({ type, coverage }: { type: DocTypeInfo; coverage?: FieldsCove
             exactly like a document that did not state one. */}
         {stale > 0 && (
           <Chip
-            label={`${stale} stale`}
+            label={`${stale} out of date`}
+            title="Read with an earlier version of this type's fields"
             sx={{ bgcolor: (t) => t.palette.roles.warn, color: "#fff", height: 20 }}
           />
         )}
@@ -127,7 +147,7 @@ function TypeCard({ type, coverage }: { type: DocTypeInfo; coverage?: FieldsCove
       {type.prompt && (
         <Box sx={{ mt: 1.5 }}>
           <Typography variant="overline" color="text.secondary" component="div">
-            How to read one
+            Reading instructions
           </Typography>
           <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", maxWidth: "78ch" }}>
             {type.prompt}
@@ -137,8 +157,9 @@ function TypeCard({ type, coverage }: { type: DocTypeInfo; coverage?: FieldsCove
 
       {(type.gold?.length ?? 0) > 0 && (
         <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 1 }}>
-          proposed from {type.gold!.length} example{type.gold!.length === 1 ? "" : "s"}
-          {type.model ? ` by ${type.model}` : ""}
+          <span title={type.model ? `Suggested by ${type.model}` : undefined}>
+            Made from {type.gold!.length} example document{type.gold!.length === 1 ? "" : "s"}
+          </span>
         </Typography>
       )}
     </Paper>
@@ -152,9 +173,9 @@ function Coverage({ resolved, extracted, stale }: { resolved: number; extracted:
   if (resolved === 0) {
     return (
       <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-        No document has resolved as this type yet. Resolution happens during
-        captioning — a document captioned before the type was registered keeps no
-        type until identity runs for it again.
+        No document has been matched to this type yet. Documents are matched when
+        they are described; a document described before this type was added is
+        matched the next time it is described again.
       </Typography>
     );
   }

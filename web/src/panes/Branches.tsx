@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { listBranches, postJSON, type Branch } from "../api";
 import { usePoll } from "../usePoll";
+import { Details, ErrorText } from "../ui/Details";
 
 // The branches of one index.
 //
@@ -34,7 +35,8 @@ export function Branches() {
   // no opinion because a branch name is just an index name to it.
   const sep = index.indexOf("__");
   const ns = sep > 0 ? index.slice(0, sep + 2) : "";
-  const branchName = (local: string) => (local.startsWith(ns) ? local : ns + local);
+  const branchName = (want: string) => (want.startsWith(ns) ? want : ns + want);
+  const local = sep > 0 ? index.slice(sep + 2) : index;
 
   const fork = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,7 +60,7 @@ export function Branches() {
     // The parent is untouched, and saying so is what makes this answerable.
     if (
       !confirm(
-        `Delete branch ${b.name}?\n\nIts ${b.documents ?? 0} local change(s) are lost. ` +
+        `Delete branch ${b.name}?\n\nIts ${changes(b.documents ?? 0)} are lost. ` +
           `${b.parent} is untouched.`,
       )
     )
@@ -81,13 +83,15 @@ export function Branches() {
   return (
     <>
       <div className="probgroup panel">
-        <h3>Branches of {index} ({mine.length})</h3>
+        <h3>
+          Branches of {local} ({mine.length})
+        </h3>
         <p className="why">
-          A branch overlays this index copy-on-write: it sees every document here
-          and stores only what it changes, so its count is edits, not contents.
-          Deleting one leaves this index untouched.
+          A branch is a working copy of this index. It sees every document here
+          and keeps only the documents it changes, so its count is changes, not
+          contents. Deleting a branch leaves this index as it is.
         </p>
-        {error && <div className="empty err">{error}</div>}
+        {error && <ErrorText raw={error} />}
         {!error && !mine.length && (
           <p className="why">Nothing branches from this index.</p>
         )}
@@ -99,20 +103,20 @@ export function Branches() {
                 {b.name}
               </Link>
               <span className="badge" style={{ marginLeft: ".4rem" }}>
-                {b.documents ?? 0} local change(s)
+                {changes(b.documents ?? 0)}
               </span>
             </div>
             <div className="det">
               {[
-                b.created_at ? `forked ${when(b.created_at)}` : null,
-                b.last_accessed_at ? `last read ${when(b.last_accessed_at)}` : null,
+                b.created_at ? `created ${when(b.created_at)}` : null,
+                b.last_accessed_at ? `last used ${when(b.last_accessed_at)}` : null,
               ]
                 .filter(Boolean)
                 .join(" · ")}
             </div>
             <div className="acts">
               <button className="act" disabled={busy} onClick={() => drop(b)}>
-                Delete branch
+                Delete
               </button>
             </div>
           </div>
@@ -120,21 +124,24 @@ export function Branches() {
       </div>
 
       <div className="probgroup panel">
-        <h3>Fork a branch</h3>
+        <h3>Create a branch</h3>
         <p className="why">
-          Branches need a scoped daemon (one started without <code>--home</code>);
-          on a single-home daemon the fork is refused with that reason.
+          Some servers do not allow branches; if so, creating one is refused and
+          the reason is shown here.
         </p>
+        <Details>
+          Branches need a scoped daemon (one started without <code>--home</code>).
+        </Details>
         <form className="acts" onSubmit={fork}>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="new branch name"
+            placeholder="New branch name"
             autoComplete="off"
           />
           <button className="act" disabled={busy || !name.trim()}>
-            Fork from {index}
+            Create from {local}
           </button>
           {/* Show the name it will actually get. The namespace is not
               decoration — it is what keeps the branch inside its project. */}
@@ -142,7 +149,7 @@ export function Branches() {
             <span className="muted small">→ {branchName(name.trim())}</span>
           )}
         </form>
-        {err && <div className="err">{err}</div>}
+        {err && <ErrorText raw={err} />}
       </div>
     </>
   );
@@ -154,4 +161,8 @@ export function Branches() {
 function when(t: number): string {
   const ms = t > 1e15 ? t / 1e6 : t > 1e12 ? t : t * 1000;
   return new Date(ms).toLocaleString();
+}
+
+function changes(n: number): string {
+  return `${n.toLocaleString()} ${n === 1 ? "changed document" : "changed documents"}`;
 }
