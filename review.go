@@ -174,6 +174,17 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 	ctx := context.Background()
 	doc, err := s.q.GetDocumentByPath(ctx, path)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Branch overlay: a document this layer neither has nor tombstoned is
+		// the parent's.
+		if s.parent != nil {
+			shadow, serr := s.shadowedPaths()
+			if serr != nil {
+				return "", nil, serr
+			}
+			if !shadow[path] {
+				return s.parent.DocReview(path)
+			}
+		}
 		return "", nil, nil
 	}
 	if err != nil {

@@ -860,6 +860,41 @@ func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, lim
 	if err != nil {
 		return nil, err
 	}
+	return s.vecSearchOverlay(qv, query, pathPrefix, limit)
+}
+
+// vecSearchOverlay is the branch overlay for vectors, the same shape as
+// SearchPath's: this layer's hits, then the parent's for documents this layer
+// does not shadow. The query is embedded once, by the top layer, and handed
+// down — every layer shares the registry's embedder.
+func (s *Store) vecSearchOverlay(qv []float32, query, pathPrefix string, limit int) ([]Hit, error) {
+	hits, err := s.vecSearchLocal(qv, query, pathPrefix, limit)
+	if err != nil || s.parent == nil {
+		return hits, err
+	}
+	s.touchAccess()
+	shadow, err := s.shadowedPaths()
+	if err != nil {
+		return nil, err
+	}
+	phits, err := s.parent.vecSearchOverlay(qv, query, pathPrefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, ph := range phits {
+		if !shadow[ph.Path] {
+			hits = append(hits, ph)
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits, nil
+}
+
+// vecSearchLocal ranks this layer's own vectors only.
+func (s *Store) vecSearchLocal(qv []float32, query, pathPrefix string, limit int) ([]Hit, error) {
 	pred, pargs := pathPredicate(pathPrefix)
 	where := ""
 	if pred != "" {
@@ -928,23 +963,32 @@ func (s *Store) HybridSearchPath(ctx context.Context, query, pathPrefix string, 
 		return nil, err
 	}
 	const rrfK = 60.0
-	fused := map[int64]*Hit{}
-	score := map[int64]float64{}
+	// Keyed by document AND fragment id: on a branch the lists hold rows from
+	// several layers, each its own database, and fragment ids collide across
+	// them. A document comes from exactly one layer (shadowing), so the pair is
+	// unique.
+	type key struct {
+		path string
+		id   int64
+	}
+	fused := map[key]*Hit{}
+	score := map[key]float64{}
 	add := func(list []Hit) {
 		for rank, h := range list {
-			if _, ok := fused[h.ID]; !ok {
+			k := key{h.Path, h.ID}
+			if _, ok := fused[k]; !ok {
 				hc := h
-				fused[h.ID] = &hc
+				fused[k] = &hc
 			}
-			score[h.ID] += 1.0 / (rrfK + float64(rank))
+			score[k] += 1.0 / (rrfK + float64(rank))
 		}
 	}
 	add(lex)
 	add(vec)
 
 	out := make([]Hit, 0, len(fused))
-	for id, h := range fused {
-		h.Score = score[id]
+	for k, h := range fused {
+		h.Score = score[k]
 		out = append(out, *h)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })

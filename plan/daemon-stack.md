@@ -112,8 +112,10 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
     untouched; tombstone hides a parent doc; list metadata; delete) + live daemon
     (fork feat-x←main → search overlays parent, list shows lineage, delete removes
     storage, parent intact).
-  - NOT overlaid (follow-ups): VecSearch + DocReview see the branch layer only;
-    merge/diff ops; CLI/MCP branch commands (daemon REST only).
+  - ✅ VecSearch + Hybrid + DocReview overlaid (2026-10-19; hybrid fuses by
+    path+fragment id, since ids collide across layers).
+  - NOT overlaid (follow-ups): SearchFigures, page images (served only under
+    the branch's own pages/); merge/diff ops; CLI/MCP branch commands.
 
 ## Blocking decisions (user owns)
 

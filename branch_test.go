@@ -159,3 +159,57 @@ func TestRegistry_ExistingDoesNotResurrectADeletedIndex(t *testing.T) {
 		t.Fatal("Get no longer creates on demand — ingest to a new index name depends on that")
 	}
 }
+
+// Vector and hybrid search overlay branch-over-parent like FTS does: the parent's
+// vectors show through, a shadowed parent doc does not, and fragment ids from
+// two databases do not merge in the fusion.
+func TestBranch_VectorOverlay(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	reg.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
+	ctx := context.Background()
+	main, _ := reg.Get("main")
+	must(t, main.Ingest(ctx, Document{Path: "file:///p-auth.md", Title: "P", Fragments: []Fragment{{Text: "parent token refresh"}}}))
+	must(t, main.Ingest(ctx, Document{Path: "file:///shadowed.md", Title: "S", Fragments: []Fragment{{Text: "old auth token"}}}))
+	must(t, reg.ForkBranch("feat", "main"))
+	feat, _ := reg.Get("feat")
+	// Same fragment id (1) as the parent's first doc, in a different database.
+	must(t, feat.Ingest(ctx, Document{Path: "file:///b-auth.md", Title: "B", Fragments: []Fragment{{Text: "branch auth token"}}}))
+	must(t, feat.Ingest(ctx, Document{Path: "file:///shadowed.md", Title: "S2", Fragments: []Fragment{{Text: "deploy rollback"}}}))
+
+	paths := func(hs []Hit) map[string]bool {
+		m := map[string]bool{}
+		for _, h := range hs {
+			m[h.Path] = true
+		}
+		return m
+	}
+	vh, err := feat.VecSearch(ctx, "token", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := paths(vh); !p["file:///p-auth.md"] || !p["file:///b-auth.md"] {
+		t.Fatalf("branch vector search should see both layers: %v", p)
+	}
+	for _, h := range vh {
+		if h.Path == "file:///shadowed.md" && h.Text == "old auth token" {
+			t.Fatal("shadowed parent doc surfaced through vector search")
+		}
+	}
+	hh, err := feat.HybridSearch(ctx, "token", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := paths(hh); !p["file:///p-auth.md"] || !p["file:///b-auth.md"] {
+		t.Fatalf("hybrid fused two layers' id-1 fragments into one: %v", p)
+	}
+	if title, pages, err := feat.DocReview("file:///p-auth.md"); err != nil || title != "P" {
+		t.Fatalf("DocReview through the branch: title=%q pages=%d err=%v", title, len(pages), err)
+	}
+	if title, _, _ := feat.DocReview("file:///shadowed.md"); title != "S2" {
+		t.Fatalf("DocReview of a shadowed doc = %q, want the branch's", title)
+	}
+}
