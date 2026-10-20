@@ -29,7 +29,10 @@ import (
 
 // DocDetail is a document, its readings, and what is known about it.
 type DocDetail struct {
+	// Path is the DISPLAY path, relative to Root (docroot.go) — "@…" for a
+	// document in raglit's own storage. Every document endpoint accepts it back.
 	Path  string `json:"path"`
+	Root  string `json:"root,omitempty"`
 	Title string `json:"title"`
 	Kind  string `json:"kind"`
 
@@ -234,28 +237,33 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 		if err != nil {
 			return nil, err
 		}
-		root, _ := indexRoot(st)
+		view, _ := indexView(st)
+		root := view.Root
 
-		// Two spellings of the same document, and they are not interchangeable.
-		// The index stores ABSOLUTE paths, so that is what the store's readers
-		// want; attest addresses assets ROOT-RELATIVE, because Root is its
-		// security boundary. A caller may hand us either, so both are derived
-		// once here rather than guessed at four times below.
-		abs, rel := in.Path, in.Path
-		if filepath.IsAbs(in.Path) {
-			if r, rerr := filepath.Rel(root, in.Path); rerr == nil && root != "" {
-				rel = r
+		// Several spellings of the same document, and they are not
+		// interchangeable. The index stores ABSOLUTE paths, so that is what the
+		// store's readers want; the UI shows and sends the DISPLAY path
+		// (docroot.go); attest addresses assets ROOT-RELATIVE, because Root is its
+		// security boundary. The request path has already been resolved to the
+		// indexed one by docPathMiddleware when it could be, so all three are
+		// derived once here rather than guessed at four times below.
+		abs := in.Path
+		if !filepath.IsAbs(abs) && root != "" {
+			if a, ok := view.resolve(abs); ok {
+				abs = a
+			} else {
+				abs = filepath.Join(root, in.Path)
 			}
-		} else if root != "" {
-			abs = filepath.Join(root, in.Path)
 		}
+		rel := view.rel(abs)
+		asset := view.asset(abs)
 
-		d := DocDetail{Path: rel, Asset: rel, Kind: detailKind(abs)}
+		d := DocDetail{Path: rel, Root: root, Asset: asset, Kind: detailKind(abs)}
 		if id, ierr := st.DocumentIdentity(abs); ierr == nil && !id.Empty() {
 			d.Identity = &id
 		}
-		if root != "" {
-			d.Original = "/api/attest/" + in.Index + "/source?asset=" + url.QueryEscape(rel)
+		if asset != "" {
+			d.Original = "/api/attest/" + in.Index + "/source?asset=" + url.QueryEscape(asset)
 		}
 
 		// Pages and text, from whichever reading the document has.
@@ -302,7 +310,7 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 				if img, ierr := st.PageImagePath(abs, p.Page); ierr == nil && img != "" {
 					q := url.Values{}
 					q.Set("index", in.Index)
-					q.Set("path", abs)
+					q.Set("path", rel) // resolved back by docPathMiddleware
 					q.Set("page", strconv.Itoa(p.Page))
 					dp.ImageURL = "/api/page-image?" + q.Encode()
 				}
@@ -331,13 +339,13 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 			}
 			for _, h := range rep.Matches {
 				si := SeenIn{
-					Path: h.Path, Title: h.Title, Jaccard: h.Jaccard,
+					Path: view.rel(h.Path), Title: h.Title, Jaccard: h.Jaccard,
 					ContainProbe: h.ContainProbe, ContainMatch: h.ContainMatch,
 					Relation: string(h.Relation), Ruling: marks[h.Path],
 					MatchedChars: h.MatchedChars, GenericChars: h.GenericChars,
 					NumericOnlyHere: h.NumericOnlyInProbe, NumericOnlyThere: h.NumericOnlyInMatch,
 					Link: "#/documents/" + url.PathEscape(in.Index) + "/" +
-						url.PathEscape(h.Path) + "/transcript",
+						url.PathEscape(view.rel(h.Path)) + "/transcript",
 				}
 				for _, b := range h.Blocks {
 					si.Blocks = append(si.Blocks, SeenBlock{
@@ -361,9 +369,9 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 				// The review route in the SPA. The standalone page is still
 				// mounted at /attest/<index>?asset=… and still serves audio,
 				// which this route does not — see plan/spa-ui.md.
-				Workbench: "/i/" + url.PathEscape(in.Index) + "/attest/a/" + url.PathEscape(rel),
+				Workbench: "/i/" + url.PathEscape(in.Index) + "/attest/a/" + url.PathEscape(asset),
 			}
-			if rows, rerr := st.Attestations(rel); rerr == nil {
+			if rows, rerr := st.Attestations(asset); rerr == nil {
 				sum.Verdicts = len(rows)
 			}
 			d.Attest = sum
@@ -397,7 +405,7 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 				})
 			}
 		}
-		if rows, rerr := st.Attestations(rel); rerr == nil {
+		if rows, rerr := st.Attestations(asset); rerr == nil {
 			for _, r := range rows {
 				d.History = append(d.History, HistoryEvent{
 					Kind: "verdict", Seq: r.Seq, Source: r.Kind, Note: r.Note,

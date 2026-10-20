@@ -486,3 +486,39 @@ func TestResegmentAssignsIDsAndLeavesNoArtifact(t *testing.T) {
 		}
 	}
 }
+
+// Candidates replaces the walk: only listed assets are checked, a listed path
+// outside the root is ignored, and an asset with a reading that is NOT listed
+// does not appear — the host's list is the answer, not a hint.
+func TestAssetsFromCandidatesSkipsTheWalk(t *testing.T) {
+	f := newFixture(t, Guest{}, nil)
+	unlisted := filepath.Join(f.root, "sub", "other.wav")
+	if err := os.MkdirAll(filepath.Dir(unlisted), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unlisted, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &Reading{Asset: Asset{ID: "sub/other.wav", Kind: KindAudio}, Units: []Unit{turn(0, 1, "A", "x")}}
+	if _, err := WriteReading(unlisted, r); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.wav")
+
+	// Walk: both.
+	refs, err := f.svc.Assets(context.Background())
+	if err != nil || len(refs) != 2 {
+		t.Fatalf("walk: %v %v", refs, err)
+	}
+
+	f.svc.Candidates = func(context.Context) ([]string, error) {
+		return []string{filepath.Join(f.root, "hearing.wav"), filepath.Join(f.root, "no-reading.wav"), outside}, nil
+	}
+	refs, err = f.svc.Assets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0].Asset != "hearing.wav" || refs[0].Stats.Total != 3 {
+		t.Fatalf("candidates: %+v", refs)
+	}
+}

@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -255,7 +256,9 @@ func openDaemonRegistry(homeFlag, rootFlag string) (*raglit.Registry, raglit.Hom
 // operations), then the two plain routes (HTML UI at /, binary page-image).
 func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int, pool *raglit.Pool, defGC raglit.GCPolicy, watch *watcher) (http.Handler, error) {
 	router := chi.NewRouter()
-	api := humachi.New(router, huma.DefaultConfig("raglit", version))
+	// Before any route: chi refuses middleware added after the first one.
+	router.Use(docPathMiddleware(reg))
+	api := humachi.New(router, schemaSchemeConfig(huma.DefaultConfig("raglit", version)))
 	g, err := gat.New()
 	if err != nil {
 		return nil, err
@@ -338,6 +341,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	if err := gat.RegisterHuma(api, g, ""); err != nil {
 		return nil, err
 	}
+	relativeSchemaExamples(api.OpenAPI())
 
 	// Plain routes (not JSON operations): the review SPA + the binary page image.
 	// Served directly on the router alongside the gat-mounted ops.
@@ -451,6 +455,10 @@ type idxRow struct {
 	Name      string `json:"name"`
 	Documents int    `json:"documents"`
 	Fragments int    `json:"fragments"`
+	// Root is the directory every corpus document of the index lies under
+	// (docroot.go). Display paths are relative to it; empty for an index with
+	// no corpus documents.
+	Root string `json:"root,omitempty"`
 	// What the index HOLDS, so choosing between several does not require
 	// searching each one to find out. Counted, except About — see IndexDigest.
 	About      string            `json:"about,omitempty"`
@@ -476,6 +484,7 @@ func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIn
 			}
 			s, _ := st.IndexStatus()
 			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments}
+			row.Root, _ = indexRoot(st)
 			if d, err := st.IndexDigest(); err == nil {
 				row.About, row.AboutStale = d.About, d.AboutStale
 				row.Kinds, row.Content, row.Roles = d.Kinds, d.Content, d.Roles
@@ -491,11 +500,24 @@ type getFieldsIn struct {
 	Path  string `query:"path" doc:"document path, or a unique filename substring"`
 }
 type getFieldsOut struct {
-	Body struct {
-		Index string `json:"index"`
-		Path  string `json:"path"`
-		raglit.DocFields
-	}
+	Body fieldsBody
+}
+
+// fieldsBody spells raglit.DocFields' fields out rather than embedding it:
+// DocFields has methods, and huma cannot add the `$schema` link to a struct
+// that embeds a type with methods anywhere but first (reflect.StructOf), so the
+// embedded form logged a warning at startup and answered without the link. The
+// JSON is the same.
+type fieldsBody struct {
+	Index    string          `json:"index"`
+	Path     string          `json:"path"`
+	Type     string          `json:"type"`
+	Fields   json.RawMessage `json:"fields"`
+	Source   string          `json:"source,omitempty"`
+	Model    string          `json:"model,omitempty"`
+	At       int64           `json:"at,omitempty"`
+	TextHash string          `json:"text_hash,omitempty"`
+	TypeHash string          `json:"type_hash,omitempty"`
 }
 
 func getFieldsOp(reg *raglit.Registry) func(context.Context, *getFieldsIn) (*getFieldsOut, error) {
@@ -519,7 +541,8 @@ func getFieldsOp(reg *raglit.Registry) func(context.Context, *getFieldsIn) (*get
 			return nil, huma.Error500InternalServerError("fields", err)
 		}
 		out := &getFieldsOut{}
-		out.Body.Index, out.Body.Path, out.Body.DocFields = in.Index, ms[0].Path, f
+		out.Body = fieldsBody{Index: in.Index, Path: ms[0].Path, Type: f.Type, Fields: f.Fields,
+			Source: f.Source, Model: f.Model, At: f.At, TextHash: f.TextHash, TypeHash: f.TypeHash}
 		return out, nil
 	}
 }
@@ -585,6 +608,16 @@ type hitRow struct {
 	// Empty for an ordinary transcription. See raglit.HitTrust.
 	Caveat string           `json:"caveat,omitempty"`
 	Trust  *raglit.HitTrust `json:"trust,omitempty"`
+	// Rel is the document's display path, relative to Root (docroot.go), and
+	// what every document endpoint accepts back. DocID stays the indexed path.
+	Rel  string `json:"rel"`
+	Root string `json:"root,omitempty"`
+	// Name and Kind are what the document IS (identity.go): its generated or
+	// corrected caption, and its kind. Empty when nobody has said.
+	Name       string `json:"name,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	NameSource string `json:"name_source,omitempty"` // machine | person
+	NameModel  string `json:"name_model,omitempty"`
 }
 type searchIn struct {
 	Query    string `query:"q"`
@@ -634,17 +667,41 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		}
 		out := &searchOut{}
 		out.Body.Hits = []hitRow{}
+		// Per index and per document, once: a page of hits is mostly a few
+		// documents several times over.
+		views := map[string]*docView{}
+		idents := map[string]raglit.DocIdentity{}
 		for _, ih := range rrfMerge(lists, limit) {
 			h := ih.hit
 			title := h.Title
 			if title == "" {
 				title = h.Path
 			}
-			out.Body.Hits = append(out.Body.Hits, hitRow{
+			row := hitRow{
 				Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 				Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
-				Caveat: h.Caveat(), Trust: h.Trust,
-			})
+				Caveat: h.Caveat(), Trust: h.Trust, Rel: h.Path,
+			}
+			if st, err := reg.Read(ctx, ih.index); err == nil {
+				v, ok := views[ih.index]
+				if !ok {
+					if vv, verr := indexView(st); verr == nil {
+						v = &vv
+					}
+					views[ih.index] = v
+				}
+				if v != nil {
+					row.Rel, row.Root = v.rel(h.Path), v.Root
+				}
+				key := ih.index + "\x00" + h.Path
+				id, seen := idents[key]
+				if !seen {
+					id, _ = st.DocumentIdentity(h.Path)
+					idents[key] = id
+				}
+				row.Name, row.Kind, row.NameSource, row.NameModel = id.Name, id.Kind, id.Source, id.Model
+			}
+			out.Body.Hits = append(out.Body.Hits, row)
 		}
 		if len(out.Body.Hits) == 0 {
 			out.Body.Covers = coversFor(reg, plan.names, in.Path)
@@ -867,8 +924,23 @@ type documentsIn struct {
 }
 type documentsOut struct {
 	Body struct {
-		Documents []raglit.DocSummary `json:"documents"`
+		// Root is the directory display paths are relative to (docroot.go).
+		Root      string   `json:"root,omitempty"`
+		Documents []docRow `json:"documents"`
 	}
+}
+
+// docRow is a document as listed: its summary plus its display path. Path stays
+// the indexed path so existing callers keep joining on it; Rel is what a person
+// is shown and what every document endpoint accepts back.
+//
+// Name and Kind repeat GenName and GenKind under the names a search hit uses, so
+// the list and the hits spell "what this document is" the same way.
+type docRow struct {
+	raglit.DocSummary
+	Rel  string `json:"rel"`
+	Name string `json:"name,omitempty"`
+	Kind string `json:"kind,omitempty"`
 }
 
 func documentsOp(reg *raglit.Registry) func(context.Context, *documentsIn) (*documentsOut, error) {
@@ -881,11 +953,16 @@ func documentsOp(reg *raglit.Registry) func(context.Context, *documentsIn) (*doc
 		if err != nil {
 			return nil, huma.Error500InternalServerError("documents", err)
 		}
-		if docs == nil {
-			docs = []raglit.DocSummary{}
+		v, err := indexView(st)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("documents", err)
 		}
 		out := &documentsOut{}
-		out.Body.Documents = docs
+		out.Body.Root = v.Root
+		out.Body.Documents = make([]docRow, 0, len(docs))
+		for _, d := range docs {
+			out.Body.Documents = append(out.Body.Documents, docRow{DocSummary: d, Rel: v.rel(d.Path), Name: d.GenName, Kind: d.GenKind})
+		}
 		return out, nil
 	}
 }

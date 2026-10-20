@@ -68,6 +68,11 @@ type DocSummary struct {
 	GenName   string `json:"gen_name,omitempty"`
 	GenKind   string `json:"gen_kind,omitempty"`
 	GenSource string `json:"gen_source,omitempty"` // machine | person
+	// GenSummary is the generated account of what the document covers, and
+	// GenModel the model that wrote the caption (empty for a person's). Carried
+	// so a list can show what a document is without a request per row.
+	GenSummary string `json:"gen_summary,omitempty"`
+	GenModel   string `json:"gen_model,omitempty"`
 	// GenContentTags / GenRoleTags are the document's tags (identity.go):
 	// what it is about, and what job it does in the corpus.
 	GenContentTags []string `json:"gen_content_tags,omitempty"`
@@ -93,7 +98,7 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	ctx := context.Background()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.id, d.path, d.title, d.added_at, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
-		        d.gen_content_tags, d.gen_role_tags,
+		        d.gen_content_tags, d.gen_role_tags, d.gen_summary, d.gen_model,
 		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND `+SQLOwnWordsF+`) AS fragments
 		   FROM documents d ORDER BY d.added_at DESC`)
 	if err != nil {
@@ -107,14 +112,14 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	var ids []int64
 	for rows.Next() {
 		var id, addedAt, frags int64
-		var path, title, fragMode, genName, genKind, genSource, ctStr, rtStr string
-		if err := rows.Scan(&id, &path, &title, &addedAt, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &frags); err != nil {
+		var path, title, fragMode, genName, genKind, genSource, ctStr, rtStr, genSummary, genModel string
+		if err := rows.Scan(&id, &path, &title, &addedAt, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &genSummary, &genModel, &frags); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		out = append(out, DocSummary{Path: path, Title: title, Fragments: int(frags), FragMode: fragMode,
 			AddedAt: addedAt, Engines: map[string]int{},
-			GenName: genName, GenKind: genKind, GenSource: genSource,
+			GenName: genName, GenKind: genKind, GenSource: genSource, GenSummary: genSummary, GenModel: genModel,
 			GenContentTags: splitTagList(ctStr), GenRoleTags: splitTagList(rtStr)})
 		ids = append(ids, id)
 	}
@@ -215,7 +220,8 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 
 // PageImagePath returns the absolute path of a document page's saved image, or
 // "" if there is none. The daemon validates the path is under the home's pages/
-// dir before serving it.
+// dir before serving it. A stored path from a home that has since been copied
+// or moved is mapped back under this home's pages/ (rerootPageImage).
 func (s *Store) PageImagePath(path string, page int) (string, error) {
 	img, err := s.q.GetPageImagePath(context.Background(), gen.GetPageImagePathParams{Path: path, Page: int64(page)})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -224,7 +230,7 @@ func (s *Store) PageImagePath(path string, page int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return img, nil
+	return s.rerootPageImage(img), nil
 }
 
 // PagesRoot is the home's pages directory (absolute), for the daemon to bound

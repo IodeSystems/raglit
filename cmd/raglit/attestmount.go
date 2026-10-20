@@ -60,6 +60,9 @@ func mountAttest(router chi.Router, api huma.API, reg *raglit.Registry) error {
 			// than only when somebody remembers to sweep. The log is still the
 			// record; this is the queryable view catching up immediately.
 			OnWrite: projectVerdicts(st, root),
+			// The index already knows every document; walking the root to find
+			// them again is what made the review list take minutes.
+			Candidates: func(context.Context) ([]string, error) { return st.DocumentPaths() },
 		}
 		prefix := "/api/attest/" + name
 		if err := svc.Register(api, prefix); err != nil {
@@ -73,33 +76,6 @@ func mountAttest(router chi.Router, api huma.API, reg *raglit.Registry) error {
 		router.Method(http.MethodGet, prefix+"/source", svc.AssetBytes())
 	}
 	return nil
-}
-
-// indexRoot is the deepest directory containing every document in an index.
-//
-// Derived rather than configured, because nothing declares it: an index is a set
-// of ingested paths and the tree they share is a fact about them. Deepest common
-// ancestor, so the root is as tight as the corpus allows — an index whose
-// documents all live under one project bounds a review to that project, and only
-// an index spanning unrelated trees widens to their common parent.
-func indexRoot(st *raglit.Store) (string, error) {
-	docs, err := st.Documents()
-	if err != nil {
-		return "", err
-	}
-	root := ""
-	for _, d := range docs {
-		if !filepath.IsAbs(d.Path) {
-			continue
-		}
-		dir := filepath.Dir(d.Path)
-		if root == "" {
-			root = dir
-			continue
-		}
-		root = commonDir(root, dir)
-	}
-	return root, nil
 }
 
 // commonDir returns the deepest directory that is a prefix of both.

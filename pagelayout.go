@@ -171,6 +171,7 @@ func (s *Store) PageLayoutFor(docPath string, page int) (*PageLayout, error) {
 	if err != nil {
 		return nil, fmt.Errorf("raglit: no page %d recorded for %s: %w", page, docPath, err)
 	}
+	imgPath = s.rerootPageImage(imgPath)
 	out.HasImage = imgPath != ""
 	if imgPath != "" {
 		if raw, ok := s.cachedOCRForImageFile(imgPath); ok {
@@ -244,7 +245,7 @@ func (s *Store) PagesWithLayout(docPath string) map[int]bool {
 		if rows.Scan(&page, &img) != nil {
 			continue
 		}
-		sha, ok := pageImageSHAFor(img)
+		sha, ok := pageImageSHAFor(s.rerootPageImage(img))
 		if !ok {
 			continue
 		}

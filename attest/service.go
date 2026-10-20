@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,6 +55,17 @@ type Service struct {
 	// stale between sweeps. Optional: a host without one loses nothing, because
 	// the log beside the asset is the record.
 	OnWrite func(assetPath string) error
+
+	// Candidates, when set, names the assets that MAY have a reading, as
+	// absolute paths, and Assets checks those instead of walking Root.
+	//
+	// For a host that already knows its assets. raglit's index knows every
+	// document it holds; walking the root to rediscover them read every
+	// directory under it, and on a root that had widened to a home directory the
+	// listing took over six minutes for 210 readings. Optional: without it the
+	// walk is the answer, which is right for a directory nobody has indexed.
+	// Paths outside Root are ignored, so a list cannot widen the boundary.
+	Candidates func(ctx context.Context) ([]string, error)
 }
 
 func (s *Service) now() string {
@@ -173,26 +185,51 @@ type AssetRef struct {
 // reviewer into every asset to find the unfinished one.
 func (s *Service) Assets(ctx context.Context) ([]AssetRef, error) {
 	var out []AssetRef
+	// add records one asset if it has a readable reading and this caller may see
+	// it. A corpus with one unreadable sidecar is still a usable corpus, and
+	// failing the whole listing would make it unusable: the asset is omitted, and
+	// opening it directly reports the real error.
+	add := func(asset string) {
+		rel, rerr := filepath.Rel(s.Root, asset)
+		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return
+		}
+		if ok, cerr := s.Ident.Can(ctx, rel, PermRead); cerr != nil || !ok {
+			return
+		}
+		st, lerr := Load(asset)
+		if lerr != nil {
+			return
+		}
+		out = append(out, AssetRef{Asset: rel, Kind: st.Asset.Kind, Producer: st.Producer, Stats: st.Stats})
+	}
+	if s.Candidates != nil {
+		paths, err := s.Candidates(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// Sorted, because the walk this replaces listed in lexical order and a
+		// list that reshuffles between requests loses a reviewer's place.
+		paths = append([]string(nil), paths...)
+		sort.Strings(paths)
+		seen := map[string]bool{}
+		for _, p := range paths {
+			if !filepath.IsAbs(p) || seen[p] || IsReading(p) || IsLog(p) {
+				continue
+			}
+			seen[p] = true
+			if _, err := os.Stat(ReadingPath(p)); err != nil {
+				continue
+			}
+			add(p)
+		}
+		return out, nil
+	}
 	err := filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !IsReading(p) {
 			return nil
 		}
-		asset := strings.TrimSuffix(p, readingSuffix)
-		rel, rerr := filepath.Rel(s.Root, asset)
-		if rerr != nil {
-			return nil
-		}
-		if ok, cerr := s.Ident.Can(ctx, rel, PermRead); cerr != nil || !ok {
-			return nil
-		}
-		st, lerr := Load(asset)
-		if lerr != nil {
-			// A corpus with one unreadable sidecar is still a usable corpus, and
-			// failing the whole listing would make it unusable. The asset is
-			// omitted; opening it directly reports the real error.
-			return nil
-		}
-		out = append(out, AssetRef{Asset: rel, Kind: st.Asset.Kind, Producer: st.Producer, Stats: st.Stats})
+		add(strings.TrimSuffix(p, readingSuffix))
 		return nil
 	})
 	return out, err
