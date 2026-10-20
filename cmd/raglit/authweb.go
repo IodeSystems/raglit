@@ -2,8 +2,8 @@ package main
 
 import (
 	"crypto/rand"
-	"fmt"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
