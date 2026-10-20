@@ -8,6 +8,7 @@ import { DocActions } from "../panes/DocActions";
 import { ErrorText } from "../ui/Details";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
 import { displayPath, displayTitle, fileName } from "../ui/display";
+import { InlineMarkdown } from "../ui/InlineMarkdown";
 import "./DocShell.css";
 
 // Everything below /i/:index/d/:doc — the breadcrumb, the title block and the
@@ -97,7 +98,7 @@ export function DocShell() {
         {identity?.summary && (
           <div className="docshell-summary">
             {!byPerson && <AISummaryLabel />}
-            <div>{identity.summary}</div>
+            <div><InlineMarkdown text={identity.summary} /></div>
           </div>
         )}
         {editing && (

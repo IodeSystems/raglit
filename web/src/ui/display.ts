@@ -102,6 +102,16 @@ export function engineLabel(engine: string | undefined): string {
   return ENGINE_LABELS[engine] ?? engine;
 }
 
+// producerLabel names what made a reading the review workbench checks. The raw
+// id ("raglit/text", "oidio/parakeet") goes in a tooltip.
+export function producerLabel(producer: string | undefined): string {
+  if (!producer) return "";
+  if (producer === "raglit/text") return "Text extraction";
+  if (producer === "raglit/regions") return "Page regions";
+  if (producer.startsWith("oidio/")) return "Speech transcription";
+  return producer;
+}
+
 const LANE_LABELS: Record<string, string> = { heavy: "Large", light: "Small" };
 
 export function laneLabel(lane: string | undefined): string {

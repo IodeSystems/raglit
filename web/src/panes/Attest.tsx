@@ -5,7 +5,7 @@ import { type Stats, ruled as ruledCount, useAssets } from "@iodesystems/attest-
 import { raglitTransport } from "./attestTransport";
 import { ApiError, postJSON } from "../api";
 import { ErrorText } from "../ui/Details";
-import { fileName } from "../ui/display";
+import { fileName, producerLabel } from "../ui/display";
 import "./Attest.css";
 
 export type { Stats };
@@ -105,7 +105,7 @@ export function Attest() {
                     <div className="muted attest-folder">{a.asset.slice(0, a.asset.lastIndexOf("/"))}</div>
                   )}
                 </td>
-                <td className="muted">{a.producer ?? ""}</td>
+                <td className="muted" title={a.producer ?? ""}>{producerLabel(a.producer)}</td>
                 <td className="num">{total}</td>
                 <td className="num" title="Checked, corrected or disputed one at a time. A blanket approval is not counted here.">
                   {s ? ruledCount(s) : 0}
