@@ -9,9 +9,10 @@ import {
   useWorkbench,
 } from "@iodesystems/attest-react";
 
-import { ApiError, postJSON } from "../api";
-import { Progress } from "./Attest";
+import { Progress, SweepIndex } from "./Attest";
 import { raglitTransport } from "./attestTransport";
+import { ErrorText } from "../ui/Details";
+import { fileName } from "../ui/display";
 
 // One asset under review: what the machine claimed, unit by unit, and what a
 // person has ruled about each.
@@ -58,8 +59,25 @@ export function AttestAsset() {
   // this document yet — a state with an action, not a broken mount.
   const unread = wb.error !== null && /\b404\b|not found/i.test(wb.error);
   if (unread) return <Unread index={index} asset={asset} onDone={wb.reload} />;
-  if (wb.error && !wb.state) return <div className="empty err">{wb.error}</div>;
-  if (!wb.state) return <div className="empty">loading…</div>;
+  if (wb.error && !wb.state) {
+    return (
+      <div className="empty attest-state">
+        <div className="attest-state-title">This review could not be loaded.</div>
+        <ErrorText raw={wb.error} />
+        <button onClick={() => wb.reload()}>Try again</button>
+      </div>
+    );
+  }
+  if (!wb.state) {
+    return (
+      <div className="panel" aria-busy="true">
+        <div className="attest-loading" role="status">
+          <span className="attest-spinner" aria-hidden="true" />
+          <span>Loading {fileName(asset)} for review…</span>
+        </div>
+      </div>
+    );
+  }
 
   const s = wb.state.stats;
   const total = s.total;
@@ -75,20 +93,34 @@ export function AttestAsset() {
         </Link>
         <span className="sep">/</span>
         <Link to="/i/$index/attest" params={{ index }}>
-          review
+          Review
         </Link>
         <span className="sep">/</span>
-        <span>{asset.split("/").pop()}</span>
+        <span>{fileName(asset)}</span>
       </nav>
 
       <div className="doctitle">
-        <h2>{asset}</h2>
+        <h2>{fileName(asset)}</h2>
+        {/* The asset id is ROOT-RELATIVE, which is the display path (F4), and
+            every document endpoint accepts it — so this links straight back. */}
+        <div className="path">
+          <Link to="/i/$index/d/$doc/pages" params={{ index, doc: asset }} title="Open the document">
+            {asset}
+          </Link>
+        </div>
         <div className="bykind">
           <Progress ruled={accounted} total={total} />
-          {wb.state.producer && <span className="muted">read by {wb.state.producer}</span>}
+          {wb.state.producer && (
+            <span className="muted" title={`Read by ${wb.state.producer}`}>
+              Machine reading
+            </span>
+          )}
           {!!wb.state.orphaned?.length && (
-            <span className="badge error" title="a re-read changed what the machine claims; these verdicts no longer attach to anything, and are never matched onto whatever is nearest">
-              {wb.state.orphaned.length} orphaned verdicts
+            <span
+              className="badge error"
+              title="The document was read again and its text changed. These decisions no longer match any passage, and are not moved onto the nearest one."
+            >
+              {wb.state.orphaned.length} decision{wb.state.orphaned.length === 1 ? "" : "s"} no longer match
             </span>
           )}
         </div>
@@ -105,11 +137,10 @@ export function AttestAsset() {
       */}
       <div className={prov.complete ? "prov" : "prov warn"}>
         {prov.accounted} · {prov.corrections}
-        {prov.terms && <div className="muted">affirmed under: “{prov.terms}”</div>}
+        {prov.terms && <div className="muted">Approved on these terms: “{prov.terms}”</div>}
         {prov.termsMissing && (
           <div className="muted">
-            the affirmation’s terms were not recorded — that is what is known, and
-            nothing here will invent them
+            The terms of the approval were not recorded.
           </div>
         )}
       </div>
@@ -130,22 +161,26 @@ export function AttestAsset() {
           <input
             value={by}
             onChange={(e) => setBy(e.target.value)}
-            placeholder="your name — a ruling is attributed to a person"
+            placeholder="Your name (each decision is recorded under it)"
             autoComplete="name"
           />
-          <span className="muted" title="checked, corrected or disputed one at a time; a sweep is not counted here">
-            {ruledCount(s)} ruled · {accounted}/{total} accounted for
+          <span className="muted" title="Reviewed: checked, corrected or disputed one at a time. A blanket approval is counted only as accounted for.">
+            {ruledCount(s)} reviewed · {accounted} of {total} accounted for
           </span>
           <SweepButton disabled={!by.trim()} onSweep={(terms) => void wb.sweep(terms)} />
         </div>
 
         {!by.trim() && (
           <div className="muted" style={{ padding: "8px 14px" }}>
-            A ruling needs the name of the person making it. Self-declared, and
-            required: a defaulted author reads afterwards exactly like a real one.
+            Enter your name to start. Every decision is recorded with the name of the
+            person who made it.
           </div>
         )}
-        {wb.error && <div className="err" style={{ padding: "8px 14px" }}>{wb.error}</div>}
+        {wb.error && (
+          <div style={{ padding: "8px 14px" }}>
+            <ErrorText raw={wb.error} />
+          </div>
+        )}
 
         {wb.state.units.map((u, i) => {
           const active = i === wb.cursor;
@@ -160,18 +195,22 @@ export function AttestAsset() {
                 {(u.label || u.unit.label) && <span className="badge">{u.label || u.unit.label}</span>}
                 {u.kind && (
                   <span className={"badge " + (u.kind === "confirmed" ? "done" : "")}>
-                    {u.kind}
+                    {verdictLabel(u.kind)}
                     {/* Swept is NOT a demotion — the reviewer went through it, and
                         the affirmation they signed says under what terms. It is
                         marked so a reader can ask whether anyone named this one. */}
-                    {u.swept ? " (swept)" : ""}
+                    {u.swept ? " (in blanket approval)" : ""}
                   </span>
                 )}
                 {u.unit.locator.area?.page != null && (
-                  <span className="muted">page {u.unit.locator.area.page}</span>
+                  <span className="muted">Page {u.unit.locator.area.page}</span>
                 )}
                 {u.by && <span className="muted">by {u.by}</span>}
-                {u.authored && <span className="muted" title="a unit a person cut themselves">authored</span>}
+                {u.authored && (
+                  <span className="muted" title="A passage a person marked out themselves">
+                    Added by a person
+                  </span>
+                )}
               </div>
 
               {active && editing ? (
@@ -191,8 +230,8 @@ export function AttestAsset() {
                   {/* The correction wins when there is one: it is what the record
                       now says, and showing the machine's words as the current text
                       next to a "corrected" badge contradicts the badge. */}
-                  {pending?.text ?? u.text ?? u.unit.text ?? <span className="muted">(no text)</span>}
-                  {pending && <span className="muted"> · unsaved</span>}
+                  {pending?.text ?? u.text ?? u.unit.text ?? <span className="muted">No text</span>}
+                  {pending && <span className="muted"> · not saved yet</span>}
                 </div>
               )}
 
@@ -209,20 +248,20 @@ export function AttestAsset() {
                       void wb.rule(k);
                     }}
                   >
-                    {k}
+                    {verdictLabel(k)}
                   </button>
                 ))}
                 {u.kind && (
                   <button
                     className="act"
-                    title="take back the ruling; the unit returns to untouched"
+                    title="Take back the decision; the passage returns to not reviewed"
                     onClick={(e) => {
                       e.stopPropagation();
                       wb.goto(i);
                       void wb.retract();
                     }}
                   >
-                    retract
+                    Undo
                   </button>
                 )}
               </div>
@@ -246,7 +285,7 @@ function SweepButton({ disabled, onSweep }: { disabled: boolean; onSweep: (terms
   if (!open) {
     return (
       <button className="act" disabled={disabled} onClick={() => setOpen(true)}>
-        affirm the rest…
+        Approve the rest…
       </button>
     );
   }
@@ -256,7 +295,7 @@ function SweepButton({ disabled, onSweep }: { disabled: boolean; onSweep: (terms
         autoFocus
         value={terms}
         onChange={(e) => setTerms(e.target.value)}
-        placeholder="the terms you are affirming under, in your own words"
+        placeholder="On what terms? For example: read in full, minor typos not corrected"
         style={{ minWidth: 320 }}
       />
       <button
@@ -267,10 +306,10 @@ function SweepButton({ disabled, onSweep }: { disabled: boolean; onSweep: (terms
           setTerms("");
         }}
       >
-        affirm
+        Approve
       </button>
       <button className="act" onClick={() => setOpen(false)}>
-        cancel
+        Cancel
       </button>
     </span>
   );
@@ -283,52 +322,32 @@ function SweepButton({ disabled, onSweep }: { disabled: boolean; onSweep: (terms
 // way to tell "your corpus has not been swept" from "the review server is
 // broken", and every reason to assume the second.
 function Unread({ index, asset, onDone }: { index: string; asset: string; onDone: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [result, setResult] = useState<{ wrote: number; skipped: number } | null>(null);
-
   return (
-    <div className="empty">
-      <p>
-        Nothing has read <b>{asset.split("/").pop()}</b> yet, so there is nothing
-        to review. A review rules on what a MACHINE claimed; until something has
-        claimed anything, there is no claim to confirm or dispute.
-      </p>
-      <p className="muted">
-        A sweep writes a reading for every document in this index that can have
-        one, and skips the rest — a spreadsheet, a zip, a PDF nobody has run
-        regions over. It reports what it skipped rather than quietly covering
-        half the corpus.
-      </p>
-      <button
-        className="primary"
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          setErr("");
-          try {
-            const r = await postJSON<{ wrote: number; skipped: number }>(
-              "/api/attest/readings",
-              { index },
-            );
-            setResult(r);
-            onDone();
-          } catch (e: unknown) {
-            setErr(e instanceof ApiError ? e.message : String(e));
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {busy ? "sweeping…" : "Sweep this index"}
-      </button>
-      {result && (
-        <p className="muted">
-          wrote {result.wrote}, skipped {result.skipped}
-          {result.skipped > 0 && " — a skipped document is one nothing can read"}
-        </p>
-      )}
-      {err && <div className="err">{err}</div>}
+    <div className="empty attest-state">
+      <div className="attest-state-title">Not ready for review</div>
+      <div>
+        <b>{fileName(asset)}</b> has not been read by the system yet, so there is
+        nothing to check. A review confirms or corrects what the machine read.
+      </div>
+      <div className="muted">
+        Preparing the index reads every document that can be read and skips the
+        rest, such as spreadsheets and archives, and says how many it skipped.
+      </div>
+      <SweepIndex index={index} onDone={onDone} />
     </div>
   );
+}
+
+// The verdict names, in words. The tooltip (VERDICT_GLOSS) keeps the exact
+// meaning; the value posted is still the core's name.
+const VERDICT_LABELS: Record<string, string> = {
+  confirmed: "Confirmed",
+  affirmed: "Looks right",
+  corrected: "Corrected",
+  unclear: "Can't tell",
+  unsupported: "Not in document",
+};
+
+function verdictLabel(kind: string): string {
+  return VERDICT_LABELS[kind] ?? kind;
 }
