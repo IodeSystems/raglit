@@ -347,8 +347,8 @@ Open:
   state not exercised.
 - Untitled documents show their OCR first line (e.g. a phone status bar) until
   captioning succeeds — 289 caption jobs failed on this corpus. Data, not UI.
-- Generated summaries render Markdown as raw text (backticks); Review's "Read
-  by" column shows engine ids ("raglit/text").
+- ✅ Summaries render inline Markdown (`InlineMarkdown`); Review's "Read by"
+  says "Text extraction" / "Page regions" / "Speech transcription".
 - ✅ Storage docs (`@attachments/…`, uploads) download through
   `GET /api/original?index=&path=` (USER 2026-10-20: separate route, not a
   second review root). Serves only a document OF the index whose bytes are
@@ -359,8 +359,9 @@ Open:
   :7431 copy (243 written / 414 skipped for lack of region reads).
 - Copied-example captions on a live index regenerate only when the caption queue
   runs with a model (`raglit identify`); until then the wrong titles show.
-- Hybrid/vec search returns 500 without an embedder; Search shows a plain
-  message. Hide the modes server-side when no embedder (icebox candidate).
+- ✅ `/indexes` rows carry `meaning`; Search offers "By meaning"/"Both" only
+  where an index in scope has an embedder; the daemon skips indexes without
+  one and answers 400 when none can.
 - AttestAsset's provenance wording lives in @iodesystems/attest-react.
 
 ## Open decisions (original planning)

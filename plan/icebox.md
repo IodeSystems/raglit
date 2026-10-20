@@ -17,8 +17,8 @@ Not scheduled. Each is opt-in.
 - **Own-layer edge**: a layer searched own-only (its parent also in the set, or
   added as a sibling) no longer hides parent docs it tombstoned/shadows — both
   versions can appear, labelled by index.
-- **attest mounts at daemon start only**: a layer registered later has no
-  review workbench until restart.
+- ✅ attest mounts lazily for indexes created after start (`lazyAttest`;
+  those ops are absent from /openapi.json, which is built once).
 - **Real Zitadel not tested**: access tokens must be JWT type; browser app is
   a PKCE user-agent app with redirect `<daemon>/auth/callback`.
 - **risks**: sessions are in memory (restart = re-login); sibling search does
