@@ -184,3 +184,41 @@ func TestSchemaLinkUsesRequestScheme(t *testing.T) {
 		t.Fatalf("$schema behind a TLS proxy not https: %s", clip(string(b), 200))
 	}
 }
+
+// An index created after the daemon started still gets a review surface.
+func TestAttestMountsIndexesCreatedLater(t *testing.T) {
+	home := raglit.Home(t.TempDir())
+	reg, err := raglit.OpenScopedRegistry(string(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	lf := addLLMFlags(fs)
+	_ = fs.Parse(nil)
+	lf.resolve(home)
+	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(func() { srv.Close(); reg.Close() })
+
+	if code, _ := getStatus(t, srv.URL+"/api/attest/later/assets"); code != http.StatusNotFound {
+		t.Fatalf("assets of an index that does not exist: %d, want 404", code)
+	}
+	st, err := reg.Get("later")
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpus := filepath.Join(t.TempDir(), "case")
+	if err := st.Ingest(context.Background(), raglit.Document{Path: filepath.Join(corpus, "a.md"), Title: "a.md",
+		Fragments: []raglit.Fragment{{Text: "a later document"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := getStatus(t, srv.URL+"/api/attest/later/assets"); code != http.StatusOK || !strings.Contains(b, `"assets"`) {
+		t.Fatalf("assets of a later index: %d %s", code, clip(b, 200))
+	}
+	if code, b := getStatus(t, srv.URL+"/attest/later"); code != http.StatusOK || !strings.Contains(strings.ToLower(b), "<!doctype html") {
+		t.Fatalf("review page of a later index: %d %s", code, clip(b, 200))
+	}
+}

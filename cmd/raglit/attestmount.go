@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 
 	"github.com/iodesystems/raglit"
@@ -39,6 +41,7 @@ import (
 // silently skips an index looks identical to an index with nothing to review,
 // and the whole point of this surface is to say how much has been checked.
 func mountAttest(router chi.Router, api huma.API, reg *raglit.Registry) error {
+	mounted := map[string]bool{}
 	for _, name := range reg.Names() {
 		st, err := reg.Get(name)
 		if err != nil {
@@ -54,16 +57,7 @@ func mountAttest(router chi.Router, api huma.API, reg *raglit.Registry) error {
 			// path bug reach the whole filesystem.
 			continue
 		}
-		svc := &attest.Service{
-			Root: root, Ident: indexIdentity(reg, name), Ev: multiEvidence{root: root},
-			// Keep the index's projection current as rulings are made, rather
-			// than only when somebody remembers to sweep. The log is still the
-			// record; this is the queryable view catching up immediately.
-			OnWrite: projectVerdicts(st, root),
-			// The index already knows every document; walking the root to find
-			// them again is what made the review list take minutes.
-			Candidates: func(context.Context) ([]string, error) { return st.DocumentPaths() },
-		}
+		svc := newAttestService(reg, name, st, root)
 		prefix := "/api/attest/" + name
 		if err := svc.Register(api, prefix); err != nil {
 			return fmt.Errorf("attest mount %s: %w", name, err)
@@ -74,8 +68,81 @@ func mountAttest(router chi.Router, api huma.API, reg *raglit.Registry) error {
 		// lets one embedded page serve every index unchanged.
 		router.Method(http.MethodGet, "/attest/"+name, svc.UI(prefix, prefix+"/source"))
 		router.Method(http.MethodGet, prefix+"/source", svc.AssetBytes())
+		mounted[name] = true
 	}
+	// Indexes that appear after start — a layer registered, an upload into a
+	// new name, an empty index that gained documents — have no routes above.
+	// chi tries those static routes first; everything else under these
+	// prefixes reaches the lazy mounts.
+	lazy := &lazyAttest{reg: reg, mounts: map[string]*lazyMount{}}
+	router.Handle("/api/attest/{index}/*", lazy)
+	router.Method(http.MethodGet, "/attest/{index}", lazy)
 	return nil
+}
+
+// newAttestService is one index's review service.
+func newAttestService(reg *raglit.Registry, name string, st *raglit.Store, root string) *attest.Service {
+	return &attest.Service{
+		Root: root, Ident: indexIdentity(reg, name), Ev: multiEvidence{root: root},
+		// Keep the index's projection current as rulings are made, rather
+		// than only when somebody remembers to sweep. The log is still the
+		// record; this is the queryable view catching up immediately.
+		OnWrite: projectVerdicts(st, root),
+		// The index already knows every document; walking the root to find
+		// them again is what made the review list take minutes.
+		Candidates: func(context.Context) ([]string, error) { return st.DocumentPaths() },
+	}
+}
+
+// lazyAttest mounts the review surface for an index on first use, on its own
+// router. Those operations are absent from /openapi.json — the document is
+// built once, at start — but they are the same handlers at the same paths.
+type lazyAttest struct {
+	reg    *raglit.Registry
+	mu     sync.Mutex
+	mounts map[string]*lazyMount
+}
+
+type lazyMount struct {
+	root string
+	h    http.Handler
+}
+
+func (l *lazyAttest) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "index")
+	// Read access first, every time: an index can be deleted or made private
+	// after its mount was built.
+	st, err := l.reg.Read(r.Context(), name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	root, err := indexRoot(st)
+	if err != nil || root == "" {
+		http.NotFound(w, r)
+		return
+	}
+	l.mu.Lock()
+	m := l.mounts[name]
+	// The root widens as documents arrive; a mount bounded by the old one
+	// would hide the new documents, so it is rebuilt.
+	if m == nil || m.root != root {
+		sub := chi.NewRouter()
+		api := humachi.New(sub, huma.DefaultConfig("raglit attest "+name, version))
+		svc := newAttestService(l.reg, name, st, root)
+		prefix := "/api/attest/" + name
+		if err := svc.Register(api, prefix); err != nil {
+			l.mu.Unlock()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sub.Method(http.MethodGet, "/attest/"+name, svc.UI(prefix, prefix+"/source"))
+		sub.Method(http.MethodGet, prefix+"/source", svc.AssetBytes())
+		m = &lazyMount{root: root, h: sub}
+		l.mounts[name] = m
+	}
+	l.mu.Unlock()
+	m.h.ServeHTTP(w, r)
 }
 
 // commonDir returns the deepest directory that is a prefix of both.
