@@ -309,7 +309,35 @@ duration and outcome, with the retry/cancel actions inline.
 - **next**: `/api/identity-jobs` exists; check whether the two can be merged
   server-side into one ordered feed or whether the client interleaves them.
 
-## Blocking decisions (USER owns)
+## Review walk 2026-10-20 (for a professional audience)
+
+Walked build 1afc2e6 on a COPY of delano-v-mckinnon (657 docs), daemon on
+:7431, no models. Screenshots under /tmp/claude-chrome-screenshots-cIMpIU/.
+Broken / embarrassing:
+- Types & fields: the example command block is light-on-light, unreadable.
+- Review tab: blank "loading…" for 75 s — `/api/attest/<idx>/assets` measured
+  1m15s (curl). No progress, no partial render.
+- Raw internal errors in Activity ("arguments are not a JSON object: invalid
+  character ','…"), 289 failed captioning jobs in red; Problems shows CLI
+  commands and copy like "Jobs the endpoint made fight".
+- Absolute home paths (/home/<user>/life/projects/…) in the doc list, search
+  hits, doc header and URLs.
+Looks unfinished:
+- Two shells: projects/project pages (top bar, centered) vs index pages
+  (sidebar). Overview = 7 stat cards and nothing else. ~200px dead gutter
+  left of content (`.pagemain` centered inside the area beside the sidebar).
+- Jargon in the UI: frags, vision 4, bm25 — exact words, llm-seg, lane
+  heavy, 11×429, score 7.00, "titled by Qwen3-6-27B-MPT".
+- Search: same document repeated (no grouping), no term highlight, filename
+  as title though a generated title exists, caption warning said twice.
+- Document list: filename + path only; kinds exist (correspondence 169,
+  court filing 87, …) but there is no type/date/title column or filter.
+- Transcript is monospace for prose.
+Minor: two breakpoints only, sidebar has no collapse rule (not verified
+visually); `$schema` URLs say https on http; page-image paths are absolute
+(moving a root breaks images — seen on the copy); JS bundle >500 kB.
+
+
 
 1. **Styling approach.** Tokens + hand-written CSS (no new deps, smallest
    change, keeps the committed-dist constraint trivially) · CSS Modules
