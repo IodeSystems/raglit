@@ -9,76 +9,78 @@ import ListItemText from "@mui/material/ListItemText";
 import ListSubheader from "@mui/material/ListSubheader";
 
 export const DRAWER_WIDTH = 232;
+export const APPBAR_HEIGHT = 56;
 
-// The index workspace navigation.
+// The side navigation, for every scope: the daemon, a project, an index.
 //
-// It replaces seven flat tabs — Dashboard, Health, Ingest jobs, Documents,
-// Search, Branches, Review — that put the corpus, the machinery and the workflow
-// at one level in no particular order. The grouping here is the claim that they
-// are three different questions:
+// One component for all three is the F5 fix (plan/ui-redesign.md, review walk
+// 2026-10-20). The overview and project pages used to have a top bar with a
+// centred page and the index pages a sidebar, so walking from a project into
+// one of its indexes changed the whole frame. Now only the entries change.
+//
+// The index entries keep the grouping that replaced seven flat tabs:
 //
 //   CORPUS  what is in this index, and how do I find it
 //   WORK    what is it doing, and what went wrong
-//   INDEX   what is this index, and how is it configured
+//   INDEX   how this index is set up
 //
-// A drawer rather than tabs because the list is going to keep growing — four of
-// these seven entries had no UI at all a day ago — and a tab bar that grows
-// wraps, while a drawer scrolls.
+// A drawer rather than tabs because the list keeps growing, and a tab bar that
+// grows wraps, while a drawer scrolls.
 
-type Item = {
+export type NavItem = {
   label: string;
   to: string;
-  // count is a problem count, not a size. It renders as an alarm, so a pane with
-  // nothing wrong must pass undefined rather than 0 — a grey zero next to
-  // "Problems" reads as a badge that failed to load.
+  // Active only on this exact path. Needed for a scope's root ("/i/:index",
+  // "/p/:project", "/"), which is a PREFIX of every other entry — the trap
+  // spa-ui.md already recorded on the tab bar, where every tab read as active.
+  exact?: boolean;
+  // A problem count, not a size. It renders as an alarm, so an entry with
+  // nothing wrong must pass undefined or 0 — a grey zero next to "Problems"
+  // reads as a badge that failed to load.
   count?: number;
-  // isNew marks a surface the daemon has served for a while and the UI has not.
-  // Dropped once the redesign lands; it exists so the gap is visible while it is
-  // being closed.
-  isNew?: boolean;
+  // A small mark in front of the label (the branch glyph).
+  mark?: string;
+  title?: string;
 };
 
-type Section = { heading: string; items: Item[] };
+export type NavSection = { heading: string; items: NavItem[] };
 
-export function NavDrawer({
-  index,
-  problems,
-  activity,
-}: {
-  index: string;
-  problems?: number;
-  activity?: number;
-}) {
-  const sections: Section[] = [
+export function indexSections(index: string, problems?: number): NavSection[] {
+  const root = `/i/${index}`;
+  return [
     {
       heading: "Corpus",
       items: [
-        { label: "Documents", to: `/i/${index}/d` },
-        { label: "Search", to: `/i/${index}/search` },
-        { label: "Types & fields", to: `/i/${index}/types`, isNew: true },
+        { label: "Overview", to: root, exact: true },
+        { label: "Documents", to: `${root}/d` },
+        { label: "Search", to: `${root}/search` },
+        { label: "Types & fields", to: `${root}/types` },
+        { label: "Review", to: `${root}/attest` },
       ],
     },
     {
       heading: "Work",
       items: [
-        { label: "Activity", to: `/i/${index}/activity`, count: activity, isNew: true },
-        { label: "Problems", to: `/i/${index}/health`, count: problems },
-        { label: "Ingest jobs", to: `/i/${index}/jobs` },
+        { label: "Activity", to: `${root}/activity` },
+        { label: "Problems", to: `${root}/health`, count: problems },
+        { label: "Import jobs", to: `${root}/jobs` },
       ],
     },
     {
       heading: "Index",
-      items: [
-        { label: "Overview", to: `/i/${index}` },
-        { label: "Branches", to: `/i/${index}/branches` },
-        { label: "Review", to: `/i/${index}/attest` },
-      ],
+      items: [{ label: "Branches", to: `${root}/branches` }],
     },
   ];
+}
 
+// `open` matters only at phone width, where the drawer leaves the flow and
+// slides in over the page (styles.css: .sidebar / .sidebar-open). On a desktop
+// it is always shown and the class does nothing.
+export function NavDrawer({ sections, open }: { sections: NavSection[]; open: boolean }) {
   return (
     <Drawer
       variant="permanent"
+      className={"sidebar" + (open ? " sidebar-open" : "")}
       sx={{
         width: DRAWER_WIDTH,
         flexShrink: 0,
@@ -88,68 +90,87 @@ export function NavDrawer({
           borderRight: 1,
           borderColor: "divider",
           // Below the app bar rather than over it: the bar carries the scope
-          // switcher, which belongs to the whole window and not to this index.
-          top: 56,
-          height: "calc(100% - 56px)",
+          // switcher, which belongs to the whole window and not to this scope.
+          top: APPBAR_HEIGHT,
+          height: `calc(100% - ${APPBAR_HEIGHT}px)`,
         },
       }}
     >
-      <Box sx={{ overflowY: "auto", py: 0.5 }}>
-        {sections.map((s, i) => (
-          <Box key={s.heading}>
-            {i > 0 && <Divider sx={{ my: 0.5 }} />}
-            <List
-              dense
-              disablePadding
-              subheader={
-                <ListSubheader
-                  disableSticky
-                  sx={{
-                    bgcolor: "transparent",
-                    lineHeight: "28px",
-                    fontSize: 11,
-                    letterSpacing: ".6px",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {s.heading}
-                </ListSubheader>
-              }
-            >
-              {s.items.map((it) => (
-                <NavItem key={it.to} item={it} index={index} />
-              ))}
-            </List>
-          </Box>
-        ))}
+      <Box component="nav" aria-label="Sections" sx={{ overflowY: "auto", py: 0.5 }}>
+        {sections
+          .filter((s) => s.items.length)
+          .map((s, i) => (
+            <Box key={s.heading || i}>
+              {i > 0 && <Divider sx={{ my: 0.5 }} />}
+              <List
+                dense
+                disablePadding
+                subheader={
+                  s.heading ? (
+                    <ListSubheader
+                      disableSticky
+                      sx={{
+                        bgcolor: "transparent",
+                        lineHeight: "28px",
+                        fontSize: 11,
+                        letterSpacing: ".6px",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {s.heading}
+                    </ListSubheader>
+                  ) : undefined
+                }
+              >
+                {s.items.map((it) => (
+                  <NavEntry key={it.to} item={it} />
+                ))}
+              </List>
+            </Box>
+          ))}
       </Box>
     </Drawer>
   );
 }
 
-function NavItem({ item, index }: { item: Item; index: string }) {
+function NavEntry({ item }: { item: NavItem }) {
   // Active state is derived from the real location rather than from Link's
-  // activeProps, because "/i/:index" is a PREFIX of every other entry here — the
-  // trap spa-ui.md already recorded on the tab bar, where every tab read as
-  // active until `exact` was added to the dashboard link.
+  // activeProps, so the exact/prefix rule is one line and visible here.
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const root = `/i/${index}`;
-  const active = item.to === root ? pathname === root : pathname.startsWith(item.to);
+  const active = item.exact
+    ? pathname === item.to || pathname === item.to + "/"
+    : pathname === item.to || pathname.startsWith(item.to + "/");
 
   return (
     <ListItemButton
       component={Link}
       to={item.to}
       selected={active}
+      title={item.title}
       sx={{ py: 0.4, pl: 2, borderRadius: 0 }}
     >
+      {item.mark && (
+        <Box component="span" sx={{ color: "text.secondary", mr: 0.75 }} aria-hidden>
+          {item.mark}
+        </Box>
+      )}
       <ListItemText
         primary={item.label}
-        slotProps={{ primary: { sx: { fontSize: 14, fontWeight: active ? 600 : 400 } } }}
+        slotProps={{
+          primary: {
+            sx: {
+              fontSize: 14,
+              fontWeight: active ? 600 : 400,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            },
+          },
+        }}
       />
-      {item.count !== undefined && item.count > 0 && (
+      {!!item.count && item.count > 0 && (
         <Chip
-          label={item.count}
+          label={item.count.toLocaleString()}
           size="small"
           sx={{
             height: 18,
@@ -158,13 +179,6 @@ function NavItem({ item, index }: { item: Item; index: string }) {
             color: "#fff",
             "& .MuiChip-label": { px: 0.75 },
           }}
-        />
-      )}
-      {item.isNew && item.count === undefined && (
-        <Box
-          component="span"
-          sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: (t) => t.palette.roles.run }}
-          title="new surface"
         />
       )}
     </ListItemButton>

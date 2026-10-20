@@ -1,6 +1,7 @@
 import { createTheme } from "@mui/material/styles";
 
-// The theme, and the only place colour is decided.
+// The theme. Colour VALUES live in the token block at the top of styles.css;
+// this file maps them onto MUI's palette roles.
 //
 // The palette is carried over from the sheet this replaces (styles.css, itself
 // ported verbatim from the old vanilla page) — not out of sentiment, but because
@@ -12,26 +13,22 @@ import { createTheme } from "@mui/material/styles";
 // `colorSchemes` rather than a media query in CSS, so a component can ask the
 // theme what the current scheme is instead of every pane re-deriving it.
 
-const roles = {
-  light: {
-    ok: "#16a34a",
-    warn: "#d97706",
-    err: "#dc2626",
-    run: "#2563eb",
-    vision: "#7c3aed",
-    textEngine: "#0891b2",
-    chip: "#eef2f7",
-  },
-  dark: {
-    ok: "#22c55e",
-    warn: "#f59e0b",
-    err: "#ef4444",
-    run: "#3b82f6",
-    vision: "#a78bfa",
-    textEngine: "#22d3ee",
-    chip: "#20242d",
-  },
+// Each role is a CSS variable defined in styles.css (the token block), not a hex
+// value. Fixed 2026-10-20: a pane reading `t.palette.roles.chip` in an sx
+// callback gets the DEFAULT (light) scheme's value whatever scheme is showing —
+// MUI only swaps `t.vars.*` per scheme — so the Types & fields command block
+// was a light chip under light dark-mode text. A var() reference resolves at
+// paint time in whichever scheme is active, so every existing caller is right.
+const role = {
+  ok: "var(--ok)",
+  warn: "var(--warn)",
+  err: "var(--err)",
+  run: "var(--run)",
+  vision: "var(--vision)",
+  textEngine: "var(--text-eng)",
+  chip: "var(--chip)",
 };
+const roles = { light: role, dark: role };
 
 declare module "@mui/material/styles" {
   interface Palette {

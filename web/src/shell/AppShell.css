@@ -1,0 +1,15 @@
+/* The app bar breadcrumb (AppShell.tsx). Every scope uses it:
+   Projects / <project> / <index switcher>. */
+.appcrumbs { display:flex; align-items:center; gap:var(--sp-2); min-width:0; flex:0 1 auto;
+  font-size:var(--fs-base); white-space:nowrap; }
+.appcrumbs-item { display:inline-flex; align-items:center; min-width:0; }
+.appcrumbs-item.last { font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; }
+.appcrumbs-sep { color:var(--muted); }
+.appcrumbs-link { color:var(--muted); text-decoration:none; }
+.appcrumbs-link:hover { color:var(--ink); text-decoration:underline; }
+
+/* Phone: the sidebar holds the way back, so the bar shows only where you are. */
+@media (max-width:720px) {
+  .appcrumbs-item:not(.last), .appcrumbs-sep { display:none; }
+  .appcrumbs { flex:0 1 auto; max-width:45vw; }
+}

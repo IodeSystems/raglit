@@ -6,21 +6,70 @@
    property makes the declaration invalid at computed-value time, so those rules
    silently fell back to the inherited colour — close enough to look intentional
    in light mode and wrong in dark. --fg is now an alias of --ink. */
+/* ── Design tokens ───────────────────────────────────────────────────────────
+   The one place colour, spacing, radius and type size are decided. theme.ts
+   points MUI's palette roles at these variables, so a value changed here
+   changes both the hand-written rules and the MUI components.
+
+   Dark mode follows the MUI scheme class on <html> (.dark / .light) when it is
+   set, and the system preference otherwise. */
   :root {
+    /* colour */
     --bg:#f6f7f9; --panel:#fff; --ink:#1a1d21; --fg:#1a1d21; --muted:#6b7280; --line:#e5e7eb;
     --accent:#2563eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626; --run:#2563eb;
     --vision:#7c3aed; --text-eng:#0891b2; --chip:#eef2f7;
+    --link:#1d4ed8; --mark-bg:#fde68a; --mark-fg:#1a1d21;
+    /* code / commands / raw text: always a distinct, readable pair */
+    --code-bg:#eef1f5; --code-fg:#1a1d21; --code-line:#d9dee6;
+    /* type */
+    --font-body:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+    --fs-xs:11px; --fs-sm:12px; --fs-md:13px; --fs-base:14px; --fs-lg:16px; --fs-xl:20px;
+    --lh-body:1.5; --measure:78ch;
+    /* spacing (4px scale) */
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+    /* radius */
+    --radius-sm:4px; --radius:7px; --radius-lg:10px;
+    /* layout: one page-width rule for every shell */
+    --page-max:1200px; --gutter:var(--sp-5); --sidebar-w:232px; --appbar-h:56px;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not(.light) {
       --bg:#0f1115; --panel:#171a21; --ink:#e6e8eb; --fg:#e6e8eb; --muted:#9aa4b2; --line:#262b34;
       --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --run:#3b82f6;
       --vision:#a78bfa; --text-eng:#22d3ee; --chip:#20242d;
+      --link:#7cb2ff; --mark-bg:#4a3d12; --mark-fg:#fff3c4;
+      --code-bg:#0b0d11; --code-fg:#dfe3e8; --code-line:#2c323c;
     }
   }
+  :root.dark {
+    --bg:#0f1115; --panel:#171a21; --ink:#e6e8eb; --fg:#e6e8eb; --muted:#9aa4b2; --line:#262b34;
+    --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --run:#3b82f6;
+    --vision:#a78bfa; --text-eng:#22d3ee; --chip:#20242d;
+    --link:#7cb2ff; --mark-bg:#4a3d12; --mark-fg:#fff3c4;
+    --code-bg:#0b0d11; --code-fg:#dfe3e8; --code-line:#2c323c;
+  }
+  @media (max-width:720px) { :root { --gutter:var(--sp-4); } }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink);
-    font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+    font:var(--fs-base)/var(--lh-body) var(--font-body); }
+
+  /* Code, commands, ids and raw machine text. One rule for every <code>/<pre>
+     so no pane can put light text on a light chip again (F1, 2026-10-20). A
+     pane's own background on a <pre> still wins; the colour pair here does
+     not depend on it. */
+  code, kbd, samp { font-family:var(--font-mono); font-size:.9em; background:var(--code-bg);
+    color:var(--code-fg); border:1px solid var(--code-line); border-radius:var(--radius-sm);
+    padding:0 var(--sp-1); overflow-wrap:anywhere; }
+  pre { font-family:var(--font-mono); font-size:var(--fs-md); line-height:var(--lh-body);
+    background:var(--code-bg); color:var(--code-fg); border:1px solid var(--code-line);
+    border-radius:var(--radius); padding:var(--sp-3); margin:0; max-width:100%; overflow-x:auto; }
+  pre code { background:none; border:0; padding:0; font-size:inherit; }
+
+  /* Prose: transcripts, page text, message bodies. Body font, wrapped, held to a
+     readable measure. Monospace is for code, ids and commands only (F9). */
+  .prose { font-family:var(--font-body); font-size:var(--fs-base); line-height:1.6;
+    white-space:pre-wrap; overflow-wrap:anywhere; max-width:var(--measure); }
   /* Scoped to .pageheader / .pagemain rather than the bare elements, 2026-08-19.
      MUI's AppBar renders a <header> and the new shell's content region is a
      <main>, so bare-element layout rules here reached inside the redesigned
@@ -38,7 +87,12 @@
   button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
   button:disabled { opacity:.45; cursor:default; }
   label.toggle { display:flex; align-items:center; gap:6px; color:var(--muted); cursor:pointer; }
-  .pagemain { padding:16px; max-width:1200px; margin:0 auto; }
+  /* Page width: ONE rule for every shell (F5). A shell without a sidebar centres
+     its page; a shell with one starts the page next to the sidebar (.app-main),
+     so there is no dead gutter between the nav and the content. */
+  .pagemain { padding:var(--gutter); max-width:var(--page-max); margin:0 auto; }
+  .app-main { flex:1 1 auto; min-width:0; padding:var(--gutter); }
+  .app-main > .page, .page { max-width:var(--page-max); margin:0; min-width:0; }
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:18px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
   .card .n { font-size:22px; font-weight:650; }
@@ -64,7 +118,7 @@
   .probgroup > h3 { margin:0 0 .15rem; font-size:.95rem; }
   .probgroup > .why { margin:0 0 .5rem; opacity:.7; font-size:.85rem; }
   .prob { padding:.45rem .6rem; border-top:1px solid var(--line); }
-  .prob .subj { font-family:ui-monospace,monospace; font-size:.85rem; word-break:break-all; }
+  .prob .subj { font-family:var(--font-mono); font-size:.85rem; word-break:break-all; }
   /* Not scoped to .prob: the job view shows the same two things — a stage's
      verbatim detail, and a row of actions — and a second copy under a second
      selector is how they drift apart. */
@@ -92,7 +146,7 @@
   .branchmark { color:var(--muted); margin-right:.3rem; }
   .branchrow { padding-left:1.6rem; }
   .jobhead { padding:.6rem .75rem; }
-  .jobhead .subj { font-family:ui-monospace,monospace; font-size:.85rem; word-break:break-all; }
+  .jobhead .subj { font-family:var(--font-mono); font-size:.85rem; word-break:break-all; }
   .jobhead .muted { font-size:.8rem; margin-top:.2rem; }
   /* A warn is a job that COMPLETED after a fight. It must not read as an error
      — that distinction is the whole content of the llm-retries report. */
@@ -127,7 +181,7 @@
   .badge.lane-light { color:var(--ok); }
   a.badge { text-decoration:none; }
   a.badge:hover { border:1px solid currentColor; padding:0 7px; }
-  .prob .fix { font-family:ui-monospace,monospace; font-size:.75rem; opacity:.6;
+  .prob .fix { font-family:var(--font-mono); font-size:.75rem; opacity:.6;
                cursor:pointer; border:1px dashed var(--line); border-radius:4px; padding:.15rem .35rem;
                max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .prob .fix:hover { opacity:.9; border-style:solid; }
@@ -169,9 +223,12 @@
     background:#fff; cursor:zoom-in; }
   .pagehead { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
   .pagehead .n { font-weight:650; }
-  .ptext { white-space:pre-wrap; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
-    background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; max-height:340px;
-    overflow:auto; }
+  /* A page's text is prose (F9): body font. pre.ptext is the raw layout output,
+     which is machine text and stays monospace via the global pre rule. */
+  .ptext { white-space:pre-wrap; overflow-wrap:anywhere; font:var(--fs-md)/1.6 var(--font-body);
+    background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius);
+    padding:var(--sp-3); max-height:340px; overflow:auto; }
+  pre.ptext { font-family:var(--font-mono); background:var(--code-bg); color:var(--code-fg); }
   .reocr { margin-top:8px; }
   .reocr .out { margin-top:8px; }
   dialog { border:none; border-radius:12px; padding:0; max-width:92vw; max-height:92vh; background:transparent; }
@@ -183,13 +240,15 @@
 .tabs { display:flex; gap:2px; margin:18px 0 12px; border-bottom:1px solid var(--line); }
 .tabs button { background:none; border:0; border-bottom:2px solid transparent; color:var(--muted);
   padding:8px 14px; cursor:pointer; font-size:14px; }
-.tabs button.on { color:var(--fg); border-bottom-color:#5b9dd9; }
+.tabs button.on { color:var(--fg); border-bottom-color:var(--link); }
 .subtabs { display:flex; gap:2px; padding:0 14px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
 .subtabs button { background:none; border:0; border-bottom:2px solid transparent; color:var(--muted);
   padding:7px 11px; cursor:pointer; font-size:13px; }
-.subtabs button.on { color:var(--fg); border-bottom-color:#5b9dd9; }
+.subtabs button.on { color:var(--fg); border-bottom-color:var(--link); }
 .dpane { padding:12px 14px; }
-.dpane pre { white-space:pre-wrap; word-break:break-word; margin:0; line-height:1.5; }
+/* The transcript is a <pre> for its line breaks, not for its font (F9). */
+.dpane pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; padding:0; border:0;
+  background:none; color:inherit; font:var(--fs-base)/1.6 var(--font-body); max-width:var(--measure); }
 .seen td { padding:6px 8px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:top; }
 .seen th { padding:6px 8px; text-align:left; font-size:12px; color:var(--muted); }
 .num { text-align:right; font-variant-numeric:tabular-nums; }
@@ -210,7 +269,7 @@
   .cards { grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); }
   .seen th:nth-child(5), .seen td:nth-child(5) { display:none; }
 }
-.backlink { display:none; background:none; border:0; color:#5b9dd9; cursor:pointer; padding:0 0 6px; font-size:13px; }
+.backlink { display:none; background:none; border:0; color:var(--link); cursor:pointer; padding:0 0 6px; font-size:13px; }
 @media (max-width:820px){ .backlink { display:inline-block; } }
 .dpane img { max-width:100%; height:auto; }
 .docacts { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; }
@@ -228,7 +287,7 @@
 .hit a { font-weight:600; }
 .hit .snip { margin-top:4px; font-size:13px; line-height:1.5; }
 .hit .meta { font-size:11px; color:var(--muted); margin-top:3px; }
-.hit mark { background:#2b3a55; color:inherit; }
+mark, .hit mark { background:var(--mark-bg); color:var(--mark-fg); border-radius:2px; padding:0 1px; }
 
 /* ── SPA additions ─────────────────────────────────────────────────────────
    Tabs are LINKS now, not buttons. That is the point of path routing: a tab can
@@ -240,7 +299,7 @@
 }
 .tabs a { padding:8px 14px; font-size:14px; }
 .subtabs a { padding:7px 11px; font-size:13px; }
-.tabs a.on, .subtabs a.on { color:var(--fg); border-bottom-color:#5b9dd9; }
+.tabs a.on, .subtabs a.on { color:var(--fg); border-bottom-color:var(--link); }
 .tabs a:hover, .subtabs a:hover { color:var(--fg); }
 
 .doc-row { text-decoration:none; color:inherit; }
@@ -260,7 +319,7 @@
 
 .doctitle { padding:10px 14px 0; }
 .doctitle h2 { margin:0; font-size:16px; text-transform:none; letter-spacing:0; color:var(--fg); }
-.doctitle .path { font-family:ui-monospace,monospace; font-size:11px; color:var(--muted);
+.doctitle .path { font-family:var(--font-mono); font-size:11px; color:var(--muted);
   word-break:break-all; }
 .doctitle .bykind { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px; }
 
@@ -279,9 +338,9 @@
 
 .pagenav { display:flex; gap:12px; align-items:center; flex-wrap:wrap;
   padding:10px 14px; border-bottom:1px solid var(--line); font-size:13px; }
-.pagenav a { color:#5b9dd9; text-decoration:none; }
+.pagenav a { color:var(--link); text-decoration:none; }
 .pagenav a:hover { text-decoration:underline; }
-.pagecard .n { color:#5b9dd9; text-decoration:none; }
+.pagecard .n { color:var(--link); text-decoration:none; }
 
 /* Text | Layout on a page card. Only rendered where the page HAS layout blocks,
    so the strip never appears over a page it cannot explain. */
@@ -292,7 +351,7 @@
   font: inherit; font-size: 12px; letter-spacing: .3px;
 }
 .tabstrip button.on { color: inherit; border-bottom-color: currentColor; }
-.linkish { background: none; border: 0; color: #7ab; cursor: pointer; font: inherit; padding: 0; }
+.linkish { background: none; border: 0; color: var(--link); cursor: pointer; font: inherit; padding: 0; }
 
 /* The page rebuilt from the reader's layout blocks — text at its own box, sized
    to fit. container-type:size makes cqh mean "percent of this page's height",
@@ -304,3 +363,68 @@
 }
 .reconstruct [data-label^="Section"], .reconstruct [data-label*="Header"] { font-weight: 700; }
 .reconstruct [data-label="Image"] { color: #666; font-style: italic; }
+
+/* ── Shared UI pieces (web/src/ui/) ─────────────────────────────────────────── */
+
+/* Details.tsx: the collapsed "Technical details" disclosure. Raw errors, CLI
+   commands and ids live in here, out of the main line. */
+.techdetails { margin-top:var(--sp-1); font-size:var(--fs-sm); color:var(--muted); }
+.techdetails > summary { cursor:pointer; user-select:none; width:max-content; max-width:100%;
+  list-style:none; }
+.techdetails > summary::-webkit-details-marker { display:none; }
+.techdetails > summary::before { content:"▸"; display:inline-block; width:1em; transition:transform .15s; }
+.techdetails[open] > summary::before { transform:rotate(90deg); }
+.techdetails > summary:hover { color:var(--ink); }
+.techdetails-body { margin-top:var(--sp-1); display:flex; flex-direction:column; gap:var(--sp-2); }
+.techdetails-body pre { font-size:var(--fs-sm); white-space:pre-wrap; overflow-wrap:anywhere;
+  max-height:240px; overflow:auto; }
+/* ErrorText: one plain sentence, in the error colour but not shouting. */
+.errline { min-width:0; }
+.errline-summary { color:var(--err); font-size:var(--fs-md); }
+
+/* Label.tsx: the single mark above machine-written text. */
+.ailabel { display:inline-block; font-size:var(--fs-xs); font-weight:600; letter-spacing:.2px;
+  color:var(--warn); border:1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius:var(--radius-sm); padding:0 var(--sp-1); margin:var(--sp-1) 0 2px; }
+.ailabel.inline { margin:0 0 0 var(--sp-2); vertical-align:middle; cursor:help; }
+
+/* A table that is wider than its column scrolls inside its own box, never the
+   page. Wrap any table that can grow wide in .table-scroll. */
+.table-scroll { max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+img, video { max-width:100%; }
+
+/* ── Sidebar shell hooks ─────────────────────────────────────────────────────
+   For the shell: the nav gets .sidebar (on the MUI Drawer root or on a plain
+   <aside>), plus .sidebar-open while it is shown on a phone; the content area
+   gets .app-main; a .menu-toggle button opens it; a .sidebar-scrim element,
+   rendered only while open, closes it on click. Above 720px the toggle and the
+   scrim are hidden and the sidebar is always shown. */
+.menu-toggle { display:none; align-items:center; justify-content:center; width:36px; height:36px;
+  padding:0; border-radius:var(--radius); background:transparent; border:1px solid var(--line);
+  color:var(--ink); font-size:18px; line-height:1; flex-shrink:0; }
+.sidebar-scrim { display:none; }
+
+@media (max-width:720px) {
+  /* No horizontal page scroll: wide content scrolls in its own container. */
+  html, body { max-width:100%; overflow-x:clip; }
+  .pageheader { padding:var(--sp-2) var(--gutter); }
+  .panel { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  th, td { padding:var(--sp-2) var(--sp-2); }
+  td.url { max-width:60vw; }
+
+  .menu-toggle { display:inline-flex; }
+  /* The sidebar leaves the flow and slides in over the content. Selectors carry
+     .MuiDrawer-root so they outrank the Drawer's own sx classes. */
+  .sidebar.MuiDrawer-root, aside.sidebar { width:0; flex:0 0 0; }
+  .sidebar.MuiDrawer-root .MuiDrawer-paper, aside.sidebar {
+    position:fixed; left:0; top:var(--appbar-h); bottom:0; height:auto;
+    width:min(var(--sidebar-w), 85vw); z-index:1250; background:var(--panel);
+    transform:translateX(-100%); visibility:hidden;
+    transition:transform .2s ease, visibility 0s linear .2s; }
+  .sidebar.sidebar-open.MuiDrawer-root .MuiDrawer-paper, aside.sidebar.sidebar-open {
+    transform:none; visibility:visible; transition:transform .2s ease;
+    box-shadow:0 8px 32px rgba(0,0,0,.35); }
+  .sidebar-scrim { display:block; position:fixed; inset:var(--appbar-h) 0 0 0; z-index:1240;
+    background:rgba(0,0,0,.45); }
+  .app-main { margin-left:0; padding:var(--gutter); }
+}

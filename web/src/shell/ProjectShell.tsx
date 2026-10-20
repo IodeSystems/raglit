@@ -1,81 +1,67 @@
-import { Link, Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
+import { Outlet, useParams } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
+import { listProjects, type Project } from "../api";
+import { AppShell, CrumbLink, ShellSearch } from "./AppShell";
+import type { NavSection } from "./NavDrawer";
+
 // Everything below /p/:project — the breadcrumb, the project-wide search box and
-// the tab bar — kept mounted while the routes underneath change.
+// the sidebar — kept mounted while the routes underneath change.
 //
 // Nested for the same reason IndexShell is: the search box lives HERE, so it
 // holds its text and focus while you walk from a hit into a document and back.
+// Same frame as the index pages (AppShell); only the sidebar entries differ.
 export function ProjectShell() {
   const { project } = useParams({ from: "/p/$project" });
+  const [p, setP] = useState<Project | undefined>();
+
+  useEffect(() => {
+    let live = true;
+    listProjects()
+      .then((got) => live && setP((got.projects ?? []).find((x) => x.name === project)))
+      .catch(() => live && setP(undefined));
+    return () => {
+      live = false;
+    };
+  }, [project]);
 
   return (
-    <>
-      <header className="pageheader">
-        <h1>
-          <Link to="/">raglit</Link> <span>review</span>
-        </h1>
-        <nav className="crumbs">
-          <Link to="/">projects</Link>
-          <span className="sep">/</span>
-          <strong>{project}</strong>
-        </nav>
-        <ProjectSearchBox project={project} />
-        <div className="grow" />
-      </header>
-
-      <main className="pagemain">
-        <nav className="tabs">
-          <Link
-            to="/p/$project"
-            params={{ project }}
-            activeProps={{ className: "on" }}
-            activeOptions={{ exact: true }}
-          >
-            Indexes
-          </Link>
-          <Link
-            to="/p/$project/search"
-            params={{ project }}
-            search={{ q: "", mode: "bm25" }}
-            activeProps={{ className: "on" }}
-          >
-            Search
-          </Link>
-        </nav>
-        <Outlet />
-      </main>
-    </>
+    <AppShell
+      crumbs={[<CrumbLink to="/">Projects</CrumbLink>, project]}
+      search={
+        <ShellSearch
+          placeholder={`Search every index in ${project}`}
+          onSearch={(q, nav) =>
+            nav({ to: "/p/$project/search", params: { project }, search: { q, mode: "bm25" } })
+          }
+        />
+      }
+      nav={projectSections(project, p)}
+    >
+      <Outlet />
+    </AppShell>
   );
 }
 
-function ProjectSearchBox({ project }: { project: string }) {
-  const navigate = useNavigate();
-  const urlQ = useRouterState({
-    select: (s) => (s.location.search as { q?: string }).q ?? "",
-  });
-  const [q, setQ] = useState(urlQ);
-  useEffect(() => setQ(urlQ), [urlQ]);
-
-  return (
-    <form
-      className="shellsearch"
-      onSubmit={(e) => {
-        e.preventDefault();
-        navigate({
-          to: "/p/$project/search",
-          params: { project },
-          search: { q: q.trim(), mode: "bm25" },
-        });
-      }}
-    >
-      <input
-        type="search"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder={`search every index in ${project}`}
-        autoComplete="off"
-      />
-    </form>
-  );
+export function projectSections(project: string, p?: Project): NavSection[] {
+  const indexes = p?.indexes ?? [];
+  return [
+    {
+      heading: "Project",
+      items: [
+        { label: "Indexes", to: `/p/${project}`, exact: true },
+        { label: "Search", to: `/p/${project}/search` },
+      ],
+    },
+    {
+      heading: "Indexes",
+      items: indexes.map((i) => ({
+        label: i.local,
+        to: `/i/${i.name}`,
+        mark: i.parent ? "⑂" : undefined,
+        title: i.parent ? `Branch of ${i.parent}` : undefined,
+        count: i.failed,
+      })),
+    },
+  ];
 }

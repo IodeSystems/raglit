@@ -15,6 +15,10 @@
 // legacy link silently became the dashboard. That redirect is gone — "/" is the
 // project overview now — but running early is still right: it is the only place
 // with no race to lose, whatever the root route later becomes.
+//
+// The document paths these links carry are ABSOLUTE. That is kept as-is here:
+// the router's document route rewrites an absolute path to the root-relative
+// display path (docRoute.ts), so the home directory never stays in the URL.
 export function applyLegacyHashRedirect(): void {
   if (!location.hash.startsWith("#/")) return;
   const to = pathForLegacyHash(location.hash);

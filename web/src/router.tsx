@@ -2,31 +2,40 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   redirect,
 } from "@tanstack/react-router";
 
 import { RootShell } from "./shell/RootShell";
-import { IndexShell } from "./shell/IndexShell";
-import { ProjectShell } from "./shell/ProjectShell";
-import { DocShell } from "./shell/DocShell";
-import { Dashboard } from "./panes/Dashboard";
-import { Types } from "./panes/Types";
-import { Overview } from "./panes/Overview";
-import { Project } from "./panes/Project";
-import { Activity } from "./panes/Activity";
-import { Branches } from "./panes/Branches";
-import { Health } from "./panes/Health";
-import { Jobs } from "./panes/Jobs";
-import { Search, ProjectSearch } from "./panes/Search";
-import { DocumentList } from "./panes/DocumentList";
-import { Pages, PageDetail } from "./panes/Pages";
-import { Transcript } from "./panes/Transcript";
-import { SeenIn } from "./panes/SeenIn";
-import { History } from "./panes/History";
-import { Notes } from "./panes/Notes";
-import { Email } from "./panes/Email";
-import { Attest } from "./panes/Attest";
-import { AttestAsset } from "./panes/AttestAsset";
+import { isAbsoluteDocPath, relDocPath } from "./docRoute";
+
+// Every page is its own chunk (M4: the single bundle was over 500 kB). The
+// review pane pulls in the attest packages and the document views pull in the
+// page renderer, and neither is needed to open the overview. RootShell stays in
+// the entry chunk because it is the frame the pending state renders in.
+const IndexShell = lazyRouteComponent(() => import("./shell/IndexShell"), "IndexShell");
+const ProjectShell = lazyRouteComponent(() => import("./shell/ProjectShell"), "ProjectShell");
+const DocShell = lazyRouteComponent(() => import("./shell/DocShell"), "DocShell");
+const Dashboard = lazyRouteComponent(() => import("./panes/Dashboard"), "Dashboard");
+const Types = lazyRouteComponent(() => import("./panes/Types"), "Types");
+const Overview = lazyRouteComponent(() => import("./panes/Overview"), "Overview");
+const Project = lazyRouteComponent(() => import("./panes/Project"), "Project");
+const Activity = lazyRouteComponent(() => import("./panes/Activity"), "Activity");
+const Branches = lazyRouteComponent(() => import("./panes/Branches"), "Branches");
+const Health = lazyRouteComponent(() => import("./panes/Health"), "Health");
+const Jobs = lazyRouteComponent(() => import("./panes/Jobs"), "Jobs");
+const Search = lazyRouteComponent(() => import("./panes/Search"), "Search");
+const ProjectSearch = lazyRouteComponent(() => import("./panes/Search"), "ProjectSearch");
+const DocumentList = lazyRouteComponent(() => import("./panes/DocumentList"), "DocumentList");
+const Pages = lazyRouteComponent(() => import("./panes/Pages"), "Pages");
+const PageDetail = lazyRouteComponent(() => import("./panes/Pages"), "PageDetail");
+const Transcript = lazyRouteComponent(() => import("./panes/Transcript"), "Transcript");
+const SeenIn = lazyRouteComponent(() => import("./panes/SeenIn"), "SeenIn");
+const History = lazyRouteComponent(() => import("./panes/History"), "History");
+const Notes = lazyRouteComponent(() => import("./panes/Notes"), "Notes");
+const Email = lazyRouteComponent(() => import("./panes/Email"), "Email");
+const Attest = lazyRouteComponent(() => import("./panes/Attest"), "Attest");
+const AttestAsset = lazyRouteComponent(() => import("./panes/AttestAsset"), "AttestAsset");
 
 // The document path is ONE encoded segment, and the router already does that.
 //
@@ -133,10 +142,31 @@ const docsRoute = createRoute({
   component: DocumentList,
 });
 
+// The document segment is the DISPLAY path, relative to the index root
+// ("records/2010-westview-survey.pdf"); every document endpoint accepts it.
+// An absolute path — any link written before 2026-10-20, every legacy hash
+// link — is rewritten to the display path before anything renders, keeping
+// the sub-tab and the query, so the home directory never sits in the address
+// bar. A path the index cannot place is left alone; the daemon still takes it.
 const docRoute = createRoute({
   getParentRoute: () => indexRoute,
   path: "d/$doc",
   component: DocShell,
+  beforeLoad: async ({ params, matches, location, preload }) => {
+    if (preload || !isAbsoluteDocPath(params.doc)) return;
+    const rel = await relDocPath(params.index, params.doc);
+    if (!rel || rel === params.doc) return;
+    const leaf = matches[matches.length - 1];
+    throw redirect({
+      // The deepest match is the sub-tab being opened ("…/pages/$page",
+      // "…/transcript"); redirecting to it keeps the reader where the link
+      // pointed. Typed loosely because the leaf is any route under this one.
+      to: (leaf?.fullPath ?? "/i/$index/d/$doc") as "/i/$index/d/$doc",
+      params: { ...(leaf?.params ?? params), doc: rel } as { index: string; doc: string },
+      search: location.search as never,
+      replace: true,
+    });
+  },
 });
 
 // A bare document URL is not an error, it is somebody who has not chosen a
@@ -277,7 +307,12 @@ const routeTree = rootRoute.addChildren([
   ]),
 ]);
 
-export const router = createRouter({ routeTree });
+export const router = createRouter({
+  routeTree,
+  // Shown while a page's chunk loads, after a short delay so a cached chunk
+  // does not flash it.
+  defaultPendingComponent: () => <div className="empty">Loading…</div>,
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

@@ -68,10 +68,28 @@ function qs(params?: Record<string, unknown>): string {
 // Only the fields the page reads. The daemon's OpenAPI document is the full
 // contract; mirroring all of it here would be a second copy to keep in step.
 
+// A display path is a document's path RELATIVE to its index root
+// (cmd/raglit/docroot.go): "records/2010-westview-survey.pdf". A document kept in
+// raglit's own storage (an extracted attachment, an upload) is not under the
+// root and is spelled "@attachments/<archive dir>/<file>". Every document
+// endpoint accepts a display path back, so the absolute path never needs to
+// reach the page — not in text, not in a URL.
+
+export type TagCount = { tag: string; count: number };
+
 export type IndexInfo = {
   name: string;
   documents?: number;
   fragments?: number;
+  // The directory display paths are relative to. Absent for an index with no
+  // corpus documents. For trimming paths the daemon did NOT already relativize
+  // (problem subjects, job URLs); never render it as page text.
+  root?: string;
+  about?: string;
+  about_stale?: boolean;
+  kinds?: TagCount[];
+  content?: TagCount[];
+  roles?: TagCount[];
 };
 
 // One scheduling lane's share of the queue. Lanes no longer SCHEDULE anything —
@@ -194,11 +212,27 @@ export type Job = {
 };
 
 export type DocumentRow = {
+  // The INDEXED path (absolute). An identity to join on, not for display.
   path: string;
-  fragments?: number;
+  // Display path, relative to the index root ("@…" for raglit's storage). Use
+  // this in text and in routes; every document endpoint accepts it.
+  rel: string;
+  title?: string; // the filename as ingested
+  fragments?: number; // passages
   pages?: number;
-  vision?: number;
-  text?: number;
+  vision?: number; // scanned pages read by a vision model
+  frag_mode?: string; // "llm-seg" | "text-overlap"
+  engines?: Record<string, number>;
+  added_at?: number; // ingest time, unix NANOseconds
+  // What the document IS (identity.go). Empty when nobody has said.
+  gen_name?: string; // generated (or corrected) title
+  gen_kind?: string; // correspondence | court filing | deed | …
+  gen_source?: string; // "machine" | "person"
+  gen_summary?: string; // generated summary — AI text, not the document's
+  gen_model?: string; // model that wrote it; empty for a person's
+  gen_content_tags?: string[];
+  gen_role_tags?: string[];
+  // gen_name / gen_kind again, under the names a search Hit uses.
   name?: string;
   kind?: string;
 };
@@ -209,10 +243,18 @@ export type Hit = {
   // and each result must link into the one it actually came from, not into the
   // scope that was searched.
   index?: string;
-  doc_id: string;
-  title?: string;
-  path?: string;
-  score?: number;
+  doc_id: string; // the INDEXED path (absolute) — identity, not display
+  rel?: string; // display path, relative to `root`; use in text and routes
+  root?: string;
+  title?: string; // filename (falls back to the path)
+  // What the document IS: generated or corrected title and kind. Prefer `name`
+  // over `title` when present; `name_source` is "machine" | "person" and
+  // `name_model` is the model that wrote a machine title.
+  name?: string;
+  kind?: string;
+  name_source?: string;
+  name_model?: string;
+  score?: number; // ranking score; the list order IS the ranking
   snippet?: string;
   page?: number;
   // Whose words these are. Empty = the document's own, transcribed. "identity" =
@@ -280,7 +322,7 @@ export const getJob = (index: string, id: number) =>
   getJSON<{ jobs: Job[] }>("/api/jobs", { index, id }).then((r) => r.jobs?.[0]);
 
 export const listDocuments = (index: string) =>
-  getJSON<{ documents: DocumentRow[] }>("/api/documents", { index });
+  getJSON<{ root?: string; documents: DocumentRow[] }>("/api/documents", { index });
 
 export const search = (index: string, q: string, mode: string) =>
   getJSON<{ hits: Hit[] }>("/search", { index, q, mode });
@@ -355,7 +397,7 @@ export type DocJob = {
 };
 
 export type SeenInRow = {
-  path: string;
+  path: string; // display path (root-relative), accepted by every document endpoint
   title?: string;
   jaccard?: number;
   relation?: string;
@@ -385,11 +427,14 @@ export type AttestSummary = {
 };
 
 export type DocDetail = {
+  // Display path, relative to `root` (or "@…" for raglit's storage).
   path: string;
   // The handle the attest mount takes: ROOT-RELATIVE, because Root is attest's
-  // security boundary. NOT the absolute path the document list and the routes
-  // use — passing that one is a 404 "no such asset".
+  // security boundary. Usually equal to `path`; EMPTY for a document in
+  // raglit's own storage ("@…"), which is outside the review mount.
   asset?: string;
+  // The index root `path` is relative to.
+  root?: string;
   title: string;
   kind?: string;
   identity?: DocIdentity;
