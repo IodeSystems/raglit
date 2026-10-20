@@ -2,6 +2,106 @@
 
 Not scheduled. Pick up explicitly. Each entry carries enough design to resume.
 
+## ◻ REQUEST from dun (USER, 2026-10-19): daemon auth — OIDC
+
+Written by the dun session; no raglit session was live to tell directly. Design
+is raglit's to own — this states the need, not the solution.
+
+**Need.** dun will keep memories in raglit indexes on a remote, shared daemon
+(`dun/plan/plan.md` item 9). Memories are PRIVATE by default and shared only
+with an explicit `public:true`. Today the daemon has no auth, owner or
+visibility field (checked 2026-10-19: none in `plan/*.md`), so any client that
+can reach it reads every index — private memory cannot be remote until this
+exists.
+
+**USER preference: OIDC.**
+
+What dun needs from it:
+- An authenticated principal on every request (OIDC bearer token).
+- Per-index (or per-branch) owner + visibility: private (owner only) vs public.
+  dun plans "private × project" as a raglit BRANCH of the project index (P6
+  overlay: reads see parent + branch, writes go to the branch) — so a private
+  branch over a public parent must work: the owner reads both, others read
+  only the parent.
+- Search that only returns what the principal may read — enforced in the
+  daemon, not filtered by the client.
+- The principal flows into attest's `Auth` (attest.md:67 already says the host
+  owns auth and `Auth` is the resolved principal) — so this fills a slot that
+  exists rather than adding a second identity.
+
+Open for raglit to decide: token validation (JWKS) vs a proxy in front; how a
+headless client (dun daemon, CI) gets a token; whether visibility is per index,
+per branch, or per document.
+
+### raglit proposal (2026-10-19) — not started; blocking decisions below
+
+**Validation: in the daemon, JWKS** (`coreos/go-oidc` v3: issuer discovery,
+signature, `exp`, `aud`). Not a proxy: the daemon binds a LIST of addresses
+(`listenlist.go`), and a trusted `X-Forwarded-User` header is forgeable from
+every bind the proxy does not sit in front of. Config: `auth.oidc.issuer`,
+`auth.oidc.audience`. Principal = `<iss>#<sub>` (sub alone collides across
+issuers; email is mutable). Unset → today's behavior, no auth.
+
+**Every request, one middleware** on the chi router before humachi/gat/SPA/
+page-image/attest: no valid bearer → 401, except `/api/health`. The principal
+goes into the request ctx.
+
+**Headless tokens.** Client reads a bearer from `RAGLIT_TOKEN`, else runs
+`auth.token_command` (git-credential-helper shape: prints a token; re-run on
+401). dun daemon / CI: IdP client-credentials grant behind that command.
+Interactive `raglit login` (device-code flow) = optional extension.
+
+**Visibility grain: per index** (a branch IS an index in the Registry).
+Per-document rejected: every read path (FTS, vec, figures, docs, pages,
+readings, attest, page images, GraphQL) would need its own filter; one missed
+path leaks. Per-index = one gate at index lookup.
+- Sidecar `<index home>/acl.json`: `{owner, visibility: private|public}`.
+- read(i) = (public ∨ owner = p) ∧ read(parent(i)) recursively.
+- write(i) = owner = p. fork(parent) needs read(parent); new branch owner = p,
+  default `private`.
+- dun's case: private branch B over public project P. Owner searches B → B+P
+  (overlay). Others: search B → 404, search P → P only. ✔
+- Unreadable index → 404, not 403 (same rule attest's authorize uses).
+- Multi-index search / listIndexes / listProjects / listBranches: filter the
+  index set by read BEFORE fan-out.
+
+**Enforcement shape.** Handlers take a principal-scoped registry view
+(`reg.As(p).Get(name)` → not-found when unreadable) instead of `reg.Get`, so
+an unscoped call is visible in review. ~50 ops in `cmd/raglit/httpd.go` + the
+plain routes + `mountAttest`.
+
+**attest.** New `attest.Identity` impl: `Principal` = ctx principal (replaces
+`attest.Guest{}` at `attestmount.go:58` when auth is on); `Can(asset, perm)` =
+read/write of the asset's index.
+
+**Risks.**
+- Plain routes (SPA, page image) and the gat GraphQL/gRPC surface bypass huma —
+  the middleware must sit on the router, and a test must hit each surface
+  unauthenticated.
+- Branch overlay is incomplete: VecSearch + DocReview see the branch layer
+  only (`branch.go:19`, daemon-stack.md P6). dun's private-branch search would
+  miss parent VECTOR hits. Separate fix; dun depends on it.
+- Watcher / queue workers act with no principal — they must act as the index
+  owner, not as "anyone".
+- Daemon-local MCP (`raglit serve` client) must forward the bearer.
+
+**Decisions (USER, 2026-10-19).**
+1. Index with no `acl.json` → owned by configured `auth.admin` principal,
+   private.
+2. Loopback binds require a token too — one rule for every bind.
+3. write(public index) = owner only; others fork a branch.
+4. IdP: Zitadel (user already runs it). Headless = Zitadel machine user,
+   client-credentials (or JWT-profile key) behind `token_command`. Tests use an
+   in-process fake issuer; Zitadel is the documented real setup.
+
+**next:** split into slices — (a) middleware + config + fake-issuer tests,
+(b) acl.json + scoped registry view across all ops, (c) client bearer +
+token_command, (d) attest Identity. Fix the VecSearch branch overlay before
+dun relies on remote private branches.
+
+**Optional extensions.** Group/shared ACLs (reader lists); `raglit login`
+device flow; per-document visibility; audit log of reads.
+
 ## USER CHECKLIST (2026-07-23) — the agreed next build
 
 The concrete roadmap, in order. Expands items #1 and #2 below.
