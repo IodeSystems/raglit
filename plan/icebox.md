@@ -2,7 +2,7 @@
 
 Not scheduled. Pick up explicitly. Each entry carries enough design to resume.
 
-## ◻ REQUEST from dun (USER, 2026-10-19): daemon auth — OIDC
+## ◐ REQUEST from dun (USER, 2026-10-19): daemon auth — OIDC
 
 Written by the dun session; no raglit session was live to tell directly. Design
 is raglit's to own — this states the need, not the solution.
@@ -94,10 +94,58 @@ read/write of the asset's index.
    client-credentials (or JWT-profile key) behind `token_command`. Tests use an
    in-process fake issuer; Zitadel is the documented real setup.
 
-**next:** split into slices — (a) middleware + config + fake-issuer tests,
-(b) acl.json + scoped registry view across all ops, (c) client bearer +
-token_command, (d) attest Identity. Fix the VecSearch branch overlay before
-dun relies on remote private branches.
+**Built (2026-10-19)** — slices a–d ✅, commits 8c050a7, d2bfadc:
+- `acl.go`: Registry.Read/Write/Readable/ForkBranchAs/DeleteAs/SetVisibility;
+  `EnableACL(admin)` refuses single-home (`--home`) storage.
+- `cmd/raglit/authn.go`: middleware wraps the WHOLE handler (huma, GraphQL,
+  SPA, page image, attest). Config `auth.{issuer,audience,admin}`.
+- `cmd/raglit/authz.go`: readIdx/writeIdx (404/403), requireAdmin.
+- Admin-only with auth on (host filesystem / daemon-wide): ingest (targets
+  are host paths/URLs), `/api/ocr` with a path, watch ops, pool ops,
+  `/api/tools`, relations/slices/materialize/correct/withdraw/restore (they
+  take a host project dir). Watched-home paths hidden from non-admin.
+  `/api/email` checks the path is a doc of the index.
+- attest: `aclIdentity` — read by index read rule, rulings owner-only.
+- Client: `client/auth.go` Transport + TokenSource ($RAGLIT_TOKEN >
+  $RAGLIT_TOKEN_COMMAND > config `auth.token_command`; renew once on 401).
+  CLI installs it on http.DefaultTransport, token sent only to hosts
+  ensureDaemon/resolveDaemon resolved.
+- Tests: `acl_test.go`, `cmd/raglit/authn_test.go` (fake issuer: every
+  surface 401 w/o token, forged/wrong-aud refused, search/list/fork/delete
+  visibility, GraphQL carries principal), `client/auth_test.go`.
+
+**Gaps found while building (not done).**
+- ❓ Non-admin REMOTE INGEST has no path: ingest takes host paths, so it is
+  admin-only. dun on a remote daemon needs a content-upload ingest (bytes
+  or text in the request body). Blocks dun's remote use.
+- ❓ Browser UI with auth on: every request 401s — no login flow. Needs an
+  authorization-code login (session cookie) or SPA PKCE.
+- attest is mounted per index at daemon START only (pre-existing): a layer
+  created later has no review workbench until restart.
+- Zitadel: access tokens must be JWT type (app / machine-user setting);
+  opaque tokens fail validation. Not tested against real Zitadel.
+- VecSearch + DocReview branch overlay (branch.go:19) — still open.
+
+### dun follow-up (2026-10-19) — NOT confirmed with USER yet
+
+dun's reading of USER decisions; confirm before building:
+1. Remote architecture: raglit + model (+ maybe dun) remote. dun passes the
+   HUMAN's OIDC token (device flow / browser login). Machine user only for
+   unattended runs. → fits TokenSource; open: who runs the device flow
+   (dun, or a `raglit login`), and where the refresh token lives.
+2. Register-or-layer: dun registers an index under a PROJECT ID. None → it
+   becomes the base; exists → registrant gets a top layer (P6 branch).
+   Needs lookup by project id + atomic register-or-fork. Proposed id = repo
+   root commit, label = normalized origin (unconfirmed).
+3. `public:true` layer → every layer on the same base sees all PUBLIC sibling
+   layers in search: fan-out to siblings, ACL per sibling. Changes branch
+   read semantics (today: self + parent chain).
+4. Maintained public base: a maintainer service (own machine user) owns the
+   base, sole writer, folds public layer notes in (dedup/merge/keep
+   attestation). Fits owner-only write.
+5. Savings recommendation: when several layers share a project id with no
+   maintained base, report duplicate docs, LLM tokens/embeddings spent,
+   bytes, per-query fan-out cost.
 
 **Optional extensions.** Group/shared ACLs (reader lists); `raglit login`
 device flow; per-document visibility; audit log of reads.
