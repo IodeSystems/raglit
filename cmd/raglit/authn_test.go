@@ -573,3 +573,30 @@ func TestAuth_ProjectSavings(t *testing.T) {
 		t.Fatalf("savings: %d %s", code, clip(body, 600))
 	}
 }
+
+// The maintainer flow over HTTP: the base is handed over, then folded.
+func TestAuth_FoldProject(t *testing.T) {
+	srv, fi, reg := authTestServerReg(t)
+	alice, bob, maint := fi.token(t, "alice", "raglit", fi.key), fi.token(t, "bob", "raglit", fi.key), fi.token(t, "maint", "raglit", fi.key)
+	var ra raglit.Registration
+	_, body := doAs(t, "POST", srv.URL+"/api/projects/register", alice, `{"project_id":"fold"}`)
+	must(t, json.Unmarshal([]byte(body), &ra))
+	if code, b := doAs(t, "POST", srv.URL+"/api/upload?index="+ra.Public, alice, `{"name":"n.md","text":"a public note worth keeping"}`); code != http.StatusOK {
+		t.Fatalf("upload: %d %s", code, clip(b, 200))
+	}
+	drainAll(t, reg)
+	fold := `{"project_id":"fold"}`
+	if code, _ := doAs(t, "POST", srv.URL+"/api/projects/fold", maint, fold); code != http.StatusForbidden {
+		t.Errorf("maintainer folding before the handover: %d, want 403", code)
+	}
+	doAs(t, "POST", srv.URL+"/api/owner", alice, `{"index":"`+ra.Base+`","owner":"`+fi.principal("maint")+`"}`)
+	if code, _ := doAs(t, "POST", srv.URL+"/api/projects/fold", bob, fold); code != http.StatusForbidden {
+		t.Errorf("bob folding: %d, want 403", code)
+	}
+	code, body := doAs(t, "POST", srv.URL+"/api/projects/fold", maint, `{"namespace":"`+ra.Namespace+`"}`)
+	var rep raglit.FoldReport
+	_ = json.Unmarshal([]byte(body), &rep)
+	if code != http.StatusOK || len(rep.Folded) != 1 {
+		t.Fatalf("fold: %d %s", code, clip(body, 400))
+	}
+}

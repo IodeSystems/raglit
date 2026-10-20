@@ -5,10 +5,15 @@ Not scheduled. Pick up explicitly. Each entry carries enough design to resume.
 ## ◻ dun shared memory — follow-ups (auth itself done → `plan/done/2026-10-19-daemon-auth.md`)
 
 Not scheduled. Each is opt-in.
-- **Maintainer service** (dun point 4): a machine user owns the base, sole
-  writer, folds PUBLIC layer notes in (dedup, merge, keep attestation). raglit
-  side done: owner-only write, and `POST /api/owner` hands the base over
-  (owner or admin). The service itself is not built.
+- ✅ **Maintainer** (dun point 4; USER 2026-10-20: in raglit, as a command):
+  `raglit maintain [--dry-run] <project-id|namespace>` → `POST
+  /api/projects/fold` (`fold.go`), run as the base's owner after `POST
+  /api/owner`. Folds PUBLIC layers only, one base copy per content hash;
+  provenance note + the source's notes copied on the next run (import is
+  async), log in `<base>/folds.json`. Layers untouched. "Merge" = dedup by
+  content, not a text merge. With auth off, public = register's `-pub` layers.
+  **risks:** attest verdicts (sidecar logs) are not copied — notes only;
+  scheduling (timer/cron) is the operator's.
 - ✅ **Savings report** (dun point 5): `GET /api/projects/savings?id=|ns=`
   (`savings.go`) — copies beyond the first across readable layers (by content
   hash): passages, embeddings, page reads, bytes, model time of non-pooled

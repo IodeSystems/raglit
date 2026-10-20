@@ -311,6 +311,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("setVisibility", http.MethodPost, "/api/visibility", "Make an index the caller owns private or public."), setVisibilityOp(reg))
 	gat.Register(api, g, op("transferOwner", http.MethodPost, "/api/owner", "Hand an index to another principal (current owner or admin)."), transferOwnerOp(reg))
 	gat.Register(api, g, op("projectSavings", http.MethodGet, "/api/projects/savings", "What a maintained base would save a shared project: copies across layers and search fan-out."), savingsOp(reg))
+	gat.Register(api, g, op("foldProject", http.MethodPost, "/api/projects/fold", "Maintainer run: fold the project's public layers into its base, deduplicated, with provenance."), foldOp(reg))
 	gat.Register(api, g, op("lookupProject", http.MethodGet, "/api/projects/lookup", "A project id's base index and the layers the caller can read."), lookupProjectOp(reg))
 	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))

@@ -130,3 +130,38 @@ func savingsOp(reg *raglit.Registry) func(context.Context, *savingsIn) (*savings
 		return &savingsOut{Body: rep}, nil
 	}
 }
+
+type foldIn struct {
+	Body struct {
+		ProjectID string `json:"project_id,omitempty" doc:"project id"`
+		Namespace string `json:"namespace,omitempty" doc:"or the project's namespace"`
+		DryRun    bool   `json:"dry_run,omitempty" doc:"report what would be folded; write nothing"`
+	}
+}
+
+type foldOut struct{ Body raglit.FoldReport }
+
+// foldOp is the maintainer's run: fold the project's public layers into its
+// base. The caller must own the base (POST /api/owner hands it over).
+func foldOp(reg *raglit.Registry) func(context.Context, *foldIn) (*foldOut, error) {
+	return func(ctx context.Context, in *foldIn) (*foldOut, error) {
+		id := in.Body.ProjectID
+		if id == "" && in.Body.Namespace != "" {
+			id = reg.ProjectIDOf(in.Body.Namespace + "__base")
+		}
+		if id == "" {
+			return nil, huma.Error404NotFound("no project registered under that id or namespace")
+		}
+		rep, err := reg.FoldProject(ctx, id, in.Body.DryRun)
+		if err != nil {
+			switch {
+			case errors.Is(err, raglit.ErrNoIndex):
+				return nil, huma.Error404NotFound("no project registered under that id or namespace")
+			case errors.Is(err, raglit.ErrForbidden):
+				return nil, huma.Error403Forbidden("only the base's owner folds into it; hand it over with POST /api/owner")
+			}
+			return nil, huma.Error500InternalServerError("fold", err)
+		}
+		return &foldOut{Body: rep}, nil
+	}
+}

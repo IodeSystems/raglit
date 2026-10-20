@@ -54,6 +54,8 @@ func main() {
 		err = runImportReadings(os.Args[2:])
 	case "migrate-attachments":
 		err = runMigrateAttachments(os.Args[2:])
+	case "maintain":
+		err = runMaintain(os.Args[2:])
 	case "branch":
 		err = runBranch(os.Args[2:])
 	case "drop-index":
@@ -157,6 +159,8 @@ usage:
                 result is wrong for a reason the cache key cannot see.
   raglit sync   [--home DIR] [--index N] [--dry-run]   ingest the config's [indexes] roots
                 (per-index include/ignore globs, honors .gitignore; dedup skips unchanged)
+  raglit maintain [--dry-run] PROJECT        fold a shared project's public layers into its
+                base (run as the base's owner, e.g. a maintainer machine user)
   raglit branch list|fork NAME|delete NAME   manage copy-on-write branch indexes
                 (daemon only; namespaced + scoped to this project)
   raglit watch  [start|list|stop]            daemon auto re-ingests this project's
