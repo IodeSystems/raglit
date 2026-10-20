@@ -71,6 +71,9 @@ function compare(a: Row, b: Row, key: SortKey): number {
       return byTitle;
     }
     default:
+      // Titled documents first: an untitled one shows its file name or the
+      // first line OCR read, which is a poor first screen.
+      if (a.named !== b.named) return a.named ? -1 : 1;
       return byTitle;
   }
 }
