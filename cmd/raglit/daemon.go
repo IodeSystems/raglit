@@ -156,6 +156,14 @@ const defaultDaemonURL = "http://" + defaultDaemonAddr
 // error (can't start it). Race-safe: concurrent starters collide on the port bind;
 // the loser exits and everyone connects to the winner.
 func ensureDaemon(flagVal string, homeOf func() raglit.Home) (string, error) {
+	base, err := findDaemon(flagVal, homeOf)
+	if err == nil {
+		trustDaemon(base)
+	}
+	return base, err
+}
+
+func findDaemon(flagVal string, homeOf func() raglit.Home) (string, error) {
 	base := resolveDaemon(flagVal, homeOf)
 	if base == "" {
 		// No explicit target: discover a running daemon from its state file, so one

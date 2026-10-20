@@ -55,12 +55,21 @@ func New(base string) *Client {
 	if base == "" {
 		base = discover()
 	}
-	return &Client{
+	c := &Client{
 		BaseURL: strings.TrimRight(base, "/"),
 		// Short: a consumer enriching a scan must not hang on a wedged daemon.
 		// Being told "unknown" quickly beats being right slowly here.
 		HTTP: &http.Client{Timeout: 5 * time.Second},
 	}
+	// A daemon with auth on needs a bearer token; see auth.go.
+	if src := EnvTokenSource(""); src != nil {
+		host := ""
+		if u, err := url.Parse(c.BaseURL); err == nil {
+			host = u.Host
+		}
+		c.HTTP.Transport = &Transport{Src: src, Allow: func(h string) bool { return h == host }}
+	}
+	return c
 }
 
 // discover reads <root>/daemon.json, which the daemon writes on startup, and

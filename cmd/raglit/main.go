@@ -25,6 +25,7 @@ func main() {
 	// changed and re-execs. No-op for a released binary (srcDir empty) and for
 	// spawned children. See selfbuild.go.
 	selfUpdate()
+	installDaemonAuth()
 	if len(os.Args) < 2 {
 		// No command: run the setup wizard if this home isn't initialized yet,
 		// otherwise show usage. (raglit is unusable until `init` writes config.)
@@ -416,9 +417,11 @@ func resolveIndexName(flagVal string, homeOf func() raglit.Home) string {
 // the daemon without passing --daemon each time.
 func resolveDaemon(flagVal string, homeOf func() raglit.Home) string {
 	if flagVal != "" {
+		trustDaemon(flagVal)
 		return flagVal
 	}
 	if cfg, _, _ := raglit.LoadConfig(homeOf()); cfg.DaemonURL != "" {
+		trustDaemon(cfg.DaemonURL)
 		return cfg.DaemonURL
 	}
 	return ""
