@@ -27,6 +27,9 @@ type Registry struct {
 	embedder      *Embedder
 	imageEmbedder ImageEmbedder
 	identifier    *Identifier
+	// admin owns every index without an acl.json; "" = access control off.
+	// See acl.go.
+	admin string
 }
 
 // OpenRegistry prepares a single-home registry (all indexes as sqlite siblings
