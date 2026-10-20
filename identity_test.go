@@ -600,3 +600,17 @@ I of the survey recorded under auditor's file number 19990101.`
 		t.Errorf("name = %q after %d calls", id.Name, c.calls)
 	}
 }
+
+// A caption taken from a Markdown heading loses its "#" marks.
+func TestValidateIdentity_StripsHeadingMarks(t *testing.T) {
+	d, err := validateIdentity(DocIdentity{Name: "## Intake checklist for new calls", Kind: "notes",
+		Summary:     "A checklist of questions asked on a first call with a prospective client.",
+		ContentTags: []string{"intake questions", "client screening", "call checklist"},
+		RoleTags:    []string{"reference"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Name != "Intake checklist for new calls" {
+		t.Fatalf("name = %q", d.Name)
+	}
+}

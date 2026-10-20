@@ -44,6 +44,13 @@ export function displayPath(path: string, root?: string): string {
 }
 
 // fileName is the last segment, for a title when nothing better exists.
+// displayTitle cleans a document title for display: a Markdown heading's "#"
+// marks, and a court pleading's margin numbers ("1 2 3 … 28") that OCR reads
+// first. An empty result means "use the file name".
+export function displayTitle(s: string): string {
+  return s.replace(/^#+\s*/, "").replace(/^(?:\d{1,2}\s+){5,}\d{0,2}\s*/, "").trim();
+}
+
 export function fileName(path: string): string {
   const segs = stripScheme(path).split(/[\\/]/).filter(Boolean);
   return segs[segs.length - 1] ?? path;

@@ -618,6 +618,10 @@ type hitRow struct {
 	Kind       string `json:"kind,omitempty"`
 	NameSource string `json:"name_source,omitempty"` // machine | person
 	NameModel  string `json:"name_model,omitempty"`
+	// Summary is set on an identity hit (origin "identity"): the generated
+	// summary alone, for a UI that already shows the name, kind and the
+	// AI-summary label. Snippet keeps the labelled text agents read.
+	Summary string `json:"summary,omitempty"`
 }
 type searchIn struct {
 	Query    string `query:"q"`
@@ -700,6 +704,9 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 					idents[key] = id
 				}
 				row.Name, row.Kind, row.NameSource, row.NameModel = id.Name, id.Kind, id.Source, id.Model
+				if h.Origin == "identity" && id.Summary != "" {
+					row.Summary = clip(oneLine(id.Summary), 300)
+				}
 			}
 			out.Body.Hits = append(out.Body.Hits, row)
 		}

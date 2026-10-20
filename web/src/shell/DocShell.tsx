@@ -7,7 +7,7 @@ import { Retitle } from "../panes/Retitle";
 import { DocActions } from "../panes/DocActions";
 import { ErrorText } from "../ui/Details";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
-import { displayPath, fileName } from "../ui/display";
+import { displayPath, displayTitle, fileName } from "../ui/display";
 import "./DocShell.css";
 
 // Everything below /i/:index/d/:doc — the breadcrumb, the title block and the
@@ -53,7 +53,7 @@ export function DocShell() {
   // What a person said beats what a machine said, and the machine's caption
   // beats the filename. Showing the filename when somebody has corrected it is
   // the exact failure this feature was asked for.
-  const title = identity?.name || detail?.title || fileName(shownPath) || shownPath;
+  const title = displayTitle(identity?.name || detail?.title || "") || fileName(shownPath) || shownPath;
   const byPerson = identity?.source === "person";
 
   return (

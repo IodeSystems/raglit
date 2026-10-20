@@ -76,7 +76,7 @@ func TestPageImagePathReroots(t *testing.T) {
 	if err := os.WriteFile(here, []byte("png"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	old := filepath.Join("/old/home/indexes/case/pages", tagDir, "p0001.png")
+	old := filepath.Join("/old/root/indexes/case/pages", tagDir, "p0001.png")
 	if err := st.recordPage(id, 1, "vlm", old); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestPageImagePathReroots(t *testing.T) {
 		t.Fatalf("PageImagePath = %q, %v; want %q", got, err, here)
 	}
 	// No such file under this home: the stored path stands.
-	missing := "/old/home/pages/nope/p0002.png"
+	missing := "/old/root/pages/nope/p0002.png"
 	if err := st.recordPage(id, 2, "vlm", missing); err != nil {
 		t.Fatal(err)
 	}

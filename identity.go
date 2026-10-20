@@ -804,6 +804,8 @@ func identityExcerpt(text string) string {
 // error is phrased as an instruction, because it goes straight back to the model.
 func validateIdentity(d DocIdentity) (DocIdentity, error) {
 	d.Name = strings.Join(strings.Fields(strings.TrimSpace(d.Name)), " ")
+	// A Markdown file's first heading is a fair caption, minus its "#" marks.
+	d.Name = strings.TrimSpace(strings.TrimLeft(d.Name, "#"))
 	d.Summary = strings.TrimSpace(d.Summary)
 	if d.Name == "" {
 		return d, fmt.Errorf("\"name\" was empty")

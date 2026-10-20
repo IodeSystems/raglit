@@ -309,7 +309,7 @@ duration and outcome, with the retry/cancel actions inline.
 - **next**: `/api/identity-jobs` exists; check whether the two can be merged
   server-side into one ordered feed or whether the client interleaves them.
 
-## Review walk 2026-10-20 (for a professional audience) — ✅ fixed in code, ◐ browser check pending
+## Review walk 2026-10-20 (for a professional audience) — ✅ fixed, browser-checked at 500px
 
 Walked build 1afc2e6 on a COPY of the 657-document corpus (daemon :7431, no
 models). Findings F1–F9 / M1–M4 (unreadable Types command block, 75 s blank
@@ -337,10 +337,18 @@ https `$schema`, absolute page-image paths, >500 kB bundle) — all fixed in cod
   queue treats such old captions as stale, so they regenerate on the next run.
 
 Open:
-- ◐ Browser walk not done: the claude-in-chrome extension was disconnected for
-  the whole fix pass. **next:** walk :7431 (shell, Search, DocumentList at 400px,
-  Transcript, attest slow/error states, Email attachment links, page-image
-  placeholder). **risks:** every UI finding is verified by typecheck/build only.
+- ✅ Browser walk 2026-10-20 at 500px (window resize ignored, so desktop width
+  NOT seen): projects, overview, search, documents, doc page, types, activity,
+  problems, review (loads in ~1 s), phone menu — clean, no console errors.
+  Fixed in that pass: "#" heading marks in titles (identity strips at source,
+  `displayTitle` for old data), pleading margin numbers ("1 2 3 … 28") as titles,
+  NAME/KIND labels in AI-summary snippets (hits carry `summary`).
+  **risks:** desktop width unchecked; Email attachment links and attest error
+  state not exercised.
+- Untitled documents show their OCR first line (e.g. a phone status bar) until
+  captioning succeeds — 289 caption jobs failed on this corpus. Data, not UI.
+- Generated summaries render Markdown as raw text (backticks); Review's "Read
+  by" column shows engine ids ("raglit/text").
 - ❓ Product call: storage docs (`@attachments/…`, uploads) are outside the
   attest mount — no review, no "Download original". Second root or a
   separate original-bytes route?

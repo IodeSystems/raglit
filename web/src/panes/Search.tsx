@@ -9,7 +9,7 @@ import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { search, type Hit } from "../api";
 import { ErrorText } from "../ui/Details";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
-import { SEARCH_MODES, displayPath, fileName, passages } from "../ui/display";
+import { SEARCH_MODES, displayPath, displayTitle, fileName, passages } from "../ui/display";
 import "./Search.css";
 
 // ── shaping the hits ─────────────────────────────────────────────────────────
@@ -49,10 +49,6 @@ function cleanSnippet(s: string): string {
   return s.replace(PREAMBLE, "").replace(LINE_NUMBERS, "").trim();
 }
 
-// A generated name for a Markdown file is often its first heading, "#" and all.
-function cleanName(s: string): string {
-  return s.replace(/^#+\s*/, "").trim();
-}
 
 // ── highlighting ─────────────────────────────────────────────────────────────
 
@@ -305,7 +301,7 @@ function DocCard({
   // rel is what the daemon resolves and what a person may read; doc_id is the
   // absolute indexed path and never goes into a URL or onto the screen.
   const rel = best.rel || displayPath(best.doc_id, best.root);
-  const name = best.name ? cleanName(best.name) : "";
+  const name = best.name ? displayTitle(best.name) : "";
   const title = name || best.title || fileName(rel);
   const machineName = !!name && best.name_source === "machine";
   const route = { index: group.index, doc: rel };
@@ -379,7 +375,7 @@ function Passage({
   // thinks the car is a Chevrolet". ONE label; the bracketed preamble the
   // daemon puts in the text is stripped so it is not said twice.
   const generated = !!hit.origin;
-  const text = hit.snippet ? cleanSnippet(hit.snippet) : "";
+  const text = hit.summary || (hit.snippet ? cleanSnippet(hit.snippet) : "");
   return (
     <Link
       className="sr-passage"

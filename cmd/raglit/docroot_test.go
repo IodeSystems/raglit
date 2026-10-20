@@ -32,7 +32,7 @@ func rootTestServer(t *testing.T) (*httptest.Server, string, string) {
 	att := filepath.Join(st.AttachmentDirFor(filepath.Join(corpus, "mail.eml")), "p01-01-order.pdf")
 	for _, d := range []raglit.Document{
 		{Path: filepath.Join(corpus, "records", "survey.pdf"), Title: "survey.pdf",
-			Fragments: []raglit.Fragment{{Text: "the westview survey monument"}}},
+			Fragments: []raglit.Fragment{{Text: "the hillcrest survey monument"}}},
 		{Path: filepath.Join(corpus, "notes.md"), Title: "notes.md",
 			Fragments: []raglit.Fragment{{Text: "a note about the driveway"}}},
 		{Path: att, Title: "p01-01-order.pdf",
@@ -43,7 +43,7 @@ func rootTestServer(t *testing.T) (*httptest.Server, string, string) {
 		}
 	}
 	if err := st.SetDocumentIdentity(context.Background(), filepath.Join(corpus, "records", "survey.pdf"), raglit.DocIdentity{
-		Name: "2010 Westview survey", Kind: "survey", Source: "person",
+		Name: "2010 Hillcrest survey", Kind: "survey", Source: "person",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestRootExcludesStorageAndPathsAreRootRelative(t *testing.T) {
 	rels := map[string]bool{}
 	for _, d := range docs.Documents {
 		rels[d.Rel] = true
-		if d.Rel == "records/survey.pdf" && (d.GenName != "2010 Westview survey" || d.GenKind != "survey") {
+		if d.Rel == "records/survey.pdf" && (d.GenName != "2010 Hillcrest survey" || d.GenKind != "survey") {
 			t.Errorf("survey row lost its identity: %+v", d)
 		}
 	}
@@ -123,14 +123,14 @@ func TestRootExcludesStorageAndPathsAreRootRelative(t *testing.T) {
 			Kind  string `json:"kind"`
 		} `json:"hits"`
 	}
-	_ = json.Unmarshal([]byte(httpGet(t, srv.URL+"/search?index=default&q=westview")), &sr)
+	_ = json.Unmarshal([]byte(httpGet(t, srv.URL+"/search?index=default&q=hillcrest")), &sr)
 	if len(sr.Hits) == 0 || sr.Hits[0].Rel != "records/survey.pdf" || sr.Hits[0].Root != corpus ||
-		sr.Hits[0].Name != "2010 Westview survey" || sr.Hits[0].Kind != "survey" {
+		sr.Hits[0].Name != "2010 Hillcrest survey" || sr.Hits[0].Kind != "survey" {
 		t.Fatalf("search hit = %+v", sr.Hits)
 	}
 
 	// Document endpoints take the display path back.
-	if b := httpGet(t, srv.URL+"/api/get-document?index=default&path=records/survey.pdf"); !strings.Contains(b, "westview survey monument") {
+	if b := httpGet(t, srv.URL+"/api/get-document?index=default&path=records/survey.pdf"); !strings.Contains(b, "hillcrest survey monument") {
 		t.Fatalf("get-document by rel: %s", clip(b, 300))
 	}
 	var det struct {

@@ -2,7 +2,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { listDocuments, type DocumentRow } from "../api";
-import { aiTitleTooltip, displayPath, documents, fileName, passages, scannedPages } from "../ui/display";
+import { aiTitleTooltip, displayPath, displayTitle, documents, fileName, passages, scannedPages } from "../ui/display";
 import { ErrorText } from "../ui/Details";
 import "./DocumentList.css";
 
@@ -35,8 +35,8 @@ type Row = {
 
 function toRow(d: DocumentRow, root?: string): Row {
   const rel = d.rel || displayPath(d.path, root);
-  const name = d.name || d.gen_name || "";
-  const title = name || d.title || fileName(rel);
+  const name = displayTitle(d.name || d.gen_name || "");
+  const title = name || displayTitle(d.title || "") || fileName(rel);
   const kind = d.kind || d.gen_kind || NO_KIND;
   // added_at is unix NANOseconds; a Date takes milliseconds.
   const added = d.added_at ? new Date(d.added_at / 1e6) : undefined;

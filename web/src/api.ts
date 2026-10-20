@@ -256,6 +256,8 @@ export type Hit = {
   name_model?: string;
   score?: number; // ranking score; the list order IS the ranking
   snippet?: string;
+  /** Identity hits: the generated summary alone (no labels). */
+  summary?: string;
   page?: number;
   // Whose words these are. Empty = the document's own, transcribed. "identity" =
   // a generated caption. "described" = a model's account of an IMAGE — the 700
