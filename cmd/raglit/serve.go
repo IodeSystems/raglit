@@ -119,8 +119,10 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 					"scoped to the same `path` as the search — so you can tell the topic is ABSENT "+
 					"from this corpus rather than re-querying. `index` selects one index or a "+
 					"comma-separated set; omit it to search ALL (results merged with reciprocal-rank "+
-					"fusion, each hit tagged by index)."),
+					"fusion, each hit tagged by index). Searching a BRANCH also searches its "+
+					"sibling branches you can read; pass siblings=false to search it alone."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language or keyword query")),
+			mcp.WithBoolean("siblings", mcp.Description("also search a branch's readable sibling branches (default true)")),
 			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
 			mcp.WithString("path", mcp.Description("constrain to documents whose path starts with this prefix (a subtree; use a trailing / for a clean directory)")),
 			mcp.WithNumber("limit", mcp.Description("max results (default 8)")),
@@ -882,7 +884,9 @@ func rrfMerge(lists map[string][]raglit.Hit, limit int) []indexedHit {
 	m := map[string]*acc{}
 	for idx, hits := range lists {
 		for rank, h := range hits {
-			key := fmt.Sprintf("%s\x00%d", idx, h.ID)
+			// Path too: a branch's list holds rows from its own database and its
+			// parent's, and fragment ids collide across databases.
+			key := fmt.Sprintf("%s\x00%s\x00%d", idx, h.Path, h.ID)
 			a := m[key]
 			if a == nil {
 				a = &acc{ih: indexedHit{idx, h}}
