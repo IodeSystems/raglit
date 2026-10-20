@@ -309,35 +309,51 @@ duration and outcome, with the retry/cancel actions inline.
 - **next**: `/api/identity-jobs` exists; check whether the two can be merged
   server-side into one ordered feed or whether the client interleaves them.
 
-## Review walk 2026-10-20 (for a professional audience)
+## Review walk 2026-10-20 (for a professional audience) — ✅ fixed in code, ◐ browser check pending
 
-Walked build 1afc2e6 on a COPY of delano-v-mckinnon (657 docs), daemon on
-:7431, no models. Screenshots under /tmp/claude-chrome-screenshots-cIMpIU/.
-Broken / embarrassing:
-- Types & fields: the example command block is light-on-light, unreadable.
-- Review tab: blank "loading…" for 75 s — `/api/attest/<idx>/assets` measured
-  1m15s (curl). No progress, no partial render.
-- Raw internal errors in Activity ("arguments are not a JSON object: invalid
-  character ','…"), 289 failed captioning jobs in red; Problems shows CLI
-  commands and copy like "Jobs the endpoint made fight".
-- Absolute home paths (/home/<user>/life/projects/…) in the doc list, search
-  hits, doc header and URLs.
-Looks unfinished:
-- Two shells: projects/project pages (top bar, centered) vs index pages
-  (sidebar). Overview = 7 stat cards and nothing else. ~200px dead gutter
-  left of content (`.pagemain` centered inside the area beside the sidebar).
-- Jargon in the UI: frags, vision 4, bm25 — exact words, llm-seg, lane
-  heavy, 11×429, score 7.00, "titled by Qwen3-6-27B-MPT".
-- Search: same document repeated (no grouping), no term highlight, filename
-  as title though a generated title exists, caption warning said twice.
-- Document list: filename + path only; kinds exist (correspondence 169,
-  court filing 87, …) but there is no type/date/title column or filter.
-- Transcript is monospace for prose.
-Minor: two breakpoints only, sidebar has no collapse rule (not verified
-visually); `$schema` URLs say https on http; page-image paths are absolute
-(moving a root breaks images — seen on the copy); JS bundle >500 kB.
+Walked build 1afc2e6 on a COPY of the 657-document corpus (daemon :7431, no
+models). Findings F1–F9 / M1–M4 (unreadable Types command block, 75 s blank
+Review tab, raw errors, absolute home paths, two shells + dead gutter, jargon,
+ungrouped search, filename-only doc list, monospace transcript, phone sidebar,
+https `$schema`, absolute page-image paths, >500 kB bundle) — all fixed in code:
+- F1 theme roles are `var(--token)`; code tokens. F2 index root excludes raglit
+  storage, attest lists candidates from the index: `/api/attest/<idx>/assets`
+  1m15s → 0.2 s (curl). Skeleton/slow/error states.
+- F3 `ErrorText` (summary + Technical details); CLI only inside details.
+- F4 display path `rel` (root-relative, `@attachments/…` for storage);
+  docPathMiddleware resolves it; router + DocShell redirect absolute URLs. The
+  API still returns absolute `path`/`doc_id` next to `rel` (identity; UI uses rel).
+- F5 one AppShell for root/project/index. F6 plain labels via `ui/display.ts`.
+  F7 grouped hits, highlight, generated name, one AI label. F8 title/kind/date
+  columns, kind chips, sort. F9 prose font.
+- M1 phone sidebar toggle + scrim. M2 `$schema` uses the request scheme; the
+  OpenAPI `$schema` examples are host-less (`/schemas/X.json`); `/api/fields`
+  body no longer embeds DocFields, so it gets its link (startup warning gone).
+  M3 page images re-rooted under PagesRoot (copy serves 200). M4 lazy routes,
+  largest chunk 261 kB.
+- New: 68/657 captions were the identity prompt's example name copied ("…Form 21
+  … (Ardley/Brannock)") — a deed titled as a PSA. Identify now rejects a name
+  carrying the example's parties when the text names neither, and the caption
+  queue treats such old captions as stale, so they regenerate on the next run.
 
+Open:
+- ◐ Browser walk not done: the claude-in-chrome extension was disconnected for
+  the whole fix pass. **next:** walk :7431 (shell, Search, DocumentList at 400px,
+  Transcript, attest slow/error states, Email attachment links, page-image
+  placeholder). **risks:** every UI finding is verified by typecheck/build only.
+- ❓ Product call: storage docs (`@attachments/…`, uploads) are outside the
+  attest mount — no review, no "Download original". Second root or a
+  separate original-bytes route?
+- After restarting a daemon on this build: `POST /api/attest/readings?index=<name>`
+  once per index (asset ids are now relative to the narrower root). Done on the
+  :7431 copy (243 written / 414 skipped for lack of region reads).
+- Copied-example captions on a live index regenerate only when the caption queue
+  runs with a model (`raglit identify`); until then the wrong titles show.
+- Hybrid/vec search returns 500 without an embedder; Search shows a plain
+  message. Hide the modes server-side when no embedder (icebox candidate).
+- AttestAsset's provenance wording lives in @iodesystems/attest-react.
 
+## Open decisions (original planning)
 
 1. **Styling approach.** Tokens + hand-written CSS (no new deps, smallest
    change, keeps the committed-dist constraint trivially) · CSS Modules
