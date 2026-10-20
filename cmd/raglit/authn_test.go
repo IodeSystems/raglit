@@ -379,9 +379,10 @@ func TestAuth_UploadIsOwnerWrite(t *testing.T) {
 	}
 }
 
-// dun's flow over HTTP: two people register one project id, write to their
-// layers by upload, and a layer made public shows up in the other's search.
-func TestAuth_RegisterUploadPublishSearch(t *testing.T) {
+// dun's flow over HTTP: two people register one project id; each note goes to
+// the private or the public layer; a branch search fans out to the siblings
+// the caller can read, and a whole-namespace search counts the base once.
+func TestAuth_RegisterUploadSearch(t *testing.T) {
 	srv, fi, reg := authTestServerReg(t)
 	alice, bob := fi.token(t, "alice", "raglit", fi.key), fi.token(t, "bob", "raglit", fi.key)
 	register := func(tok string) raglit.Registration {
@@ -395,41 +396,46 @@ func TestAuth_RegisterUploadPublishSearch(t *testing.T) {
 		return r
 	}
 	ra, rb := register(alice), register(bob)
-	if ra.Base != rb.Base || ra.Layer == rb.Layer {
+	if ra.Base != rb.Base || ra.Private == rb.Private || ra.Namespace != rb.Namespace {
 		t.Fatalf("registrations %+v / %+v", ra, rb)
 	}
-	upload := func(tok, index, text string) {
+	upload := func(tok, index, name, text string) {
 		t.Helper()
-		code, body := doAs(t, "POST", srv.URL+"/api/upload?index="+index, tok, `{"name":"m.md","text":"`+text+`"}`)
+		code, body := doAs(t, "POST", srv.URL+"/api/upload?index="+index, tok, `{"name":"`+name+`","text":"`+text+`"}`)
 		if code != http.StatusOK {
 			t.Fatalf("upload: %d\n%s", code, clip(body, 400))
 		}
 	}
-	upload(alice, ra.Layer, "alice narwhal")
-	if code, _ := doAs(t, "POST", srv.URL+"/api/upload?index="+ra.Layer, bob, `{"name":"x.md","text":"x"}`); code != http.StatusNotFound {
+	upload(alice, ra.Private, "secret.md", "alice secret narwhal")
+	upload(alice, ra.Public, "shared.md", "alice shared narwhal")
+	// The base belongs to its first registrant until a maintainer takes it.
+	upload(alice, ra.Base, "base.md", "base narwhal fact")
+	if code, _ := doAs(t, "POST", srv.URL+"/api/upload?index="+ra.Private, bob, `{"name":"x.md","text":"x"}`); code != http.StatusNotFound {
 		t.Errorf("bob uploading into alice's private layer: %d, want 404", code)
 	}
-	// Uploads are queued; drain them here (workers are not running in tests).
 	drainAll(t, reg)
 
-	search := func(tok, index string) string {
-		_, body := doAs(t, "GET", srv.URL+"/search?q=narwhal&index="+index, tok, "")
+	search := func(tok, query string) string {
+		_, body := doAs(t, "GET", srv.URL+"/search?q=narwhal&n=20&"+query, tok, "")
 		return body
 	}
-	if b := search(bob, rb.Layer); strings.Contains(b, "narwhal") {
-		t.Fatalf("bob sees alice's private layer:\n%s", clip(b, 400))
+	b := search(bob, "index="+rb.Private)
+	if !strings.Contains(b, "shared.md") || !strings.Contains(b, "base.md") || strings.Contains(b, "secret.md") {
+		t.Fatalf("bob's layer search: want alice's public note + base, not her private note:\n%s", clip(b, 800))
 	}
-	if code, b := doAs(t, "POST", srv.URL+"/api/visibility", bob, `{"index":"`+ra.Layer+`","visibility":"public"}`); code != http.StatusNotFound {
-		t.Fatalf("bob publishing alice's layer: %d\n%s", code, clip(b, 300))
+	if b := search(bob, "index="+rb.Private+"&siblings=false"); strings.Contains(b, "shared.md") || !strings.Contains(b, "base.md") {
+		t.Fatalf("siblings=false: want base only:\n%s", clip(b, 800))
 	}
-	if code, b := doAs(t, "POST", srv.URL+"/api/visibility", alice, `{"index":"`+ra.Layer+`","visibility":"public"}`); code != http.StatusOK {
-		t.Fatalf("alice publishing her layer: %d\n%s", code, clip(b, 300))
+	if b := search(alice, "index="+ra.Private); !strings.Contains(b, "secret.md") || !strings.Contains(b, "shared.md") {
+		t.Fatalf("alice's private layer search: want both of her notes:\n%s", clip(b, 800))
 	}
-	if b := search(bob, rb.Layer); !strings.Contains(b, ra.Layer) {
-		t.Fatalf("bob's layer search should include alice's public layer:\n%s", clip(b, 400))
+	// The daemon MCP's selector for a project: every readable index, base once.
+	b = search(bob, "index="+ra.Namespace+"__*")
+	if strings.Count(b, `"title":"base.md"`) != 1 || strings.Contains(b, "secret.md") || !strings.Contains(b, "shared.md") {
+		t.Fatalf("namespace search: want base once, alice's public note, not her private one:\n%s", clip(b, 1200))
 	}
 	_, body := doAs(t, "GET", srv.URL+"/api/projects/lookup?id=rootsha", bob, "")
-	if !strings.Contains(body, ra.Layer) || !strings.Contains(body, rb.Layer) {
+	if !strings.Contains(body, ra.Public) || strings.Contains(body, ra.Private) || !strings.Contains(body, rb.Private) {
 		t.Fatalf("lookup for bob: %s", clip(body, 400))
 	}
 }

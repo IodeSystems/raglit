@@ -2,11 +2,12 @@ package raglit
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 )
 
-func TestRegisterProject_BaseThenLayers(t *testing.T) {
+func TestRegisterProject_BaseThenTwoLayersEach(t *testing.T) {
 	reg := aclRegistry(t)
 	ctx := context.Background()
 	const id = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -15,45 +16,76 @@ func TestRegisterProject_BaseThenLayers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !a.NewBase || !a.NewLayer || a.Layer == a.Base {
-		t.Fatalf("first registration = %+v; want a new base AND a layer", a)
+	if !a.NewBase || !a.NewPrivate || !a.NewPublic {
+		t.Fatalf("first registration = %+v; want a new base and both layers", a)
+	}
+	for _, n := range []string{a.Base, a.Private, a.Public} {
+		if !strings.HasPrefix(n, a.Namespace+"__") || strings.Contains(a.Namespace, "_") {
+			t.Fatalf("%q is not in namespace %q", n, a.Namespace)
+		}
 	}
 	if acl := reg.ACLOf(a.Base); acl.Visibility != Public {
 		t.Fatalf("base ACL %+v; a private base makes every other layer unreadable", acl)
 	}
-	if acl := reg.ACLOf(a.Layer); acl.Owner != "alice" || acl.Visibility != Private {
-		t.Fatalf("alice's layer ACL %+v", acl)
+	if acl := reg.ACLOf(a.Private); acl.Owner != "alice" || acl.Visibility != Private {
+		t.Fatalf("alice's private layer ACL %+v", acl)
+	}
+	if acl := reg.ACLOf(a.Public); acl.Owner != "alice" || acl.Visibility != Public {
+		t.Fatalf("alice's public layer ACL %+v", acl)
 	}
 	again, err := reg.RegisterProject(as("alice"), id, "")
-	if err != nil || again.Base != a.Base || again.Layer != a.Layer || again.NewBase || again.NewLayer {
-		t.Fatalf("repeat registration = %+v, %v; want the same pair", again, err)
+	if err != nil || again.Base != a.Base || again.Private != a.Private || again.Public != a.Public ||
+		again.NewBase || again.NewPrivate || again.NewPublic {
+		t.Fatalf("repeat registration = %+v, %v; want the same names, nothing new", again, err)
 	}
 	b, err := reg.RegisterProject(as("bob"), id, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Base != a.Base || b.NewBase || b.Layer == a.Layer {
-		t.Fatalf("bob = %+v; want alice's base and his own layer", b)
+	if b.Base != a.Base || b.NewBase || b.Private == a.Private || b.Public == a.Public {
+		t.Fatalf("bob = %+v; want alice's base and his own layers", b)
 	}
 	if reg.ProjectBase(id) != a.Base {
 		t.Fatal("lookup by project id failed")
 	}
 
-	// Private by default: bob does not see alice's layer. Public: he does, as a
-	// sibling of his own.
-	al, _ := reg.Write(as("alice"), a.Layer)
-	must(t, al.Ingest(ctx, Document{Path: "file:///n.md", Title: "N", Fragments: []Fragment{{Text: "alice narwhal"}}}))
-	if s := reg.PublicSiblings(as("bob"), b.Layer); len(s) != 0 {
-		t.Fatalf("bob sees private siblings: %v", s)
+	// One public note does not expose the private ones.
+	priv, _ := reg.Write(as("alice"), a.Private)
+	must(t, priv.Ingest(ctx, Document{Path: "file:///p.md", Title: "P", Fragments: []Fragment{{Text: "alice secret narwhal"}}}))
+	pub, _ := reg.Write(as("alice"), a.Public)
+	must(t, pub.Ingest(ctx, Document{Path: "file:///s.md", Title: "S", Fragments: []Fragment{{Text: "alice shared narwhal"}}}))
+
+	sib := map[string]bool{}
+	for _, s := range reg.Siblings(as("bob"), b.Private) {
+		sib[s] = true
 	}
-	must(t, reg.SetVisibility(as("alice"), a.Layer, Public))
-	s := reg.PublicSiblings(as("bob"), b.Layer)
-	if len(s) != 1 || s[0] != a.Layer {
-		t.Fatalf("bob's public siblings = %v, want [%s]", s, a.Layer)
+	if !sib[a.Public] || sib[a.Private] || !sib[b.Public] {
+		t.Fatalf("bob's siblings = %v; want alice's public + his own public, not alice's private", sib)
 	}
-	st, _ := reg.Read(as("bob"), s[0])
-	if h, _ := st.SearchOwnLayer(ctx, "narwhal", "", "", 5); len(h) != 1 {
-		t.Fatalf("sibling layer search: %d hits", len(h))
+	st, _ := reg.Read(as("bob"), a.Public)
+	if h, _ := st.SearchOwnLayer(ctx, "narwhal", "", "", 5); len(h) != 1 || h[0].Path != "file:///s.md" {
+		t.Fatalf("alice's public layer search: %+v", h)
+	}
+}
+
+// With access control off, a branch's siblings are every other branch on its
+// parent.
+func TestSiblings_ACLOff(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	if _, err := reg.Get("main"); err != nil {
+		t.Fatal(err)
+	}
+	must(t, reg.ForkBranch("x", "main"))
+	must(t, reg.ForkBranch("y", "main"))
+	if s := reg.Siblings(context.Background(), "x"); len(s) != 1 || s[0] != "y" {
+		t.Fatalf("siblings of x = %v", s)
+	}
+	if s := reg.Siblings(context.Background(), "main"); len(s) != 0 {
+		t.Fatalf("a root index has no siblings: %v", s)
 	}
 }
 

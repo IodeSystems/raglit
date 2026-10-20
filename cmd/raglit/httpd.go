@@ -587,11 +587,12 @@ type hitRow struct {
 	Trust  *raglit.HitTrust `json:"trust,omitempty"`
 }
 type searchIn struct {
-	Query string `query:"q"`
-	Index string `query:"index"`
-	Mode  string `query:"mode"`
-	Path  string `query:"path"`
-	Limit int    `query:"n"`
+	Query    string `query:"q"`
+	Index    string `query:"index"`
+	Mode     string `query:"mode"`
+	Path     string `query:"path"`
+	Limit    int    `query:"n"`
+	Siblings string `query:"siblings" doc:"a branch also searches its readable sibling branches; \"false\" to search the branch alone"`
 }
 type searchOut struct {
 	Body struct {
@@ -614,33 +615,22 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			limit = defLimit
 		}
 		lists := map[string][]raglit.Hit{}
-		names := reg.Readable(ctx, selectIndexes(reg, in.Index))
-		for _, name := range names {
+		plan := planSearch(ctx, reg, in.Index, siblingsOn(in.Siblings))
+		for _, name := range plan.names {
 			st, err := reg.Read(ctx, name)
 			if err != nil {
 				continue
 			}
-			hits, err := searchByMode(st, in.Query, in.Mode, in.Path, limit*2)
+			var hits []raglit.Hit
+			if plan.own[name] {
+				hits, err = st.SearchOwnLayer(ctx, in.Query, in.Mode, in.Path, limit*2)
+			} else {
+				hits, err = searchByMode(st, in.Query, in.Mode, in.Path, limit*2)
+			}
 			if err != nil {
 				return nil, huma.Error500InternalServerError("search", err)
 			}
 			lists[name] = hits
-		}
-		// A layer also searches the PUBLIC layers beside it on the same base —
-		// their own documents only, since this layer already overlays the base.
-		for _, name := range names {
-			for _, sib := range reg.PublicSiblings(ctx, name) {
-				if _, done := lists[sib]; done {
-					continue
-				}
-				st, err := reg.Read(ctx, sib)
-				if err != nil {
-					continue
-				}
-				if hits, err := st.SearchOwnLayer(ctx, in.Query, in.Mode, in.Path, limit*2); err == nil {
-					lists[sib] = hits
-				}
-			}
 		}
 		out := &searchOut{}
 		out.Body.Hits = []hitRow{}
@@ -657,7 +647,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			})
 		}
 		if len(out.Body.Hits) == 0 {
-			out.Body.Covers = coversFor(reg, reg.Readable(ctx, selectIndexes(reg, in.Index)), in.Path)
+			out.Body.Covers = coversFor(reg, plan.names, in.Path)
 		}
 		return out, nil
 	}
@@ -675,10 +665,11 @@ type figureRow struct {
 	Score       float64 `json:"score"`
 }
 type searchFiguresIn struct {
-	Query string `query:"q"`
-	Index string `query:"index"`
-	Path  string `query:"path"`
-	Limit int    `query:"n"`
+	Query    string `query:"q"`
+	Index    string `query:"index"`
+	Path     string `query:"path"`
+	Limit    int    `query:"n"`
+	Siblings string `query:"siblings" doc:"a branch also searches its readable sibling branches; \"false\" to search the branch alone"`
 }
 type searchFiguresOut struct {
 	Body struct {
@@ -697,7 +688,9 @@ func searchFiguresOp(reg *raglit.Registry, defLimit int) func(context.Context, *
 		}
 		out := &searchFiguresOut{}
 		out.Body.Figures = []figureRow{}
-		for _, name := range reg.Readable(ctx, selectIndexes(reg, in.Index)) {
+		// Figures are not overlaid (each index answers for its own), so the
+		// plan's own-layer marks change nothing here; the sibling set does.
+		for _, name := range planSearch(ctx, reg, in.Index, siblingsOn(in.Siblings)).names {
 			st, err := reg.Read(ctx, name)
 			if err != nil {
 				continue

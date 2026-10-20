@@ -33,6 +33,9 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			if n := req.GetInt("limit", defLimit); n > 0 {
 				v.Set("n", strconv.Itoa(n))
 			}
+			if !req.GetBool("siblings", true) {
+				v.Set("siblings", "false")
+			}
 			return proxyGet(base, "/search", v, ns)
 		},
 

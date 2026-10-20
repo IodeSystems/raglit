@@ -13,22 +13,30 @@ import (
 	"time"
 )
 
-// Shared projects: one BASE index per project id, one LAYER (a P6 branch) per
-// person over it.
+// Shared projects: one BASE index per project id, and per person TWO layers (P6
+// branches) over it — one private, one public.
 //
 // A client turning on rag for a repo registers under the repo's project id (dun:
 // the root commit, labelled with the normalized origin; raglit treats the id as
 // opaque text). The first registration creates the base, PUBLIC and empty, and
-// every registrant — the first included — writes to their own private layer
-// over it. USER decision 2026-10-19: the base is not the first person's
-// memories; it is what a maintainer folds the public layers into.
+// every registrant — the first included — writes to their own layers over it.
+// USER decision 2026-10-19: the base is not the first person's memories; it is
+// what a maintainer folds the public layers into.
 //
 // Why the base is public: a layer is readable only when its parent is (acl.go),
 // so a private base would make every other person's layer unreadable — even to
 // them.
 //
-// A layer marked public is searched by every other layer on the same base
-// (PublicSiblings). That is how a note becomes shared without being merged.
+// Two layers because visibility is per index and public:true is per NOTE: with
+// one layer, publishing one note would publish every private note beside it
+// (USER, 2026-10-19). The client writes each note to the layer it belongs in.
+//
+// Every name sits in one namespace — <ns>__base, <ns>__u<hash>-priv|-pub — so a
+// client configured with project = <ns> reaches the whole project through the
+// daemon MCP's ordinary "<ns>__*" selector.
+//
+// Sharing between layers is not a project feature: search on any branch fans
+// out to its readable siblings (Registry.Siblings). Ownership is the ACL on top.
 
 // ProjectMeta marks an index as a project's base: <home>/project.json.
 type ProjectMeta struct {
@@ -37,14 +45,19 @@ type ProjectMeta struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
-// Registration answers RegisterProject: the base, and the caller's layer, which
-// is where the caller writes.
+// Registration answers RegisterProject.
 type Registration struct {
 	ProjectID string `json:"project_id"`
+	// Namespace prefixes every name below; it is the client's project setting
+	// for the daemon MCP.
+	Namespace string `json:"namespace"`
 	Base      string `json:"base"`
-	Layer     string `json:"layer"`
-	NewBase   bool   `json:"new_base"`
-	NewLayer  bool   `json:"new_layer"`
+	// Private and Public are the caller's two layers — where the caller writes.
+	Private    string `json:"private"`
+	Public     string `json:"public"`
+	NewBase    bool   `json:"new_base"`
+	NewPrivate bool   `json:"new_private"`
+	NewPublic  bool   `json:"new_public"`
 }
 
 func projectPath(home Home) string { return filepath.Join(string(home), "project.json") }
@@ -97,6 +110,7 @@ func (r *Registry) ProjectBase(id string) string {
 
 // LayersOf lists the branches whose parent is base.
 func (r *Registry) LayersOf(base string) []string {
+	base = normalizeIndexName(base)
 	var out []string
 	for _, n := range r.indexDirs() {
 		if meta, ok := readBranchMeta(r.indexHome(n)); ok && normalizeIndexName(meta.Parent) == base {
@@ -106,26 +120,59 @@ func (r *Registry) LayersOf(base string) []string {
 	return out
 }
 
-// baseName derives a base index name from a project id: readable prefix plus a
-// hash, so two ids that sanitize alike do not collide.
-func baseName(id string) string {
+// ParentOf is a branch's parent, "" for an index that is not a branch.
+func (r *Registry) ParentOf(name string) string {
+	if r.scopedRoot == "" {
+		return ""
+	}
+	if meta, ok := readBranchMeta(r.indexHome(normalizeIndexName(name))); ok {
+		return normalizeIndexName(meta.Parent)
+	}
+	return ""
+}
+
+// Siblings lists the branches that share name's parent and that the caller may
+// read — what a search on name fans out to besides name itself. Empty for an
+// index that is not a branch. With access control off every sibling is
+// readable.
+func (r *Registry) Siblings(ctx context.Context, name string) []string {
+	name = normalizeIndexName(name)
+	parent := r.ParentOf(name)
+	if parent == "" {
+		return nil
+	}
+	var out []string
+	for _, sib := range r.LayersOf(parent) {
+		if sib != name && r.CanRead(ctx, sib) {
+			out = append(out, sib)
+		}
+	}
+	return out
+}
+
+// projectNamespace derives a namespace from a project id: readable prefix plus a
+// hash, so two ids that sanitize alike do not collide. No underscores, because
+// "__" separates a namespace from the index name.
+func projectNamespace(id string) string {
 	sum := sha256.Sum256([]byte(id))
-	stem := normalizeIndexName(id)
+	stem := strings.ReplaceAll(normalizeIndexName(id), "_", "")
 	if len(stem) > 16 {
 		stem = stem[:16]
 	}
-	return "proj-" + stem + "-" + hex.EncodeToString(sum[:4])
+	return "p" + stem + hex.EncodeToString(sum[:4])
 }
 
-// layerName is the caller's layer over base.
-func layerName(base, principal string) string {
+// layerNames are the caller's private and public layers in namespace ns.
+func layerNames(ns, principal string) (priv, pub string) {
 	sum := sha256.Sum256([]byte(principal))
-	return base + "-l" + hex.EncodeToString(sum[:4])
+	u := ns + "__u" + hex.EncodeToString(sum[:4])
+	return u + "-priv", u + "-pub"
 }
 
 // RegisterProject is register-or-layer, atomic per registry: the base for id
-// (created public and empty when absent) and the caller's private layer over it
-// (created when absent). Repeating a registration returns the same pair.
+// (created public and empty when absent) and the caller's private and public
+// layers over it (each created when absent). Repeating a registration returns
+// the same names.
 func (r *Registry) RegisterProject(ctx context.Context, id, label string) (Registration, error) {
 	if r.scopedRoot == "" {
 		return Registration{}, fmt.Errorf("raglit: projects require the daemon's scoped storage (no --home)")
@@ -145,7 +192,7 @@ func (r *Registry) RegisterProject(ctx context.Context, id, label string) (Regis
 
 	reg := Registration{ProjectID: id, Base: r.ProjectBase(id)}
 	if reg.Base == "" {
-		reg.Base = baseName(id)
+		reg.Base = projectNamespace(id) + "__base"
 		if r.exists(reg.Base) {
 			return Registration{}, fmt.Errorf("raglit: index %q exists and is not project %q's base", reg.Base, id)
 		}
@@ -162,41 +209,37 @@ func (r *Registry) RegisterProject(ctx context.Context, id, label string) (Regis
 		}
 		reg.NewBase = true
 	}
+	reg.Namespace, _, _ = strings.Cut(reg.Base, "__")
+	reg.Private, reg.Public = layerNames(reg.Namespace, p)
 
-	reg.Layer = layerName(reg.Base, p)
-	if r.exists(reg.Layer) {
-		if r.ACLEnabled() && r.ACLOf(reg.Layer).Owner != p {
-			return Registration{}, fmt.Errorf("raglit: layer %q belongs to someone else", reg.Layer)
-		}
-		return reg, nil
-	}
-	if err := r.ForkBranchAs(ctx, reg.Layer, reg.Base); err != nil {
+	var err error
+	if reg.NewPrivate, err = r.ensureLayer(ctx, reg.Private, reg.Base, Private); err != nil {
 		return Registration{}, err
 	}
-	reg.NewLayer = true
+	if reg.NewPublic, err = r.ensureLayer(ctx, reg.Public, reg.Base, Public); err != nil {
+		return Registration{}, err
+	}
 	return reg, nil
 }
 
-// PublicSiblings lists the layers that share name's parent, are public, and the
-// caller can read — what a search on name fans out to besides name itself.
-// Empty for an index that is not a branch.
-func (r *Registry) PublicSiblings(ctx context.Context, name string) []string {
-	if r.scopedRoot == "" || !r.ACLEnabled() {
-		return nil
-	}
-	name = normalizeIndexName(name)
-	meta, ok := readBranchMeta(r.indexHome(name))
-	if !ok {
-		return nil
-	}
-	var out []string
-	for _, sib := range r.LayersOf(normalizeIndexName(meta.Parent)) {
-		if sib == name || r.ACLOf(sib).Visibility != Public || !r.CanRead(ctx, sib) {
-			continue
+// ensureLayer forks the caller's layer over base when it is absent. An existing
+// layer must be the caller's.
+func (r *Registry) ensureLayer(ctx context.Context, name, base string, v Visibility) (bool, error) {
+	if r.exists(name) {
+		if r.ACLEnabled() && r.ACLOf(name).Owner != PrincipalFrom(ctx) {
+			return false, fmt.Errorf("raglit: layer %q belongs to someone else", name)
 		}
-		out = append(out, sib)
+		return false, nil
 	}
-	return out
+	if err := r.ForkBranchAs(ctx, name, base); err != nil {
+		return false, err
+	}
+	if v == Public && r.ACLEnabled() {
+		if err := r.SetVisibility(ctx, name, Public); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // SearchOwnLayer searches this layer's OWN documents only — not its parent.
