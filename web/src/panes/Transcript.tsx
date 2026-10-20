@@ -9,11 +9,12 @@ export function Transcript() {
   const { detail } = useDoc();
   const text = detail.text ?? "";
   if (!text.trim()) {
-    return <div className="empty">Nothing indexed for this document.</div>;
+    return <div className="empty">No text has been indexed for this document yet.</div>;
   }
   return (
     <div className="dpane">
-      <pre>{text}</pre>
+      {/* Prose in the body font (F9); a <pre> only to keep the line breaks. */}
+      <pre className="prose">{text}</pre>
     </div>
   );
 }

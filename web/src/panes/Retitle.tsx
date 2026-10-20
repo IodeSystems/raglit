@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { identify, type DocIdentity } from "../api";
+import { ErrorText } from "../ui/Details";
 
 // The kinds identity.go accepts. A CLOSED vocabulary — NormalizeKind rejects
 // anything outside it — so this is a select, not a text box. Typing a kind the
@@ -72,12 +73,13 @@ export function Retitle({
           style={{ flex: 1, minWidth: 0 }}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="what this document IS — not what the file is called"
+          placeholder="Title: what this document is, not what the file is called"
+          aria-label="Title"
         />
-        <select value={kind} onChange={(e) => setKind(e.target.value)}>
+        <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind">
           {KINDS.map((k) => (
             <option key={k} value={k}>
-              {k || "(kind unset)"}
+              {k ? k[0]!.toUpperCase() + k.slice(1) : "Kind not set"}
             </option>
           ))}
         </select>
@@ -85,20 +87,21 @@ export function Retitle({
       <textarea
         value={summary}
         onChange={(e) => setSummary(e.target.value)}
-        placeholder="summary — what it says, and what makes it worth keeping"
+        placeholder="Summary: what it says, and why it matters"
+        aria-label="Summary"
       />
       {/* The server enforces a floor on the summary (identity.go rejects "A
           legal document." as an answer that establishes nothing). Saying so here
           beats a 400 with the number in it. */}
       <div className="row">
         <button className="primary" type="submit" disabled={busy}>
-          {busy ? "saving…" : "Save as a person's title"}
+          {busy ? "Saving…" : "Save title"}
         </button>
         <span className="muted">
-          A summary must be at least a sentence; a machine re-run will not overwrite this.
+          Write the summary as at least one full sentence. A title you save here is kept when the document is read again.
         </span>
       </div>
-      {err && <div className="err">{err}</div>}
+      {err && <ErrorText raw={err} />}
     </form>
   );
 }

@@ -1,4 +1,5 @@
 import { useDoc } from "../useDocDetail";
+import { engineLabel } from "../ui/display";
 
 // What has happened to this document: readings taken, and verdicts ruled.
 //
@@ -16,7 +17,7 @@ export function History() {
     <table className="seen">
       <thead>
         <tr>
-          <th>What</th>
+          <th>Event</th>
           <th className="num">Page</th>
           <th>Source</th>
           <th>By</th>
@@ -28,14 +29,14 @@ export function History() {
         {events.map((e, i) => (
           <tr key={`${e.kind}-${e.seq ?? i}-${e.page ?? ""}-${i}`}>
             <td>
-              {e.kind}
+              {KIND_LABELS[e.kind] ?? e.kind}
               {/* "active" is which reading is the one in the index right now.
                   Without it a page with three readings gives no clue which one
                   search is actually matching against. */}
-              {e.active && <span className="badge" style={{ marginLeft: 6 }}>active</span>}
+              {e.active && <span className="badge" style={{ marginLeft: 6 }} title="This is the reading search uses now">current</span>}
             </td>
             <td className="num">{e.page || ""}</td>
-            <td>{e.source || ""}</td>
+            <td>{e.kind === "reading" ? sourceLabel(e.source) : e.source || ""}</td>
             <td>{e.by || <span className="muted">—</span>}</td>
             <td className="muted">{e.at || ""}</td>
             <td style={{ whiteSpace: "pre-wrap" }}>{e.note || ""}</td>
@@ -44,4 +45,17 @@ export function History() {
       </tbody>
     </table>
   );
+}
+
+const KIND_LABELS: Record<string, string> = {
+  reading: "Page reading",
+  verdict: "Review decision",
+};
+
+// How a reading was made, in words. "corrected" is a person's correction and is
+// said so; an engine name goes through the shared engine labels.
+function sourceLabel(source?: string): string {
+  if (!source) return "";
+  if (source === "corrected") return "Corrected by a person";
+  return engineLabel(source);
 }

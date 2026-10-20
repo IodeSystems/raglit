@@ -1,0 +1,185 @@
+/* Search results, grouped by document (Search.tsx). Tokens come from
+   styles.css; nothing here sets a colour of its own. */
+
+.sr-summary {
+  color: var(--muted);
+  font-size: var(--fs-md);
+}
+.sr-mode {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  color: var(--muted);
+}
+
+.sr-doc {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.sr-doc:last-child {
+  border-bottom: none;
+}
+
+.sr-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  min-width: 0;
+}
+.sr-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--link);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.sr-title:hover {
+  text-decoration: underline;
+}
+.sr-kind {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: var(--chip);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-2);
+  white-space: nowrap;
+}
+
+.sr-sub {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.sr-sub .sr-sep {
+  margin: 0 var(--sp-1);
+}
+
+.sr-passage {
+  display: block;
+  margin-top: var(--sp-2);
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  max-width: var(--measure);
+}
+.sr-passage:hover .sr-snip {
+  color: var(--ink);
+}
+.sr-passage:hover .sr-page {
+  color: var(--link);
+}
+.sr-page {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.sr-snip {
+  font-size: var(--fs-md);
+  line-height: var(--lh-body);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.sr-snip.generated {
+  border-left: 2px solid var(--warn);
+  padding-left: var(--sp-2);
+  font-style: italic;
+  color: var(--muted);
+}
+
+.sr-more {
+  margin-top: var(--sp-2);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--link);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+.sr-more:hover {
+  text-decoration: underline;
+}
+.sr-rest {
+  margin-left: var(--sp-3);
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--line);
+}
+
+.sr-state {
+  padding: var(--sp-6) var(--sp-4);
+  text-align: center;
+  color: var(--muted);
+}
+.sr-state .sr-state-title {
+  font-size: var(--fs-lg);
+  color: var(--ink);
+  margin-bottom: var(--sp-1);
+}
+.sr-state .errline {
+  text-align: left;
+  max-width: var(--measure);
+  margin: 0 auto;
+}
+.sr-hintbtn {
+  margin-top: var(--sp-3);
+  background: var(--chip);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-3);
+  cursor: pointer;
+  font: inherit;
+}
+
+/* Loading placeholder: three grey cards in the shape of a result. */
+.sr-skel {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.sr-skel div {
+  height: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--chip);
+  margin-top: var(--sp-2);
+  animation: sr-pulse 1.2s ease-in-out infinite;
+}
+.sr-skel div:first-child {
+  height: 14px;
+  width: 40%;
+  margin-top: 0;
+}
+.sr-skel div:nth-child(2) {
+  width: 25%;
+}
+.sr-skel div:nth-child(3) {
+  width: 90%;
+}
+.sr-skel div:nth-child(4) {
+  width: 75%;
+}
+@keyframes sr-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sr-skel div {
+    animation: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .sr-doc,
+  .sr-skel {
+    padding: var(--sp-3);
+  }
+  .sr-rest {
+    margin-left: 0;
+  }
+}

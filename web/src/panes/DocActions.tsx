@@ -1,11 +1,13 @@
 import { useState } from "react";
 
 import { postJSON, type DocDetail } from "../api";
+import { ErrorText } from "../ui/Details";
+import { fileName } from "../ui/display";
 
 // What can be done to the document itself, as opposed to what can be said about
 // it.
 //
-// Two different re-reads, named apart because they are not the same act and the
+// Two different re-reads, named apart ("Re-index" and "Re-read pages") because they are not the same act and the
 // difference is what you get back. Re-ingest re-fragments and re-indexes from
 // the file as it stands; re-read purges the cached page OCR first, which is the
 // one that matters when the CACHE is what is wrong — a re-index alone returns
@@ -42,7 +44,10 @@ export function DocActions({
     }
   };
 
-  const why = blocked ? `already ${inFlight[0]!.state} for this document` : undefined;
+  // The tooltip says what the button does; when it is disabled, why.
+  const why = blocked
+    ? `Work for this document is already ${stateWord(inFlight[0]!.state)}. Wait for it to finish.`
+    : undefined;
 
   return (
     <div className="docacts">
@@ -51,13 +56,17 @@ export function DocActions({
         // browser derive it from the URL path, which here ends "/source" — so
         // the file arrived named "source", with no extension, and looked like a
         // broken link rather than a working one with a bad name.
-        <a href={detail.original} download={doc.split("/").pop()}>
-          download original
+        <a
+          href={detail.original}
+          download={fileName(detail.path || doc)}
+          title="Download the file exactly as it was added"
+        >
+          Download original
         </a>
       )}
       <button
         disabled={blocked || !!busy}
-        title={why}
+        title={why ?? "Add this document to the index again from the file as it is now"}
         onClick={() =>
           // fresh:true, not a plain re-ingest. Without it the unchanged-bytes
           // fast path and the cross-index pool both short-circuit, so pressing
@@ -66,23 +75,35 @@ export function DocActions({
           act("ingest", () => postJSON("/ingest", { index }, { targets: [doc], fresh: true }))
         }
       >
-        {busy === "ingest" ? "queued…" : "re-ingest"}
+        {busy === "ingest" ? "Queued…" : "Re-index"}
       </button>
       <button
         disabled={blocked || !!busy}
-        title={why}
-        onClick={() => act("reread", () => postJSON("/api/reread", { index }, { path: doc }))}
+        title={
+          why ?? "Read the page images again from scratch, discarding the saved reading of every page"
+        }
+        // /api/reread takes `path` as a QUERY parameter only; sent in the body it
+        // was a 422. The display path is accepted like the absolute one.
+        onClick={() => act("reread", () => postJSON("/api/reread", { index, path: detail.path || doc }))}
       >
-        {busy === "reread" ? "queued…" : "re-read (purge OCR cache)"}
+        {busy === "reread" ? "Queued…" : "Re-read pages"}
       </button>
       {blocked && (
-        <span className="badge vision">
+        <span className="badge vision" title={inFlight.map((j) => `job #${j.id}: ${j.state}`).join("\n")}>
           {inFlight.length === 1
-            ? `${inFlight[0]!.state} · job #${inFlight[0]!.id}`
-            : `${inFlight.length} jobs ${inFlight[0]!.state}`}
+            ? `Work ${stateWord(inFlight[0]!.state)}`
+            : `${inFlight.length} jobs ${stateWord(inFlight[0]!.state)}`}
         </span>
       )}
-      {err && <span className="err">{err}</span>}
+      {err && <ErrorText raw={err} />}
     </div>
   );
+}
+
+// The queue's states, in words: "pending" reads as a problem to somebody who
+// has not seen the queue.
+function stateWord(state: string): string {
+  if (state === "pending") return "waiting";
+  if (state === "running") return "in progress";
+  return state;
 }

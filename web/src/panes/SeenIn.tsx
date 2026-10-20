@@ -1,6 +1,8 @@
 import { Link } from "@tanstack/react-router";
 
 import { useDoc } from "../useDocDetail";
+import { Details } from "../ui/Details";
+import { displayPath, fileName } from "../ui/display";
 
 // Where else this content shows up: near-duplicates, and any ruling already made
 // on the pair.
@@ -14,8 +16,14 @@ export function SeenIn() {
   if (!rows.length) {
     return (
       <div className="empty">
-        Nothing else in this index shares content with it — or sketches have not
-        been built (<code>raglit similar --build</code>).
+        No other document in this index shares text with this one.
+        <Details summary="Why might this be empty?">
+          <div>
+            Similar documents are found from a comparison index built separately.
+            If it has not been built, this list is empty for every document.
+          </div>
+          <pre>raglit similar --build</pre>
+        </Details>
       </div>
     );
   }
@@ -24,9 +32,9 @@ export function SeenIn() {
       <thead>
         <tr>
           <th>Document</th>
-          <th className="num">Overlap</th>
+          <th className="num" title="How much of the text the two documents share">Shared text</th>
           <th>Relation</th>
-          <th>Ruling</th>
+          <th>Decision</th>
         </tr>
       </thead>
       <tbody>
@@ -34,15 +42,15 @@ export function SeenIn() {
           <tr key={r.path}>
             <td>
               <Link to="/i/$index/d/$doc/pages" params={{ index, doc: r.path }}>
-                {r.title || r.path.split("/").pop()}
+                {r.title || fileName(r.path)}
               </Link>
               <div className="muted" style={{ fontSize: 11, wordBreak: "break-all" }}>
-                {r.path}
+                {displayPath(r.path, detail.root)}
               </div>
             </td>
-            <td className="num">{r.jaccard != null ? r.jaccard.toFixed(2) : ""}</td>
+            <td className="num">{r.jaccard != null ? `${Math.round(r.jaccard * 100)}%` : ""}</td>
             <td>{r.relation || <span className="muted">—</span>}</td>
-            <td>{r.ruling || <span className="muted">unruled</span>}</td>
+            <td>{r.ruling || <span className="muted">Not decided</span>}</td>
           </tr>
         ))}
       </tbody>

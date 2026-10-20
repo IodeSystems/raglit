@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { addNote, deleteNote, listNotes, type Note } from "../api";
 import { useDoc } from "../useDocDetail";
+import { ErrorText } from "../ui/Details";
 
 // What a person knows about this document that the machine could not read off it.
 //
@@ -53,8 +54,12 @@ export function NotesPanel({ pageScope }: { pageScope?: number }) {
           load();
         }}
       />
-      {err && <div className="empty err">{err}</div>}
-      {!err && shown === null && <div className="empty">loading…</div>}
+      {err && (
+        <div className="empty">
+          <ErrorText raw={err} />
+        </div>
+      )}
+      {!err && shown === null && <div className="empty">Loading notes…</div>}
       {shown?.length === 0 && (
         <div className="empty">
           {pageScope == null
@@ -65,11 +70,11 @@ export function NotesPanel({ pageScope }: { pageScope?: number }) {
       {shown?.map((n) => (
         <div className="note" key={n.id}>
           <div className="meta">
-            <b>{n.author || "anonymous"}</b>
+            <b>{n.author || "Anonymous"}</b>
             {/* Only when it adds something. In a page-scoped list every note is
                 about that page, and repeating it on each row is noise. */}
             {pageScope == null && n.page != null && (
-              <span className="badge">page {n.page}</span>
+              <span className="badge">Page {n.page}</span>
             )}
             <span>{n.created_at}</span>
             <div className="grow" />
@@ -133,19 +138,19 @@ function NoteForm({
         onChange={(e) => setBody(e.target.value)}
         placeholder={
           fixedPage != null
-            ? `what somebody looking at page ${fixedPage} would need to know and cannot see`
-            : "what somebody reading this document would need to know and cannot see"
+            ? `A note about page ${fixedPage}: what a reader should know that the page does not show`
+            : "A note about this document: what a reader should know that the document does not show"
         }
       />
       <div className="row">
         <input
           value={author}
           onChange={(e) => setAuthor(e.target.value)}
-          placeholder="your name"
+          placeholder="Your name"
           autoComplete="name"
         />
         {fixedPage != null ? (
-          <span className="badge">page {fixedPage}</span>
+          <span className="badge">Page {fixedPage}</span>
         ) : (
           <input
             type="number"
@@ -153,15 +158,15 @@ function NoteForm({
             max={maxPage || undefined}
             value={page}
             onChange={(e) => setPage(e.target.value)}
-            placeholder="page (optional)"
+            placeholder="Page (optional)"
             style={{ width: 140 }}
           />
         )}
         <button className="primary" type="submit" disabled={busy || !body.trim()}>
-          {busy ? "saving…" : "Add note"}
+          {busy ? "Saving…" : "Add note"}
         </button>
       </div>
-      {err && <div className="err">{err}</div>}
+      {err && <ErrorText raw={err} />}
     </form>
   );
 }

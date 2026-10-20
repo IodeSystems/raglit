@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { getPageLayout, postJSON, type DocPage, type PageLayout } from "../api";
 import { useDoc } from "../useDocDetail";
 import { NotesPanel } from "./Notes";
+import { ErrorText } from "../ui/Details";
+import { engineLabel } from "../ui/display";
+import "./Pages.css";
 
 // The page list: every page's image beside the text that was indexed from it.
 //
@@ -20,8 +23,8 @@ export function Pages() {
   if (!pages.length) {
     return (
       <div className="empty">
-        No per-page reading. Born-digital text and plain files are indexed whole;
-        a scanned sheet gets pages once it has been OCR'd or regioned.
+        This document is not shown page by page. Files with built-in text are
+        indexed whole; a scanned document gets pages once its images have been read.
       </div>
     );
   }
@@ -38,7 +41,7 @@ export function Pages() {
                 to="/i/$index/d/$doc/pages/$page"
                 params={{ index, doc, page: String(p.page) }}
               >
-                page {p.page} →
+                Page {p.page} →
               </Link>
               <PageBadges p={p} />
             </div>
@@ -80,7 +83,7 @@ export function PageDetail({ page }: { page: number }) {
     <>
       <div className="pagenav">
         <Link to="/i/$index/d/$doc/pages" params={{ index, doc }}>
-          ← all pages
+          ← All pages
         </Link>
         <div className="grow" />
         {/* Previous/next by POSITION in the list, not by page ± 1. A sliced or
@@ -89,16 +92,16 @@ export function PageDetail({ page }: { page: number }) {
         {prev && (
           <Link to="/i/$index/d/$doc/pages/$page"
                 params={{ index, doc, page: String(prev.page) }}>
-            ← page {prev.page}
+            ← Page {prev.page}
           </Link>
         )}
         <span className="muted">
-          page {p.page} of {pages.length}
+          Page {p.page} of {pages.length}
         </span>
         {next && (
           <Link to="/i/$index/d/$doc/pages/$page"
                 params={{ index, doc, page: String(next.page) }}>
-            page {next.page} →
+            Page {next.page} →
           </Link>
         )}
       </div>
@@ -107,7 +110,7 @@ export function PageDetail({ page }: { page: number }) {
         <PageImageWithLayout p={p} onZoom={setLightbox} />
         <div>
           <div className="pagehead">
-            <span className="n">page {p.page}</span>
+            <span className="n">Page {p.page}</span>
             <PageBadges p={p} />
           </div>
           <PageBody p={p} index={index} doc={doc} tall />
@@ -118,7 +121,7 @@ export function PageDetail({ page }: { page: number }) {
                   that says "[FIGURE: a survey map …]" and shows nothing is a
                   dead end. */}
               <div className="muted">
-                {p.figures.length} figure{p.figures.length > 1 ? "s" : ""} described on this page
+                {p.figures.length} figure{p.figures.length > 1 ? "s" : ""} described on this page (AI description)
               </div>
               {p.figures.map((f, i) => (
                 <div className="prov" style={{ marginTop: 6 }} key={i}>
@@ -156,17 +159,33 @@ function PageBadges({ p }: { p: DocPage }) {
           coloured apart rather than left to look like another engine. */}
       {p.source && (
         <span className={"badge " + (p.source === "corrected" ? "vision" : "text")}>
-          {p.source}
+          {p.source === "corrected" ? "Corrected by a person" : engineLabel(p.source)}
         </span>
       )}
-      {p.engine && <span className="badge eng">{p.engine}</span>}
+      {p.engine && p.engine !== p.source && (
+        <span className="badge eng" title={p.engine}>
+          {engineLabel(p.engine)}
+        </span>
+      )}
     </>
   );
 }
 
-function PageImage({ p, onZoom }: { p: DocPage; onZoom: (src: string) => void }) {
+function PageImage({
+  p,
+  onZoom,
+  failed,
+}: {
+  p: DocPage;
+  onZoom: (src: string) => void;
+  failed?: boolean;
+}) {
   const { index, doc } = useDoc();
-  const [broken, setBroken] = useState(false);
+  const [broken, setBroken] = useState(!!failed);
+  // Bumped by "Try again": the same URL would be served from the failed cache
+  // entry, so the retry asks for it under a new query string.
+  const [attempt, setAttempt] = useState(0);
+  const src = p.image_url ? retryURL(p.image_url, attempt) : "";
   return (
     <div>
       {p.image_url && !broken ? (
@@ -175,19 +194,66 @@ function PageImage({ p, onZoom }: { p: DocPage; onZoom: (src: string) => void })
         // decides it is not near the viewport, never fetches it, and it stays
         // zero-height. The lazy attribute deadlocks against its own effect.
         <img
-          src={p.image_url}
-          alt={`page ${p.page}`}
+          src={src}
+          alt={`Page ${p.page}`}
           onError={() => setBroken(true)}
-          onClick={() => onZoom(p.image_url!)}
+          onClick={() => onZoom(src)}
         />
       ) : (
-        <div className="muted">
-          {broken ? "(page image failed to load)" : "(no page image)"}
-        </div>
+        <PagePlaceholder
+          page={p.page}
+          failed={broken}
+          onRetry={
+            broken
+              ? () => {
+                  setAttempt((n) => n + 1);
+                  setBroken(false);
+                }
+              : undefined
+          }
+        />
       )}
       {p.image_url && !broken && <Reocr index={index} doc={doc} page={p.page} />}
     </div>
   );
+}
+
+// What stands where a page image would be. A failed load and a page that never
+// had an image are different facts, and the text beside it is still the indexed
+// reading either way, so the placeholder says so instead of looking like an
+// error in the document.
+function PagePlaceholder({
+  page,
+  failed,
+  onRetry,
+}: {
+  page: number;
+  failed: boolean;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="page-ph" role="img" aria-label={`Page ${page}: no image shown`}>
+      <div className="page-ph-icon" aria-hidden="true" />
+      <div className="page-ph-title">
+        {failed ? "Page image unavailable" : "No image for this page"}
+      </div>
+      <div className="page-ph-sub">
+        {failed
+          ? "The image could not be loaded. The text beside it is unaffected."
+          : "This page was indexed from its text only."}
+      </div>
+      {onRetry && (
+        <button className="linkish" onClick={onRetry}>
+          Try again
+        </button>
+      )}
+    </div>
+  );
+}
+
+function retryURL(url: string, attempt: number): string {
+  if (!attempt) return url;
+  return url + (url.includes("?") ? "&" : "?") + "retry=" + attempt;
 }
 
 // Re-OCR stays beside the page rather than moving to the workbench: this is the
@@ -201,12 +267,13 @@ function Reocr({ index, doc, page }: { index: string; doc: string; page: number 
     <div className="reocr">
       <button
         disabled={busy}
+        title="Read this page's image again and show the result here. The indexed text does not change."
         onClick={async () => {
           setBusy(true);
           setOut(null);
           try {
             const r = await postJSON<{ text?: string }>("/api/reocr", { index }, { path: doc, page });
-            setOut({ text: r.text || "(empty)" });
+            setOut({ text: r.text || "No text was found on this page." });
           } catch (e: unknown) {
             setOut({ err: String(e) });
           } finally {
@@ -214,11 +281,11 @@ function Reocr({ index, doc, page }: { index: string; doc: string; page: number 
           }
         }}
       >
-        {busy ? "running…" : "Re-OCR (cascade)"}
+        {busy ? "Reading…" : "Read page again"}
       </button>
       {out && (
         <div className="out">
-          {out.err ? <div className="err">{out.err}</div> : <div className="ptext">{out.text}</div>}
+          {out.err ? <ErrorText raw={out.err} /> : <div className="ptext">{out.text}</div>}
         </div>
       )}
     </div>
@@ -279,13 +346,13 @@ function PageImageWithLayout({
   const [broken, setBroken] = useState(false);
   const boxes = pl?.boxes ?? [];
 
-  if (!p.image_url || broken) return <PageImage p={p} onZoom={onZoom} />;
+  if (!p.image_url || broken) return <PageImage p={p} onZoom={onZoom} failed={broken} />;
   return (
     <div>
       <div style={{ position: "relative", display: "block" }}>
         <img
           src={p.image_url}
-          alt={`page ${p.page}`}
+          alt={`Page ${p.page}`}
           onError={() => setBroken(true)}
           onClick={() => onZoom(p.image_url!)}
           style={{ display: "block", width: "100%" }}
@@ -343,7 +410,7 @@ function PageBody({
   if (!p.has_layout) {
     return (
       <div className="ptext" style={style}>
-        {p.text || "(no text on this page)"}
+        {p.text || <span className="muted">No text on this page.</span>}
       </div>
     );
   }
@@ -359,7 +426,7 @@ function PageBody({
       </div>
       {tab === "text" ? (
         <div className="ptext" style={style}>
-          {p.text || "(no text on this page)"}
+          {p.text || <span className="muted">No text on this page.</span>}
         </div>
       ) : (
         <LayoutBlocks index={index} doc={doc} page={p.page} />
@@ -445,7 +512,7 @@ function ReconstructedPage({ pl }: { pl: PageLayout }) {
       ref={ref}
       className="reconstruct"
       style={{ aspectRatio: String(ratio) }}
-      title="rebuilt from the reader's layout blocks — not the page image"
+      title="Rebuilt from the layout the reader found. This is not the page image."
     >
       {boxes.map((b, i) => {
         const h = (b.y1 - b.y0) / 10;
@@ -487,12 +554,19 @@ function LayoutBlocks({ index, doc, page }: { index: string; doc: string; page: 
   if (!boxes.length && !pl.raw) return null;
   return (
     <div style={{ marginTop: 12 }}>
-      <div className="muted" style={{ marginBottom: 6 }}>
-        read by {pl.model || pl.engine || "?"} · {boxes.length} block
-        {boxes.length === 1 ? "" : "s"} · raw {(pl.raw || "").length} bytes vs indexed{" "}
-        {(pl.indexed || "").length} bytes{" "}
+      <div
+        className="muted"
+        style={{ marginBottom: 6 }}
+        title={[
+          pl.model || pl.engine ? `read by ${pl.model || pl.engine}` : "",
+          `raw reading ${(pl.raw || "").length} bytes, indexed text ${(pl.indexed || "").length} bytes`,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      >
+        {boxes.length} layout block{boxes.length === 1 ? "" : "s"}{" "}
         <button className="linkish" onClick={() => setTab(tab === "blocks" ? "raw" : "blocks")}>
-          {tab === "blocks" ? "show raw transcription" : "show rebuilt page"}
+          {tab === "blocks" ? "Show raw reading" : "Show rebuilt page"}
         </button>
       </div>
       {tab === "blocks" ? (

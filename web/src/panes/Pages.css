@@ -1,0 +1,13 @@
+/* Page image placeholder (Pages pane): a calm box the size of a thumbnail,
+   not a red error line. */
+.page-ph { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:var(--sp-1); min-height:180px; padding:var(--sp-4); text-align:center;
+  border:1px dashed var(--line); border-radius:var(--radius-lg); background:var(--chip);
+  color:var(--muted); }
+.page-ph-icon { width:28px; height:36px; border:2px solid var(--line); border-radius:var(--radius-sm);
+  background:linear-gradient(var(--line),var(--line)) 50% 30%/60% 2px no-repeat,
+             linear-gradient(var(--line),var(--line)) 50% 50%/60% 2px no-repeat,
+             linear-gradient(var(--line),var(--line)) 50% 70%/40% 2px no-repeat;
+  margin-bottom:var(--sp-1); }
+.page-ph-title { color:var(--ink); font-size:var(--fs-md); font-weight:600; }
+.page-ph-sub { font-size:var(--fs-sm); max-width:28ch; }
