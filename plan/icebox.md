@@ -126,9 +126,15 @@ read/write of the asset's index.
   opaque tokens fail validation. Not tested against real Zitadel.
 - VecSearch + DocReview branch overlay (branch.go:19) — still open.
 
-### dun follow-up (2026-10-19) — NOT confirmed with USER yet
+### dun follow-up (2026-10-19) — USER confirmed 2026-10-19
 
-dun's reading of USER decisions; confirm before building:
+USER answers: dun runs the device flow and hands raglit the token via
+RAGLIT_TOKEN_COMMAND (raglit stores no tokens). Build order: (1) content-upload
+ingest, (2) VecSearch/DocReview branch overlay, (3) register-or-layer by
+project id + public sibling fan-out, (4) browser login (auth-code + session
+cookie). Points 4–5 (maintainer service, savings report) not scheduled.
+
+dun's points (confirmed as read):
 1. Remote architecture: raglit + model (+ maybe dun) remote. dun passes the
    HUMAN's OIDC token (device flow / browser login). Machine user only for
    unattended runs. → fits TokenSource; open: who runs the device flow
