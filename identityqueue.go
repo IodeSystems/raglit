@@ -309,16 +309,16 @@ func (s *Store) captionableMissing() ([]string, error) {
 // as stale: it is exactly as trustworthy as one that is.
 func (s *Store) staleCaptions() ([]string, error) {
 	rows, err := s.db.Query(
-		`SELECT path, gen_text_hash FROM documents
+		`SELECT path, gen_text_hash, gen_name FROM documents
 		  WHERE TRIM(gen_name) <> '' AND gen_source <> 'person' ORDER BY added_at`)
 	if err != nil {
 		return nil, err
 	}
-	type doc struct{ path, hash string }
+	type doc struct{ path, hash, name string }
 	var docs []doc
 	for rows.Next() {
 		var d doc
-		if err := rows.Scan(&d.path, &d.hash); err != nil {
+		if err := rows.Scan(&d.path, &d.hash, &d.name); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -333,12 +333,27 @@ func (s *Store) staleCaptions() ([]string, error) {
 	var out []string
 	for _, d := range docs {
 		h, err := s.documentTextHash(ctx, d.path)
-		if err != nil || h == d.hash {
+		if err != nil {
+			continue
+		}
+		if h == d.hash && !s.captionCopiesExample(ctx, d.path, d.name) {
 			continue
 		}
 		out = append(out, d.path)
 	}
 	return out, nil
+}
+
+// captionCopiesExample is the backlog form of the check Identify makes: a
+// machine caption written before that check existed whose name is the prompt's
+// example (copiesNameExample). The text is read only for names that carry the
+// example's parties, so the rest of the backlog pays nothing for it.
+func (s *Store) captionCopiesExample(ctx context.Context, path, name string) bool {
+	if !copiesNameExample(name, "") {
+		return false
+	}
+	text, err := s.IdentityText(ctx, path)
+	return err == nil && copiesNameExample(name, text)
 }
 
 // claimNextIdentityJob takes the oldest pending row and marks it running.

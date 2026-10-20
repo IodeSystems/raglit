@@ -453,6 +453,9 @@ func (id *Identifier) Identify(ctx context.Context, ask IdentityAsk) (DocIdentit
 			if err != nil {
 				return err
 			}
+			if copiesNameExample(d.Name, ask.Text) {
+				return fmt.Errorf("\"name\" copies the example from the instructions; name THIS document from its own dates, instrument and parties")
+			}
 			if d.DocType, err = normalizeDocType(d.DocType, names); err != nil {
 				return err
 			}
@@ -717,6 +720,33 @@ const identityTagFields = `- "content_tags": 3 to 5 short noun phrases (1–3 wo
     data          — tabular or structured data, not prose about it
     other         — none of the above genuinely fits`
 
+// identityNameExample is the prompt's example of a name, and
+// identityExampleParties the words in it that belong to no other document.
+//
+// A model given little text copies the example: 68 of 657 documents on one
+// corpus were captioned "<date> Form 21 purchase and sale agreement, executed
+// (Ardley/Brannock)" — a deed among them, whose own summary said "Statutory
+// Warranty Deed". The name is the first thing a list shows, so a copied example
+// is a wrong title on every row it lands on. copiesNameExample catches it.
+const identityNameExample = "2021-05-25 Form 21 purchase and sale agreement, executed (Ardley/Brannock)"
+
+var identityExampleParties = []string{"ardley", "brannock"}
+
+// copiesNameExample reports whether name carries the example's parties while the
+// document's own text names neither — the example copied, not this document
+// described.
+func copiesNameExample(name, text string) bool {
+	n, t := strings.ToLower(name), strings.ToLower(text)
+	inName := false
+	for _, w := range identityExampleParties {
+		if strings.Contains(t, w) {
+			return false
+		}
+		inName = inName || strings.Contains(n, w)
+	}
+	return inName
+}
+
 // identityPrompt asks for the three fields. It names the vocabulary inline
 // because a model cannot pick from a list it was not shown, and the fix loop
 // should be for genuine failures rather than for a term nobody mentioned.
@@ -726,9 +756,9 @@ output ONLY a JSON object:
 
 - "name": what a person filing this would call it — the instrument, its date,
   and the parties or property it concerns. A caption for a list, not a filename
-  and not a sentence. Example: "2021-05-25 Form 21 purchase and sale agreement,
-  executed (Ardley/Brannock)". Use the document's own dates and names; if it does
-  not state one, leave it out rather than guessing.
+  and not a sentence. Example: "` + identityNameExample + `". The example is
+  the SHAPE only — never reuse its words, names or parties. Use the document's own
+  dates and names; if it does not state one, leave it out rather than guessing.
 - "summary": a few sentences — what the instrument IS, who the parties are, the
   date, the property or matter it concerns, and what it does. Enough that someone
   reading only this can tell whether they need the document.

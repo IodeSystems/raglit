@@ -563,3 +563,40 @@ func TestAnswerCutOff_NamesTheCapAndNotJustTheSymptom(t *testing.T) {
 		t.Errorf("the error does not name the cap: %v", err)
 	}
 }
+
+func TestCopiesNameExample(t *testing.T) {
+	cases := []struct {
+		name, text string
+		want       bool
+	}{
+		{"2022-05-27 Form 21 purchase and sale agreement, executed (Ardley/Brannock)", "STATUTORY WARRANTY DEED ... Harrow to Ingram", true},
+		{"2022-05-27 Form 21 purchase and sale agreement (Ardley/Brannock)", "Buyer: J. Ardley. Seller: Brannock", false},
+		{"2022-05-27 statutory warranty deed (Harrow to Ingram)", "STATUTORY WARRANTY DEED", false},
+	}
+	for _, c := range cases {
+		if got := copiesNameExample(c.name, c.text); got != c.want {
+			t.Errorf("copiesNameExample(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A model that copies the prompt's example name is told so and asked again.
+func TestIdentify_RejectsTheCopiedExampleName(t *testing.T) {
+	const deedText = `STATUTORY WARRANTY DEED. The grantors, OSWIN P HARROW and MAREN
+HARROW, for ten dollars and other valuable consideration, convey and warrant to
+TESSA JUNE INGRAM the real estate in Example County, described as Lot
+I of the survey recorded under auditor's file number 19990101.`
+	tail := `"summary":"Statutory warranty deed from Oswin and Maren Harrow to Tessa June Ingram for Lot I in Example County.",
+		  "kind":"deed","content_tags":["warranty deed","real estate transfer","property description"],"role_tags":["reference"]}`
+	c := &identityChatter{replies: []string{
+		`{"name":"2022-05-27 Form 21 purchase and sale agreement, executed (Ardley/Brannock)",` + tail,
+		`{"name":"Statutory warranty deed (Harrow to Ingram)",` + tail,
+	}}
+	id, err := NewIdentifier(c, "test-model").Identify(context.Background(), IdentityAsk{Text: deedText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Name != "Statutory warranty deed (Harrow to Ingram)" || c.calls != 2 {
+		t.Errorf("name = %q after %d calls", id.Name, c.calls)
+	}
+}
