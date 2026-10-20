@@ -259,3 +259,22 @@ func httpPostJSON(t *testing.T, url, body string) string {
 	b, _ := io.ReadAll(resp.Body)
 	return string(b)
 }
+
+// Without an embedding model, search by meaning is refused plainly (400), and
+// /indexes says so up front.
+func TestSearchByMeaningWithoutEmbedder(t *testing.T) {
+	srv, _ := gatTestServer(t)
+	if b := httpGet(t, srv.URL+"/indexes"); !strings.Contains(b, `"meaning":false`) {
+		t.Fatalf("/indexes should report meaning:false:\n%s", clip(b, 300))
+	}
+	for _, mode := range []string{"vec", "hybrid"} {
+		resp, err := http.Get(srv.URL + "/search?index=default&q=token&mode=" + mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("mode %s without an embedder: %d, want 400", mode, resp.StatusCode)
+		}
+	}
+}

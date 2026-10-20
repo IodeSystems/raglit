@@ -467,6 +467,9 @@ type idxRow struct {
 	Kinds      []raglit.TagCount `json:"kinds,omitempty"`
 	Content    []raglit.TagCount `json:"content,omitempty"`
 	Roles      []raglit.TagCount `json:"roles,omitempty"`
+	// Meaning is whether search by meaning (vec, hybrid) can run here: the
+	// daemon has an embedding model. False → offer exact-word search only.
+	Meaning bool `json:"meaning"`
 }
 type listIndexesOut struct {
 	Body struct {
@@ -484,7 +487,7 @@ func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIn
 				continue
 			}
 			s, _ := st.IndexStatus()
-			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments}
+			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments, Meaning: st.CanSearchByMeaning()}
 			row.Root, _ = indexRoot(st)
 			if d, err := st.IndexDigest(); err == nil {
 				row.About, row.AboutStale = d.About, d.AboutStale
@@ -654,11 +657,19 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		}
 		lists := map[string][]raglit.Hit{}
 		plan := planSearch(ctx, reg, in.Index, siblingsOn(in.Siblings))
+		byMeaning := in.Mode == "vec" || in.Mode == "hybrid"
+		meaningful := 0
 		for _, name := range plan.names {
 			st, err := reg.Read(ctx, name)
 			if err != nil {
 				continue
 			}
+			// An index without an embedder cannot answer a meaning search; it
+			// sits out rather than failing the whole search.
+			if byMeaning && !st.CanSearchByMeaning() {
+				continue
+			}
+			meaningful++
 			var hits []raglit.Hit
 			if plan.own[name] {
 				hits, err = st.SearchOwnLayer(ctx, in.Query, in.Mode, in.Path, limit*2)
@@ -669,6 +680,9 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 				return nil, huma.Error500InternalServerError("search", err)
 			}
 			lists[name] = hits
+		}
+		if byMeaning && meaningful == 0 && len(plan.names) > 0 {
+			return nil, huma.Error400BadRequest("search by meaning is not set up here (no embedding model); use exact-word search")
 		}
 		out := &searchOut{}
 		out.Body.Hits = []hitRow{}

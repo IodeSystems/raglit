@@ -9,6 +9,7 @@ import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { search, type Hit } from "../api";
 import { ErrorText } from "../ui/Details";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
+import { useIndexInfo } from "./IndexRows";
 import { SEARCH_MODES, displayPath, displayTitle, fileName, passages } from "../ui/display";
 import "./Search.css";
 
@@ -112,6 +113,15 @@ function noMeaningSearch(err: string): boolean {
 // searching a whole project is the string "<project>__*" and needs no endpoint
 // of its own. What differs between the two callers is only what they put in the
 // URL when the mode changes, which is the onMode callback.
+// inScope applies the daemon's index selector — a comma list of names and
+// "prefix*" wildcards — to one index name.
+function inScope(name: string, scope: string): boolean {
+  return scope.split(",").some((t) => {
+    const s = t.trim();
+    return s.endsWith("*") ? name.startsWith(s.slice(0, -1)) : name === s;
+  });
+}
+
 function SearchPane({
   scope,
   q,
@@ -170,6 +180,10 @@ function SearchPane({
       return n;
     });
 
+  // Offer search by meaning only where some index in scope can run it.
+  const info = useIndexInfo();
+  const meaning = [...info.values()].some((i) => i.meaning && inScope(i.name, scope));
+  const modes = SEARCH_MODES.filter((m) => m.value === "bm25" || meaning || m.value === mode);
   const modeOption = SEARCH_MODES.find((m) => m.value === mode);
 
   return (
@@ -202,7 +216,7 @@ function SearchPane({
             onChange={(e) => onMode(e.target.value)}
             title={modeOption?.hint}
           >
-            {SEARCH_MODES.map((m) => (
+            {modes.map((m) => (
               <option key={m.value} value={m.value} title={m.hint}>
                 {m.label}
               </option>

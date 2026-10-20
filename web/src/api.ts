@@ -90,6 +90,8 @@ export type IndexInfo = {
   kinds?: TagCount[];
   content?: TagCount[];
   roles?: TagCount[];
+  // Search by meaning (vec/hybrid) can run: the daemon has an embedding model.
+  meaning?: boolean;
 };
 
 // One scheduling lane's share of the queue. Lanes no longer SCHEDULE anything —

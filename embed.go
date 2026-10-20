@@ -447,3 +447,7 @@ func (s *Store) LearnLimitFromError(model, errText string) (int, bool) {
 	}
 	return chars, true
 }
+
+// CanSearchByMeaning reports whether vector and hybrid search can run: an
+// embedder is set. Without one they fail on every call, so a UI hides them.
+func (s *Store) CanSearchByMeaning() bool { return s.embedder != nil }
