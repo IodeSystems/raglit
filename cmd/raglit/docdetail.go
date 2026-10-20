@@ -264,6 +264,10 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 		}
 		if asset != "" {
 			d.Original = "/api/attest/" + in.Index + "/source?asset=" + url.QueryEscape(asset)
+		} else if _, ok := st.StoragePath(abs); ok {
+			// An attachment or upload: outside the review mount, so its bytes
+			// come from raglit's own storage route (original.go).
+			d.Original = "/api/original?index=" + url.QueryEscape(in.Index) + "&path=" + url.QueryEscape(rel)
 		}
 
 		// Pages and text, from whichever reading the document has.

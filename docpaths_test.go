@@ -92,3 +92,23 @@ func TestPageImagePathReroots(t *testing.T) {
 		t.Fatalf("PageImagePath(missing) = %q; want the stored path", got)
 	}
 }
+
+// An upload is a storage document too, queued as a file:// URL.
+func TestStoragePathFindsUploads(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	st, _ := reg.Get("u")
+	p, err := st.SaveUpload("notes/a.md", []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := st.StoragePath(UploadURL(p)); !ok || got != p {
+		t.Fatalf("StoragePath(upload) = %q, %v", got, ok)
+	}
+	if _, ok := st.StoragePath("/etc/hostname"); ok {
+		t.Fatal("a host file is not storage")
+	}
+}

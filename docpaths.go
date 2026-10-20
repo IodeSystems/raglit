@@ -76,6 +76,42 @@ func (s *Store) StorageRel(path string) (string, bool) {
 	return "", false
 }
 
+// StoragePath is where a storage document's bytes are on THIS machine: the
+// file under this store's home (or its parent's, for a branch) that StorageRel
+// names. Empty and false for a corpus document, for a path that would leave the
+// home, and for a file that is not there.
+func (s *Store) StoragePath(path string) (string, bool) {
+	path = strings.TrimPrefix(path, "file://") // uploads are queued as file:// URLs
+	if !filepath.IsAbs(path) {
+		return "", false
+	}
+	if s.withHome {
+		home := string(s.home)
+		if abs, err := filepath.Abs(home); err == nil {
+			home = abs
+		}
+		rel, ok := pathUnder(path, home)
+		if !ok {
+			marker := string(filepath.Separator) + "indexes" + string(filepath.Separator) + filepath.Base(home) + string(filepath.Separator)
+			if i := strings.LastIndex(path, marker); i >= 0 {
+				rel, ok = path[i+len(marker):], true
+			}
+		}
+		if ok {
+			full := filepath.Join(home, rel)
+			if _, inside := pathUnder(full, home); inside {
+				if fi, err := os.Stat(full); err == nil && fi.Mode().IsRegular() {
+					return full, true
+				}
+			}
+		}
+	}
+	if s.parent != nil {
+		return s.parent.StoragePath(path)
+	}
+	return "", false
+}
+
 // pathUnder returns p relative to dir when p is strictly inside dir.
 func pathUnder(p, dir string) (string, bool) {
 	rel, err := filepath.Rel(dir, p)

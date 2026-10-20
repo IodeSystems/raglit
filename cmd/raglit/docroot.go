@@ -156,7 +156,7 @@ func escapes(p string) bool {
 // under — rewriting any of those would change what they mean.
 var docPathQueryRoutes = map[string]bool{
 	"/api/doc": true, "/api/doc-detail": true, "/api/get-document": true,
-	"/api/email": true, "/api/page-layout": true, "/api/page-image": true,
+	"/api/email": true, "/api/page-layout": true, "/api/page-image": true, "/api/original": true,
 	"/api/fields": true, "/api/notes": true,
 	"/api/identify": true, "/api/identify/queue": true,
 	"/api/reread": true, "/api/restore": true, "/api/withdraw": true, "/api/forget": true,

@@ -374,6 +374,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 		}
 		http.ServeFile(w, r, img)
 	})
+	router.Get("/api/original", originalHandler(reg))
 	return router, nil
 }
 

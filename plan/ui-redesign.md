@@ -349,9 +349,11 @@ Open:
   captioning succeeds — 289 caption jobs failed on this corpus. Data, not UI.
 - Generated summaries render Markdown as raw text (backticks); Review's "Read
   by" column shows engine ids ("raglit/text").
-- ❓ Product call: storage docs (`@attachments/…`, uploads) are outside the
-  attest mount — no review, no "Download original". Second root or a
-  separate original-bytes route?
+- ✅ Storage docs (`@attachments/…`, uploads) download through
+  `GET /api/original?index=&path=` (USER 2026-10-20: separate route, not a
+  second review root). Serves only a document OF the index whose bytes are
+  under the index home (`Store.StoragePath`); doc-detail links it. Still no
+  review workbench for them.
 - After restarting a daemon on this build: `POST /api/attest/readings?index=<name>`
   once per index (asset ids are now relative to the narrower root). Done on the
   :7431 copy (243 written / 414 skipped for lack of region reads).
