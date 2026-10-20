@@ -30,6 +30,8 @@ type Registry struct {
 	// admin owns every index without an acl.json; "" = access control off.
 	// See acl.go.
 	admin string
+	// registerMu serializes RegisterProject (project.go).
+	registerMu sync.Mutex
 }
 
 // OpenRegistry prepares a single-home registry (all indexes as sqlite siblings

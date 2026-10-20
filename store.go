@@ -962,6 +962,11 @@ func (s *Store) HybridSearchPath(ctx context.Context, query, pathPrefix string, 
 	if err != nil {
 		return nil, err
 	}
+	return fuseRRF(lex, vec, limit), nil
+}
+
+// fuseRRF is Reciprocal Rank Fusion of a lexical and a vector ranking.
+func fuseRRF(lex, vec []Hit, limit int) []Hit {
 	const rrfK = 60.0
 	// Keyed by document AND fragment id: on a branch the lists hold rows from
 	// several layers, each its own database, and fragment ids collide across
@@ -995,7 +1000,7 @@ func (s *Store) HybridSearchPath(ctx context.Context, query, pathPrefix string, 
 	if len(out) > limit {
 		out = out[:limit]
 	}
-	return out, nil
+	return out
 }
 
 // ftsQuery turns arbitrary user text into a safe FTS5 MATCH expression: each

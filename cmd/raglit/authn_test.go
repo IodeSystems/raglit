@@ -78,6 +78,12 @@ func (fi *fakeIssuer) principal(sub string) string { return fi.srv.URL + "#" + s
 // "legacy" with no acl.json (admin-owned).
 func authTestServer(t *testing.T) (*httptest.Server, *fakeIssuer) {
 	t.Helper()
+	srv, fi, _ := authTestServerReg(t)
+	return srv, fi
+}
+
+func authTestServerReg(t *testing.T) (*httptest.Server, *fakeIssuer, *raglit.Registry) {
+	t.Helper()
 	fi := newFakeIssuer(t)
 	root := t.TempDir()
 	reg, err := raglit.OpenScopedRegistry(root)
@@ -115,7 +121,28 @@ func authTestServer(t *testing.T) (*httptest.Server, *fakeIssuer) {
 	}
 	srv := httptest.NewServer(mw(h))
 	t.Cleanup(func() { srv.Close(); reg.Close() })
-	return srv, fi
+	return srv, fi, reg
+}
+
+// drainAll runs every queued job in every index (the tests start no workers).
+func drainAll(t *testing.T, reg *raglit.Registry) {
+	t.Helper()
+	for _, n := range reg.Names() {
+		st, err := reg.Existing(n)
+		if err != nil {
+			continue
+		}
+		w := &raglit.Worker{Store: st}
+		for range 50 {
+			did, err := w.ProcessOne(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !did {
+				break
+			}
+		}
+	}
 }
 
 func must(t *testing.T, err error) {
@@ -282,5 +309,60 @@ func TestAuth_UploadIsOwnerWrite(t *testing.T) {
 	// The new index is bob's and private.
 	if code, _ := doAs(t, "GET", srv.URL+"/api/jobs?index=b-mem", alice, ""); code != http.StatusNotFound {
 		t.Errorf("alice reading bob's new index: %d, want 404", code)
+	}
+}
+
+// dun's flow over HTTP: two people register one project id, write to their
+// layers by upload, and a layer made public shows up in the other's search.
+func TestAuth_RegisterUploadPublishSearch(t *testing.T) {
+	srv, fi, reg := authTestServerReg(t)
+	alice, bob := fi.token(t, "alice", "raglit", fi.key), fi.token(t, "bob", "raglit", fi.key)
+	register := func(tok string) raglit.Registration {
+		t.Helper()
+		code, body := doAs(t, "POST", srv.URL+"/api/projects/register", tok, `{"project_id":"rootsha","label":"github.com/x/y"}`)
+		if code != http.StatusOK {
+			t.Fatalf("register: %d\n%s", code, clip(body, 400))
+		}
+		var r raglit.Registration
+		must(t, json.Unmarshal([]byte(body), &r))
+		return r
+	}
+	ra, rb := register(alice), register(bob)
+	if ra.Base != rb.Base || ra.Layer == rb.Layer {
+		t.Fatalf("registrations %+v / %+v", ra, rb)
+	}
+	upload := func(tok, index, text string) {
+		t.Helper()
+		code, body := doAs(t, "POST", srv.URL+"/api/upload?index="+index, tok, `{"name":"m.md","text":"`+text+`"}`)
+		if code != http.StatusOK {
+			t.Fatalf("upload: %d\n%s", code, clip(body, 400))
+		}
+	}
+	upload(alice, ra.Layer, "alice narwhal")
+	if code, _ := doAs(t, "POST", srv.URL+"/api/upload?index="+ra.Layer, bob, `{"name":"x.md","text":"x"}`); code != http.StatusNotFound {
+		t.Errorf("bob uploading into alice's private layer: %d, want 404", code)
+	}
+	// Uploads are queued; drain them here (workers are not running in tests).
+	drainAll(t, reg)
+
+	search := func(tok, index string) string {
+		_, body := doAs(t, "GET", srv.URL+"/search?q=narwhal&index="+index, tok, "")
+		return body
+	}
+	if b := search(bob, rb.Layer); strings.Contains(b, "narwhal") {
+		t.Fatalf("bob sees alice's private layer:\n%s", clip(b, 400))
+	}
+	if code, b := doAs(t, "POST", srv.URL+"/api/visibility", bob, `{"index":"`+ra.Layer+`","visibility":"public"}`); code != http.StatusNotFound {
+		t.Fatalf("bob publishing alice's layer: %d\n%s", code, clip(b, 300))
+	}
+	if code, b := doAs(t, "POST", srv.URL+"/api/visibility", alice, `{"index":"`+ra.Layer+`","visibility":"public"}`); code != http.StatusOK {
+		t.Fatalf("alice publishing her layer: %d\n%s", code, clip(b, 300))
+	}
+	if b := search(bob, rb.Layer); !strings.Contains(b, ra.Layer) {
+		t.Fatalf("bob's layer search should include alice's public layer:\n%s", clip(b, 400))
+	}
+	_, body := doAs(t, "GET", srv.URL+"/api/projects/lookup?id=rootsha", bob, "")
+	if !strings.Contains(body, ra.Layer) || !strings.Contains(body, rb.Layer) {
+		t.Fatalf("lookup for bob: %s", clip(body, 400))
 	}
 }

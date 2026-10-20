@@ -304,6 +304,9 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listWithdrawals", http.MethodGet, "/api/withdrawals", "Documents ruled out of the corpus, and why."), withdrawalsOp(reg))
 	gat.Register(api, g, op("problems", http.MethodGet, "/api/problems", "What is wrong with an index: unsearchable documents, failed jobs, degraded reads."), problemsOp(reg))
 	gat.Register(api, g, op("materializeSlices", http.MethodPost, "/api/slices/materialize", "Build child documents for declared slices."), materializeSlicesOp(reg))
+	gat.Register(api, g, op("registerProject", http.MethodPost, "/api/projects/register", "Register-or-layer: the project's base (created public and empty when absent) and the caller's private layer over it."), registerProjectOp(reg))
+	gat.Register(api, g, op("setVisibility", http.MethodPost, "/api/visibility", "Make an index the caller owns private or public."), setVisibilityOp(reg))
+	gat.Register(api, g, op("lookupProject", http.MethodGet, "/api/projects/lookup", "A project id's base index and the layers the caller can read."), lookupProjectOp(reg))
 	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
@@ -611,7 +614,8 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			limit = defLimit
 		}
 		lists := map[string][]raglit.Hit{}
-		for _, name := range reg.Readable(ctx, selectIndexes(reg, in.Index)) {
+		names := reg.Readable(ctx, selectIndexes(reg, in.Index))
+		for _, name := range names {
 			st, err := reg.Read(ctx, name)
 			if err != nil {
 				continue
@@ -621,6 +625,22 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 				return nil, huma.Error500InternalServerError("search", err)
 			}
 			lists[name] = hits
+		}
+		// A layer also searches the PUBLIC layers beside it on the same base —
+		// their own documents only, since this layer already overlays the base.
+		for _, name := range names {
+			for _, sib := range reg.PublicSiblings(ctx, name) {
+				if _, done := lists[sib]; done {
+					continue
+				}
+				st, err := reg.Read(ctx, sib)
+				if err != nil {
+					continue
+				}
+				if hits, err := st.SearchOwnLayer(ctx, in.Query, in.Mode, in.Path, limit*2); err == nil {
+					lists[sib] = hits
+				}
+			}
 		}
 		out := &searchOut{}
 		out.Body.Hits = []hitRow{}
