@@ -13,7 +13,10 @@ Not scheduled. Each is opt-in.
   no maintained base — duplicate docs across layers, tokens/embeddings spent,
   bytes, per-query fan-out cost.
 - **Overlay gaps**: SearchFigures and page images on a branch see the branch
-  layer only; sibling fan-out covers `/search`, not `/search-figures` or MCP.
+  layer only. Embedded (`--embedded`) MCP has no branches, so no fan-out.
+- **Own-layer edge**: a layer searched own-only (its parent also in the set, or
+  added as a sibling) no longer hides parent docs it tombstoned/shadows — both
+  versions can appear, labelled by index.
 - **attest mounts at daemon start only**: a layer registered later has no
   review workbench until restart.
 - **Real Zitadel not tested**: access tokens must be JWT type; browser app is

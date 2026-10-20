@@ -25,12 +25,18 @@ original request, proposal and decisions are kept below as they stood.
 - **Overlay** VecSearch + Hybrid + DocReview over the parent (hybrid fuses by
   path+fragment id).
 - **Projects** `project.go`: `POST /api/projects/register` (register-or-layer,
-  atomic) — first registration makes a PUBLIC EMPTY base, every registrant a
-  private layer (USER 2026-10-19: a private base would make others' layers
-  unreadable). `GET /api/projects/lookup?id=`. `POST /api/visibility` =
-  public:true. `/search` on a layer adds public sibling layers (their own docs).
-  Project id = opaque text (dun: root commit, label = normalized origin; USER
-  confirmed).
+  atomic, repeatable) → {namespace, base, private, public}. First
+  registration makes a PUBLIC EMPTY base; every registrant gets a private AND
+  a public layer (USER 2026-10-19: a private base makes others' layers
+  unreadable; public:true is per note, so one layer would publish everything).
+  Names `<ns>__base`, `<ns>__u<hash>-priv|-pub` — the daemon MCP's `<ns>__*`
+  reaches the project. `GET /api/projects/lookup?id=`. `POST /api/visibility`.
+  Project id = opaque text (dun: root commit, label = normalized origin).
+- **Sibling fan-out** `cmd/raglit/searchplan.go` (USER 2026-10-19: a BRANCH
+  feature, ACL on top): `/search`, `/search-figures`, daemon MCP `search` read
+  every readable sibling; `siblings=false` opts out. An index whose parent is
+  already in the set reads its own layer only (base counted once). Also fixed:
+  rrfMerge keyed idx+fragment id, merging two databases' fragments.
 - **Browser login** `cmd/raglit/authweb.go`: auth code + PKCE,
   `auth.{client_id,redirect_url}`, in-memory sessions, SameSite=Lax cookie,
   cookie writes must be same-origin.
