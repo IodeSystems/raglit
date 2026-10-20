@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -18,6 +19,8 @@ import (
 // only the address it sits in front of; every other bind accepts the header from
 // anyone. Validating the token here makes every bind the same.
 //
+// Browsers log in instead (authweb.go) when client_id + redirect_url are set.
+//
 // Every request except /api/health needs a token — loopback included (USER
 // decision 2026-10-19: one rule for every bind). Health stays open because every
 // client probes it before routing, and it carries only build identity.
@@ -29,6 +32,7 @@ import (
 // authenticator validates bearer tokens against one issuer.
 type authenticator struct {
 	verifier *oidc.IDTokenVerifier
+	web      *webLogin // nil = no browser login (authweb.go)
 }
 
 // newAuthenticator discovers the issuer (/.well-known/openid-configuration) and
@@ -44,7 +48,14 @@ func newAuthenticator(ctx context.Context, cfg *raglit.AuthConfig) (*authenticat
 	if err != nil {
 		return nil, fmt.Errorf("auth: discover %s: %w", cfg.Issuer, err)
 	}
-	return &authenticator{verifier: p.Verifier(&oidc.Config{ClientID: cfg.Audience})}, nil
+	a := &authenticator{verifier: p.Verifier(&oidc.Config{ClientID: cfg.Audience})}
+	if cfg.ClientID != "" || cfg.RedirectURL != "" {
+		if cfg.ClientID == "" || cfg.RedirectURL == "" {
+			return nil, fmt.Errorf("auth: browser login needs both client_id and redirect_url")
+		}
+		a.web = newWebLogin(p, cfg.ClientID, cfg.RedirectURL)
+	}
+	return a, nil
 }
 
 // principal validates a raw token and returns "<iss>#<sub>".
@@ -65,8 +76,25 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if a.web != nil && a.web.handle(w, r) {
+			return
+		}
 		raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || strings.TrimSpace(raw) == "" {
+			if a.web != nil {
+				if p := a.web.principal(r); p != "" {
+					if !sameOrigin(r) {
+						http.Error(w, "cross-origin request refused", http.StatusForbidden)
+						return
+					}
+					next.ServeHTTP(w, r.WithContext(raglit.WithPrincipal(r.Context(), p)))
+					return
+				}
+				if wantsPage(r) {
+					http.Redirect(w, r, "/auth/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+					return
+				}
+			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="raglit"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return

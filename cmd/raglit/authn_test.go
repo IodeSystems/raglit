@@ -4,12 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +29,12 @@ import (
 type fakeIssuer struct {
 	srv *httptest.Server
 	key *rsa.PrivateKey
+
+	mu    sync.Mutex
+	codes map[string]authReq
 }
+
+type authReq struct{ nonce, challenge, client string }
 
 func newFakeIssuer(t *testing.T) *fakeIssuer {
 	t.Helper()
@@ -32,7 +42,7 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fi := &fakeIssuer{key: key}
+	fi := &fakeIssuer{key: key, codes: map[string]authReq{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
@@ -47,6 +57,33 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 		json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
 			Key: &key.PublicKey, KeyID: "k1", Algorithm: "RS256", Use: "sig",
 		}}})
+	})
+	// Authorization endpoint: approve at once as user "web", bound to the
+	// nonce and PKCE challenge the client sent.
+	mux.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		code := "code-" + q.Get("state")
+		fi.mu.Lock()
+		fi.codes[code] = authReq{nonce: q.Get("nonce"), challenge: q.Get("code_challenge"), client: q.Get("client_id")}
+		fi.mu.Unlock()
+		http.Redirect(w, r, q.Get("redirect_uri")+"?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(q.Get("state")), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		fi.mu.Lock()
+		ar, ok := fi.codes[r.Form.Get("code")]
+		delete(fi.codes, r.Form.Get("code"))
+		fi.mu.Unlock()
+		sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
+		if !ok || base64.RawURLEncoding.EncodeToString(sum[:]) != ar.challenge {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "opaque", "token_type": "Bearer", "expires_in": 3600,
+			"id_token": fi.idToken(t, "web", ar.client, ar.nonce),
+		})
 	})
 	fi.srv = httptest.NewServer(mux)
 	t.Cleanup(fi.srv.Close)
@@ -71,6 +108,24 @@ func (fi *fakeIssuer) token(t *testing.T, sub, aud string, key *rsa.PrivateKey) 
 	return raw
 }
 
+func (fi *fakeIssuer) idToken(t *testing.T, sub, aud, nonce string) string {
+	t.Helper()
+	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: fi.key},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "k1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	raw, err := jwt.Signed(sig).Claims(jwt.Claims{
+		Issuer: fi.srv.URL, Subject: sub, Audience: jwt.Audience{aud},
+		IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Hour)),
+	}).Claims(map[string]any{"nonce": nonce}).Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func (fi *fakeIssuer) principal(sub string) string { return fi.srv.URL + "#" + sub }
 
 // authTestServer is the daemon with auth on, over a scoped registry holding:
@@ -84,7 +139,16 @@ func authTestServer(t *testing.T) (*httptest.Server, *fakeIssuer) {
 
 func authTestServerReg(t *testing.T) (*httptest.Server, *fakeIssuer, *raglit.Registry) {
 	t.Helper()
+	return authTestServerWith(t, false)
+}
+
+// authTestServerWith builds the test daemon; web turns on browser login with
+// client id "raglit-web" and the server's own /auth/callback.
+func authTestServerWith(t *testing.T, web bool) (*httptest.Server, *fakeIssuer, *raglit.Registry) {
+	t.Helper()
 	fi := newFakeIssuer(t)
+	srv := httptest.NewUnstartedServer(nil)
+	srv.Start()
 	root := t.TempDir()
 	reg, err := raglit.OpenScopedRegistry(root)
 	if err != nil {
@@ -96,6 +160,9 @@ func authTestServerReg(t *testing.T) (*httptest.Server, *fakeIssuer, *raglit.Reg
 		Fragments: []raglit.Fragment{{Text: "walrus legacy"}}}))
 
 	cfg := &raglit.AuthConfig{Issuer: fi.srv.URL, Audience: "raglit", Admin: fi.principal("admin")}
+	if web {
+		cfg.ClientID, cfg.RedirectURL = "raglit-web", srv.URL+"/auth/callback"
+	}
 	mw, err := daemonAuth(ctx, reg, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +186,7 @@ func authTestServerReg(t *testing.T) (*httptest.Server, *fakeIssuer, *raglit.Reg
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(mw(h))
+	srv.Config.Handler = mw(h)
 	t.Cleanup(func() { srv.Close(); reg.Close() })
 	return srv, fi, reg
 }
@@ -364,5 +431,93 @@ func TestAuth_RegisterUploadPublishSearch(t *testing.T) {
 	_, body := doAs(t, "GET", srv.URL+"/api/projects/lookup?id=rootsha", bob, "")
 	if !strings.Contains(body, ra.Layer) || !strings.Contains(body, rb.Layer) {
 		t.Fatalf("lookup for bob: %s", clip(body, 400))
+	}
+}
+
+// A browser logs in through the IdP and then uses the UI and API by cookie; a
+// cross-site write with that cookie is refused.
+func TestAuth_BrowserLogin(t *testing.T) {
+	srv, fi, reg := authTestServerWith(t, true)
+	// The browser user owns an index, so a write by cookie has something to hit.
+	if _, err := reg.Write(raglit.WithPrincipal(context.Background(), fi.principal("web")), "w-own"); err != nil {
+		t.Fatal(err)
+	}
+	jar, _ := cookiejar.New(nil)
+	browser := &http.Client{Jar: jar}
+
+	get := func(path string) (*http.Response, string) {
+		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+		req.Header.Set("Accept", "text/html")
+		resp, err := browser.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+	// Navigation → login → IdP → callback → back to the page asked for.
+	resp, _ := get("/indexes")
+	if resp.StatusCode != http.StatusOK || resp.Request.URL.Path != "/indexes" {
+		t.Fatalf("after login: %d at %s, want 200 at /indexes", resp.StatusCode, resp.Request.URL)
+	}
+	_, body := get("/indexes")
+	if !strings.Contains(body, "w-own") || strings.Contains(body, "a-priv") {
+		t.Fatalf("the browser session is not the web user's:\n%s", clip(body, 400))
+	}
+
+	post := func(origin string) int {
+		req, _ := http.NewRequest("POST", srv.URL+"/api/visibility", strings.NewReader(`{"index":"w-own","visibility":"public"}`))
+		req.Header.Set("Content-Type", "application/json")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := browser.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post("https://evil.example"); code != http.StatusForbidden {
+		t.Errorf("cross-origin write by cookie: %d, want 403", code)
+	}
+	if code := post(""); code != http.StatusForbidden {
+		t.Errorf("write by cookie with no Origin: %d, want 403", code)
+	}
+	if code := post(srv.URL); code != http.StatusOK {
+		t.Errorf("same-origin write by cookie: %d, want 200", code)
+	}
+
+	// A callback whose state was not started in this browser is refused.
+	other := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	r2, err := other.Get(srv.URL + "/auth/callback?code=x&state=y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusBadRequest {
+		t.Errorf("foreign callback: %d, want 400", r2.StatusCode)
+	}
+	// An open redirect through next= is not followed off-site.
+	r3, err := other.Get(srv.URL + "/auth/login?next=//evil.example/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r3.Body.Close()
+	if u, _ := url.Parse(r3.Header.Get("Location")); u == nil || !strings.HasPrefix(u.String(), fi.srv.URL) {
+		t.Fatalf("login redirect = %q", r3.Header.Get("Location"))
+	}
+
+	// Logout ends the session.
+	get("/auth/logout")
+	req, _ := http.NewRequest("GET", srv.URL+"/indexes", nil)
+	resp3, err := browser.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusUnauthorized {
+		t.Errorf("API after logout: %d, want 401", resp3.StatusCode)
 	}
 }

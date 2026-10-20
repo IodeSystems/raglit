@@ -204,6 +204,13 @@ type AuthConfig struct {
 	// Admin is the principal ("<iss>#<sub>") that owns every index without an
 	// acl.json — the indexes from before auth. Required when Issuer is set.
 	Admin string `json:"admin,omitempty"`
+	// ClientID and RedirectURL turn on BROWSER login (authorization code +
+	// PKCE, session cookie) for the review UI. ClientID is a public (no secret)
+	// web/user-agent application at the IdP; RedirectURL is
+	// <daemon public URL>/auth/callback, registered there exactly. Both empty →
+	// the browser gets 401 like any client without a token.
+	ClientID    string `json:"client_id,omitempty"`
+	RedirectURL string `json:"redirect_url,omitempty"`
 	// TokenCommand prints a bearer token on stdout. The client runs it when
 	// $RAGLIT_TOKEN is unset, and again after a 401. A headless client (a
 	// Zitadel machine user) puts its client-credentials exchange here.
