@@ -264,3 +264,23 @@ func TestAuth_GraphQLCarriesThePrincipal(t *testing.T) {
 		t.Fatalf("bob's GraphQL search leaks a-priv:\n%s", clip(body, 600))
 	}
 }
+
+// A non-admin adds documents by content; the owner rule still holds.
+func TestAuth_UploadIsOwnerWrite(t *testing.T) {
+	srv, fi := authTestServer(t)
+	alice, bob := fi.token(t, "alice", "raglit", fi.key), fi.token(t, "bob", "raglit", fi.key)
+	code, body := doAs(t, "POST", srv.URL+"/api/upload?index=b-mem", bob, `{"name":"m/one.md","text":"bob remembers the narwhal"}`)
+	if code != http.StatusOK || !strings.Contains(body, `"job_id"`) {
+		t.Fatalf("bob uploading to a new index: %d\n%s", code, clip(body, 400))
+	}
+	if code, _ := doAs(t, "POST", srv.URL+"/api/upload?index=a-pub", bob, `{"name":"x.md","text":"x"}`); code != http.StatusForbidden {
+		t.Errorf("bob uploading to alice's public index: %d, want 403", code)
+	}
+	if code, _ := doAs(t, "POST", srv.URL+"/api/upload?index=b-mem", bob, `{"name":"../../escape.md","text":"x"}`); code != http.StatusBadRequest {
+		t.Errorf("escaping upload name: %d, want 400", code)
+	}
+	// The new index is bob's and private.
+	if code, _ := doAs(t, "GET", srv.URL+"/api/jobs?index=b-mem", alice, ""); code != http.StatusNotFound {
+		t.Errorf("alice reading bob's new index: %d, want 404", code)
+	}
+}

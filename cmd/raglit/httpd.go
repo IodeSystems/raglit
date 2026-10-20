@@ -277,6 +277,9 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
 	gat.Register(api, g, op("searchFigures", http.MethodGet, "/search-figures", "Semantic search over figures (MCP search_figures)."), searchFiguresOp(reg, defLimit))
 	gat.Register(api, g, op("ingest", http.MethodPost, "/ingest", "Queue targets for lazy ingestion."), ingestOp(reg))
+	uploadOperation := op("upload", http.MethodPost, "/api/upload", "Ingest a document sent in the request (text or base64), stored in the index's own home.")
+	uploadOperation.MaxBodyBytes = uploadMaxBytes
+	gat.Register(api, g, uploadOperation, uploadOp(reg))
 	gat.Register(api, g, op("listJobs", http.MethodGet, "/api/jobs", "List ingest jobs (all states) with stages + ETA."), listJobs(reg))
 	gat.Register(api, g, op("retryJob", http.MethodPost, "/api/jobs/retry", "Requeue an errored/done job."), jobAction(reg, (*raglit.Store).RetryJob))
 	gat.Register(api, g, op("cancelJob", http.MethodPost, "/api/jobs/cancel", "Cancel a pending job."), jobAction(reg, (*raglit.Store).CancelJob))
