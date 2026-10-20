@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-
 	"github.com/iodesystems/raglit"
 	"github.com/iodesystems/raglit/attest"
 )
