@@ -281,3 +281,15 @@ func (s *Store) SearchOwnLayer(ctx context.Context, query, mode, pathPrefix stri
 		return lex(limit)
 	}
 }
+
+// ProjectIDOf is the project id a base index was registered under, "" when it
+// is not a project base.
+func (r *Registry) ProjectIDOf(base string) string {
+	if r.scopedRoot == "" {
+		return ""
+	}
+	if m, ok := readProjectMeta(r.indexHome(normalizeIndexName(base))); ok {
+		return m.ID
+	}
+	return ""
+}

@@ -302,6 +302,26 @@ export type Project = {
 
 export const listProjects = () => getJSON<{ projects: Project[] }>("/api/projects");
 
+// What a maintained base would save a shared project (savings.go). Tokens are
+// not recorded; page reads, embeddings and model time stand in for them.
+export type ProjectSavings = {
+  project_id: string;
+  base: string;
+  layers?: { name: string; documents: number; duplicates: number }[];
+  duplicate_documents: number;
+  duplicate_passages: number;
+  duplicate_embeddings: number;
+  duplicate_page_reads: number;
+  duplicate_bytes: number;
+  model_seconds: number;
+  fanout_now: number;
+  fanout_with_base: number;
+  recommend: boolean;
+  reason: string;
+  note: string;
+};
+export const projectSavings = (ns: string) => getJSON<ProjectSavings>("/api/projects/savings", { ns });
+
 export type Branch = {
   name: string;
   parent: string;

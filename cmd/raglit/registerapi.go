@@ -102,3 +102,31 @@ func transferOwnerOp(reg *raglit.Registry) func(context.Context, *transferOwnerI
 		return &setVisibilityOut{Body: reg.ACLOf(in.Body.Index)}, nil
 	}
 }
+
+type savingsIn struct {
+	ID string `query:"id" doc:"project id"`
+	NS string `query:"ns" doc:"or the project's namespace (what register returned as namespace)"`
+}
+
+type savingsOut struct{ Body raglit.ProjectSavings }
+
+// savingsOp reports what a maintained base would save a shared project.
+func savingsOp(reg *raglit.Registry) func(context.Context, *savingsIn) (*savingsOut, error) {
+	return func(ctx context.Context, in *savingsIn) (*savingsOut, error) {
+		id := in.ID
+		if id == "" && in.NS != "" {
+			id = reg.ProjectIDOf(in.NS + "__base")
+		}
+		if id == "" {
+			return nil, huma.Error404NotFound("no project registered under that id or namespace")
+		}
+		rep, err := reg.ProjectSavings(ctx, id)
+		if err != nil {
+			if errors.Is(err, raglit.ErrNoIndex) {
+				return nil, huma.Error404NotFound("no project registered under that id or namespace")
+			}
+			return nil, huma.Error500InternalServerError("savings", err)
+		}
+		return &savingsOut{Body: rep}, nil
+	}
+}

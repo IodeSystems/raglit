@@ -73,3 +73,5 @@
 .recent .when { color:var(--muted); font-size:var(--fs-sm); white-space:nowrap; }
 .okline { color:var(--ok); font-size:var(--fs-md); }
 .tagchips { display:flex; flex-wrap:wrap; gap:var(--sp-1); }
+
+.panel.savings { display: grid; gap: 6px; padding: 12px 14px; margin-bottom: 16px; }

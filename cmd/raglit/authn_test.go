@@ -548,3 +548,28 @@ func TestAuth_TransferOwnership(t *testing.T) {
 		t.Errorf("new owner writing: %d %s", code, clip(b, 300))
 	}
 }
+
+// Two people upload the same note to their public layers; the report counts the
+// second copy and recommends a maintained base.
+func TestAuth_ProjectSavings(t *testing.T) {
+	srv, fi, reg := authTestServerReg(t)
+	alice, bob := fi.token(t, "alice", "raglit", fi.key), fi.token(t, "bob", "raglit", fi.key)
+	var ra, rb raglit.Registration
+	for tok, r := range map[string]*raglit.Registration{alice: &ra, bob: &rb} {
+		_, body := doAs(t, "POST", srv.URL+"/api/projects/register", tok, `{"project_id":"sav"}`)
+		must(t, json.Unmarshal([]byte(body), r))
+	}
+	note := `{"name":"spec.md","text":"the shared deployment spec for the project"}`
+	for tok, layer := range map[string]string{alice: ra.Public, bob: rb.Public} {
+		if code, b := doAs(t, "POST", srv.URL+"/api/upload?index="+layer, tok, note); code != http.StatusOK {
+			t.Fatalf("upload: %d %s", code, clip(b, 200))
+		}
+	}
+	drainAll(t, reg)
+	code, body := doAs(t, "GET", srv.URL+"/api/projects/savings?ns="+ra.Namespace, alice, "")
+	var rep raglit.ProjectSavings
+	_ = json.Unmarshal([]byte(body), &rep)
+	if code != http.StatusOK || rep.DuplicateDocuments != 1 || !rep.Recommend {
+		t.Fatalf("savings: %d %s", code, clip(body, 600))
+	}
+}

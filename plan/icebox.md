@@ -7,11 +7,13 @@ Not scheduled. Pick up explicitly. Each entry carries enough design to resume.
 Not scheduled. Each is opt-in.
 - **Maintainer service** (dun point 4): a machine user owns the base, sole
   writer, folds PUBLIC layer notes in (dedup, merge, keep attestation). raglit
-  side today: owner-only write already holds; needs a way to hand base
-  ownership to the maintainer principal (no ownership-transfer op exists).
-- **Savings report** (dun point 5): for a project id with several layers and
-  no maintained base — duplicate docs across layers, tokens/embeddings spent,
-  bytes, per-query fan-out cost.
+  side done: owner-only write, and `POST /api/owner` hands the base over
+  (owner or admin). The service itself is not built.
+- ✅ **Savings report** (dun point 5): `GET /api/projects/savings?id=|ns=`
+  (`savings.go`) — copies beyond the first across readable layers (by content
+  hash): passages, embeddings, page reads, bytes, model time of non-pooled
+  imports; fan-out now vs with a base; `recommend` when ≥2 layers, copies, and
+  an empty base. Banner on the project page. TOKENS NOT RECORDED — proxies only.
 - **Overlay gaps**: SearchFigures and page images on a branch see the branch
   layer only. Embedded (`--embedded`) MCP has no branches, so no fan-out.
 - **Own-layer edge**: a layer searched own-only (its parent also in the set, or

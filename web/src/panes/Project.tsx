@@ -1,6 +1,8 @@
 import { useParams } from "@tanstack/react-router";
 
-import { listProjects, type Project as ProjectRow } from "../api";
+import { useEffect, useState } from "react";
+
+import { listProjects, projectSavings, type Project as ProjectRow, type ProjectSavings } from "../api";
 import { usePoll } from "../usePoll";
 import { ErrorText } from "../ui/Details";
 import { displayPath, documents, passages } from "../ui/display";
@@ -60,10 +62,46 @@ export function Project() {
         )}
       </div>
 
+      <SavingsBanner ns={p.name} />
+
       <h2 className="scopesec">Indexes</h2>
       <div className="panel">
         <IndexRows indexes={indexes} info={info} />
       </div>
     </>
+  );
+}
+
+// Shown only when several people's layers share a base nobody maintains, and
+// copies between them cost something. Absent for every other project: the
+// endpoint answers 404 for a project that was not registered by id.
+function SavingsBanner({ ns }: { ns: string }) {
+  const [s, setS] = useState<ProjectSavings | null>(null);
+  useEffect(() => {
+    let live = true;
+    projectSavings(ns)
+      .then((r) => live && setS(r))
+      .catch(() => live && setS(null));
+    return () => {
+      live = false;
+    };
+  }, [ns]);
+  if (!s?.recommend) return null;
+  const mb = (s.duplicate_bytes / 1e6).toFixed(1);
+  const mins = Math.round(s.model_seconds / 60);
+  return (
+    <div className="panel savings">
+      <strong>A maintained base would save this project work.</strong>
+      <div>
+        {s.duplicate_documents.toLocaleString()} document copies across{" "}
+        {(s.layers ?? []).length} layers: {s.duplicate_passages.toLocaleString()} passages,{" "}
+        {s.duplicate_embeddings.toLocaleString()} embeddings, {s.duplicate_page_reads.toLocaleString()} page
+        reads, {mb} MB{mins > 0 ? `, about ${mins} min of model time` : ""}. Each search reads{" "}
+        {s.fanout_now} indexes; with a maintained base it would read {s.fanout_with_base}.
+      </div>
+      <div className="muted" title={s.note}>
+        A maintainer service owns the base and folds the public layers into it. Token counts are not recorded.
+      </div>
+    </div>
   );
 }
