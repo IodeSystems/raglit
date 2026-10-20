@@ -114,8 +114,9 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
     storage, parent intact).
   - ✅ VecSearch + Hybrid + DocReview overlaid (2026-10-19; hybrid fuses by
     path+fragment id, since ids collide across layers).
-  - NOT overlaid (follow-ups): SearchFigures, page images (served only under
-    the branch's own pages/); merge/diff ops; CLI/MCP branch commands.
+  - ✅ SearchFigures, page images (ServesPageImage accepts ancestors' pages/)
+    and page layouts overlaid (2026-10-20).
+  - NOT overlaid (follow-ups): merge/diff ops; CLI/MCP branch commands.
 
 ## Blocking decisions (user owns)
 

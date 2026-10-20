@@ -172,6 +172,58 @@ func (s *Store) SearchFiguresPath(ctx context.Context, query, pathPrefix string,
 	if err != nil {
 		return nil, err
 	}
+	return s.figuresOverlay(qv, pathPrefix, limit, true)
+}
+
+// SearchFiguresOwnLayer is SearchFiguresPath over this layer's own documents
+// only — for sibling fan-out, where the caller's layer already covers the parent.
+func (s *Store) SearchFiguresOwnLayer(ctx context.Context, query, pathPrefix string, limit int) ([]FigureHit, error) {
+	if s.embedder == nil {
+		return nil, fmt.Errorf("raglit: SearchFigures needs an embedder (SetEmbedder)")
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	qv, err := s.embedder.EmbedQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return s.figuresOverlay(qv, pathPrefix, limit, false)
+}
+
+// figuresOverlay is the branch overlay for figures, the same shape as the
+// vector one: this layer's figures, then the parent's for documents this layer
+// does not shadow (when overlay is set).
+func (s *Store) figuresOverlay(qv []float32, pathPrefix string, limit int, overlay bool) ([]FigureHit, error) {
+	hits, err := s.figuresLocal(qv, pathPrefix, limit)
+	if err != nil || !overlay || s.parent == nil {
+		return hits, err
+	}
+	shadow, err := s.shadowedPaths()
+	if err != nil {
+		return nil, err
+	}
+	phits, err := s.parent.figuresOverlay(qv, pathPrefix, limit, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range phits {
+		if !shadow[h.Path] {
+			hits = append(hits, h)
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits, nil
+}
+
+// figuresLocal ranks this layer's own figure vectors.
+func (s *Store) figuresLocal(qv []float32, pathPrefix string, limit int) ([]FigureHit, error) {
 	pred, pargs := pathPredicate(pathPrefix)
 	if pred != "" {
 		pred = " AND " + pred

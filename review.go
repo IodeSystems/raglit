@@ -225,6 +225,9 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 func (s *Store) PageImagePath(path string, page int) (string, error) {
 	img, err := s.q.GetPageImagePath(context.Background(), gen.GetPageImagePathParams{Path: path, Page: int64(page)})
 	if errors.Is(err, sql.ErrNoRows) {
+		if s.parentHas(path) {
+			return s.parent.PageImagePath(path, page)
+		}
 		return "", nil
 	}
 	if err != nil {
@@ -243,4 +246,30 @@ func (s *Store) PagesRoot() string {
 		return abs
 	}
 	return s.home.PagesDir()
+}
+
+// parentHas reports whether a document this layer lacks shows through from the
+// parent: there is a parent, and this layer neither has nor tombstoned it.
+func (s *Store) parentHas(path string) bool {
+	if s.parent == nil {
+		return false
+	}
+	shadow, err := s.shadowedPaths()
+	return err == nil && !shadow[path]
+}
+
+// ServesPageImage reports whether img is a page image this store may serve:
+// under its own pages directory, or — for a branch — under an ancestor's, for
+// the parent documents that show through it.
+func (s *Store) ServesPageImage(img string) bool {
+	for st := s; st != nil; st = st.parent {
+		if root := st.PagesRoot(); root != "" && img != "" {
+			if abs, err := filepath.Abs(img); err == nil {
+				if _, ok := pathUnder(abs, root); ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

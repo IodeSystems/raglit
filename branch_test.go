@@ -213,3 +213,47 @@ func TestBranch_VectorOverlay(t *testing.T) {
 		t.Fatalf("DocReview of a shadowed doc = %q, want the branch's", title)
 	}
 }
+
+// Figures and page images of a parent document show through a branch; the
+// own-layer figure search leaves them out.
+func TestBranch_FiguresAndPageImagesOverlay(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	reg.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
+	ctx := context.Background()
+	main, _ := reg.Get("main")
+	ocr := NewOCR(&okChatter{text: "body text"})
+	sg := NewSegmenter(&scriptChatter{replies: []string{
+		`{"continues_previous":false,"fragments":[{"text":"intro [FIGURE: an invoice billing summary table] outro"}]}`,
+	}})
+	units := []ingestUnit{{page: 1, mime: "image/png", data: []byte("img1")}}
+	if _, _, err := main.ingestUnits(ctx, sg, ocr, "/corpus/doc.pdf", "Doc", units, FragConfig{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	must(t, reg.ForkBranch("feat", "main"))
+	feat, _ := reg.Get("feat")
+
+	if figs, err := feat.SearchFigures(ctx, "billing invoice", 5); err != nil || len(figs) != 1 {
+		t.Fatalf("branch figure search: %d figures, err=%v; want the parent's 1", len(figs), err)
+	}
+	if figs, _ := feat.SearchFiguresOwnLayer(ctx, "billing invoice", "", 5); len(figs) != 0 {
+		t.Fatalf("own-layer figure search returned the parent's figures: %d", len(figs))
+	}
+	want, _ := main.PageImagePath("/corpus/doc.pdf", 1)
+	if want == "" {
+		t.Fatal("the parent saved no page image; the image half of this test proves nothing")
+	}
+	got, err := feat.PageImagePath("/corpus/doc.pdf", 1)
+	if err != nil || got != want {
+		t.Fatalf("branch page image = %q (err %v), want the parent's %q", got, err, want)
+	}
+	if !feat.ServesPageImage(got) {
+		t.Fatal("the branch refuses to serve its parent's page image")
+	}
+	if feat.ServesPageImage("/etc/passwd") {
+		t.Fatal("ServesPageImage accepted a host file")
+	}
+}

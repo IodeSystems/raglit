@@ -1,6 +1,8 @@
 package raglit
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"image"
@@ -168,6 +170,9 @@ func (s *Store) PageLayoutFor(docPath string, page int) (*PageLayout, error) {
 	                        FROM ocr_pages o JOIN documents d ON d.id = o.doc_id
 	                       WHERE d.path = ? AND o.page = ?`, docPath, page).
 		Scan(&out.Engine, &out.Model, &imgPath)
+	if errors.Is(err, sql.ErrNoRows) && s.parentHas(docPath) {
+		return s.parent.PageLayoutFor(docPath, page)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("raglit: no page %d recorded for %s: %w", page, docPath, err)
 	}

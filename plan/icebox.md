@@ -14,8 +14,9 @@ Not scheduled. Each is opt-in.
   hash): passages, embeddings, page reads, bytes, model time of non-pooled
   imports; fan-out now vs with a base; `recommend` when ≥2 layers, copies, and
   an empty base. Banner on the project page. TOKENS NOT RECORDED — proxies only.
-- **Overlay gaps**: SearchFigures and page images on a branch see the branch
-  layer only. Embedded (`--embedded`) MCP has no branches, so no fan-out.
+- ✅ Figures, page images and page layouts overlay the parent on a branch;
+  sibling figure search reads own layers. Embedded (`--embedded`) MCP has no
+  branches, so no fan-out.
 - **Own-layer edge**: a layer searched own-only (its parent also in the set, or
   added as a sibling) no longer hides parent docs it tombstoned/shadows — both
   versions can appear, labelled by index.

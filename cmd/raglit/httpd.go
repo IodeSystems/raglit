@@ -370,7 +370,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if root := st.PagesRoot(); img == "" || root == "" || !isUnder(img, root) {
+		if !st.ServesPageImage(img) {
 			http.NotFound(w, r)
 			return
 		}
@@ -769,14 +769,17 @@ func searchFiguresOp(reg *raglit.Registry, defLimit int) func(context.Context, *
 		}
 		out := &searchFiguresOut{}
 		out.Body.Figures = []figureRow{}
-		// Figures are not overlaid (each index answers for its own), so the
-		// plan's own-layer marks change nothing here; the sibling set does.
-		for _, name := range planSearch(ctx, reg, in.Index, siblingsOn(in.Siblings)).names {
+		plan := planSearch(ctx, reg, in.Index, siblingsOn(in.Siblings))
+		for _, name := range plan.names {
 			st, err := reg.Read(ctx, name)
 			if err != nil {
 				continue
 			}
-			figs, err := st.SearchFiguresPath(ctx, in.Query, in.Path, limit)
+			search := st.SearchFiguresPath
+			if plan.own[name] {
+				search = st.SearchFiguresOwnLayer
+			}
+			figs, err := search(ctx, in.Query, in.Path, limit)
 			if err != nil {
 				continue // no embedder on this index → skip
 			}
