@@ -35,7 +35,7 @@ Not scheduled. Each is opt-in.
   **blocking decision (USER):** skip captions for code indexes, or a second
   vocabulary per index (e.g. code, docs, config, test, plan). **next:** after
   the decision, clear gen_kind/gen_name on code indexes and re-run.
-  Delano failures (134 of 818): kind 43, tag list in one string 44 (fixed
+  Case-folder failures (134 of 818): kind 43, tag list in one string 44 (fixed
   d31702e: an over-long tag is split on commas), malformed JSON 34 (agentkit
   argument parse; raw answers are not logged, so not diagnosed).
 - ✅ attest mounts lazily for indexes created after start (`lazyAttest`;
