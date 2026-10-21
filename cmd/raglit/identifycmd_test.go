@@ -64,7 +64,7 @@ func TestIdentifyByAPerson(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !id.ByPerson() || id.Kind != "agreement" || !strings.HasPrefix(id.Name, "2021-05-25") {
+	if !id.ByPerson() || id.Kind != "legal:agreement" || !strings.HasPrefix(id.Name, "2021-05-25") {
 		t.Fatalf("identity = %+v", id)
 	}
 	docs, err := st.Documents()

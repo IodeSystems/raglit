@@ -7,7 +7,7 @@ import { Retitle } from "../panes/Retitle";
 import { DocActions } from "../panes/DocActions";
 import { ErrorText } from "../ui/Details";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
-import { displayPath, displayTitle, fileName } from "../ui/display";
+import { displayPath, displayTitle, fileName, kindLabel } from "../ui/display";
 import { InlineMarkdown } from "../ui/InlineMarkdown";
 import "./DocShell.css";
 
@@ -73,7 +73,7 @@ export function DocShell() {
         <h2>{title}</h2>
         <div className="path" title={shownPath}>{shownPath}</div>
         <div className="bykind">
-          {identity?.kind && <span className="badge">{identity.kind}</span>}
+          {identity?.kind && <span className="badge">{kindLabel(identity.kind)}</span>}
           {/* Who said so is not decoration. A machine's caption is a paraphrase
               and a person's is a ruling, and a reader deciding whether to trust
               the title needs to know which one they are reading. */}

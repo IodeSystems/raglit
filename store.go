@@ -402,6 +402,14 @@ func migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS ingest_jobs_lane ON ingest_jobs(state, lane, id)`); err != nil {
 		return err
 	}
+	// Kinds gained families (captionprofile.go): a kind stored before that is a
+	// bare legal term, "court filing" → "legal:court-filing". Idempotent — a
+	// kind with a family is left alone.
+	if _, err := db.Exec(
+		`UPDATE documents SET gen_kind = 'legal:' || REPLACE(LOWER(TRIM(gen_kind)), ' ', '-')
+		  WHERE TRIM(gen_kind) <> '' AND INSTR(gen_kind, ':') = 0`); err != nil {
+		return err
+	}
 	return nil
 }
 

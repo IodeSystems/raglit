@@ -17,7 +17,7 @@ import {
 import { usePoll } from "../usePoll";
 import { ErrorText, Details } from "../ui/Details";
 import { AISummaryLabel } from "../ui/Label";
-import { displayPath, documents, laneLabel, passages } from "../ui/display";
+import { displayPath, documents, kindLabel, laneLabel, passages } from "../ui/display";
 import { splitName } from "../shell/IndexShell";
 import { useIndexInfo } from "./IndexRows";
 import "./scope.css";
@@ -130,7 +130,7 @@ function Holds({ index, info }: { index: string; info?: IndexInfo }) {
 function KindBar({ k, top }: { k: TagCount; top: number }) {
   return (
     <>
-      <span>{k.tag}</span>
+      <span>{kindLabel(k.tag)}</span>
       <span className="bar" aria-hidden>
         <span style={{ width: `${top ? Math.max(2, (k.count / top) * 100) : 0}%` }} />
       </span>

@@ -102,41 +102,20 @@ const (
 	fragOriginIdentity = "identity"
 )
 
-// identityKinds is the CLOSED vocabulary for gen_kind.
-//
-// Closed because an open one produces forty spellings of "letter", and a kind
-// nobody can group by is a kind nobody can filter on. Settled here, before
-// anything writes it, rather than by whatever the first model happened to
-// return.
+// The kind vocabularies live in captionprofile.go, one closed list per
+// profile. Closed because an open one produces forty spellings of "letter",
+// and a kind nobody can group by is a kind nobody can filter on.
 //
 // "other" is the escape hatch and is meant to stay rare: a corpus where it is
-// common is a corpus whose vocabulary is wrong, and the fix is to add a term
-// here — deliberately, once — not to let the model invent one per document.
-var identityKinds = []string{
-	"deed",
-	"survey",
-	"agreement",
-	"correspondence",
-	"court filing",
-	"certification",
-	"analysis",
-	// notes — a document somebody MADE about the matter rather than one that was
-	// filed in it: a timeline, a witness list, a call transcript, a packet
-	// assembled for counsel. Added deliberately, once, because "other" was 9% of
-	// a real corpus after the junk was removed, and a working file is not an
-	// absence of a kind — it is a kind the vocabulary did not have.
-	"notes",
-	// commercial — a record of work done or goods sold: an invoice, a work
-	// order, a receipt, a property listing. Added for the same reason as notes,
-	// from the same corpus: these are neither filed instruments nor
-	// correspondence nor anybody's analysis, and they were landing in "other"
-	// with nowhere else to go.
-	"commercial",
-	"other",
-}
+// common is a corpus whose vocabulary is wrong, and the fix is to add a term —
+// deliberately, once — not to let the model invent one per document. Two
+// legal terms came that way: notes (a document somebody MADE about the matter:
+// "other" was 9% of a real corpus, and every one was a working file) and
+// commercial (invoices, work orders, listings, from the same corpus).
 
-// identityKindAliases maps what a model actually returns onto the vocabulary.
-// Everything is lowercased and trimmed before lookup.
+// identityKindAliases maps what a model actually returns onto the legal
+// vocabulary (bare terms; legalProfile adds the "legal:" family). Everything is
+// lowercased and trimmed before lookup.
 var identityKindAliases = map[string]string{
 	"letter":             "correspondence",
 	"letters":            "correspondence",
@@ -193,44 +172,31 @@ var identityKindAliases = map[string]string{
 	"advertisement":      "commercial",
 }
 
-// NormalizeKind maps a model's answer onto identityKinds, returning ok=false
-// when it is not a term this vocabulary knows — which is the caller's cue to ask
-// again with the list, rather than to store a fortieth spelling.
-func NormalizeKind(s string) (string, bool) {
-	k := strings.ToLower(strings.TrimSpace(s))
-	k = strings.Trim(k, ".")
-	if k == "" {
-		return "", false
-	}
-	for _, want := range identityKinds {
-		if k == want {
-			return want, true
-		}
-	}
-	if alias, ok := identityKindAliases[k]; ok {
-		return alias, true
-	}
-	return "", false
-}
+// NormalizeKind maps a kind onto the vocabularies — any profile's, since a
+// person may file a document under any family — returning ok=false when no
+// profile knows it. A bare legal term ("deed") is what was stored before kinds
+// had families, and still maps.
+func NormalizeKind(s string) (string, bool) { return NormalizeAnyKind(s) }
 
-// IdentityKinds is the vocabulary, for a help string or a UI filter.
-func IdentityKinds() []string { return append([]string(nil), identityKinds...) }
+// IdentityKinds is every vocabulary, for a help string or a UI filter.
+func IdentityKinds() []string { return allKindNames() }
 
 // identityRoleKinds is the CLOSED vocabulary for role tags: what job a document
 // does in the corpus. Closed for the same reason kind is — an open one produces
 // forty spellings of "documentation", and a role nobody can group by is a role
 // nobody can filter on. A document gets 1–3 of these (see validateIdentity).
 var identityRoleKinds = []string{
-	"documentation", // explains how something works; meant to be read
-	"reference",     // looked up for a fact, not read through
-	"overview",      // orienting summary of a larger body of work
-	"specification", // prescribes what something should be or do
-	"guide",         // step-by-step instructions for doing something
-	"changelog",     // records what changed and when
-	"notes",         // working notes, scratch, intermediate thinking
-	"report",        // findings from an investigation or measurement
-	"data",          // tabular or structured data, not prose about it
-	"other",         // none of the above genuinely fits
+	"documentation",  // explains how something works; meant to be read
+	"reference",      // looked up for a fact, not read through
+	"overview",       // orienting summary of a larger body of work
+	"specification",  // prescribes what something should be or do
+	"guide",          // step-by-step instructions for doing something
+	"changelog",      // records what changed and when
+	"notes",          // working notes, scratch, intermediate thinking
+	"report",         // findings from an investigation or measurement
+	"data",           // tabular or structured data, not prose about it
+	"implementation", // code that does the work, as opposed to prose about it
+	"other",          // none of the above genuinely fits
 }
 
 // identityRoleAliases maps common model spellings onto the vocabulary.
@@ -298,6 +264,9 @@ type Identifier struct {
 	MaxRetries int // JSON fix-loop attempts after the first try (default 2)
 
 	validator *agent.SchemaValidator
+	// byFamily validates a full identity answer, per profile: the kind enum is
+	// the profile's.
+	byFamily map[string]*agent.SchemaValidator
 	// maxTokens caps THIS Identifier's answer; 0 means identityMaxTokens.
 	// Per-ask rather than a constant because two asks emit an answer whose size
 	// is the corpus owner's and not raglit's — see identityMaxTokens.
@@ -317,12 +286,22 @@ func NewIdentifier(c Chatter, model string) *Identifier {
 		Client:     c,
 		Model:      model,
 		MaxRetries: 2,
-		validator:  agent.NewSchemaValidator([]llm.ToolDef{identityToolDef(), identityTagsToolDef()}),
+		validator:  agent.NewSchemaValidator([]llm.ToolDef{identityTagsToolDef()}),
+		byFamily:   profileValidators(),
 	}
 }
 
-// identityToolDef is the schema the answer is validated against.
-func identityToolDef() llm.ToolDef {
+func profileValidators() map[string]*agent.SchemaValidator {
+	m := map[string]*agent.SchemaValidator{}
+	for _, p := range captionProfiles {
+		m[p.Family] = agent.NewSchemaValidator([]llm.ToolDef{identityToolDef(p)})
+	}
+	return m
+}
+
+// identityToolDef is the schema the answer is validated against, with the
+// profile's kinds as the enum.
+func identityToolDef(prof *captionProfile) llm.ToolDef {
 	var td llm.ToolDef
 	td.Type = "function"
 	td.Function.Name = "emit_identity"
@@ -332,7 +311,7 @@ func identityToolDef() llm.ToolDef {
 		"properties": map[string]any{
 			"name":         map[string]any{"type": "string"},
 			"summary":      map[string]any{"type": "string"},
-			"kind":         map[string]any{"type": "string", "enum": identityKinds},
+			"kind":         map[string]any{"type": "string", "enum": prof.kindNames()},
 			"content_tags": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 3, "maxItems": 5},
 			"role_tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": identityRoleKinds}, "minItems": 1, "maxItems": 3},
 		},
@@ -434,13 +413,17 @@ func (id *Identifier) Identify(ctx context.Context, ask IdentityAsk) (DocIdentit
 		return DocIdentity{}, &ErrIdentityTooShort{Chars: n}
 	}
 	names := typeNames(ask.DocTypes)
-	validator := id.validator
+	prof := ask.profile()
+	validator := id.byFamily[prof.Family]
+	if validator == nil { // an Identifier built as a literal, not by NewIdentifier
+		validator = newValidator(identityToolDef(prof))
+	}
 	if len(names) > 0 {
 		// The doc_type enum is THIS index's vocabulary, so the schema is not
 		// known until the call. Built per ask rather than per Identifier for the
 		// same reason the tag context is a parameter: one *Identifier serves
 		// every index in a registry.
-		validator = newValidator(identityToolDefWithTypes(names))
+		validator = newValidator(identityToolDefWithTypes(prof, names))
 	}
 	var got DocIdentity
 	err := id.askWith(ctx, validator, ask.prompt(), "emit_identity", identityJSONShape,
@@ -449,12 +432,12 @@ func (id *Identifier) Identify(ctx context.Context, ask IdentityAsk) (DocIdentit
 			if err := json.Unmarshal([]byte(js), &d); err != nil {
 				return fmt.Errorf("unparseable: %v", err)
 			}
-			d, err := validateIdentity(d)
+			d, err := validateIdentity(d, prof)
 			if err != nil {
 				return err
 			}
-			if copiesNameExample(d.Name, ask.Text) {
-				return fmt.Errorf("\"name\" copies the example from the instructions; name THIS document from its own dates, instrument and parties")
+			if prof.copiesExample(d.Name, ask.Text) {
+				return errors.New(prof.CopiedMsg)
 			}
 			if d.DocType, err = normalizeDocType(d.DocType, names); err != nil {
 				return err
@@ -492,12 +475,34 @@ type IdentityAsk struct {
 	// choose one of. Empty → the doc_type field is not asked for at all, which
 	// is right for an index that has registered none.
 	DocTypes []DocType
+	// Path is the document's path, which picks the caption profile and, for a
+	// profile that shows it, is quoted in the prompt.
+	Path string
+	// Profile is the caption rules (profileFor); nil means legal.
+	Profile *captionProfile
+}
+
+func (a IdentityAsk) profile() *captionProfile {
+	if a.Profile == nil {
+		return legalProfile
+	}
+	return a.Profile
 }
 
 func (a IdentityAsk) prompt() string {
-	p := identityPrompt + docTypeBlock(a.DocTypes) + tagContextBlock(a.TagContext) +
+	prof := a.profile()
+	p := identityPromptFor(prof) + docTypeBlock(a.DocTypes) + tagContextBlock(a.TagContext) +
 		HintBlock(a.IndexHint)
-	return p + "\n\nDOCUMENT:\n" + identityExcerpt(a.Text)
+	return p + documentBlock(prof, a.Path) + identityExcerpt(a.Text)
+}
+
+// documentBlock heads the document in a prompt: its path, when the profile
+// says the path is part of what the file is.
+func documentBlock(prof *captionProfile, path string) string {
+	if prof.ShowPath && path != "" {
+		return "\n\nFILE PATH: " + pathForPrompt(path) + "\n\nFILE:\n"
+	}
+	return "\n\nDOCUMENT:\n"
 }
 
 func typeNames(types []DocType) []string {
@@ -513,8 +518,8 @@ func typeNames(types []DocType) []string {
 // identityToolDefWithTypes is the identity schema with this index's document
 // types as the doc_type enum. Not required — most documents are not forms, and
 // a required enum with no "none" member is an instruction to pick one anyway.
-func identityToolDefWithTypes(names []string) llm.ToolDef {
-	td := identityToolDef()
+func identityToolDefWithTypes(prof *captionProfile, names []string) llm.ToolDef {
+	td := identityToolDef(prof)
 	params, _ := td.Function.Parameters.(map[string]any)
 	props, _ := params["properties"].(map[string]any)
 	props["doc_type"] = map[string]any{
@@ -574,8 +579,9 @@ func (id *Identifier) IdentifyTags(ctx context.Context, ask IdentityAsk) (conten
 	if n := contentChars(ask.Text); n < identityMinTextChars {
 		return nil, nil, &ErrIdentityTooShort{Chars: n}
 	}
-	prompt := identityTagsPrompt + tagContextBlock(ask.TagContext) + HintBlock(ask.IndexHint) +
-		"\n\nDOCUMENT:\n" + identityExcerpt(ask.Text)
+	prof := ask.profile()
+	prompt := identityTagsPromptFor(prof) + tagContextBlock(ask.TagContext) + HintBlock(ask.IndexHint) +
+		documentBlock(prof, ask.Path) + identityExcerpt(ask.Text)
 	err = id.ask(ctx, prompt, "emit_tags", identityTagsJSONShape, func(js string) error {
 		var d DocIdentity
 		if uerr := json.Unmarshal([]byte(js), &d); uerr != nil {
@@ -686,25 +692,30 @@ const identityJSONShape = `{"name":"...","summary":"...","kind":"...","content_t
 // identityTagsJSONShape is the same, for the tags-only ask.
 const identityTagsJSONShape = `{"content_tags":["..."],"role_tags":["..."]}`
 
-// identityTagsPrompt is the tags-only ask. It shares the field descriptions
-// with identityPrompt rather than restating them, because two prompts that
-// drift produce two vocabularies — which is the exact failure tags exist to
-// avoid, one level up.
-var identityTagsPrompt = `You are tagging a document that is already catalogued in a legal/records
-index. It already has a caption; do not write another one. Read it and output
-ONLY a JSON object:
+// identityTagsPromptFor is the tags-only ask. It shares the field
+// descriptions with identityPromptFor rather than restating them, because two
+// prompts that drift produce two vocabularies — which is the exact failure
+// tags exist to avoid, one level up.
+func identityTagsPromptFor(prof *captionProfile) string {
+	return prof.Framing + ` It is already catalogued and has a caption; do not
+write another one. Read it and output ONLY a JSON object:
 ` + identityTagsJSONShape + `
 
-` + identityTagFields + `
+` + tagFieldsFor(prof) + `
 
-Describe only what the document says. Do not infer a subject it does not state.`
+Describe only what it says. Do not infer a subject it does not state.`
+}
+
+func tagFieldsFor(prof *captionProfile) string {
+	return strings.Replace(identityTagFields, "{{TAG_EXAMPLES}}", prof.TagExamples, 1)
+}
 
 // identityTagFields describes the two tag fields, for both prompts that ask for
 // them. One text, so the two asks cannot describe the same field differently.
 const identityTagFields = `- "content_tags": 3 to 5 short noun phrases (1–3 words each, lowercase) naming
   what the document is ABOUT — its subject matter, the entities or procedures it
   concerns. Not the document type, and not a summary of its content. Examples:
-  "lead paint inspection", "boundary survey", "escrow closing". No commas inside
+  {{TAG_EXAMPLES}}. No commas inside
   a tag. Reuse terms from the existing tag list below when they fit; do not
   invent a new spelling for a concept already tagged.
 - "role_tags": 1 to 3 of the following, naming what job this document does in
@@ -718,6 +729,7 @@ const identityTagFields = `- "content_tags": 3 to 5 short noun phrases (1–3 wo
     notes         — working notes, scratch, intermediate thinking
     report        — findings from an investigation or measurement
     data          — tabular or structured data, not prose about it
+    implementation — code that does the work, as opposed to prose about it
     other         — none of the above genuinely fits`
 
 // identityNameExample is the prompt's example of a name, and
@@ -732,57 +744,40 @@ const identityNameExample = "2021-05-25 Form 21 purchase and sale agreement, exe
 
 var identityExampleParties = []string{"ardley", "brannock"}
 
-// copiesNameExample reports whether name carries the example's parties while the
-// document's own text names neither — the example copied, not this document
-// described.
+// copiesNameExample reports whether name carries any profile's example words
+// while the document's own text names none of them — an example copied, not
+// this document described. Every profile, because a backlog caption may have
+// been written under any of them.
 func copiesNameExample(name, text string) bool {
-	n, t := strings.ToLower(name), strings.ToLower(text)
-	inName := false
-	for _, w := range identityExampleParties {
-		if strings.Contains(t, w) {
-			return false
+	for _, p := range captionProfiles {
+		if p.copiesExample(name, text) {
+			return true
 		}
-		inName = inName || strings.Contains(n, w)
 	}
-	return inName
+	return false
 }
 
-// identityPrompt asks for the three fields. It names the vocabulary inline
-// because a model cannot pick from a list it was not shown, and the fix loop
-// should be for genuine failures rather than for a term nobody mentioned.
-var identityPrompt = `You are cataloguing a document for a legal/records index. Read it and
-output ONLY a JSON object:
+// identityPromptFor asks for the fields, in the profile's terms. It names the
+// vocabulary inline because a model cannot pick from a list it was not shown,
+// and the fix loop should be for genuine failures rather than for a term nobody
+// mentioned.
+func identityPromptFor(prof *captionProfile) string {
+	return prof.Framing + ` Read it and output ONLY a JSON object:
 ` + identityJSONShape + `
 
-- "name": what a person filing this would call it — the instrument, its date,
-  and the parties or property it concerns. A caption for a list, not a filename
-  and not a sentence. Example: "` + identityNameExample + `". The example is
-  the SHAPE only — never reuse its words, names or parties. Use the document's own
-  dates and names; if it does not state one, leave it out rather than guessing.
-- "summary": a few sentences — what the instrument IS, who the parties are, the
-  date, the property or matter it concerns, and what it does. Enough that someone
-  reading only this can tell whether they need the document.
-- "kind": exactly one of the following. Choose by what the document IS, not by
-  what it is about:
-    deed           — an instrument conveying or encumbering land
-    survey         — a survey, plat or map of land
-    agreement      — a contract between parties, signed or offered
-    correspondence — a letter, email, memo or notice between people
-    court filing   — anything filed in or issued by a court
-    certification  — a certificate, affidavit, permit or official attestation
-    analysis       — a report, assessment, inspection or study of something
-    notes          — a document somebody MADE about the matter rather than one
-                     filed in it: a timeline, a witness list, a call transcript,
-                     a packet assembled for counsel, a worklist
-    commercial     — a record of work done or goods sold: an invoice, a work
-                     order, a receipt, a statement, a property listing
-    other          — none of the above genuinely fits. Prefer any term above to
-                     this one; "other" is a last resort, not a default.
+- "name": ` + prof.NameRule + ` Example: "` + prof.NameExample + `". The example
+  is the SHAPE only — never reuse its words or names. Use its own dates and
+  names; if it does not state one, leave it out rather than guessing.
+- "summary": ` + prof.SummaryRule + `
+- "kind": exactly one of the following. Choose by what it IS, not by what it is
+  about:
+` + prof.kindBlock() + `
 
-` + identityTagFields + `
+` + tagFieldsFor(prof) + `
 
-Describe only what the document says. Do not infer a purpose it does not state,
-and do not carry over an assumption from how the document is titled.`
+Describe only what it says. Do not infer a purpose it does not state, and do
+not carry over an assumption from how it is titled.`
+}
 
 // identityExcerpt bounds one call's input: the head, and the tail when the
 // document is long enough that they differ, with the gap MARKED so the model
@@ -802,7 +797,7 @@ func identityExcerpt(text string) string {
 // validateIdentity enforces what the schema cannot: a caption that is a caption,
 // a summary that says something, and a kind from the vocabulary. The returned
 // error is phrased as an instruction, because it goes straight back to the model.
-func validateIdentity(d DocIdentity) (DocIdentity, error) {
+func validateIdentity(d DocIdentity, prof *captionProfile) (DocIdentity, error) {
 	d.Name = strings.Join(strings.Fields(strings.TrimSpace(d.Name)), " ")
 	// A Markdown file's first heading is a fair caption, minus its "#" marks.
 	d.Name = strings.TrimSpace(strings.TrimLeft(d.Name, "#"))
@@ -815,15 +810,15 @@ func validateIdentity(d DocIdentity) (DocIdentity, error) {
 			len(d.Name), identityMaxNameChars)
 	}
 	if len(d.Summary) < identityMinSummaryChars {
-		return d, fmt.Errorf("\"summary\" says nothing that distinguishes this document from another; state the instrument, the parties, the date and what it does")
+		return d, errors.New(prof.ThinSummaryMsg)
 	}
 	if len(d.Summary) > identityMaxSummaryChars {
 		return d, fmt.Errorf("\"summary\" is %d characters — keep it under %d",
 			len(d.Summary), identityMaxSummaryChars)
 	}
-	kind, ok := NormalizeKind(d.Kind)
+	kind, ok := prof.normalize(d.Kind)
 	if !ok {
-		return d, fmt.Errorf("\"kind\" must be exactly one of: %s", strings.Join(identityKinds, ", "))
+		return d, fmt.Errorf("\"kind\" must be exactly one of: %s", strings.Join(prof.kindNames(), ", "))
 	}
 	d.Kind = kind
 	ct, rt, err := validateTags(d.ContentTags, d.RoleTags)
@@ -960,7 +955,7 @@ func splitTagList(s string) []string {
 // identityAsk assembles everything about THIS index that shapes an identity
 // answer: the established tag vocabulary, the corpus owner's hint, and the
 // registered document types the answer may choose one of.
-func (s *Store) identityAsk(text string) (IdentityAsk, error) {
+func (s *Store) identityAsk(path, text string) (IdentityAsk, error) {
 	types, err := s.DocTypeRefs()
 	if err != nil {
 		return IdentityAsk{}, err
@@ -970,6 +965,8 @@ func (s *Store) identityAsk(text string) (IdentityAsk, error) {
 		TagContext: s.TagContext(),
 		IndexHint:  s.IndexHint(),
 		DocTypes:   types,
+		Path:       path,
+		Profile:    profileFor(path, s.isCodeCorpus()),
 	}, nil
 }
 
@@ -1176,7 +1173,7 @@ func (s *Store) IdentifyDocument(ctx context.Context, path string, force bool) (
 	if err != nil {
 		return DocIdentity{}, err
 	}
-	ask, err := s.identityAsk(text)
+	ask, err := s.identityAsk(path, text)
 	if err != nil {
 		return DocIdentity{}, err
 	}
@@ -1232,7 +1229,7 @@ func (s *Store) RecordIdentity(ctx context.Context, path string, d DocIdentity, 
 		kind, ok := NormalizeKind(out.Kind)
 		if !ok {
 			return DocIdentity{}, fmt.Errorf("raglit: kind %q is not one of: %s",
-				out.Kind, strings.Join(identityKinds, ", "))
+				out.Kind, strings.Join(allKindNames(), ", "))
 		}
 		out.Kind = kind
 	}
@@ -1316,7 +1313,7 @@ func (s *Store) TagDocument(ctx context.Context, path string, force bool) (DocId
 	if err != nil {
 		return DocIdentity{}, err
 	}
-	ask, err := s.identityAsk(text)
+	ask, err := s.identityAsk(path, text)
 	if err != nil {
 		return DocIdentity{}, err
 	}

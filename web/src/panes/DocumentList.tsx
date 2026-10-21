@@ -2,7 +2,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { listDocuments, type DocumentRow } from "../api";
-import { aiTitleTooltip, displayPath, displayTitle, documents, fileName, passages, scannedPages } from "../ui/display";
+import { aiTitleTooltip, displayPath, displayTitle, documents, fileName, kindLabel, passages, scannedPages } from "../ui/display";
 import { ErrorText } from "../ui/Details";
 import "./DocumentList.css";
 
@@ -47,7 +47,7 @@ function toRow(d: DocumentRow, root?: string): Row {
     named: !!name,
     kind,
     added,
-    hay: `${title}\n${rel}\n${kind}`.toLowerCase(),
+    hay: `${title}\n${rel}\n${kind}\n${kindLabel(kind)}`.toLowerCase(),
   };
 }
 
@@ -213,7 +213,7 @@ export function DocumentList() {
               disabled={n === 0 && kind !== k}
               onClick={() => setKind(kind === k ? null : k)}
             >
-              {k || "Not classified"} <span className="dl-count">{n.toLocaleString()}</span>
+              {k ? kindLabel(k) : "Not classified"} <span className="dl-count">{n.toLocaleString()}</span>
             </button>
           ))}
         </div>
@@ -255,7 +255,7 @@ export function DocumentList() {
                   <div className="dl-path">{r.rel}</div>
                 </div>
                 <div className="dl-meta">
-                  {r.kind && <span className="badge dl-kind">{r.kind}</span>}
+                  {r.kind && <span className="badge dl-kind">{kindLabel(r.kind)}</span>}
                   {!!r.doc.vision && <span className="badge vision">{scannedPages(r.doc.vision)}</span>}
                   <span className="muted dl-num">{passages(r.doc.fragments ?? 0)}</span>
                   {r.added && (

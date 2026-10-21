@@ -59,7 +59,7 @@ func TestIdentify_ReturnsCaptionSummaryKind(t *testing.T) {
 	if !strings.Contains(id.Name, "purchase and sale agreement") {
 		t.Errorf("name = %q", id.Name)
 	}
-	if id.Kind != "agreement" || id.Source != IdentityByMachine || id.Model != "test-model" || id.At == 0 {
+	if id.Kind != "legal:agreement" || id.Source != IdentityByMachine || id.Model != "test-model" || id.At == 0 {
 		t.Errorf("identity = %+v", id)
 	}
 	if len(id.ContentTags) != 3 || id.ContentTags[0] != "purchase agreement" {
@@ -88,7 +88,7 @@ func TestIdentify_FixLoopOnAnInventedKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Kind != "correspondence" {
+	if id.Kind != "legal:correspondence" {
 		t.Errorf("kind = %q", id.Kind)
 	}
 	if c.calls != 2 {
@@ -114,9 +114,10 @@ func TestIdentify_ErrorsRatherThanGuessing(t *testing.T) {
 
 func TestNormalizeKind(t *testing.T) {
 	for in, want := range map[string]string{
-		"deed": "deed", "Court Filing": "court filing", "letter": "correspondence",
-		"E-Mail": "correspondence", "contract": "agreement", "plat": "survey",
-		"REPORT.": "analysis", "other": "other",
+		"deed": "legal:deed", "Court Filing": "legal:court-filing", "letter": "legal:correspondence",
+		"E-Mail": "legal:correspondence", "contract": "legal:agreement", "plat": "legal:survey",
+		"REPORT.": "legal:analysis", "other": "legal:other", "legal:court-filing": "legal:court-filing",
+		"code:entrypoint": "code:entrypoint", "docs:plan": "docs:plan",
 	} {
 		got, ok := NormalizeKind(in)
 		if !ok || got != want {
@@ -452,17 +453,17 @@ func TestIdentityText_PrefersTheCorrectedReading(t *testing.T) {
 func TestNormalizeKind_NotesCoversWorkProduct(t *testing.T) {
 	for _, in := range []string{"notes", "timeline", "transcript", "witness list", "packet", "worklist", "log"} {
 		got, ok := NormalizeKind(in)
-		if !ok || got != "notes" {
-			t.Errorf("NormalizeKind(%q) = %q,%v; want notes", in, got, ok)
+		if !ok || got != "legal:notes" {
+			t.Errorf("NormalizeKind(%q) = %q,%v; want legal:notes", in, got, ok)
 		}
 	}
 	for _, in := range []string{"invoice", "work order", "receipt", "mls listing", "statement"} {
-		if got, ok := NormalizeKind(in); !ok || got != "commercial" {
-			t.Errorf("NormalizeKind(%q) = %q,%v; want commercial", in, got, ok)
+		if got, ok := NormalizeKind(in); !ok || got != "legal:commercial" {
+			t.Errorf("NormalizeKind(%q) = %q,%v; want legal:commercial", in, got, ok)
 		}
 	}
 	// And it did not swallow the filed kinds it sits next to.
-	for in, want := range map[string]string{"deed": "deed", "letter": "correspondence", "report": "analysis"} {
+	for in, want := range map[string]string{"deed": "legal:deed", "letter": "legal:correspondence", "report": "legal:analysis"} {
 		if got, _ := NormalizeKind(in); got != want {
 			t.Errorf("NormalizeKind(%q) = %q; want %q", in, got, want)
 		}
@@ -606,7 +607,7 @@ func TestValidateIdentity_StripsHeadingMarks(t *testing.T) {
 	d, err := validateIdentity(DocIdentity{Name: "## Intake checklist for new calls", Kind: "notes",
 		Summary:     "A checklist of questions asked on a first call with a prospective client.",
 		ContentTags: []string{"intake questions", "client screening", "call checklist"},
-		RoleTags:    []string{"reference"}})
+		RoleTags:    []string{"reference"}}, legalProfile)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -97,7 +97,7 @@ func TestGatDaemon_RecordsAPersonsIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, err := st.DocumentIdentity("file:///notes.md")
-	if err != nil || !id.ByPerson() || id.Kind != "analysis" {
+	if err != nil || !id.ByPerson() || id.Kind != "legal:analysis" {
 		t.Fatalf("stored identity = %+v, %v", id, err)
 	}
 	// Findable by the caption, and the document's own text is unchanged.

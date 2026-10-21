@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 
 import { listIndexes, type IndexInfo, type ProjectIndex } from "../api";
-import { documents, passages } from "../ui/display";
+import { documents, isOtherKind, kindLabel, passages } from "../ui/display";
 import "./scope.css";
 
 // The indexes of one project, as the overview and the project page both show
@@ -52,7 +52,7 @@ function IndexRow({
   branches: ProjectIndex[];
   orphan?: boolean;
 }) {
-  const kinds = (info?.kinds ?? []).filter((k) => k.tag !== "other").slice(0, 4);
+  const kinds = (info?.kinds ?? []).filter((k) => !isOtherKind(k.tag)).slice(0, 4);
   return (
     <>
       <div className="idxrow">
@@ -69,7 +69,7 @@ function IndexRow({
             <div className="idxrow-kinds">
               {kinds.map((k) => (
                 <span className="kindchip" key={k.tag}>
-                  {k.tag} <span className="muted">{k.count.toLocaleString()}</span>
+                  {kindLabel(k.tag)} <span className="muted">{k.count.toLocaleString()}</span>
                 </span>
               ))}
             </div>

@@ -10,7 +10,7 @@ import { search, type Hit } from "../api";
 import { ErrorText } from "../ui/Details";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
 import { useIndexInfo } from "./IndexRows";
-import { SEARCH_MODES, displayPath, displayTitle, fileName, passages } from "../ui/display";
+import { SEARCH_MODES, displayPath, displayTitle, fileName, isOtherKind, kindLabel, passages } from "../ui/display";
 import "./Search.css";
 
 // ── shaping the hits ─────────────────────────────────────────────────────────
@@ -332,8 +332,8 @@ function DocCard({
         >
           {title}
         </Link>
-        {best.kind && best.kind !== "other" && (
-          <span className="sr-kind">{best.kind}</span>
+        {best.kind && !isOtherKind(best.kind) && (
+          <span className="sr-kind">{kindLabel(best.kind)}</span>
         )}
         {machineName && <AITitleLabel model={best.name_model} />}
       </div>

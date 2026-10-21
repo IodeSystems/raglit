@@ -58,6 +58,20 @@ export function fileName(path: string): string {
 
 // ── labels ───────────────────────────────────────────────────────────────────
 
+// kindLabel shows a "family:kind" kind as "family · kind" with spaces:
+// "legal:court-filing" → "legal · court filing". A kind stored before kinds
+// had families shows as it is.
+export function kindLabel(kind: string): string {
+  const [fam, rest] = kind.includes(":") ? kind.split(":", 2) : ["", kind];
+  const k = (rest ?? "").replace(/-/g, " ");
+  return fam ? `${fam} · ${k}` : k;
+}
+
+// isOtherKind: "other" in any family, the kind that says nothing.
+export function isOtherKind(kind: string): boolean {
+  return kind === "other" || kind.endsWith(":other");
+}
+
 function plural(n: number, one: string, many: string): string {
   return `${n.toLocaleString()} ${n === 1 ? one : many}`;
 }

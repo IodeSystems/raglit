@@ -769,7 +769,7 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 					t.err = &ErrIdentityTooShort{Chars: contentChars(text)}
 				default:
 					t.text = text
-					if ask, aerr := w.Store.identityAsk(text); aerr == nil {
+					if ask, aerr := w.Store.identityAsk(job.Path, text); aerr == nil {
 						t.ask = ask
 					} else {
 						t.err = aerr

@@ -3,24 +3,30 @@ import { useState } from "react";
 import { identify, type DocIdentity } from "../api";
 import { ErrorText } from "../ui/Details";
 
-// The kinds identity.go accepts. A CLOSED vocabulary — NormalizeKind rejects
-// anything outside it — so this is a select, not a text box. Typing a kind the
-// server will refuse and finding out on submit is a worse way to learn the list.
+// The kinds identity.go accepts, by family (captionprofile.go). CLOSED
+// vocabularies — NormalizeKind rejects anything outside them — so this is a
+// select, not a text box. Typing a kind the server will refuse and finding out
+// on submit is a worse way to learn the list.
 //
-// Kept in step with identityKinds in identity.go. A kind added there and not
-// here is simply missing from the picker; a kind here and not there is a 400.
-const KINDS = [
-  "",
-  "deed",
-  "survey",
-  "agreement",
-  "correspondence",
-  "court filing",
-  "certification",
-  "analysis",
-  "notes",
-  "commercial",
-  "other",
+// Kept in step with the profiles in captionprofile.go. A kind added there and
+// not here is simply missing from the picker; a kind here and not there is a 400.
+const KIND_GROUPS: { family: string; label: string; kinds: string[] }[] = [
+  {
+    family: "legal",
+    label: "Legal and records",
+    kinds: ["deed", "survey", "agreement", "correspondence", "court-filing", "certification", "analysis", "notes", "commercial", "other"],
+  },
+  {
+    family: "code",
+    label: "Code",
+    kinds: ["entrypoint", "library", "api", "ui", "schema", "test", "generated", "config", "build", "script", "other"],
+  },
+  {
+    family: "docs",
+    label: "Project docs",
+    kinds: ["readme", "plan", "design", "spec", "guide", "reference", "changelog", "notes", "other"],
+  },
+  { family: "image", label: "Images", kinds: ["photo", "screenshot", "diagram", "map", "scan", "other"] },
 ];
 
 // Re-title a document: say what it IS, as a person.
@@ -77,10 +83,15 @@ export function Retitle({
           aria-label="Title"
         />
         <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind">
-          {KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k ? k[0]!.toUpperCase() + k.slice(1) : "Kind not set"}
-            </option>
+          <option value="">Kind not set</option>
+          {KIND_GROUPS.map((g) => (
+            <optgroup key={g.family} label={g.label}>
+              {g.kinds.map((k) => (
+                <option key={k} value={`${g.family}:${k}`}>
+                  {k.replace(/-/g, " ")}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
       </div>
