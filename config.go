@@ -85,9 +85,8 @@ type Config struct {
 	DescribeModel      string `json:"describe_model,omitempty"`
 	// IdentityModel names the chat model that says what a document IS — a
 	// caption, a summary and a kind, asked once per document on the assembled
-	// transcript (identity.go). Empty → the vision model, which is already
-	// configured and is a chat model; set this to caption with a stronger or
-	// cheaper text-only model than the one doing OCR.
+	// transcript (identity.go). Empty → the segment model, else the vision
+	// model; set this to caption with a different text model than either.
 	IdentityModel string `json:"identity_model,omitempty"`
 	// IdentitySlots is how many captioning requests are in the model at once.
 	// 0 → DefaultIdentitySlots (2), which is what this endpoint serves

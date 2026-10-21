@@ -43,12 +43,10 @@ Not scheduled. Each is opt-in.
   through the 800-token cap on long files → empty answer; reasoning now has its
   own 1500 budget. Live re-run 2026-10-20: all docs of 6 code indexes + 424
   chandra legal captions + missing/stale, force.
-  **risks:** the fallback to the vision model is still the code default
-  (`llmFlags.identifier`) — any install without `identity_model` captions with
-  its OCR model; images in a records corpus get image:* not legal:* (a scanned
+  Caption model now defaults to the segment model, then vision (USER).
+  **risks:** images in a records corpus get image:* not legal:* (a scanned
   letter is image:scan); a person's kind picker list in Retitle.tsx is kept in
-  step by hand. **optional extensions:** default identity model to the segment
-  model; log the raw answer on a failed caption.
+  step by hand. **optional extensions:** log the raw answer on a failed caption.
 - **Real Zitadel not tested**: access tokens must be JWT type; browser app is
   a PKCE user-agent app with redirect `<daemon>/auth/callback`.
 - **risks**: sessions are in memory (restart = re-login).

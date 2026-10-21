@@ -170,9 +170,11 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home, strategy string) {
 // identifier builds the document-identity model client from config, or returns
 // nil when identity is off or no model is configured.
 //
-// It defaults to the VISION model because that is the one every raglit home
-// already has, and it is a chat model — the identity call is text in, JSON out,
-// so a vision model serves it. config.identity_model overrides.
+// It defaults to the SEGMENT model, then the vision model. The identity call
+// is text in, JSON out, which is the segmenter's job too; the vision model is
+// often an OCR model, and one captioning a live daemon copied first lines and
+// failed the kind list (USER 2026-10-20: default to the segment model).
+// config.identity_model overrides.
 //
 // Same batch retry policy as the rest of ingest: this call happens at the end of
 // a document that may have cost thirty OCR requests, and losing the caption to a
@@ -182,7 +184,7 @@ func (f *llmFlags) identifier(home raglit.Home) *raglit.Identifier {
 	if cfg.NoIdentity {
 		return nil
 	}
-	model := firstNonEmpty(cfg.IdentityModel, *f.visionModel)
+	model := firstNonEmpty(cfg.IdentityModel, *f.segmentModel, cfg.SegmentModel, *f.visionModel)
 	if model == "" {
 		return nil
 	}

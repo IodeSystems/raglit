@@ -130,8 +130,9 @@ BM25 can rank, because the summary does.
 - `POST /api/identify` — the same two operations daemon-side, because a write on
   a daemon-routed project belongs to the daemon (storeroute.go) and because the
   daemon is what holds the model.
-- Config — `identity_model` (empty → the vision model, which every home already
-  has and which is a chat model), `no_identity` to turn it off.
+- Config — `identity_model` (empty → the segment model, else the vision model;
+  USER 2026-10-20 — an OCR vision model captions badly), `no_identity` to turn
+  it off.
 
 ## Tags, and what an INDEX is (2026-08-18)
 
