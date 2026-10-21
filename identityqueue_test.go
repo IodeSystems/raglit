@@ -690,3 +690,32 @@ func TestDrain_ReclaimsOrphansBeforeWorking(t *testing.T) {
 		t.Errorf("queue = %+v, want the orphan worked to done and nothing left running", q)
 	}
 }
+
+// A sweep that finds a caption copied from the prompt's example must REPLACE
+// it. It used to queue the row without force, the job kept the existing
+// caption and closed done, and 220 copied captions survived the sweep that
+// found them.
+func TestIdentityWorker_StaleCaptionIsReplaced(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	ctx := context.Background()
+	path := "/corpus/scan_000.pdf"
+	if err := s.SetDocumentIdentity(ctx, path, DocIdentity{
+		Name: "2021-05-25 Form 21 purchase and sale agreement, executed (Ardley/Brannock)",
+		Summary: "copied", Source: IdentityByMachine}); err != nil {
+		t.Fatal(err)
+	}
+	s.SetIdentifier(NewIdentifier(&countingChatter{}, "m"))
+	if n, err := s.EnqueueMissingIdentities(false); err != nil || n != 1 {
+		t.Fatalf("queued %d, %v", n, err)
+	}
+	if _, err := (&IdentityWorker{Store: s, Slots: 1}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.DocumentIdentity(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(id.Name, "Ardley") {
+		t.Fatalf("caption after the sweep = %q — the copied one was kept", id.Name)
+	}
+}

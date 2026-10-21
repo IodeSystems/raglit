@@ -169,20 +169,31 @@ func (s *Store) EnqueueIdentityFor(paths []string, force bool) (int, error) {
 // EnqueueMissingIdentities queues every document with no caption yet — or, with
 // force, every document. Returns how many were queued.
 func (s *Store) EnqueueMissingIdentities(force bool) (int, error) {
-	var paths []string
-	var err error
 	if force {
 		docs, derr := s.Documents()
 		if derr != nil {
 			return 0, derr
 		}
+		var paths []string
 		for _, d := range docs {
 			paths = append(paths, d.Path)
 		}
-	} else if paths, err = s.captionableMissing(); err != nil {
+		return s.EnqueueIdentityFor(paths, true)
+	}
+	missing, stale, err := s.captionableMissing()
+	if err != nil {
 		return 0, err
 	}
-	return s.EnqueueIdentityFor(paths, force)
+	n, err := s.EnqueueIdentityFor(missing, false)
+	if err != nil {
+		return n, err
+	}
+	// A stale caption EXISTS, and a job without force keeps an existing caption
+	// and closes done — which is how 220 copied-example captions sat through a
+	// sweep that had found every one of them. A person's is still kept: the
+	// precondition never overwrites one, force or not.
+	m, err := s.EnqueueIdentityFor(stale, true)
+	return n + m, err
 }
 
 // EnqueueTagsFor queues every given path for the tags-only ask.
@@ -263,9 +274,10 @@ func (s *Store) EnqueueMissingFields(force bool) (int, error) {
 	return s.EnqueueFieldsFor(paths, force)
 }
 
-// captionableMissing is every document that OWES a caption: one that has none,
-// and one whose caption was written from a transcript the document no longer
-// has (gen_text_hash empty or stale). A person's caption is never owed again.
+// captionableMissing is every document that OWES a caption: missing, those
+// that have none; stale, those whose caption was written from a transcript the
+// document no longer has (gen_text_hash empty or stale) or copies a prompt
+// example. A person's caption is never owed again.
 //
 // Documents a previous sweep established have nothing to caption are excluded —
 // re-queueing those is a guaranteed no-op that would nonetheless read as
@@ -275,10 +287,10 @@ func (s *Store) EnqueueMissingFields(force bool) (int, error) {
 // The staleness test is done in Go rather than SQL because the hash is over the
 // REASSEMBLED text — overlapping windows are de-overlapped, which sqlite cannot
 // express — and it is the same comparison commitDoc makes.
-func (s *Store) captionableMissing() ([]string, error) {
-	stale, err := s.staleCaptions()
+func (s *Store) captionableMissing() (missing, stale []string, err error) {
+	stale, err = s.staleCaptions()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rows, err := s.db.Query(
 		`SELECT d.path FROM documents d
@@ -286,21 +298,17 @@ func (s *Store) captionableMissing() ([]string, error) {
 		    AND NOT EXISTS (SELECT 1 FROM identity_jobs j WHERE j.path = d.path AND j.state = 'skipped')
 		  ORDER BY d.added_at`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
-	var out []string
 	for rows.Next() {
 		var p string
 		if err := rows.Scan(&p); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		out = append(out, p)
+		missing = append(missing, p)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return append(out, stale...), nil
+	return missing, stale, rows.Err()
 }
 
 // staleCaptions lists documents whose caption describes a transcript the
