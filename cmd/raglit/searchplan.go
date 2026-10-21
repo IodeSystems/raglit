@@ -14,8 +14,10 @@ import (
 // is searched as its OWN LAYER only — otherwise the parent's documents would be
 // counted once per layer that overlays them.
 //
-// Known edge: a layer searched own-only no longer hides the parent documents it
-// tombstoned or shadows; both versions can appear, each labelled by index.
+// A layer searched own-only does not hide the parent documents it tombstoned or
+// shadows. That is correct: the parent's copy reaches the results only through
+// another index in the set that does show it, so both versions appear, each
+// labelled by index.
 
 type searchPlan struct {
 	names []string

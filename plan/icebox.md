@@ -22,15 +22,27 @@ Not scheduled. Each is opt-in.
 - ✅ Figures, page images and page layouts overlay the parent on a branch;
   sibling figure search reads own layers. Embedded (`--embedded`) MCP has no
   branches, so no fan-out.
-- **Own-layer edge**: a layer searched own-only (its parent also in the set, or
-  added as a sibling) no longer hides parent docs it tombstoned/shadows — both
-  versions can appear, labelled by index.
+- ✅ **Own-layer edge — by design** (re-checked 2026-10-20): when a layer is
+  searched own-only, the parent's copy that also appears always comes through
+  ANOTHER index in the set (the parent itself, or a sibling's overlay), which
+  does show that copy. Both versions appearing, each labelled by index, is
+  correct. Not a leak: every index in the set passed the ACL.
+- ❓ **Captions for code indexes** (found 2026-10-20, live run): the caption
+  prompt and kind vocabulary are legal-only ("cataloguing a document for a
+  legal/records index"; kinds deed…commercial). On `raglit__code`: 95 of 115
+  failures were "kind must be one of"; of the captions that passed, 7 code files
+  are "deed", 25 "agreement". Same pattern on dun/homelab/sprink/yscr.
+  **blocking decision (USER):** skip captions for code indexes, or a second
+  vocabulary per index (e.g. code, docs, config, test, plan). **next:** after
+  the decision, clear gen_kind/gen_name on code indexes and re-run.
+  Delano failures (134 of 818): kind 43, tag list in one string 44 (fixed
+  d31702e: an over-long tag is split on commas), malformed JSON 34 (agentkit
+  argument parse; raw answers are not logged, so not diagnosed).
 - ✅ attest mounts lazily for indexes created after start (`lazyAttest`;
   those ops are absent from /openapi.json, which is built once).
 - **Real Zitadel not tested**: access tokens must be JWT type; browser app is
   a PKCE user-agent app with redirect `<daemon>/auth/callback`.
-- **risks**: sessions are in memory (restart = re-login); sibling search does
-  not de-dup a sibling doc against the parent version it shadows.
+- **risks**: sessions are in memory (restart = re-login).
 
 ## USER CHECKLIST (2026-07-23) — the agreed next build
 

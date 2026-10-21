@@ -116,7 +116,16 @@ Both share one modernc `*sql.DB`; no CGo (metaquery ships `mqsqlite`, a
     path+fragment id, since ids collide across layers).
   - ✅ SearchFigures, page images (ServesPageImage accepts ancestors' pages/)
     and page layouts overlaid (2026-10-20).
-  - NOT overlaid (follow-ups): merge/diff ops; CLI/MCP branch commands.
+  - ✅ diff (2026-10-20): `Store.BranchDiff` → `GET /api/branches/diff?name=`
+    → `raglit branch diff NAME [--json]`. Per document: added / changed / same
+    (a copy with the parent's bytes) / deleted (tombstone the parent shows),
+    against the parent's VIEW. CLI `branch list|fork|delete|diff` exists.
+  - ◻ merge — not built. **blocking decision (USER):** conflict rule when the
+    parent changed a document after the fork (no fork-time snapshot is kept, so
+    "changed since fork" cannot be told from "changed in branch" today); and
+    whether a merge applies tombstones (deletes from the parent). **next:**
+    record parent hashes at fork, or decide branch-wins.
+  - MCP has no branch tools (MCP `search` takes `siblings`).
 
 ## Blocking decisions (user owns)
 
