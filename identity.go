@@ -362,6 +362,10 @@ const (
 	// knows, so each carries its own cap below and sets Identifier.maxTokens.
 	identityMaxTokens = 800
 
+	// identityReasoningBudget bounds a reasoning model's thinking before the
+	// answer (askWith). Enough for a long file; the answer still gets its own cap.
+	identityReasoningBudget = 1500
+
 	// proposeMaxTokens caps a type proposal: a description, the reading
 	// instructions, and a JSON Schema over however many fields the examples
 	// turn out to have.
@@ -632,7 +636,18 @@ func (id *Identifier) answerCap() int {
 func (id *Identifier) askWith(ctx context.Context, validator *agent.SchemaValidator,
 	prompt, tool, shape string, accept func(js string) error) error {
 	msgs := []llm.Message{{Role: "user", Parts: []llm.ContentPart{llm.TextPart(prompt)}}}
-	opts := &llm.ChatOpts{MaxTokens: id.answerCap()}
+	// A reasoning model spends tokens BEFORE it answers, from the same cap. On a
+	// long file Qwen3 reasoned through all 800 and stopped ("length") with no
+	// answer at all, which read back as "missing required field(s)". So the
+	// reasoning gets its own bounded budget, told to answer at the cut, and the
+	// cap is the answer's plus that budget. A model that does not reason spends
+	// none of it.
+	budget := identityReasoningBudget
+	opts := &llm.ChatOpts{
+		MaxTokens:              id.answerCap() + budget,
+		ReasoningBudgetTokens:  &budget,
+		ReasoningBudgetMessage: "Stop reasoning now and output only the JSON object.",
+	}
 	var lastErr error
 	for attempt := 0; attempt <= id.MaxRetries; attempt++ {
 		out, rep, err := collectStream(ctx, id.Client, msgs, opts)

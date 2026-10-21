@@ -88,3 +88,18 @@ func TestCopiesNameExample_EveryProfile(t *testing.T) {
 		t.Error("a name the text itself carries was flagged")
 	}
 }
+
+// A reasoning model thinks from the same token cap it answers from. Qwen3
+// spent all 800 reasoning about a long plan and returned nothing, so the ask
+// bounds the reasoning and leaves the answer its own cap on top.
+func TestIdentify_ReasoningHasItsOwnBudget(t *testing.T) {
+	c := &identityChatter{replies: []string{`{"name":"Purchase and sale agreement for the lot","summary":"The buyer's signed offer for the lot, between the two parties, with its closing date.","kind":"agreement","content_tags":["purchase agreement","property transfer","escrow closing"],"role_tags":["reference"]}`}}
+	if _, err := NewIdentifier(c, "m").Identify(context.Background(), IdentityAsk{Text: psaText}); err != nil {
+		t.Fatal(err)
+	}
+	o := c.opts[0]
+	if o.ReasoningBudgetTokens == nil || *o.ReasoningBudgetTokens != identityReasoningBudget ||
+		o.MaxTokens != identityMaxTokens+identityReasoningBudget {
+		t.Fatalf("opts = %+v — the reasoning budget is not separate from the answer cap", o)
+	}
+}

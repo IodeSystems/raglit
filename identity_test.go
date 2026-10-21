@@ -17,10 +17,12 @@ type identityChatter struct {
 	replies []string
 	calls   int
 	prompts []string
+	opts    []*llm.ChatOpts
 }
 
 func (c *identityChatter) ChatStream(_ context.Context, msgs []llm.Message, _ []llm.ToolDef,
-	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	o *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	c.opts = append(c.opts, o)
 	var b strings.Builder
 	for _, m := range msgs {
 		b.WriteString(m.Content)
