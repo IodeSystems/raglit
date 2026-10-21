@@ -838,7 +838,7 @@ func validateIdentity(d DocIdentity) (DocIdentity, error) {
 // from the closed vocabulary. Shared by the full ask and the tags-only one.
 func validateTags(content, roles []string) ([]string, []string, error) {
 	var ct []string
-	for _, tag := range content {
+	for _, tag := range expandTagLists(content) {
 		tag = normalizeContentTag(tag)
 		if tag == "" || len(tag) > identityMaxTagChars || len(strings.Fields(tag)) > identityMaxTagWords {
 			continue
@@ -891,6 +891,23 @@ func normalizeContentTag(tag string) string {
 	}, tag)
 	tag = strings.ToLower(strings.Join(strings.Fields(tag), " "))
 	return strings.Trim(tag, ".-·")
+}
+
+// expandTagLists splits an entry that is a whole list in one string — the
+// model wrote ["deed, easement, boundary survey"] for three tags — into its
+// parts. Only an entry too long to be one tag is split: "Escrow, Closing" fits
+// and stays one tag, as it did before.
+func expandTagLists(tags []string) []string {
+	var out []string
+	for _, tag := range tags {
+		n := normalizeContentTag(tag)
+		if len(n) <= identityMaxTagChars && len(strings.Fields(n)) <= identityMaxTagWords {
+			out = append(out, tag)
+			continue
+		}
+		out = append(out, strings.FieldsFunc(tag, func(r rune) bool { return r == ',' || r == ';' })...)
+	}
+	return out
 }
 
 func tagContains(ss []string, s string) bool {

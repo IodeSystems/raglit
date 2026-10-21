@@ -120,3 +120,18 @@ func TestValidateTags_ATagCannotCarryTheSeparator(t *testing.T) {
 		t.Errorf("round trip turned %d tags into %d: %v", len(ct), len(got), got)
 	}
 }
+
+// A whole list in one string is the model's mistake, not a long tag: split it
+// rather than drop it and fail the caption for "1 usable" tag.
+func TestValidateTags_AListInOneStringIsSplit(t *testing.T) {
+	ct, _, err := validateTags(
+		[]string{"boundary dispute", "deed, easement; boundary survey, quiet title"},
+		[]string{"reference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"boundary dispute", "deed", "easement", "boundary survey", "quiet title"}
+	if strings.Join(ct, "|") != strings.Join(want, "|") {
+		t.Fatalf("tags = %v, want %v", ct, want)
+	}
+}
