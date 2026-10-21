@@ -27,19 +27,28 @@ Not scheduled. Each is opt-in.
   ANOTHER index in the set (the parent itself, or a sibling's overlay), which
   does show that copy. Both versions appearing, each labelled by index, is
   correct. Not a leak: every index in the set passed the ACL.
-- ❓ **Captions for code indexes** (found 2026-10-20, live run): the caption
-  prompt and kind vocabulary are legal-only ("cataloguing a document for a
-  legal/records index"; kinds deed…commercial). On `raglit__code`: 95 of 115
-  failures were "kind must be one of"; of the captions that passed, 7 code files
-  are "deed", 25 "agreement". Same pattern on dun/homelab/sprink/yscr.
-  **blocking decision (USER):** skip captions for code indexes, or a second
-  vocabulary per index (e.g. code, docs, config, test, plan). **next:** after
-  the decision, clear gen_kind/gen_name on code indexes and re-run.
-  Case-folder failures (134 of 818): kind 43, tag list in one string 44 (fixed
-  d31702e: an over-long tag is split on commas), malformed JSON 34 (agentkit
-  argument parse; raw answers are not logged, so not diagnosed).
-- ✅ attest mounts lazily for indexes created after start (`lazyAttest`;
-  those ops are absent from /openapi.json, which is built once).
+- ✅ **Caption profiles** (USER 2026-10-20: "kinds are important"; "when it's
+  code, it should be about the purpose, component"; different caption rules per
+  file type). `captionprofile.go`: code / docs / image / legal, chosen by file
+  type (`profileFor`); docs = prose in an index ≥25% source files. Each profile
+  has framing, name + summary rules, example (+ copy guard), tag examples and a
+  CLOSED `family:kind` list; code + docs prompts carry the path tail. Bare kinds
+  migrated to `legal:*` on open. USER chose model-only kinds for code (no
+  rules), legal kinds prefixed too, vocabulary by file type.
+  Found on the way, fixed: (1) a sweep queued stale/example-copied captions
+  WITHOUT force, so they were kept and closed "done" (6acda72); (2) the live
+  daemon had no `identity_model`, so captions fell back to the vision model
+  `chandra-ocr-2` (an OCR model) — set to Qwen3-6-27B-MPT in
+  ~/.raglit/config.json (backup `.bak-20261020-identity`); (3) Qwen3 reasoned
+  through the 800-token cap on long files → empty answer; reasoning now has its
+  own 1500 budget. Live re-run 2026-10-20: all docs of 6 code indexes + 424
+  chandra legal captions + missing/stale, force.
+  **risks:** the fallback to the vision model is still the code default
+  (`llmFlags.identifier`) — any install without `identity_model` captions with
+  its OCR model; images in a records corpus get image:* not legal:* (a scanned
+  letter is image:scan); a person's kind picker list in Retitle.tsx is kept in
+  step by hand. **optional extensions:** default identity model to the segment
+  model; log the raw answer on a failed caption.
 - **Real Zitadel not tested**: access tokens must be JWT type; browser app is
   a PKCE user-agent app with redirect `<daemon>/auth/callback`.
 - **risks**: sessions are in memory (restart = re-login).
