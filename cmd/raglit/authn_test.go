@@ -337,6 +337,20 @@ func TestAuth_WritesAndHostOperations(t *testing.T) {
 	if code, _ := doAs(t, "POST", srv.URL+"/api/branches", bob, `{"name":"b-fork2","parent":"a-priv"}`); code != http.StatusNotFound {
 		t.Errorf("bob forking a-priv: %d, want 404", code)
 	}
+	// Diff: a fresh fork has no changes; it is bob's private index, so alice
+	// gets the same 404 as for a name that does not exist.
+	if code, b := doAs(t, "GET", srv.URL+"/api/branches/diff?name=b-fork", bob, ""); code != http.StatusOK || !strings.Contains(b, `"changes":[]`) || !strings.Contains(b, `"parent":"a-pub"`) {
+		t.Errorf("bob diffing his fork: %d\n%s", code, clip(b, 300))
+	}
+	if code, _ := doAs(t, "GET", srv.URL+"/api/branches/diff?name=b-fork", alice, ""); code != http.StatusNotFound {
+		t.Errorf("alice diffing bob's private fork: %d, want 404", code)
+	}
+	if code, _ := doAs(t, "GET", srv.URL+"/api/branches/diff?name=a-pub", bob, ""); code != http.StatusBadRequest {
+		t.Errorf("diff of a non-branch: %d, want 400", code)
+	}
+	if code, _ := doAs(t, "GET", srv.URL+"/api/branches/diff?name=a-priv", bob, ""); code != http.StatusNotFound {
+		t.Errorf("bob diffing alice's private non-branch: %d, want 404", code)
+	}
 	_, body := doAs(t, "GET", srv.URL+"/api/branches", alice, "")
 	if strings.Contains(body, "b-fork") {
 		t.Errorf("alice sees bob's private fork:\n%s", clip(body, 300))

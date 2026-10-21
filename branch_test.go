@@ -257,3 +257,58 @@ func TestBranch_FiguresAndPageImagesOverlay(t *testing.T) {
 		t.Fatal("ServesPageImage accepted a host file")
 	}
 }
+
+func TestBranch_Diff(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	ctx := context.Background()
+	main, _ := reg.Get("main")
+	for _, p := range []string{"a", "b", "c"} {
+		must(t, main.Ingest(ctx, Document{Path: "file:///" + p + ".md", Title: p, Fragments: []Fragment{{Text: p + " text"}}}))
+		must(t, main.SetDocumentHash("file:///"+p+".md", "h-"+p))
+	}
+	must(t, reg.ForkBranch("feat", "main"))
+	feat, _ := reg.Get("feat")
+	if d, _ := feat.BranchDiff(); len(d) != 0 {
+		t.Fatalf("a fresh branch differs: %+v", d)
+	}
+	must(t, feat.Ingest(ctx, Document{Path: "file:///a.md", Title: "a2", Fragments: []Fragment{{Text: "new a"}}}))
+	must(t, feat.SetDocumentHash("file:///a.md", "h-a2"))
+	must(t, feat.Ingest(ctx, Document{Path: "file:///b.md", Title: "b", Fragments: []Fragment{{Text: "b text"}}}))
+	must(t, feat.SetDocumentHash("file:///b.md", "h-b"))
+	must(t, feat.Ingest(ctx, Document{Path: "file:///n.md", Title: "n", Fragments: []Fragment{{Text: "new"}}}))
+	must(t, feat.DeleteDocument("file:///c.md"))
+	must(t, feat.DeleteDocument("file:///nowhere.md")) // hides nothing: not reported
+
+	d, err := feat.BranchDiff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, c := range d {
+		got[c.Path] = c.Change
+	}
+	want := map[string]string{"file:///a.md": "changed", "file:///b.md": "same", "file:///n.md": "added", "file:///c.md": "deleted"}
+	if len(got) != len(want) {
+		t.Fatalf("diff = %+v, want %v", d, want)
+	}
+	for p, c := range want {
+		if got[p] != c {
+			t.Errorf("%s: %q, want %q", p, got[p], c)
+		}
+	}
+
+	// A branch of a branch diffs against its parent's VIEW: c is gone there.
+	must(t, reg.ForkBranch("sub", "feat"))
+	sub, _ := reg.Get("sub")
+	must(t, sub.Ingest(ctx, Document{Path: "file:///c.md", Title: "c", Fragments: []Fragment{{Text: "c back"}}}))
+	if d, _ := sub.BranchDiff(); len(d) != 1 || d[0].Change != "added" {
+		t.Fatalf("sub diff = %+v, want c.md added", d)
+	}
+	if d, _ := main.BranchDiff(); d != nil {
+		t.Fatalf("a non-branch has a diff: %+v", d)
+	}
+}

@@ -316,6 +316,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listBranches", http.MethodGet, "/api/branches", "List branches: lineage, age, last-access, local doc count."), listBranchesOp(reg))
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
+	gat.Register(api, g, op("branchDiff", http.MethodGet, "/api/branches/diff", "What a branch changed against its parent: added, changed, same-bytes copies, deleted."), branchDiffOp(reg))
 	gat.Register(api, g, op("deleteIndex", http.MethodDelete, "/indexes", "Delete an index (its storage); the shared pool is untouched."), deleteIndexOp(reg))
 	if watch != nil {
 		gat.Register(api, g, op("listWatches", http.MethodGet, "/api/watch", "List project homes watched for auto re-ingest."), listWatchesOp(reg, watch))
@@ -1291,6 +1292,41 @@ func forkBranchOp(reg *raglit.Registry) func(context.Context, *forkBranchIn) (*f
 
 type deleteBranchIn struct {
 	Name string `query:"name"`
+}
+
+type branchDiffOut struct {
+	Body struct {
+		Name    string                `json:"name"`
+		Parent  string                `json:"parent"`
+		Changes []raglit.BranchChange `json:"changes"`
+	}
+}
+
+func branchDiffOp(reg *raglit.Registry) func(context.Context, *deleteBranchIn) (*branchDiffOut, error) {
+	return func(ctx context.Context, in *deleteBranchIn) (*branchDiffOut, error) {
+		parent := reg.ParentOf(in.Name)
+		if parent == "" {
+			if !reg.CanRead(ctx, in.Name) {
+				return nil, idxErr(raglit.ErrNoIndex)
+			}
+			return nil, huma.Error400BadRequest(fmt.Sprintf("%q is not a branch", in.Name))
+		}
+		st, err := reg.Read(ctx, in.Name)
+		if err != nil {
+			return nil, idxErr(err)
+		}
+		ch, err := st.BranchDiff()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("branch diff", err)
+		}
+		out := &branchDiffOut{}
+		out.Body.Name, out.Body.Parent = in.Name, parent
+		out.Body.Changes = ch
+		if ch == nil {
+			out.Body.Changes = []raglit.BranchChange{}
+		}
+		return out, nil
+	}
 }
 
 type deleteIndexIn struct {

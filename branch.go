@@ -3,6 +3,7 @@ package raglit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,8 @@ import (
 // untouched (copy-on-write). The branch stores just its diffs (changed/added
 // docs + tombstones), so forking is cheap and a branch reflects only what it
 // changed. Overlaid: FTS, vector and hybrid search, figures, DocReview, page
-// images and layouts. NOT yet: merge/diff — see plan/daemon-stack.md P6.
+// images and layouts. BranchDiff lists what a branch changed; merge is not
+// built — see plan/daemon-stack.md P6.
 
 // shadowedPaths is the set of parent doc paths hidden by this branch: docs the
 // branch has its own copy of, plus tombstoned (deleted-in-branch) paths.
@@ -232,6 +234,84 @@ func (s *Store) DeleteDocument(path string) error {
 	}
 	// Tombstone so a parent doc is hidden. Harmless on a non-branch store.
 	return s.q.InsertTombstone(ctx, path)
+}
+
+// BranchChange is one document a branch differs from its parent on.
+type BranchChange struct {
+	Path       string `json:"path"`
+	Change     string `json:"change"` // "added", "changed", "same" (a copy with the parent's bytes) or "deleted"
+	Hash       string `json:"hash,omitempty"`
+	ParentHash string `json:"parent_hash,omitempty"`
+	Title      string `json:"title,omitempty"`
+}
+
+// BranchDiff lists the documents this branch holds or deleted, against what its
+// parent shows now (the parent's own overlay, if it is a branch too). Compared
+// by content hash; a document with no hash on either side counts as "changed".
+// A tombstone for a path the parent does not show is left out: it hides
+// nothing. A non-branch store has no diff.
+func (s *Store) BranchDiff() ([]BranchChange, error) {
+	if s.parent == nil {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT path, content_hash, title FROM documents ORDER BY path`)
+	if err != nil {
+		return nil, fmt.Errorf("raglit: branch diff: %w", err)
+	}
+	defer rows.Close()
+	var out []BranchChange
+	own := map[string]bool{}
+	for rows.Next() {
+		var c BranchChange
+		if err := rows.Scan(&c.Path, &c.Hash, &c.Title); err != nil {
+			return nil, err
+		}
+		own[c.Path] = true
+		ph, ok := s.parent.viewHash(c.Path)
+		switch {
+		case !ok:
+			c.Change = "added"
+		case c.Hash != "" && c.Hash == ph:
+			c.Change, c.ParentHash = "same", ph
+		default:
+			c.Change, c.ParentHash = "changed", ph
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ts, err := s.q.ListTombstones(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(ts)
+	for _, p := range ts {
+		if own[p] {
+			continue
+		}
+		if ph, ok := s.parent.viewHash(p); ok {
+			out = append(out, BranchChange{Path: p, Change: "deleted", ParentHash: ph})
+		}
+	}
+	return out, nil
+}
+
+// viewHash is the content hash of path as this store shows it through its
+// overlay, and whether it shows the path at all.
+func (s *Store) viewHash(path string) (string, bool) {
+	for st := s; st != nil; st = st.parent {
+		var h string
+		err := st.db.QueryRow(`SELECT content_hash FROM documents WHERE path = ?`, path).Scan(&h)
+		if err == nil {
+			return h, true
+		}
+		var n int
+		if st.db.QueryRow(`SELECT COUNT(*) FROM tombstones WHERE path = ?`, path).Scan(&n) == nil && n > 0 {
+			return "", false
+		}
+	}
+	return "", false
 }
 
 // ── branch metadata (branch.json in the branch's scoped Home) ───────────

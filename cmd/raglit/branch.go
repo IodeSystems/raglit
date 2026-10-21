@@ -23,16 +23,18 @@ import (
 //	raglit branch [--home DIR] list
 //	raglit branch [--home DIR] [--parent PARENT] fork NAME   (parent defaults to "default")
 //	raglit branch [--home DIR] delete NAME
+//	raglit branch [--home DIR] [--json] diff NAME   (what NAME changed against its parent)
 func runBranch(args []string) error {
 	fs := flag.NewFlagSet("branch", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
 	client := addClientFlags(fs) // --daemon + --embedded + --project
 	parent := fs.String("parent", "", `parent index to fork from (fork only; default "default")`)
+	asJSON := fs.Bool("json", false, "diff only: print the daemon's JSON")
 	fs.Parse(args)
 
 	sub := fs.Arg(0)
 	if sub == "" {
-		return fmt.Errorf("branch: need a subcommand (list | fork NAME | delete NAME)")
+		return fmt.Errorf("branch: need a subcommand (list | fork NAME | delete NAME | diff NAME)")
 	}
 
 	homeOf := func() raglit.Home {
@@ -63,8 +65,13 @@ func runBranch(args []string) error {
 			return fmt.Errorf("branch delete: need exactly one NAME")
 		}
 		return branchDelete(dURL, ns, fs.Arg(1))
+	case "diff":
+		if fs.NArg() != 2 {
+			return fmt.Errorf("branch diff: need exactly one NAME")
+		}
+		return branchDiff(dURL, ns, fs.Arg(1), *asJSON)
 	default:
-		return fmt.Errorf("branch: unknown subcommand %q (list | fork | delete)", sub)
+		return fmt.Errorf("branch: unknown subcommand %q (list | fork | delete | diff)", sub)
 	}
 }
 
@@ -91,6 +98,36 @@ func branchDelete(base, ns, name string) error {
 		return err
 	}
 	fmt.Printf("deleted branch %q\n", name)
+	return nil
+}
+
+func branchDiff(base, ns, name string, asJSON bool) error {
+	b, err := daemonGet(base, "/api/branches/diff", url.Values{"name": {nsIndex(ns, name)}})
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		fmt.Println(string(b))
+		return nil
+	}
+	var r struct {
+		Parent  string                `json:"parent"`
+		Changes []raglit.BranchChange `json:"changes"`
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		return err
+	}
+	if len(r.Changes) == 0 {
+		fmt.Printf("%s: no changes against %s\n", name, nsStrip(ns, r.Parent))
+		return nil
+	}
+	n := map[string]int{}
+	for _, c := range r.Changes {
+		n[c.Change]++
+		fmt.Printf("%-8s %s\n", c.Change, c.Path)
+	}
+	fmt.Printf("%s against %s: %d added, %d changed, %d same bytes, %d deleted\n",
+		name, nsStrip(ns, r.Parent), n["added"], n["changed"], n["same"], n["deleted"])
 	return nil
 }
 
