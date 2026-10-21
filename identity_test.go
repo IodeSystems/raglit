@@ -506,8 +506,8 @@ func TestAnswerCap_IsPerAskAndNotOneConstant(t *testing.T) {
 			IdentityAsk{Text: strings.Repeat("the document says something. ", 40)}); err != nil {
 			t.Fatal(err)
 		}
-		if len(c.caps) != 1 || c.caps[0] != identityMaxTokens {
-			t.Errorf("identity asked under %v, want [%d]", c.caps, identityMaxTokens)
+		if len(c.caps) != 1 || c.caps[0] != identityMaxTokens+identityReasoningBudget {
+			t.Errorf("identity asked under %v, want [%d] (cap + reasoning budget)", c.caps, identityMaxTokens+identityReasoningBudget)
 		}
 	})
 
@@ -517,8 +517,8 @@ func TestAnswerCap_IsPerAskAndNotOneConstant(t *testing.T) {
 			IdentityAsk{Text: strings.Repeat("the document says something. ", 40)}); err != nil {
 			t.Fatal(err)
 		}
-		if len(c.caps) != 1 || c.caps[0] != identityMaxTokens {
-			t.Errorf("tags asked under %v, want [%d]", c.caps, identityMaxTokens)
+		if len(c.caps) != 1 || c.caps[0] != identityMaxTokens+identityReasoningBudget {
+			t.Errorf("tags asked under %v, want [%d] (cap + reasoning budget)", c.caps, identityMaxTokens+identityReasoningBudget)
 		}
 	})
 
@@ -531,8 +531,8 @@ func TestAnswerCap_IsPerAskAndNotOneConstant(t *testing.T) {
 			[]string{"/corpus/scan_000.pdf"}); err != nil {
 			t.Fatal(err)
 		}
-		if len(c.caps) != 1 || c.caps[0] != proposeMaxTokens {
-			t.Errorf("the proposal asked under %v, want [%d]", c.caps, proposeMaxTokens)
+		if len(c.caps) != 1 || c.caps[0] != proposeMaxTokens+identityReasoningBudget {
+			t.Errorf("the proposal asked under %v, want [%d] (cap + reasoning budget)", c.caps, proposeMaxTokens+identityReasoningBudget)
 		}
 	})
 
@@ -544,8 +544,8 @@ func TestAnswerCap_IsPerAskAndNotOneConstant(t *testing.T) {
 			strings.Repeat("the work order says something. ", 40), dt, ""); err != nil {
 			t.Fatal(err)
 		}
-		if len(c.caps) != 1 || c.caps[0] != fieldsMaxTokens {
-			t.Errorf("the extraction asked under %v, want [%d]", c.caps, fieldsMaxTokens)
+		if len(c.caps) != 1 || c.caps[0] != fieldsMaxTokens+identityReasoningBudget {
+			t.Errorf("the extraction asked under %v, want [%d] (cap + reasoning budget)", c.caps, fieldsMaxTokens+identityReasoningBudget)
 		}
 	})
 }
