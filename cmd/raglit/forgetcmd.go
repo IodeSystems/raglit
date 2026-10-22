@@ -25,6 +25,7 @@ import (
 func runForget(args []string) error {
 	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
 	openStore, homeOf := addStoreFlags(fs)
+	client := addClientFlags(fs) // --daemon, --embedded, --project: the same routing as ingest
 	dry := fs.Bool("dry-run", false, "name what would be removed")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -32,6 +33,41 @@ func runForget(args []string) error {
 	targets := fs.Args()
 	if len(targets) == 0 {
 		return fmt.Errorf("forget: name a document (or a directory prefix)")
+	}
+	// Named a daemon or a project: forget from THAT project's --index on the
+	// daemon, exactly where `ingest` with the same flags put it. Without
+	// this, a client that ingested with --project could not take the
+	// document back out: forget had no --project, and its routed path
+	// below finds the project from a .raglit/ directory and always uses
+	// the default index. Targets are exact document paths here — listing
+	// the daemon's documents to match prefixes is not something it offers.
+	if flagSet(fs, "project") || flagSet(fs, "daemon") {
+		if flagSet(fs, "embedded") {
+			return fmt.Errorf("forget: --embedded with --project/--daemon names two stores")
+		}
+		dURL, ns, err := client(homeOf, false)
+		if err != nil {
+			return err
+		}
+		idx, err := nsWriteIndex(ns, projectShared(homeOf), resolveIndexName(fs.Lookup("index").Value.String(), homeOf))
+		if err != nil {
+			return err
+		}
+		for _, p := range targets {
+			fmt.Println(p)
+			if *dry {
+				continue
+			}
+			if err := daemonForgetIn(dURL, idx, p); err != nil {
+				return err
+			}
+		}
+		verb := "forgot"
+		if *dry {
+			verb = "would forget"
+		}
+		fmt.Printf("%s %d document(s) from %s — the files on disk are untouched\n", verb, len(targets), idx)
+		return nil
 	}
 	st, err := openCorpus(fs, openStore, homeOf)
 	if err != nil {
@@ -47,7 +83,7 @@ func runForget(args []string) error {
 		return fmt.Errorf("forget: nothing indexed under %s", strings.Join(targets, ", "))
 	}
 	ns, _ := resolveProject("", homeOf)
-	routed := ns != "" && !explicitStoreFlag(fs)
+	routed := ns != "" && !explicitStoreFlag(fs) && !flagSet(fs, "embedded")
 	for _, p := range paths {
 		fmt.Println(p)
 		if *dry {
@@ -71,6 +107,35 @@ func runForget(args []string) error {
 		verb = "would forget"
 	}
 	fmt.Printf("%s %d document(s) — the files on disk are untouched\n", verb, len(paths))
+	return nil
+}
+
+// flagSet reports whether a flag was given on the command line.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// daemonForgetIn drops one document from a named daemon index.
+func daemonForgetIn(base, idx, path string) error {
+	b, err := daemonPostJSON(base, "/api/forget?"+urlValues("index", idx, "path", path).Encode(), map[string]any{})
+	if err != nil {
+		return err
+	}
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return err
+	}
+	if !out.OK {
+		return fmt.Errorf("forget %s: the daemon did not confirm", path)
+	}
 	return nil
 }
 
