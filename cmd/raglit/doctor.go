@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -67,8 +68,12 @@ func runDoctor(args []string) error {
 			cheapOK = true
 		} else {
 			fmt.Printf("  ✗ tesseract not runnable (%s): %v\n", bin, e)
-			fmt.Println("     install:  sudo apt-get install tesseract-ocr tesseract-ocr-eng")
-			fmt.Println("     no sudo:  deb-extract into a prefix — recipe in raglit/plan/ocr-mcp.md")
+			if runtime.GOOS == "darwin" {
+				fmt.Println("     install:  brew install tesseract")
+			} else {
+				fmt.Println("     install:  sudo apt-get install tesseract-ocr tesseract-ocr-eng")
+				fmt.Println("     no sudo:  deb-extract into a prefix — recipe in raglit/plan/ocr-mcp.md")
+			}
 		}
 	case "paddle", "paddleocr":
 		if _, e := raglit.BuildPageEngine(cfg.OCR); e != nil {

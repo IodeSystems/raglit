@@ -59,19 +59,30 @@ type ToolEnv struct {
 // probeSpec is the fixed list. Kept beside ClassifyDoc's router: a tool belongs
 // here exactly when some document kind cannot be read without it.
 var probeSpec = []struct {
-	name, purpose, install string
-	optional               bool
+	name, purpose string
+	// apt and brew are the install hints for Linux and macOS. Both are spelled
+	// out because the package names differ (poppler-utils vs poppler).
+	apt, brew string
+	optional  bool
 	// alts are equivalent tools; the first one found wins. antiword/catdoc both
 	// read legacy .doc, and reporting "antiword missing" when catdoc is present
 	// would be a false alarm.
 	alts []string
 }{
-	{name: "pdftotext", purpose: "PDF text layer", install: "sudo apt-get install poppler-utils"},
-	{name: "pdftoppm", purpose: "PDF page rasterization", install: "sudo apt-get install poppler-utils"},
-	{name: "pandoc", purpose: "docx/odt/epub/html/pptx → text", install: "sudo apt-get install pandoc", optional: true},
-	{name: "antiword", purpose: "legacy binary .doc → text", install: "sudo apt-get install antiword", optional: true, alts: []string{"antiword", "catdoc"}},
-	{name: "magick", purpose: "HEIC/HEIF (iPhone photos) → PNG", install: "sudo apt-get install imagemagick", optional: true, alts: []string{"magick", "convert"}},
-	{name: "xls2csv", purpose: "legacy binary .xls → text", install: "sudo apt-get install catdoc", optional: true},
+	{name: "pdftotext", purpose: "PDF text layer", apt: "sudo apt-get install poppler-utils", brew: "brew install poppler"},
+	{name: "pdftoppm", purpose: "PDF page rasterization", apt: "sudo apt-get install poppler-utils", brew: "brew install poppler"},
+	{name: "pandoc", purpose: "docx/odt/epub/html/pptx → text", apt: "sudo apt-get install pandoc", brew: "brew install pandoc", optional: true},
+	{name: "antiword", purpose: "legacy binary .doc → text", apt: "sudo apt-get install antiword", brew: "brew install antiword", optional: true, alts: []string{"antiword", "catdoc"}},
+	{name: "magick", purpose: "HEIC/HEIF (iPhone photos) → PNG", apt: "sudo apt-get install imagemagick", brew: "brew install imagemagick", optional: true, alts: []string{"magick", "convert"}},
+	{name: "xls2csv", purpose: "legacy binary .xls → text", apt: "sudo apt-get install catdoc", brew: "brew install catdoc", optional: true},
+}
+
+// installHint picks the hint for goos: brew on macOS, apt everywhere else.
+func installHint(goos, apt, brew string) string {
+	if goos == "darwin" {
+		return brew
+	}
+	return apt
 }
 
 // ProbeTools measures this process's view of the external extractors.
@@ -83,7 +94,7 @@ var probeSpec = []struct {
 func ProbeTools() ToolEnv {
 	env := ToolEnv{PATH: os.Getenv("PATH"), GOOS: runtime.GOOS}
 	for _, s := range probeSpec {
-		st := ToolStatus{Name: s.name, Purpose: s.purpose, Optional: s.optional, Install: s.install}
+		st := ToolStatus{Name: s.name, Purpose: s.purpose, Optional: s.optional, Install: installHint(env.GOOS, s.apt, s.brew)}
 		cands := s.alts
 		if len(cands) == 0 {
 			cands = []string{s.name}

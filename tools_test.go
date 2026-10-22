@@ -138,3 +138,19 @@ func TestAlternativesCountAsFound(t *testing.T) {
 		t.Error("magick should accept `convert` — ImageMagick 6 ships only that name")
 	}
 }
+
+// Every tool has a hint for both platforms, and a mac gets brew, not apt — an
+// apt command on a mac is a hint nobody can follow.
+func TestInstallHintPerPlatform(t *testing.T) {
+	for _, s := range probeSpec {
+		if s.apt == "" || s.brew == "" {
+			t.Errorf("%s: needs both an apt and a brew hint", s.name)
+		}
+		if got := installHint("darwin", s.apt, s.brew); !strings.HasPrefix(got, "brew install ") {
+			t.Errorf("%s on darwin: hint %q, want brew", s.name, got)
+		}
+		if got := installHint("linux", s.apt, s.brew); !strings.Contains(got, "apt-get") {
+			t.Errorf("%s on linux: hint %q, want apt", s.name, got)
+		}
+	}
+}
