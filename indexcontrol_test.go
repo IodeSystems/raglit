@@ -90,3 +90,50 @@ func TestEnqueueRefusesIgnoredPaths(t *testing.T) {
 		t.Errorf("stored patterns = %q", got)
 	}
 }
+
+// A purge previews, then removes matching documents and their pending jobs,
+// and leaves everything else.
+func TestPurgeByPattern(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	for _, p := range []string{"/w/node_modules/a/README.md", "/w/node_modules/b/README.md", "/w/src/keep.md"} {
+		if err := s.Ingest(ctx, Document{Path: p, Title: p, Fragments: []Fragment{{Text: "words " + p}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.EnqueueIdentity("/w/node_modules/a/README.md", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO ingest_jobs (url, enqueued_at) VALUES ('/w/node_modules/c/x.md', 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	pre, err := s.Purge("**/node_modules/**", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pre.Documents != 2 || pre.IngestJobs != 1 || pre.CaptionJobs != 1 || len(pre.Sample) != 2 {
+		t.Fatalf("preview = %+v", pre)
+	}
+	if st, _ := s.IndexStatus(); st.Documents != 3 {
+		t.Fatalf("a dry run removed documents: %d left", st.Documents)
+	}
+	if _, err := s.Purge("**/node_modules/**", false); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := s.IndexStatus(); st.Documents != 1 {
+		t.Fatalf("%d documents left, want 1", st.Documents)
+	}
+	var jobs int
+	_ = s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM ingest_jobs) + (SELECT COUNT(*) FROM identity_jobs)`).Scan(&jobs)
+	if jobs != 0 {
+		t.Errorf("%d jobs left on purged paths", jobs)
+	}
+	if hits, err := s.Search("words", 10); err != nil || len(hits) != 1 {
+		t.Errorf("search after purge: %d hits, %v; want only the kept document", len(hits), err)
+	}
+}

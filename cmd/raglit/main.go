@@ -87,6 +87,8 @@ func main() {
 		err = runWithdrawn(os.Args[2:])
 	case "forget":
 		err = runForget(os.Args[2:])
+	case "purge":
+		err = runPurge(os.Args[2:])
 	case "pause", "resume":
 		err = runPause(os.Args[1], os.Args[2:])
 	case "slice":
@@ -217,6 +219,11 @@ usage:
   raglit pause|resume [--daemon URL] [INDEX...]
                 a paused index runs no work: no ingest, captions or embeds. Jobs
                 still queue and run on resume. No INDEX lists every index.
+
+  raglit purge [--yes] [--daemon URL] INDEX PATTERN
+                remove every document whose path matches PATTERN (a glob:
+                **/node_modules/** for a directory anywhere), with its pending
+                jobs. Reports what would go unless --yes. Files on disk stay.
 
   raglit marks [--todo] [--json] [DOCPATH]
                 what an overlapping pair IS, as opposed to how much text it shares.

@@ -102,3 +102,88 @@ func (s *Store) IgnoredBy(path string) string {
 
 // EnqueueBuiltinIgnore is the ignore list every index applies, for display.
 func EnqueueBuiltinIgnore() []string { return append([]string{}, enqueueIgnore...) }
+
+// PurgeResult is what a purge by pattern removes, or would remove.
+type PurgeResult struct {
+	Pattern   string   `json:"pattern"`
+	Documents int      `json:"documents"`
+	Sample    []string `json:"sample"`
+	// Pending jobs on matching paths, dropped with the documents.
+	IngestJobs  int `json:"ingest_jobs"`
+	CaptionJobs int `json:"caption_jobs"`
+}
+
+const purgeSample = 20
+
+// Purge removes every document whose path matches pattern, with its fragments,
+// vectors, pages and fields, and drops pending ingest and caption jobs on
+// matching paths. dry reports the same counts and removes nothing. The files on
+// disk are untouched. Matched like an ignore pattern: against the absolute
+// path, or the file name for a glob with no "/".
+func (s *Store) Purge(pattern string, dry bool) (PurgeResult, error) {
+	pattern = strings.TrimSpace(pattern)
+	res := PurgeResult{Pattern: pattern, Sample: []string{}}
+	if pattern == "" {
+		return res, fmt.Errorf("raglit: purge: empty pattern")
+	}
+	if _, err := regexp.Compile(globToRegexp(pattern)); err != nil {
+		return res, fmt.Errorf("raglit: purge pattern %q: %w", pattern, err)
+	}
+	match := func(p string) bool { return matchAny([]string{pattern}, strings.TrimPrefix(p, "file://")) }
+	paths := func(q string) ([]string, error) {
+		rows, err := s.db.Query(q)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var p string
+			if err := rows.Scan(&p); err != nil {
+				return nil, err
+			}
+			if match(p) {
+				out = append(out, p)
+			}
+		}
+		return out, rows.Err()
+	}
+	docs, err := paths(`SELECT path FROM documents ORDER BY path`)
+	if err != nil {
+		return res, err
+	}
+	ingest, err := paths(`SELECT DISTINCT url FROM ingest_jobs WHERE state='pending'`)
+	if err != nil {
+		return res, err
+	}
+	captions, err := paths(`SELECT path FROM identity_jobs WHERE state='pending'`)
+	if err != nil {
+		return res, err
+	}
+	res.Documents, res.IngestJobs, res.CaptionJobs = len(docs), len(ingest), len(captions)
+	res.Sample = append(res.Sample, docs[:min(len(docs), purgeSample)]...)
+	if dry {
+		return res, nil
+	}
+	for _, u := range ingest {
+		if _, err := s.db.Exec(`DELETE FROM ingest_jobs WHERE url=? AND state='pending'`, u); err != nil {
+			return res, err
+		}
+	}
+	for _, p := range captions {
+		if _, err := s.db.Exec(`DELETE FROM identity_jobs WHERE path=? AND state='pending'`, p); err != nil {
+			return res, err
+		}
+	}
+	for _, p := range docs {
+		if err := s.DeleteDocument(p); err != nil {
+			return res, fmt.Errorf("raglit: purge %s: %w", p, err)
+		}
+		// A caption row for a document that no longer exists is history about
+		// nothing; the pending ones went above.
+		if _, err := s.db.Exec(`DELETE FROM identity_jobs WHERE path=? AND state<>'running'`, p); err != nil {
+			return res, err
+		}
+	}
+	return res, nil
+}

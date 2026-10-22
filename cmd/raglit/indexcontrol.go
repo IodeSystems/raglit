@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -44,14 +45,7 @@ func runPause(verb string, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	base := *daemon
-	if base == "" {
-		addr := ""
-		if st, ok := readDaemonState(raglit.DefaultRoot()); ok {
-			addr = st.Addr
-		}
-		base = localBase(addr)
-	}
+	base := controlBase(*daemon)
 	if fs.NArg() == 0 {
 		b, err := daemonGet(base, "/indexes", nil)
 		if err != nil {
@@ -128,4 +122,84 @@ func putIgnoreOp(reg *raglit.Registry) func(context.Context, *ignorePutIn) (*ign
 		}
 		return ignoreView(got), nil
 	}
+}
+
+type purgeIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	Body  struct {
+		Pattern string `json:"pattern" doc:"glob matched against each document path, like an ignore pattern"`
+		DryRun  bool   `json:"dry_run,omitempty" doc:"count and sample what would go; remove nothing"`
+	}
+}
+type purgeOut struct {
+	Body raglit.PurgeResult
+}
+
+func purgeOp(reg *raglit.Registry) func(context.Context, *purgeIn) (*purgeOut, error) {
+	return func(ctx context.Context, in *purgeIn) (*purgeOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		res, err := st.Purge(in.Body.Pattern, in.Body.DryRun)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
+		if !in.Body.DryRun {
+			log.Printf("raglit: %s: purged %d document(s), %d ingest and %d caption job(s) matching %q",
+				in.Index, res.Documents, res.IngestJobs, res.CaptionJobs, res.Pattern)
+		}
+		return &purgeOut{Body: res}, nil
+	}
+}
+
+// runPurge is `raglit purge INDEX PATTERN`: a dry run unless --yes.
+func runPurge(args []string) error {
+	fs := flag.NewFlagSet("purge", flag.ContinueOnError)
+	daemon := fs.String("daemon", "", "daemon URL (default: this machine's daemon)")
+	yes := fs.Bool("yes", false, "remove the documents; without it, only report what would go")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return fmt.Errorf("purge: usage: raglit purge [--yes] INDEX PATTERN")
+	}
+	idx, pattern := fs.Arg(0), fs.Arg(1)
+	b, err := daemonPostJSON(controlBase(*daemon), "/api/index/purge?"+urlValues("index", idx).Encode(),
+		map[string]any{"pattern": pattern, "dry_run": !*yes})
+	if err != nil {
+		return err
+	}
+	var res raglit.PurgeResult
+	if err := json.Unmarshal(b, &res); err != nil {
+		return err
+	}
+	for _, p := range res.Sample {
+		fmt.Println(p)
+	}
+	if res.Documents > len(res.Sample) {
+		fmt.Printf("… and %d more\n", res.Documents-len(res.Sample))
+	}
+	verb := "would purge"
+	if *yes {
+		verb = "purged"
+	}
+	fmt.Printf("%s %d document(s), %d pending import and %d pending caption job(s) from %s; files on disk are untouched\n",
+		verb, res.Documents, res.IngestJobs, res.CaptionJobs, idx)
+	if !*yes && res.Documents+res.IngestJobs+res.CaptionJobs > 0 {
+		fmt.Println("run again with --yes to remove them")
+	}
+	return nil
+}
+
+// controlBase is the daemon pause, resume and purge talk to: --daemon, else this machine's.
+func controlBase(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	addr := ""
+	if st, ok := readDaemonState(raglit.DefaultRoot()); ok {
+		addr = st.Addr
+	}
+	return localBase(addr)
 }
