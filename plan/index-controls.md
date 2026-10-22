@@ -31,25 +31,39 @@ file patterns and ignore file patterns. I'm burning money on node_modules."
   the documents with their fragments, vectors and captions, plus pending jobs.
   Adding an ignore pattern offers "also purge N matching docs".
 
-## Slices
+## Slices (✅ 2026-10-22)
 
-1. ◻ Pause: index_meta flag; the ingest worker, identity queue and re-embed
-   skip a paused index; API, CLI and UI toggle.
-2. ◻ Ignore at Enqueue: builtins + the index list, matched relative to the
-   project root when the path is under it, otherwise on the absolute path.
-   API and UI list editor.
-3. ◻ Purge: preview and delete API, UI dialog; ignore-add offers a purge.
+1. ✅ Pause — bac640c, bed21a0, cb6d426. The flag is in index_meta. Ingest
+   claims, caption claims and re-embed skip a paused index. Also
+   POST /api/index/pause, `raglit pause|resume`, and a header chip.
+2. ✅ Ignore at Enqueue — 07225f5. `**/node_modules/**` applies to every index,
+   plus each index's own list, matched against the absolute path. A refused
+   path returns ErrIgnored, so a batch skips it and counts it.
+3. ✅ Purge — 46ac360, cf7d793. Dry-run preview first. When an ignore pattern
+   is added, the page offers to purge what already matches.
 
-**next:** slice 1.
+The Controls page was checked in the browser against a scratch daemon: pause,
+the chip, adding an ignore pattern, the purge offer, purge and resume. The CLI
+was checked too.
+
+**next:** deploy, then purge `**/.claude/worktrees/**` from `dun__dun-main`
+(about 1,900 documents).
 
 **risks:**
-- Enqueue matching needs a relative path for `**/x/**` globs. A path outside
-  every known root is matched as an absolute path, so a glob anchored at a
-  root does not match it.
-- A purge deletes data. The preview is the guard; nothing can be undone after
-  the confirm.
+- A job already running when you pause finishes. Only new claims stop.
+- Re-embed runs only at daemon start. Vectors missing on a paused index fill
+  on the next start after it is resumed.
+- Patterns match the absolute path. A glob anchored at a root (`mobile/**`)
+  matches nothing; use `**/mobile/**`.
+- A purge cannot be undone. The preview is the only guard.
+- A direct `raglit ingest <dir>` walk applies only `node_modules` and the
+  index's own list. For build output (Android, iOS, Python) see the blocking
+  decision.
 
-**blocking decisions:** none open.
+**blocking decisions:**
+- Should more build-output directories be ignored at Enqueue on every index
+  (`.gradle`, `Pods`, `android/build`, `ios/build`, `.expo`)? Asked
+  2026-10-22.
 
 **optional extensions:**
 - Pause the whole daemon (every index).
