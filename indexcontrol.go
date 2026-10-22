@@ -39,7 +39,10 @@ func (s *Store) SetPaused(paused bool) error {
 // batch it came in.
 var ErrIgnored = errors.New("raglit: ignored")
 
-const metaIgnore = "ignore"
+const (
+	metaIgnore = "ignore"
+	metaAllow  = "allow"
+)
 
 // enqueueIgnore is what every index refuses at Enqueue, whatever its own list.
 //
@@ -68,8 +71,16 @@ var enqueueIgnore = []string{
 // IgnorePatterns is this index's own ignore list: globs a path must not match to
 // be enqueued. Matched against the absolute path, so a directory anywhere is
 // `**/name/**`; a glob with no "/" matches the file name.
-func (s *Store) IgnorePatterns() []string {
-	v, ok := s.Meta(metaIgnore)
+func (s *Store) IgnorePatterns() []string { return s.globList(metaIgnore) }
+
+// AllowPatterns is this index's allow list: a path matching one is exempt from
+// the global ignores (EnqueueBuiltinIgnore), so an index that IS an iOS
+// project can take `**/Pods/**`. The index's own ignore list still applies —
+// both are this index's choices, and refusing is the safe way to settle them.
+func (s *Store) AllowPatterns() []string { return s.globList(metaAllow) }
+
+func (s *Store) globList(key string) []string {
+	v, ok := s.Meta(key)
 	if !ok || v == "" {
 		return []string{}
 	}
@@ -84,6 +95,15 @@ func (s *Store) IgnorePatterns() []string {
 // repeats are dropped. It does not touch documents already indexed; a purge
 // does that.
 func (s *Store) SetIgnorePatterns(patterns []string) ([]string, error) {
+	return s.setGlobList(metaIgnore, patterns)
+}
+
+// SetAllowPatterns replaces this index's allow list, cleaned the same way.
+func (s *Store) SetAllowPatterns(patterns []string) ([]string, error) {
+	return s.setGlobList(metaAllow, patterns)
+}
+
+func (s *Store) setGlobList(key string, patterns []string) ([]string, error) {
 	seen := map[string]bool{}
 	clean := []string{}
 	for _, p := range patterns {
@@ -92,23 +112,31 @@ func (s *Store) SetIgnorePatterns(patterns []string) ([]string, error) {
 			continue
 		}
 		if _, err := regexp.Compile(globToRegexp(p)); err != nil {
-			return nil, fmt.Errorf("raglit: ignore pattern %q: %w", p, err)
+			return nil, fmt.Errorf("raglit: %s pattern %q: %w", key, p, err)
 		}
 		seen[p] = true
 		clean = append(clean, p)
 	}
 	b, _ := json.Marshal(clean)
-	return clean, s.SetMeta(metaIgnore, string(b), time.Now().Unix())
+	return clean, s.SetMeta(key, string(b), time.Now().Unix())
 }
 
 // IgnoredBy returns the pattern that refuses path at Enqueue, "" when none does.
+// The index's own ignore list first; then the global list, unless the index's
+// allow list exempts the path.
 func (s *Store) IgnoredBy(path string) string {
 	path = strings.TrimPrefix(path, "file://")
-	for _, list := range [][]string{enqueueIgnore, s.IgnorePatterns()} {
-		for _, pat := range list {
-			if matchAny([]string{pat}, path) {
-				return pat
+	for _, pat := range s.IgnorePatterns() {
+		if matchAny([]string{pat}, path) {
+			return pat
+		}
+	}
+	for _, pat := range enqueueIgnore {
+		if matchAny([]string{pat}, path) {
+			if matchAny(s.AllowPatterns(), path) {
+				return ""
 			}
+			return pat
 		}
 	}
 	return ""

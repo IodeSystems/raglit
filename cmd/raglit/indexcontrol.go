@@ -81,21 +81,24 @@ type ignoreIn struct {
 type ignorePutIn struct {
 	Index string `query:"index" doc:"index name (default: the default index)"`
 	Body  struct {
-		Patterns []string `json:"patterns" doc:"globs matched against a path at enqueue; **/dir/** for a directory anywhere, a glob with no / for a file name"`
+		Patterns *[]string `json:"patterns,omitempty" doc:"this index's ignore globs, matched against a path at enqueue; **/dir/** for a directory anywhere, a glob with no / for a file name. Omitted: unchanged"`
+		Allow    *[]string `json:"allow,omitempty" doc:"globs exempt from the global (builtin) ignores on this index. Omitted: unchanged"`
 	}
 }
 type ignoreOut struct {
 	Body struct {
 		Patterns []string `json:"patterns"`
-		// Builtin is what every index refuses whatever its own list.
+		// Builtin is what every index refuses unless Allow exempts it.
 		Builtin []string `json:"builtin"`
+		Allow   []string `json:"allow"`
 	}
 }
 
-func ignoreView(patterns []string) *ignoreOut {
+func ignoreView(st *raglit.Store) *ignoreOut {
 	out := &ignoreOut{}
-	out.Body.Patterns = patterns
+	out.Body.Patterns = st.IgnorePatterns()
 	out.Body.Builtin = raglit.EnqueueBuiltinIgnore()
+	out.Body.Allow = st.AllowPatterns()
 	return out
 }
 
@@ -105,7 +108,7 @@ func getIgnoreOp(reg *raglit.Registry) func(context.Context, *ignoreIn) (*ignore
 		if err != nil {
 			return nil, err
 		}
-		return ignoreView(st.IgnorePatterns()), nil
+		return ignoreView(st), nil
 	}
 }
 
@@ -115,11 +118,17 @@ func putIgnoreOp(reg *raglit.Registry) func(context.Context, *ignorePutIn) (*ign
 		if err != nil {
 			return nil, err
 		}
-		got, err := st.SetIgnorePatterns(in.Body.Patterns)
-		if err != nil {
-			return nil, huma.Error422UnprocessableEntity(err.Error())
+		if in.Body.Patterns != nil {
+			if _, err := st.SetIgnorePatterns(*in.Body.Patterns); err != nil {
+				return nil, huma.Error422UnprocessableEntity(err.Error())
+			}
 		}
-		return ignoreView(got), nil
+		if in.Body.Allow != nil {
+			if _, err := st.SetAllowPatterns(*in.Body.Allow); err != nil {
+				return nil, huma.Error422UnprocessableEntity(err.Error())
+			}
+		}
+		return ignoreView(st), nil
 	}
 }
 

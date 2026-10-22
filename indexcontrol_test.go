@@ -153,3 +153,32 @@ func TestPurgeByPattern(t *testing.T) {
 		t.Errorf("search after purge: %d hits, %v; want only the kept document", len(hits), err)
 	}
 }
+
+// An index's allow list exempts a path from the global ignores, never from its
+// own ignore list.
+func TestAllowListExemptsFromGlobalIgnores(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	pods := "/w/app/ios/Pods/Lib/README.md"
+	if _, err := s.Enqueue(pods, ""); !errors.Is(err, ErrIgnored) {
+		t.Fatalf("Pods enqueued before the allow: %v", err)
+	}
+	if _, err := s.SetAllowPatterns([]string{"**/Pods/**"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(pods, ""); err != nil {
+		t.Fatalf("allowed path refused: %v", err)
+	}
+	if _, err := s.Enqueue("/w/node_modules/x/README.md", ""); !errors.Is(err, ErrIgnored) {
+		t.Errorf("allowing Pods let node_modules in: %v", err)
+	}
+	if _, err := s.SetIgnorePatterns([]string{"**/Lib/**"}); err != nil {
+		t.Fatal(err)
+	}
+	if s.IgnoredBy(pods) != "**/Lib/**" {
+		t.Errorf("the index's own ignore did not win over its allow: %q", s.IgnoredBy(pods))
+	}
+}

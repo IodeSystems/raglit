@@ -316,7 +316,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("identify", http.MethodPost, "/api/identify", "Say what a document IS: generate a caption/summary/kind, or record a person's."), identifyOp(reg))
 	gat.Register(api, g, op("pauseIndex", http.MethodPost, "/api/index/pause", "Pause or resume an index: a paused index runs no work; jobs queue and run on resume."), pauseOp(reg))
 	gat.Register(api, g, op("getIgnore", http.MethodGet, "/api/index/ignore", "An index's ignore patterns: paths they match are refused at enqueue."), getIgnoreOp(reg))
-	gat.Register(api, g, op("putIgnore", http.MethodPut, "/api/index/ignore", "Replace an index's ignore patterns. Indexed documents are untouched; purge removes them."), putIgnoreOp(reg))
+	gat.Register(api, g, op("putIgnore", http.MethodPut, "/api/index/ignore", "Replace an index's ignore and/or allow patterns. Indexed documents are untouched; purge removes them."), putIgnoreOp(reg))
 	gat.Register(api, g, op("purgeIndex", http.MethodPost, "/api/index/purge", "Remove every document matching a glob, with its pending jobs; dry_run previews."), purgeOp(reg))
 	gat.Register(api, g, op("forget", http.MethodPost, "/api/forget", "Drop a document from the index (no grounds recorded; not a withdrawal)."), forgetOp(reg))
 	gat.Register(api, g, op("withdraw", http.MethodPost, "/api/withdraw", "Rule a document out of the corpus, with grounds. Survives re-ingest."), withdrawOp(reg))
