@@ -3,6 +3,7 @@ package raglit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -251,5 +252,62 @@ func TestWorker_EmptyFileIsFlaggedNotFailed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// batchLimitedVecClient counts one token per character — dense text, like a
+// CSV — and refuses an input over max with llama.cpp's own wording.
+type batchLimitedVecClient struct{ max, refused int }
+
+func (c *batchLimitedVecClient) Embed(_ context.Context, _ string, texts []string) ([][]float32, error) {
+	for _, t := range texts {
+		if len(t) > c.max {
+			c.refused++
+			return nil, fmt.Errorf(`llm: input too large for this endpoint (status 500, not retried): {"error":{"code":500,"message":"input (%d tokens) is too large to process. increase the physical batch size (current batch size: %d)","type":"server_error"}}`, len(t), c.max)
+		}
+	}
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = []float32{1, 0}
+	}
+	return out, nil
+}
+
+// An endpoint whose physical batch is smaller than the limit raglit holds
+// refuses a dense fragment and names its number. The job learns it, reads the
+// document again with fragments cut to fit, and completes with every fragment
+// embedded. Measured 2026-10-22: a 75 KB CSV, 13 fragments, one at 5250 tokens
+// against a batch of 4096.
+func TestWorker_LearnsTheEmbedBatchAndRetries(t *testing.T) {
+	s := testStore(t)
+	client := &batchLimitedVecClient{max: 4096}
+	s.SetEmbedder(NewEmbedder(client, "dense-embed"))
+	var b strings.Builder
+	for i := 0; b.Len() < 30000; i++ {
+		fmt.Fprintf(&b, "%d,%d,%d\n", i, i*7, i*13)
+	}
+	url := "file:///corpus/survey.csv"
+	if _, err := s.Enqueue(url, ""); err != nil {
+		t.Fatal(err)
+	}
+	w := &Worker{Store: s, Frag: FragConfig{EmbedLimitTokens: 8192}, Fetcher: func(context.Context, string) (Fetched, error) {
+		return Fetched{Data: []byte(b.String())}, nil
+	}}
+	for range 3 {
+		if _, err := w.ProcessOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if client.refused == 0 {
+		t.Fatal("the endpoint never refused: the test does not exercise the limit")
+	}
+	if bad, _ := s.Jobs("error", 10); len(bad) != 0 {
+		t.Fatalf("job failed: %s", bad[0].Error)
+	}
+	if w.Frag.EmbedLimitTokens != 4096 || s.LearnedEmbedLimitTokens("dense-embed") != 4096 {
+		t.Errorf("limit = %d (worker), %d (stored); want 4096", w.Frag.EmbedLimitTokens, s.LearnedEmbedLimitTokens("dense-embed"))
+	}
+	if n, _ := s.MissingVectors(); n != 0 {
+		t.Errorf("%d fragment(s) without a vector", n)
 	}
 }

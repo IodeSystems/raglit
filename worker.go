@@ -97,6 +97,7 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 	// Start this job's retry history empty: whatever the previous job survived is
 	// its own, and a tally that carries over blames the wrong document.
 	w.Retries.Take()
+	w.applyStoredEmbedLimit()
 	n, mode, ierr := w.ingest(ctx, job, sl)
 	// Recorded LAST, so it covers the whole job, and on the failure path too —
 	// a job that died after forty minutes of backpressure is exactly the one
@@ -109,6 +110,19 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 		sl.Record("llm-retries", "", state, s.Detail())
 	}
 	if ierr != nil {
+		// The embed endpoint named a smaller per-input limit than this worker
+		// sized fragments for. Learn it and read the document again, fresh, so
+		// its fragments are cut to fit. Bounded by construction: a retry happens
+		// only when the limit went DOWN, and a second refusal at the same limit
+		// does not lower it again, so it fails as before.
+		if w.relearnEmbedLimit(ierr) {
+			sl.Record("embed-limit", "", "warn", fmt.Sprintf(
+				"the embedder takes at most %d tokens per input; reading the document again with passages cut to fit",
+				w.Frag.EmbedLimitTokens))
+			if err := w.Store.requeueFresh(job.ID); err == nil {
+				return nil
+			}
+		}
 		return w.Store.failJob(job.ID, ierr.Error())
 	}
 	// The Documents tree's size and date (srcstat.go). Best-effort: a stat that
@@ -810,4 +824,35 @@ func (w *Worker) recordIngestReading(docPath, hash string, kind DocKind, sl *Sta
 	}); err != nil {
 		sl.Fail("reading", "index", err)
 	}
+}
+
+// applyStoredEmbedLimit lowers this worker's embed token limit to the index's
+// stored one. A worker is built once per runner and index and lives for the
+// daemon, so a limit another runner learned reaches it here, at its next job.
+func (w *Worker) applyStoredEmbedLimit() {
+	if w.Store.embedder == nil {
+		return
+	}
+	n := w.Store.LearnedEmbedLimitTokens(w.Store.embedder.Model)
+	if n <= 0 || (w.Frag.EmbedLimitTokens > 0 && n >= w.Frag.EmbedLimitTokens) {
+		return
+	}
+	w.Frag.EmbedLimitTokens = n
+	if c := TokensToChars(n); w.Frag.EmbedLimit == 0 || c < w.Frag.EmbedLimit {
+		w.Frag.EmbedLimit = c
+	}
+}
+
+// relearnEmbedLimit reads a stated per-input limit out of a failed job's error
+// and reports whether it lowered this worker's limit.
+func (w *Worker) relearnEmbedLimit(err error) bool {
+	if w.Store.embedder == nil {
+		return false
+	}
+	before := w.Frag.EmbedLimitTokens
+	if _, ok := w.Store.LearnLimitFromError(w.Store.embedder.Model, err.Error()); !ok {
+		return false
+	}
+	w.applyStoredEmbedLimit()
+	return w.Frag.EmbedLimitTokens > 0 && (before == 0 || w.Frag.EmbedLimitTokens < before)
 }

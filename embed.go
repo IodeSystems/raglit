@@ -486,16 +486,40 @@ func perInputTokenLimit(errText string) (int, bool) {
 // inference: the server named its own number. Called on an embed failure so the
 // next ingest is sized correctly even if the model was unknown or was swapped
 // under a stored value.
+//
+// Stored in tokens as well as characters. The token number is the one the
+// fragment budget enforces, and it is the one that was wrong: probed as the
+// model's context window (8192) on a server whose physical batch was 4096, so a
+// CSV fragment of 5250 tokens passed every check and was refused (2026-10-22).
+// A stated number only ever LOWERS the token limit; the server's word for one
+// input never makes a smaller stored limit larger.
 func (s *Store) LearnLimitFromError(model, errText string) (int, bool) {
 	tok, ok := perInputTokenLimit(errText)
 	if !ok || model == "" {
 		return 0, false
 	}
+	now := time.Now().Unix()
 	chars := TokensToChars(tok)
-	if err := s.SetMeta(embedLimitKey(model), strconv.Itoa(chars), time.Now().Unix()); err != nil {
+	if err := s.SetMeta(embedLimitKey(model), strconv.Itoa(chars), now); err != nil {
 		return 0, false
 	}
+	if cur := s.LearnedEmbedLimitTokens(model); cur == 0 || tok < cur {
+		if err := s.SetMeta(embedLimitTokensKey(model), strconv.Itoa(tok), now); err != nil {
+			return 0, false
+		}
+	}
 	return chars, true
+}
+
+// LearnedEmbedLimitTokens is the stored per-input token limit for model, 0 when
+// none is stored.
+func (s *Store) LearnedEmbedLimitTokens(model string) int {
+	v, ok := s.Meta(embedLimitTokensKey(model))
+	if !ok {
+		return 0
+	}
+	n, _ := strconv.Atoi(v)
+	return n
 }
 
 // CanSearchByMeaning reports whether vector and hybrid search can run: an

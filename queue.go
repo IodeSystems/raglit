@@ -230,6 +230,16 @@ func (s *Store) RequeueJob(id int64) error {
 	return err
 }
 
+// requeueFresh puts a running job back as pending with fresh set, so its next
+// run skips the unchanged-bytes check and the pool: what is stored for it was
+// cut for a limit the endpoint has since refused.
+func (s *Store) requeueFresh(id int64) error {
+	_, err := s.db.Exec(
+		`UPDATE ingest_jobs SET state='pending', fresh=1, started_at=0, owner_pid=0
+		  WHERE id = ? AND state='running'`, id)
+	return err
+}
+
 // SetJobLane records which lane a job actually belongs in. Used by the worker
 // once routing has read the bytes and disagreed with the guess from the URL.
 func (s *Store) SetJobLane(id int64, lane Lane) error {
