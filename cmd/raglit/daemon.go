@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -330,6 +331,17 @@ func spawnDaemonDetached(subcmd string, args []string) error {
 // surfacing: silently detaching instead would hide a broken unit behind a
 // daemon that works until the next reboot.
 func startDaemonUnit() (bool, error) {
+	if runtime.GOOS == "darwin" {
+		p, err := launchdPlistPath(serviceUnitName)
+		if err != nil {
+			return false, nil
+		}
+		if _, err := os.Stat(p); err != nil {
+			return false, nil // no agent installed: detach as before
+		}
+		fmt.Fprintf(os.Stderr, "raglit: starting %s (a launchd agent supervises this daemon)\n", launchdLabel(serviceUnitName))
+		return true, launchdCtl("start", serviceUnitName)
+	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return false, nil
 	}

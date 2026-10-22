@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -24,12 +25,26 @@ type daemonState struct {
 	Root      string `json:"root"` // storage root it owns
 	StartedAt string `json:"started_at"`
 	Version   string `json:"version"`
-	// Unit is the systemd unit supervising this daemon, when one is ("" when it
+	// Unit is the systemd unit (or launchd label) supervising this daemon, when one is ("" when it
 	// was started by hand). Recorded so --stop/--restart can refuse to step
 	// around the supervisor: --restart relaunches DETACHED, which under a unit
 	// silently swaps a supervised daemon for an unsupervised one that will not
 	// survive a reboot. Observed within minutes of the unit landing.
 	Unit string `json:"unit,omitempty"`
+}
+
+// supervisingUnit is the systemd unit or launchd agent supervising this
+// process, or "".
+func supervisingUnit() string {
+	if runtime.GOOS == "darwin" {
+		// launchd sets XPC_SERVICE_NAME to the job's label. A Terminal shell has
+		// one too ("0" or an app id), hence the prefix check.
+		if l := os.Getenv("XPC_SERVICE_NAME"); strings.HasPrefix(l, launchdLabel("")) {
+			return l
+		}
+		return ""
+	}
+	return systemdUnit()
 }
 
 // systemdUnit returns the unit supervising this process, or "".
@@ -83,7 +98,7 @@ func writeDaemonState(root, addr string) (func(), error) {
 		Addr:      addr,
 		Root:      root,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Unit:      systemdUnit(),
+		Unit:      supervisingUnit(),
 		// The build that is actually running, not the `version` literal — which
 		// has read "0.1.0" for every build ever made and so cannot tell a
 		// months-old daemon from a fresh one. Someone reading daemon.json to

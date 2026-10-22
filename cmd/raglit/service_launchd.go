@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/xml"
 	"fmt"
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // raglit as a launchd user agent — `raglit service` on macOS.
@@ -47,6 +49,80 @@ func launchdLogPath(name string) (string, error) {
 func launchdDomain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
 
 func launchdTarget(name string) string { return launchdDomain() + "/" + launchdLabel(name) }
+
+// refuseRoot stops `sudo raglit service …`. A LaunchAgent belongs to the
+// logged-in user's GUI domain; as root, gui/0 does not exist, and launchctl
+// answers "Bootstrap failed: 5" plus a hint to re-run as root — which is
+// already the cause.
+func refuseRoot() error {
+	if os.Geteuid() == 0 {
+		return fmt.Errorf("run `raglit service` as your own user, not root or sudo: the agent runs in your login session")
+	}
+	return nil
+}
+
+// launchdBootout unloads the agent and waits until launchd has let it go.
+// bootout returns before the job is gone (it may still be in ExitTimeOut), and
+// a bootstrap in that window fails with error 5.
+func launchdBootout(name string) {
+	_ = exec.Command("launchctl", "bootout", launchdTarget(name)).Run()
+	for deadline := time.Now().Add(130 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		if exec.Command("launchctl", "print", launchdTarget(name)).Run() != nil {
+			return
+		}
+	}
+}
+
+// launchdBootstrap loads the plist. On failure it names the cause instead of
+// launchctl's "Bootstrap failed: 5: Input/output error", which says nothing.
+func launchdBootstrap(name, path string) error {
+	out, err := exec.Command("launchctl", "bootstrap", launchdDomain(), path).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	cause := "launchd refused it: " + strings.TrimSpace(firstLine(string(out)))
+	switch {
+	case exec.Command("launchctl", "print", launchdTarget(name)).Run() == nil:
+		cause = "it is still loaded — the previous instance has not finished stopping; try `raglit service restart --name " + name + "`"
+	case plistLint(path) != "":
+		cause = "the plist is invalid: " + plistLint(path)
+	default:
+		if b, rerr := os.ReadFile(path); rerr == nil {
+			if exe := plistExec(string(b)); exe != "" {
+				if st, serr := os.Stat(exe); serr != nil || st.Mode()&0o111 == 0 {
+					cause = exe + " is missing or not executable — reinstall with `raglit service install`"
+				}
+			}
+		}
+	}
+	return fmt.Errorf("could not load %s: %s", launchdLabel(name), cause)
+}
+
+func firstLine(s string) string { l, _, _ := strings.Cut(s, "\n"); return l }
+
+// plistLint is plutil's complaint about path, "" when it is valid (or plutil
+// is unavailable).
+func plistLint(path string) string {
+	out, err := exec.Command("plutil", "-lint", path).CombinedOutput()
+	if err == nil || len(out) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// plistExec is the first ProgramArguments entry: the binary launchd runs.
+func plistExec(plist string) string {
+	_, rest, ok := strings.Cut(plist, "<key>ProgramArguments</key>")
+	if !ok {
+		return ""
+	}
+	_, rest, ok = strings.Cut(rest, "<string>")
+	if !ok {
+		return ""
+	}
+	v, _, _ := strings.Cut(rest, "</string>")
+	return html.UnescapeString(v)
+}
 
 func launchctl(args ...string) *exec.Cmd {
 	c := exec.Command("launchctl", args...)
@@ -108,6 +184,9 @@ func renderPlist(name, execPath string, daemonArgs, envs []string, runAtLoad boo
 }
 
 func launchdInstall(name, execPath string, daemonArgs, envs []string, enable, start bool) error {
+	if err := refuseRoot(); err != nil {
+		return err
+	}
 	path, err := launchdPlistPath(name)
 	if err != nil {
 		return err
@@ -128,10 +207,10 @@ func launchdInstall(name, execPath string, daemonArgs, envs []string, enable, st
 	fmt.Printf("wrote %s\n  logs   %s\n", path, logPath)
 
 	// Reload: an agent already loaded keeps its old definition until booted out.
-	_ = exec.Command("launchctl", "bootout", launchdTarget(name)).Run()
+	launchdBootout(name)
 	_ = launchctl("enable", launchdTarget(name)).Run()
-	if err := launchctl("bootstrap", launchdDomain(), path).Run(); err != nil {
-		return fmt.Errorf("launchctl bootstrap: %w", err)
+	if err := launchdBootstrap(name, path); err != nil {
+		return err
 	}
 	if enable {
 		fmt.Println("enabled at login")
@@ -148,7 +227,10 @@ func launchdInstall(name, execPath string, daemonArgs, envs []string, enable, st
 }
 
 func launchdUninstall(name string) error {
-	_ = exec.Command("launchctl", "bootout", launchdTarget(name)).Run()
+	if err := refuseRoot(); err != nil {
+		return err
+	}
+	launchdBootout(name)
 	path, err := launchdPlistPath(name)
 	if err != nil {
 		return err
@@ -173,10 +255,13 @@ func launchdLoaded(name string) error {
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("%s is not installed — run `raglit service install` first", launchdLabel(name))
 	}
-	return launchctl("bootstrap", launchdDomain(), path).Run()
+	return launchdBootstrap(name, path)
 }
 
 func launchdCtl(verb, name string) error {
+	if err := refuseRoot(); err != nil {
+		return err
+	}
 	switch verb {
 	case "start":
 		if err := launchdLoaded(name); err != nil {
@@ -191,7 +276,8 @@ func launchdCtl(verb, name string) error {
 	case "stop":
 		// bootout, not kill: KeepAlive would restart a daemon that exits
 		// non-zero on the signal. bootout sends SIGTERM and waits ExitTimeOut.
-		return launchctl("bootout", launchdTarget(name)).Run()
+		launchdBootout(name)
+		return nil
 	default: // status
 		return launchctl("print", launchdTarget(name)).Run()
 	}

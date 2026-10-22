@@ -163,6 +163,10 @@ func runDoctor(args []string) error {
 				}
 			}
 			switch {
+			case daemonShort && runtime.GOOS == "darwin":
+				fmt.Println("      fix: the DAEMON is short — reinstall from a shell that has the tools:")
+				fmt.Println("           raglit service install ... (it records this shell's PATH)")
+				fmt.Println("           or pass --env PATH=... to raglit service install")
 			case daemonShort:
 				fmt.Println("      fix: the DAEMON is short — give it the PATH via a systemd drop-in")
 				fmt.Println("           ~/.config/systemd/user/raglit.service.d/path.conf")

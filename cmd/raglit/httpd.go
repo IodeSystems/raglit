@@ -83,7 +83,7 @@ func runHttpd(subcmd string, args []string) error {
 				verb = "restart"
 			}
 			return fmt.Errorf("that daemon is supervised by %s — use `raglit service %s`\n"+
-				"  (--%s would leave systemd with nothing to supervise)", st.Unit, verb, verb)
+				"  (--%s would leave the service manager with nothing to supervise)", st.Unit, verb, verb)
 		}
 		if *stop {
 			return stopDaemon(root)

@@ -223,7 +223,7 @@ func serviceInstall(args []string) error {
 	fmt.Printf("wrote %s\n  exec   %s\n  mode   %s\n  daemon %s\n", path, *execPath, mode, strings.Join(daemonArgs, " "))
 
 	if err := systemctl("daemon-reload").Run(); err != nil {
-		return fmt.Errorf("daemon-reload: %w", err)
+		return fmt.Errorf("register the unit with the service manager: %w", err)
 	}
 	if *enable {
 		if err := systemctl("enable", unit).Run(); err != nil {

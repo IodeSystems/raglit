@@ -64,3 +64,14 @@ func TestWithPath(t *testing.T) {
 		t.Errorf("an explicit PATH must win: got %v", got)
 	}
 }
+
+// The bootstrap diagnosis reads the binary back out of the plist it wrote.
+func TestPlistExec(t *testing.T) {
+	p := renderPlist("raglit", "/Users/a & b/raglit", []string{"-addr", "x"}, nil, false, "/l")
+	if got := plistExec(p); got != "/Users/a & b/raglit" {
+		t.Errorf("plistExec = %q", got)
+	}
+	if plistExec("<plist/>") != "" {
+		t.Error("no ProgramArguments → empty")
+	}
+}
