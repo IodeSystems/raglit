@@ -72,9 +72,15 @@ var probeSpec = []struct {
 	{name: "pdftotext", purpose: "PDF text layer", apt: "sudo apt-get install poppler-utils", brew: "brew install poppler"},
 	{name: "pdftoppm", purpose: "PDF page rasterization", apt: "sudo apt-get install poppler-utils", brew: "brew install poppler"},
 	{name: "pandoc", purpose: "docx/odt/epub/html/pptx → text", apt: "sudo apt-get install pandoc", brew: "brew install pandoc", optional: true},
-	{name: "antiword", purpose: "legacy binary .doc → text", apt: "sudo apt-get install antiword", brew: "brew install antiword", optional: true, alts: []string{"antiword", "catdoc"}},
+	// Homebrew packages neither antiword nor catdoc (formulae.brew.sh: 404 for
+	// both, checked 2026-10-22). macOS ships textutil, which reads .doc, so on a
+	// mac this is normally found and the hint is not shown.
+	{name: "antiword", purpose: "legacy binary .doc → text", apt: "sudo apt-get install antiword",
+		brew: "macOS's built-in textutil reads .doc (/usr/bin/textutil); Homebrew has no antiword or catdoc", optional: true,
+		alts: []string{"antiword", "catdoc", "textutil"}},
 	{name: "magick", purpose: "HEIC/HEIF (iPhone photos) → PNG", apt: "sudo apt-get install imagemagick", brew: "brew install imagemagick", optional: true, alts: []string{"magick", "convert"}},
-	{name: "xls2csv", purpose: "legacy binary .xls → text", apt: "sudo apt-get install catdoc", brew: "brew install catdoc", optional: true},
+	{name: "xls2csv", purpose: "legacy binary .xls → text", apt: "sudo apt-get install catdoc",
+		brew: "no Homebrew formula (catdoc is not packaged); save legacy .xls as .xlsx, which raglit reads with no tool", optional: true},
 }
 
 // installHint picks the hint for goos: brew on macOS, apt everywhere else.

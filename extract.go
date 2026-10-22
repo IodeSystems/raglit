@@ -336,7 +336,11 @@ func HavePandoc() bool  { return toolPath("pandoc") != "" }
 // legacyDocTools convert binary .doc, in preference order. antiword handles Word
 // 6/7/8/97-2003 and preserves paragraph breaks, which matters because the text
 // is about to be fragmented; catdoc is the fallback and flattens harder.
-var legacyDocTools = []string{"antiword", "catdoc"}
+//
+// textutil is macOS's own converter (/usr/bin/textutil, Cocoa's text system),
+// last because it is the only one there: Homebrew packages neither antiword nor
+// catdoc (formulae.brew.sh answers 404 for both, checked 2026-10-22).
+var legacyDocTools = []string{"antiword", "catdoc", "textutil"}
 
 func legacyDocTool() string {
 	for _, b := range legacyDocTools {
@@ -801,9 +805,13 @@ func PandocText(ctx context.Context, path string) (string, error) {
 func LegacyDocText(ctx context.Context, path string) (string, error) {
 	tool := legacyDocTool()
 	if tool == "" {
-		return "", fmt.Errorf("no converter for legacy %s files (install antiword, or catdoc) — `raglit doctor` has the install hint", filepath.Ext(path))
+		return "", fmt.Errorf("no converter for legacy %s files (antiword or catdoc; textutil on macOS) — `raglit doctor` has the install hint", filepath.Ext(path))
 	}
-	out, err := exec.CommandContext(ctx, tool, path).Output()
+	args := []string{path}
+	if filepath.Base(tool) == "textutil" {
+		args = []string{"-convert", "txt", "-stdout", path}
+	}
+	out, err := exec.CommandContext(ctx, tool, args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("%s %s: %w", filepath.Base(tool), filepath.Ext(path), err)
 	}

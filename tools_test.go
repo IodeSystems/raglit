@@ -1,7 +1,9 @@
 package raglit
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -151,6 +153,30 @@ func TestInstallHintPerPlatform(t *testing.T) {
 		}
 		if got := installHint("linux", s.apt, s.brew); !strings.Contains(got, "apt-get") {
 			t.Errorf("%s on linux: hint %q, want apt", s.name, got)
+		}
+	}
+}
+
+// On a mac neither antiword nor catdoc is packaged, so textutil reads .doc, and
+// it takes its own arguments: -convert txt -stdout PATH.
+func TestLegacyDocFallsBackToTextutil(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "textutil"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	out, err := LegacyDocText(context.Background(), "/x/letter.doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "-convert txt -stdout /x/letter.doc" {
+		t.Fatalf("textutil called with %q", out)
+	}
+	st := ProbeTools()
+	for _, s := range st.Tools {
+		if s.Name == "antiword" && (!s.Found || filepath.Base(s.Path) != "textutil") {
+			t.Errorf("doctor does not count textutil as the .doc reader: %+v", s)
 		}
 	}
 }
