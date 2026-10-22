@@ -141,15 +141,22 @@ func TestAlternativesCountAsFound(t *testing.T) {
 	}
 }
 
-// Every tool has a hint for both platforms, and a mac gets brew, not apt — an
-// apt command on a mac is a hint nobody can follow.
+// Every tool has a hint for both platforms, and a mac gets its own, not apt —
+// an apt command on a mac is a hint nobody can follow. Not every mac hint is
+// `brew install`: Homebrew has no antiword or catdoc formula, and naming one
+// would be a hint nobody can follow either.
 func TestInstallHintPerPlatform(t *testing.T) {
+	noFormula := map[string]bool{"antiword": true, "xls2csv": true}
 	for _, s := range probeSpec {
 		if s.apt == "" || s.brew == "" {
 			t.Errorf("%s: needs both an apt and a brew hint", s.name)
 		}
-		if got := installHint("darwin", s.apt, s.brew); !strings.HasPrefix(got, "brew install ") {
-			t.Errorf("%s on darwin: hint %q, want brew", s.name, got)
+		got := installHint("darwin", s.apt, s.brew)
+		if strings.Contains(got, "apt-get") || got != s.brew {
+			t.Errorf("%s on darwin: hint %q, want the mac hint", s.name, got)
+		}
+		if strings.HasPrefix(got, "brew install ") == noFormula[s.name] {
+			t.Errorf("%s on darwin: hint %q; brew install only where a formula exists", s.name, got)
 		}
 		if got := installHint("linux", s.apt, s.brew); !strings.Contains(got, "apt-get") {
 			t.Errorf("%s on linux: hint %q, want apt", s.name, got)
