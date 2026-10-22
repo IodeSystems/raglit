@@ -29,7 +29,10 @@ func serviceUsage() {
 
   raglit service install [flags] [-- <daemon flags>...]
   raglit service uninstall
-  raglit service start | stop | restart | status | logs
+  raglit service start | stop | restart | reload | status | logs
+
+reload re-reads config.json (models, auth) without a restart: the daemon
+re-execs itself once no job is running.
 
 install flags:
   --name NAME     unit name without .service (default raglit); on macOS the
@@ -57,7 +60,7 @@ func runService(args []string) error {
 		return serviceInstall(args[1:])
 	case "uninstall":
 		return serviceUninstall(args[1:])
-	case "start", "stop", "restart", "status":
+	case "start", "stop", "restart", "reload", "status":
 		return serviceCtl(args[0], args[1:])
 	case "logs":
 		return serviceLogs(args[1:])
@@ -106,6 +109,8 @@ func renderUnit(execPath string, daemonArgs, envs []string) string {
 	// Restart=on-failure a bad flag is not one error, it is a crash loop.
 	fmt.Fprintf(&b, "ExecStartPre=%s daemon -check %s\n", quoteUnit(execPath), strings.Join(parts[2:], " "))
 	fmt.Fprintf(&b, "ExecStart=%s\n", strings.Join(parts, " "))
+	// SIGHUP to the main process only: the daemon re-execs itself (reloadOnHUP).
+	b.WriteString("ExecReload=/bin/kill -HUP $MAINPID\n")
 	for _, e := range envs {
 		fmt.Fprintf(&b, "Environment=%s\n", e)
 	}

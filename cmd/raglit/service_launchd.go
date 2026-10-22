@@ -273,6 +273,9 @@ func launchdCtl(verb, name string) error {
 			return err
 		}
 		return launchctl("kickstart", "-k", launchdTarget(name)).Run()
+	case "reload":
+		// The main process only; it re-execs itself (reloadOnHUP).
+		return launchctl("kill", "SIGHUP", launchdTarget(name)).Run()
 	case "stop":
 		// bootout, not kill: KeepAlive would restart a daemon that exits
 		// non-zero on the signal. bootout sends SIGTERM and waits ExitTimeOut.

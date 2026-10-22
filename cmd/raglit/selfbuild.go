@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -231,6 +232,26 @@ func daemonSelfUpdate(idle func() bool) {
 			fmt.Fprintf(os.Stderr, "raglit daemon: re-exec failed (%v) — staying up\n", err)
 			pending = false
 		}
+	}
+}
+
+// reloadOnHUP re-execs the daemon on SIGHUP, once no job is running: config,
+// models and auth are read again from scratch, with the same PID, so systemd
+// and launchd see no restart. Waiting for idle is the self-update rule above —
+// a re-exec aborts the running job and it is not requeued.
+func reloadOnHUP(idle func() bool) {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	for range hup {
+		fmt.Fprintln(os.Stderr, "raglit daemon: reload requested — re-reading config when no job is in flight")
+		for !idle() {
+			time.Sleep(time.Second)
+		}
+		exe, err := selfPath()
+		if err == nil {
+			err = syscall.Exec(exe, os.Args, os.Environ())
+		}
+		fmt.Fprintf(os.Stderr, "raglit daemon: reload failed (%v) — staying up\n", err)
 	}
 }
 

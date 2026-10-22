@@ -130,6 +130,8 @@ func runHttpd(subcmd string, args []string) error {
 	// job is RUNNING — a re-exec mid-ingest aborts that job and it is not
 	// requeued, while pending rows survive and the new process picks them up.
 	go daemonSelfUpdate(func() bool { return noJobRunning(reg) })
+	// `raglit service reload`: SIGHUP re-execs the daemon, under the same rule.
+	go reloadOnHUP(func() bool { return noJobRunning(reg) })
 
 	// Directory watching: keep opt-in projects (config watch:true) re-ingested on
 	// change. Registrations persist under the daemon root and reload here.
