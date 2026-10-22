@@ -61,6 +61,10 @@ type DocSummary struct {
 	FragMode  string         `json:"frag_mode"` // how it was fragmented: text-overlap | llm-seg
 	Engines   map[string]int `json:"engines"`   // engine → page count
 	AddedAt   int64          `json:"added_at"`
+	// SrcSize / SrcMtime are the source file's bytes and modified time (unix
+	// seconds); 0 when unknown (srcstat.go).
+	SrcSize  int64 `json:"src_size,omitempty"`
+	SrcMtime int64 `json:"src_mtime,omitempty"`
 	// GenName / GenKind / GenSource are what the document IS (identity.go), for a
 	// list a person can navigate. Both names travel: the caption is what a reader
 	// needs, and the filename is what everything else joins on — and where they
@@ -98,7 +102,7 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	ctx := context.Background()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.id, d.path, d.title, d.added_at, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
-		        d.gen_content_tags, d.gen_role_tags, d.gen_summary, d.gen_model,
+		        d.gen_content_tags, d.gen_role_tags, d.gen_summary, d.gen_model, d.src_size, d.src_mtime,
 		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND `+SQLOwnWordsF+`) AS fragments
 		   FROM documents d ORDER BY d.added_at DESC`)
 	if err != nil {
@@ -111,14 +115,14 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	var out []DocSummary
 	var ids []int64
 	for rows.Next() {
-		var id, addedAt, frags int64
+		var id, addedAt, frags, srcSize, srcMtime int64
 		var path, title, fragMode, genName, genKind, genSource, ctStr, rtStr, genSummary, genModel string
-		if err := rows.Scan(&id, &path, &title, &addedAt, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &genSummary, &genModel, &frags); err != nil {
+		if err := rows.Scan(&id, &path, &title, &addedAt, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &genSummary, &genModel, &srcSize, &srcMtime, &frags); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		out = append(out, DocSummary{Path: path, Title: title, Fragments: int(frags), FragMode: fragMode,
-			AddedAt: addedAt, Engines: map[string]int{},
+			AddedAt: addedAt, SrcSize: srcSize, SrcMtime: srcMtime, Engines: map[string]int{},
 			GenName: genName, GenKind: genKind, GenSource: genSource, GenSummary: genSummary, GenModel: genModel,
 			GenContentTags: splitTagList(ctStr), GenRoleTags: splitTagList(rtStr)})
 		ids = append(ids, id)

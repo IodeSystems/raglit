@@ -111,6 +111,9 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 	if ierr != nil {
 		return w.Store.failJob(job.ID, ierr.Error())
 	}
+	// The Documents tree's size and date (srcstat.go). Best-effort: a stat that
+	// fails leaves the document's size unknown, not the job failed.
+	_ = w.Store.RecordSourceStat(job.URL)
 	return w.Store.completeJob(job.ID, n, mode)
 }
 

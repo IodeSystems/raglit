@@ -375,6 +375,10 @@ func migrate(db *sql.DB) error {
 		// at ingest because that is the only moment the evidence exists.
 		{"ocr_pages", "text_chars", "INTEGER NOT NULL DEFAULT 0"},
 		{"ocr_pages", "described_chars", "INTEGER NOT NULL DEFAULT 0"},
+		// The source file's size and modified time (srcstat.go), for the
+		// Documents tree. 0 is unknown: a URL, an upload, or a file gone.
+		{"documents", "src_size", "INTEGER NOT NULL DEFAULT 0"},
+		{"documents", "src_mtime", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

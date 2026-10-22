@@ -45,3 +45,23 @@ func reembedIndexes(ctx context.Context, reg *raglit.Registry, model string) {
 		}
 	}
 }
+
+// backfillSourceStats records file size and modified time for documents
+// ingested before raglit kept them (srcstat.go). One stat per document, once:
+// a filled row is never visited again.
+func backfillSourceStats(ctx context.Context, reg *raglit.Registry) {
+	for _, name := range reg.Names() {
+		if ctx.Err() != nil {
+			return
+		}
+		st, err := reg.Get(name)
+		if err != nil {
+			continue
+		}
+		if n, err := st.BackfillSourceStats(); err != nil {
+			log.Printf("raglit: %s: file size/date backfill: %v", name, err)
+		} else if n > 0 {
+			log.Printf("raglit: %s: recorded file size and date for %d document(s)", name, n)
+		}
+	}
+}

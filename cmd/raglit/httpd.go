@@ -128,6 +128,7 @@ func runHttpd(subcmd string, args []string) error {
 	go runIdentityWorkers(ctx, reg, cfgHome)
 	// Vectors from another embed model are dropped and rebuilt (reembed.go).
 	go reembedIndexes(ctx, reg, *lf.embedModel)
+	go backfillSourceStats(ctx, reg)
 	// Stay on the current source. Rebuilds immediately, restarts as soon as no
 	// job is RUNNING — a re-exec mid-ingest aborts that job and it is not
 	// requeued, while pending rows survive and the new process picks them up.
