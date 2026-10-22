@@ -315,6 +315,8 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("identityJobs", http.MethodGet, "/api/identity-jobs", "The captioning queue: counts and rows."), identityJobsOp(reg))
 	gat.Register(api, g, op("identify", http.MethodPost, "/api/identify", "Say what a document IS: generate a caption/summary/kind, or record a person's."), identifyOp(reg))
 	gat.Register(api, g, op("pauseIndex", http.MethodPost, "/api/index/pause", "Pause or resume an index: a paused index runs no work; jobs queue and run on resume."), pauseOp(reg))
+	gat.Register(api, g, op("getIgnore", http.MethodGet, "/api/index/ignore", "An index's ignore patterns: paths they match are refused at enqueue."), getIgnoreOp(reg))
+	gat.Register(api, g, op("putIgnore", http.MethodPut, "/api/index/ignore", "Replace an index's ignore patterns. Indexed documents are untouched; purge removes them."), putIgnoreOp(reg))
 	gat.Register(api, g, op("forget", http.MethodPost, "/api/forget", "Drop a document from the index (no grounds recorded; not a withdrawal)."), forgetOp(reg))
 	gat.Register(api, g, op("withdraw", http.MethodPost, "/api/withdraw", "Rule a document out of the corpus, with grounds. Survives re-ingest."), withdrawOp(reg))
 	gat.Register(api, g, op("restore", http.MethodPost, "/api/restore", "Return a withdrawn document to the corpus (does not re-index)."), restoreOp(reg))
@@ -852,6 +854,8 @@ type ingestOut struct {
 	Body struct {
 		Queued int     `json:"queued"`
 		JobIDs []int64 `json:"job_ids"`
+		// Ignored counts targets an ignore pattern refused (index Controls).
+		Ignored int `json:"ignored,omitempty"`
 		Index  string  `json:"index"`
 	}
 }
@@ -872,8 +876,13 @@ func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut
 			return nil, err
 		}
 		ids := make([]int64, 0, len(in.Body.Targets))
+		ignored := 0
 		for _, t := range in.Body.Targets {
 			id, err := st.EnqueueFresh(t, in.Body.Title, in.Body.Fresh)
+			if errors.Is(err, raglit.ErrIgnored) {
+				ignored++
+				continue
+			}
 			if err != nil {
 				return nil, huma.Error500InternalServerError("enqueue", err)
 			}
@@ -881,6 +890,7 @@ func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut
 		}
 		out := &ingestOut{}
 		out.Body.Queued = len(ids)
+		out.Body.Ignored = ignored
 		out.Body.JobIDs = ids
 		out.Body.Index = defaultIndexName(idx)
 		return out, nil

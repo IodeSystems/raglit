@@ -81,3 +81,51 @@ func runPause(verb string, args []string) error {
 	}
 	return nil
 }
+
+type ignoreIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+}
+type ignorePutIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	Body  struct {
+		Patterns []string `json:"patterns" doc:"globs matched against a path at enqueue; **/dir/** for a directory anywhere, a glob with no / for a file name"`
+	}
+}
+type ignoreOut struct {
+	Body struct {
+		Patterns []string `json:"patterns"`
+		// Builtin is what every index refuses whatever its own list.
+		Builtin []string `json:"builtin"`
+	}
+}
+
+func ignoreView(patterns []string) *ignoreOut {
+	out := &ignoreOut{}
+	out.Body.Patterns = patterns
+	out.Body.Builtin = raglit.EnqueueBuiltinIgnore()
+	return out
+}
+
+func getIgnoreOp(reg *raglit.Registry) func(context.Context, *ignoreIn) (*ignoreOut, error) {
+	return func(ctx context.Context, in *ignoreIn) (*ignoreOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		return ignoreView(st.IgnorePatterns()), nil
+	}
+}
+
+func putIgnoreOp(reg *raglit.Registry) func(context.Context, *ignorePutIn) (*ignoreOut, error) {
+	return func(ctx context.Context, in *ignorePutIn) (*ignoreOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		got, err := st.SetIgnorePatterns(in.Body.Patterns)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
+		return ignoreView(got), nil
+	}
+}

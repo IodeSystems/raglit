@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -53,5 +54,39 @@ func TestPausedIndexClaimsNothing(t *testing.T) {
 	}
 	if j, err := s.claimNextIdentityJob(); err != nil || j == nil {
 		t.Fatalf("resumed index claimed no caption job: %v", err)
+	}
+}
+
+// Enqueue refuses node_modules on every index and whatever the index's own
+// list names, with ErrIgnored so a batch can skip it.
+func TestEnqueueRefusesIgnoredPaths(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Enqueue("/w/.claude/worktrees/a/mobile/node_modules/x/README.md", ""); !errors.Is(err, ErrIgnored) {
+		t.Fatalf("node_modules enqueued: %v", err)
+	}
+	if _, err := s.Enqueue("/w/.claude/worktrees/a/README.md", ""); err != nil {
+		t.Fatalf("an unignored path was refused: %v", err)
+	}
+	got, err := s.SetIgnorePatterns([]string{" **/.claude/** ", "*.lock", "", "*.lock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("patterns = %q, want trimmed and deduplicated", got)
+	}
+	for _, p := range []string{"/w/.claude/worktrees/a/main.go", "file:///w/yarn.lock"} {
+		if _, err := s.Enqueue(p, ""); !errors.Is(err, ErrIgnored) {
+			t.Errorf("%s enqueued: %v", p, err)
+		}
+	}
+	if _, err := s.Enqueue("/w/src/main.go", ""); err != nil {
+		t.Errorf("an unignored path was refused: %v", err)
+	}
+	if got := s.IgnorePatterns(); len(got) != 2 || got[0] != "**/.claude/**" {
+		t.Errorf("stored patterns = %q", got)
 	}
 }

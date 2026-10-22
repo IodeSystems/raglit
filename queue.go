@@ -82,6 +82,11 @@ func (s *Store) EnqueueFresh(url, title string, fresh bool) (int64, error) {
 	if IsGeneratedSidecar(url) {
 		return 0, fmt.Errorf("raglit: enqueue: %s is raglit's own output, not a source document", url)
 	}
+	// The ignore patterns are checked here for the same reason: every ingest
+	// path passes through, so none can go around them.
+	if pat := s.IgnoredBy(url); pat != "" {
+		return 0, fmt.Errorf("%w: %s matches %q", ErrIgnored, url, pat)
+	}
 	// One transaction, so two callers racing on the same url cannot both see an
 	// empty queue and both insert.
 	tx, err := s.db.Begin()

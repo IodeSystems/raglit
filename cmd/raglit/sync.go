@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -86,7 +87,7 @@ func runSync(args []string) error {
 				return err
 			}
 			for _, f := range files {
-				if _, err := st.Enqueue(f, ""); err != nil {
+				if _, err := st.Enqueue(f, ""); err != nil && !errors.Is(err, raglit.ErrIgnored) {
 					st.Close()
 					return err
 				}

@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -493,7 +494,7 @@ func runIndex(args []string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := store.Enqueue(abs, ""); err != nil {
+		if _, err := store.Enqueue(abs, ""); err != nil && !errors.Is(err, raglit.ErrIgnored) {
 			return err
 		}
 	}

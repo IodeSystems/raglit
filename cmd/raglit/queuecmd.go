@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -276,6 +277,10 @@ func runIngest(args []string) error {
 
 	for _, u := range targets {
 		id, err := store.EnqueueFresh(u, *title, *fresh)
+		if errors.Is(err, raglit.ErrIgnored) {
+			fmt.Printf("ignored  %v\n", err)
+			continue
+		}
 		if err != nil {
 			return err
 		}
