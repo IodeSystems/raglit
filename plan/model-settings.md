@@ -44,19 +44,29 @@ be unavailable; pattern is PROVIDER then MODEL (corrallm's add-model flow).
   3. None is allowed for vision and audio. Segment empty → the vision model.
   4. Save.
 
-## Slices
+## Slices (✅ 2026-10-22)
 
-1. ◻ Config providers + per-role endpoint resolution (pipeline.go, queuecmd.go STT).
-2. ◻ Vision None → tesseract-only OCR (cheap result always accepted; no VLM).
-3. ◻ embed_model meta + re-embed backfill.
-4. ◻ Settings API + self-reload.
-5. ◻ UI page.
+1. ✅ Config providers + per-role endpoint resolution — b29da58.
+2. ✅ Vision None → tesseract-only OCR — 12ad753.
+3. ✅ embed_model meta + re-embed backfill — 796abc8.
+4. ✅ Settings API + self-reload — 0533cd7, 8430729.
+5. ✅ UI page (Settings › Models) — 58c3125. Browser-checked against a stub
+   provider.
+
+**next:** deploy to the live daemon (needs a restart), then set the real
+providers from the page.
 
 **risks:**
 - A reload re-execs only when idle, so a busy daemon applies settings late. The
   UI says "applies when the current job finishes".
 - The tesseract-only path has no figure descriptions and no LLM segmentation.
 - Keys are stored in plain text in config.json (0600), the same as today.
+- The first start after deploy records the current embed model on every index
+  (adopt). A model changed before that first start is not detected.
+- The re-embed runs one index at a time at daemon start. A large corpus means
+  hours of embed calls, during which semantic search returns partial results.
+- The tesseract-only path is untested against a real scan in this session;
+  the stub engine test covers the accept-as-read rule.
 
 **blocking decisions:** none open.
 
