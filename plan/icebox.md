@@ -2,6 +2,19 @@
 
 Not scheduled. Pick up explicitly. Each entry carries enough design to resume.
 
+## ◻ web/: TypeScript 7 + oxlint type-aware lint (fleet standard X-LINT-2, 2026-10-22)
+
+- **State:** web/ is on typescript ^6.0.3, npm (package-lock.json), no linter. `typecheck` = `tsc -b --noEmit`.
+- **Recipe:** reference is gwag commits c2dd1f6 (fixes) and 79d4fdd (tooling), plus gwag `ui/.oxlintrc.json`.
+  1. `npm i -D typescript@^7 oxlint oxlint-tsgolint`.
+  2. Copy gwag's `.oxlintrc.json`; set `ignorePatterns` to `dist`.
+  3. Add the script `lint` = `oxlint --type-aware`.
+  4. Fix the findings, then build and boot-check.
+- **Trigger:** Carl schedules it, or the next UI dependency upgrade.
+- **Risks:**
+  - This is the first lint run on web/, so expect findings, probably floating promises from `invalidateQueries`.
+  - `tsc -b` (project references) under TS 7 is not yet checked.
+
 ## ◻ dun shared memory — follow-ups (auth itself done → `plan/done/2026-10-19-daemon-auth.md`)
 
 Not scheduled. Each is opt-in.
