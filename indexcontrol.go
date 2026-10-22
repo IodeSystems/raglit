@@ -49,7 +49,21 @@ const metaIgnore = "ignore"
 // skills under ~/.claude, uploads under ~/.raglit — so only the rule nothing
 // legitimate breaks is global. Measured cost of not having it: one dun session
 // queued ~7,400 files from worktree node_modules, ~1,900 of them for captions.
-var enqueueIgnore = []string{"**/node_modules/**"}
+//
+// Mobile build output is global for the same reason (USER 2026-10-22): a
+// React Native tree's android/app/build holds a copy of every image per build
+// variant, and images go to the vision model. A bare `build` is NOT here: a
+// corpus folder named "build" is legitimate, so only the platform-qualified
+// paths are.
+var enqueueIgnore = []string{
+	"**/node_modules/**",
+	"**/.gradle/**",
+	"**/Pods/**",
+	"**/android/build/**",
+	"**/android/app/build/**",
+	"**/ios/build/**",
+	"**/.expo/**",
+}
 
 // IgnorePatterns is this index's own ignore list: globs a path must not match to
 // be enqueued. Matched against the absolute path, so a directory anywhere is

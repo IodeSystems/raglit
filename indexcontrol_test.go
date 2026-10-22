@@ -71,6 +71,22 @@ func TestEnqueueRefusesIgnoredPaths(t *testing.T) {
 	if _, err := s.Enqueue("/w/.claude/worktrees/a/README.md", ""); err != nil {
 		t.Fatalf("an unignored path was refused: %v", err)
 	}
+	for _, p := range []string{
+		"/w/app/android/app/build/intermediates/res/merged/debug/splash.png",
+		"/w/app/android/build/reports/x.md",
+		"/w/app/android/.gradle/8.0/x.txt",
+		"/w/app/ios/Pods/Lib/README.md",
+		"/w/app/ios/build/x.png",
+		"/w/app/.expo/web/cache/x.png",
+	} {
+		if _, err := s.Enqueue(p, ""); !errors.Is(err, ErrIgnored) {
+			t.Errorf("mobile build output enqueued: %s: %v", p, err)
+		}
+	}
+	// A corpus folder named "build" is not build output.
+	if _, err := s.Enqueue("/w/case/build/permit.pdf", ""); err != nil {
+		t.Errorf("a folder named build was refused: %v", err)
+	}
 	got, err := s.SetIgnorePatterns([]string{" **/.claude/** ", "*.lock", "", "*.lock"})
 	if err != nil {
 		t.Fatal(err)
