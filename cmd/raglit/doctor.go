@@ -44,8 +44,9 @@ func runDoctor(args []string) error {
 	if !visionOK {
 		fmt.Println("  ✗ no vision_model configured — the cascade cannot fall back to a VLM")
 	} else {
-		fmt.Printf("  model:    %s\n  endpoint: %s\n", cfg.VisionModel, cfg.BaseURL)
-		if ok, detail := pingEndpoint(cfg.BaseURL); ok {
+		base, _, _ := cfg.Endpoint(cfg.VisionProvider)
+		fmt.Printf("  model:    %s\n  endpoint: %s\n", cfg.VisionModel, base)
+		if ok, detail := pingEndpoint(base); ok {
 			fmt.Printf("  ✓ endpoint reachable (%s)\n", detail)
 		} else {
 			fmt.Printf("  ✗ endpoint unreachable: %s\n", detail)

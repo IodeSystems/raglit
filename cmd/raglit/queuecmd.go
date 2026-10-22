@@ -72,15 +72,15 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	// same broker as the vision and embed models, so the endpoint is already
 	// known; AudioBaseURL is only for the case where it is not.
 	if cfg.AudioModel != "" {
-		base := cfg.AudioBaseURL
-		if base == "" {
-			base = cfg.BaseURL
+		base, key, _ := cfg.Endpoint(cfg.AudioProvider)
+		if cfg.AudioBaseURL != "" {
+			base = cfg.AudioBaseURL
 		}
 		// Gated on the same channels as every other model. The daemon starts one
 		// runner per lane slot and will offer several recordings at once; oidio
 		// holds a single recogniser behind corrallm, and the width for it is
 		// learned from its own 429s rather than assumed here.
-		w.STT = &raglit.STT{BaseURL: base, APIKey: cfg.APIKey, Model: cfg.AudioModel, Chan: lf.chans}
+		w.STT = &raglit.STT{BaseURL: base, APIKey: key, Model: cfg.AudioModel, Chan: lf.chans}
 	}
 	// Deterministic text fragmenter params (config-or-default), with the fragment
 	// ceiling capped by the embed model's probed input limit.

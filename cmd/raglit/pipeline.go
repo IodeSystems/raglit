@@ -14,12 +14,22 @@ import (
 	"github.com/iodesystems/raglit"
 )
 
-// llmFlags holds the shared model-connection flags. One endpoint + key, two
-// models: a vision model for OCR and an embedding model for vectors. Flags
-// default EMPTY; resolve() fills them from `raglit init` config (then env, then
-// an OpenAI-standard fallback for the URL), so explicit flags override config.
+// llmFlags holds the shared model-connection flags: a vision model for OCR, an
+// embedding model for vectors, a segment model for text. Flags default EMPTY;
+// resolve() fills them from config (then env, then an OpenAI-standard fallback
+// for the URL), so explicit flags override config.
+//
+// Each role has its own endpoint (config providers). --llm-url/--llm-key, when
+// given, override every role's.
 type llmFlags struct {
 	url, key, visionModel, embedModel *string
+	// Per-role endpoints, filled by resolve.
+	vision, segment, embed endpoint
+	// flagURL/flagKey are --llm-url/--llm-key as typed, captured on the first
+	// resolve: after it, url/key hold resolved values and no longer say whether
+	// the user gave one.
+	flagURL, flagKey string
+	resolved         bool
 	// segmentModel splits TEXT into fragments. Empty → visionModel, which is what
 	// it always was — see Config.SegmentModel for why they are separable.
 	segmentModel *string
@@ -46,15 +56,24 @@ func addLLMFlags(fs *flag.FlagSet) *llmFlags {
 
 // resolve fills any unset flag from the home's config, then env, then a sane
 // fallback. Precedence: explicit flag > config > env > hardcoded.
+// endpoint is one role's base URL and key.
+type endpoint struct{ url, key string }
+
 func (f *llmFlags) resolve(home raglit.Home) {
 	cfg, _, _ := raglit.LoadConfig(home)
-	*f.url = firstNonEmpty(*f.url, cfg.BaseURL, "https://api.openai.com/v1")
+	if !f.resolved {
+		f.flagURL, f.flagKey, f.resolved = *f.url, *f.key, true
+	}
+	*f.url = firstNonEmpty(f.flagURL, cfg.BaseURL, "https://api.openai.com/v1")
 	*f.visionModel = firstNonEmpty(*f.visionModel, cfg.VisionModel)
 	*f.embedModel = firstNonEmpty(*f.embedModel, cfg.EmbedModel)
 	// Falls back to the vision model, so an index that never heard of this keeps
 	// behaving exactly as before.
 	*f.segmentModel = firstNonEmpty(*f.segmentModel, cfg.SegmentModel, *f.visionModel)
-	*f.key = firstNonEmpty(*f.key, os.Getenv("RAGLIT_LLM_KEY"), cfg.APIKey)
+	*f.key = firstNonEmpty(f.flagKey, os.Getenv("RAGLIT_LLM_KEY"), cfg.APIKey)
+	f.vision = f.endpointFor(cfg, cfg.VisionProvider)
+	f.segment = f.endpointFor(cfg, cfg.SegmentProviderName())
+	f.embed = f.endpointFor(cfg, cfg.EmbedProvider)
 	if f.chans != nil {
 		f.chans.Max = cfg.ModelChannelMax
 	}
@@ -73,6 +92,30 @@ func (f *llmFlags) gate(c *llm.Client, model string) raglit.Chatter {
 	return f.chans.Gate(c, model)
 }
 
+// or is e, or the flat url/key when e was never resolved (a caller that set
+// the flags directly).
+func (f *llmFlags) or(e endpoint) endpoint {
+	if e.url == "" {
+		return endpoint{url: *f.url, key: *f.key}
+	}
+	return e
+}
+
+// endpointFor resolves a role's provider. A named provider uses its own key,
+// never $RAGLIT_LLM_KEY: that key belongs to the legacy endpoint, and sending it
+// to another provider would leak it there.
+func (f *llmFlags) endpointFor(cfg raglit.Config, provider string) endpoint {
+	if provider == "" {
+		return endpoint{url: *f.url, key: *f.key}
+	}
+	u, k, ok := cfg.Endpoint(provider)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "raglit: no provider named %q in config — using base_url\n", provider)
+		return endpoint{url: *f.url, key: *f.key}
+	}
+	return endpoint{url: firstNonEmpty(f.flagURL, u), key: firstNonEmpty(f.flagKey, k)}
+}
+
 func (f *llmFlags) requireVision() error {
 	if *f.visionModel == "" {
 		return fmt.Errorf("no vision model configured — run 'raglit init' or pass --llm-model")
@@ -88,7 +131,7 @@ func (f *llmFlags) requireEmbed() error {
 }
 
 func (f *llmFlags) visionClient() *llm.Client {
-	c := llm.NewClient(*f.url, *f.key, *f.visionModel)
+	c := llm.NewClient(f.or(f.vision).url, f.or(f.vision).key, *f.visionModel)
 	// Ingest is a BATCH, not a chat turn, and agentkit's default 5xx cap of five
 	// attempts is tuned for the latter. A 33-page document is ~33 requests, so
 	// one upstream blip outlasting ~15s of backoff kills the whole document —
@@ -111,7 +154,7 @@ func (f *llmFlags) segmentClient() *llm.Client {
 	if m == "" {
 		m = *f.visionModel
 	}
-	c := llm.NewClient(*f.url, *f.key, m)
+	c := llm.NewClient(f.or(f.segment).url, f.or(f.segment).key, m)
 	c.Retry5xxAttempts = visionRetry5xxAttempts
 	return c
 }
@@ -188,7 +231,11 @@ func (f *llmFlags) identifier(home raglit.Home) *raglit.Identifier {
 	if model == "" {
 		return nil
 	}
-	c := llm.NewClient(*f.url, *f.key, model)
+	ep := f.or(f.segment)
+	if cfg.IdentityModel != "" {
+		ep = endpoint{url: *f.url, key: *f.key}
+	}
+	c := llm.NewClient(ep.url, ep.key, model)
 	c.Retry5xxAttempts = visionRetry5xxAttempts
 	return raglit.NewIdentifier(f.gate(c, model), model)
 }
@@ -198,7 +245,7 @@ func (f *llmFlags) identifier(home raglit.Home) *raglit.Identifier {
 // failures logged a different retry cap than the OCR client and sent an
 // investigation down the wrong path.
 func (f *llmFlags) embedClientForProbe() *llm.Client {
-	c := llm.NewClient(*f.url, *f.key, *f.embedModel)
+	c := llm.NewClient(f.or(f.embed).url, f.or(f.embed).key, *f.embedModel)
 	c.Retry5xxAttempts = visionRetry5xxAttempts
 	return c
 }

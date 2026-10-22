@@ -187,6 +187,48 @@ type Config struct {
 	// Auth turns on OIDC for the daemon and tells a client how to get a token.
 	// Nil → no auth, every index readable by anyone who can reach the daemon.
 	Auth *AuthConfig `json:"auth,omitempty"`
+
+	// Providers are named model endpoints, and each role picks one
+	// (USER 2026-10-22: provider, then model — set from the UI). A role with
+	// no provider uses BaseURL/APIKey above, so a config written before
+	// providers existed behaves exactly as it did.
+	Providers       map[string]Provider `json:"providers,omitempty"`
+	VisionProvider  string              `json:"vision_provider,omitempty"`
+	EmbedProvider   string              `json:"embed_provider,omitempty"`
+	SegmentProvider string              `json:"segment_provider,omitempty"`
+	AudioProvider   string              `json:"audio_provider,omitempty"`
+}
+
+// Provider is one OpenAI-compatible endpoint.
+type Provider struct {
+	// Kind is the preset it was made from: "custom", "openrouter", "litellm".
+	// Informational; the base URL is what is called.
+	Kind    string `json:"kind,omitempty"`
+	BaseURL string `json:"base_url"`
+	// APIKey is sent as a bearer token. Empty → no Authorization header.
+	APIKey string `json:"api_key,omitempty"`
+}
+
+// Endpoint is the base URL and key of a named provider. "" or an unknown name
+// → the legacy BaseURL/APIKey, with ok=false for an unknown name.
+func (c *Config) Endpoint(provider string) (baseURL, apiKey string, ok bool) {
+	if provider == "" {
+		return c.BaseURL, c.APIKey, true
+	}
+	p, found := c.Providers[provider]
+	if !found {
+		return c.BaseURL, c.APIKey, false
+	}
+	return p.BaseURL, p.APIKey, true
+}
+
+// SegmentProviderName is the segment role's provider. A segment role with no
+// model of its own runs on the vision model, and so on the vision provider.
+func (c *Config) SegmentProviderName() string {
+	if c.SegmentProvider == "" && c.SegmentModel == "" {
+		return c.VisionProvider
+	}
+	return c.SegmentProvider
 }
 
 // AuthConfig is the daemon's OIDC setup (issuer/audience/admin) and the
