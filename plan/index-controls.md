@@ -41,6 +41,13 @@ file patterns and ignore file patterns. I'm burning money on node_modules."
    path returns ErrIgnored, so a batch skips it and counts it.
 3. ✅ Purge — 46ac360, cf7d793. Dry-run preview first. When an ignore pattern
    is added, the page offers to purge what already matches.
+4. ✅ Mobile build output ignored on every index — 64a9903 (USER 2026-10-22:
+   "close it now"): `.gradle`, `Pods`, `android/build`, `android/app/build`,
+   `ios/build`, `.expo`. A bare `build/` is not ignored.
+5. ✅ Allow list + MCP `manage_index` — 0bbae7f, 7904312, 2d4c76f (USER
+   2026-10-22: allowlist builtins from the index page or MCP). A path that
+   matches an index's allow list passes the global ignores; the index's own
+   ignore list still wins. On the page, click a builtin chip to allow it.
 
 The Controls page was checked in the browser against a scratch daemon: pause,
 the chip, adding an ignore pattern, the purge offer, purge and resume. The CLI
@@ -56,14 +63,12 @@ was checked too.
 - Patterns match the absolute path. A glob anchored at a root (`mobile/**`)
   matches nothing; use `**/mobile/**`.
 - A purge cannot be undone. The preview is the only guard.
-- A direct `raglit ingest <dir>` walk applies only `node_modules` and the
-  index's own list. For build output (Android, iOS, Python) see the blocking
-  decision.
+- The global list covers JS and mobile output only. Python (`.venv`,
+  `__pycache__`) and other build trees still need an index pattern.
+- `manage_index` is in MCP client mode and embedded serve. With auth on, its
+  daemon calls carry no token, the same as every other proxied tool.
 
-**blocking decisions:**
-- Should more build-output directories be ignored at Enqueue on every index
-  (`.gradle`, `Pods`, `android/build`, `ios/build`, `.expo`)? Asked
-  2026-10-22.
+**blocking decisions:** none open.
 
 **optional extensions:**
 - Pause the whole daemon (every index).
