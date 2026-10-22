@@ -1,0 +1,228 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"slices"
+
+	"github.com/iodesystems/raglit"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+// The manage_index MCP tool: the index Controls page for an agent. Pause and
+// resume, the ignore and allow lists, and purge by pattern. One handler over
+// two backings, the local registry (embedded serve) or the daemon's HTTP
+// surface (client mode), like every other tool.
+
+// controlState is what manage_index reports after every action.
+type controlState struct {
+	Index   string   `json:"index"`
+	Paused  bool     `json:"paused"`
+	Ignore  []string `json:"ignore"`
+	Allow   []string `json:"allow"`
+	Builtin []string `json:"builtin"`
+}
+
+type indexControls interface {
+	state(idx string) (controlState, error)
+	setPaused(idx string, paused bool) error
+	// setLists replaces the lists given; nil leaves one unchanged.
+	setLists(idx string, ignore, allow *[]string) error
+	purge(idx, pattern string, dry bool) (raglit.PurgeResult, error)
+}
+
+const manageIndexHelp = "Operate an index: pause/resume its work, edit the patterns refused at enqueue, " +
+	"or purge indexed documents by pattern. action: status | pause | resume | ignore | unignore | " +
+	"allow | disallow | purge. A paused index runs no imports, captions or embeds; jobs still queue. " +
+	"`ignore PATTERN` refuses matching paths at enqueue on this index. Every index also refuses the " +
+	"builtin list (node_modules, mobile build output); `allow PATTERN` exempts matching paths from the " +
+	"builtin list on this index. Patterns are globs matched against the absolute path: **/dir/** is a " +
+	"directory anywhere, a glob with no / matches the file name. `purge PATTERN` reports what would be " +
+	"removed; pass confirm=true to remove it (cannot be undone; files on disk stay). Every action " +
+	"returns the index's resulting state."
+
+func manageIndexTool() mcp.Tool {
+	return mcp.NewTool("manage_index",
+		mcp.WithDescription(manageIndexHelp),
+		mcp.WithString("action", mcp.Required(),
+			mcp.Enum("status", "pause", "resume", "ignore", "unignore", "allow", "disallow", "purge")),
+		mcp.WithString("index", mcp.Description("index name (default \"default\")")),
+		mcp.WithString("pattern", mcp.Description("glob for ignore, unignore, allow, disallow and purge")),
+		mcp.WithBoolean("confirm", mcp.Description("purge only: true removes; false or omitted reports what would go")),
+	)
+}
+
+func manageIndexHandler(c indexControls, resolve func(string) (string, error), display func(string) string) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		action, err := req.RequireString("action")
+		if err != nil {
+			return mcp.NewToolResultError("action is required"), nil
+		}
+		idx, err := resolve(req.GetString("index", ""))
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("manage_index", err), nil
+		}
+		pattern := req.GetString("pattern", "")
+		needPattern := action != "status" && action != "pause" && action != "resume"
+		if needPattern && pattern == "" {
+			return mcp.NewToolResultError(action + " needs a pattern"), nil
+		}
+		reply := func(v any) (*mcp.CallToolResult, error) {
+			b, _ := json.Marshal(v)
+			return mcp.NewToolResultText(string(b)), nil
+		}
+		fail := func(err error) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultErrorFromErr("manage_index "+action, err), nil
+		}
+
+		if action == "purge" {
+			res, err := c.purge(idx, pattern, !req.GetBool("confirm", false))
+			if err != nil {
+				return fail(err)
+			}
+			return reply(map[string]any{"index": display(idx), "removed": req.GetBool("confirm", false), "purge": res})
+		}
+		cur, err := c.state(idx)
+		if err != nil {
+			return fail(err)
+		}
+		edit := func(list []string, add bool) *[]string {
+			out := slices.DeleteFunc(slices.Clone(list), func(p string) bool { return p == pattern })
+			if add {
+				out = append(out, pattern)
+			}
+			return &out
+		}
+		switch action {
+		case "status":
+		case "pause", "resume":
+			err = c.setPaused(idx, action == "pause")
+		case "ignore", "unignore":
+			err = c.setLists(idx, edit(cur.Ignore, action == "ignore"), nil)
+		case "allow", "disallow":
+			err = c.setLists(idx, nil, edit(cur.Allow, action == "allow"))
+		default:
+			return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
+		}
+		if err != nil {
+			return fail(err)
+		}
+		if cur, err = c.state(idx); err != nil {
+			return fail(err)
+		}
+		cur.Index = display(idx)
+		return reply(cur)
+	}
+}
+
+// storeControls backs manage_index with the local registry.
+type storeControls struct{ reg *raglit.Registry }
+
+func (c storeControls) state(idx string) (controlState, error) {
+	st, err := c.reg.Get(idx)
+	if err != nil {
+		return controlState{}, err
+	}
+	return controlState{Index: idx, Paused: st.Paused(), Ignore: st.IgnorePatterns(),
+		Allow: st.AllowPatterns(), Builtin: raglit.EnqueueBuiltinIgnore()}, nil
+}
+
+func (c storeControls) setPaused(idx string, paused bool) error {
+	st, err := c.reg.Get(idx)
+	if err != nil {
+		return err
+	}
+	return st.SetPaused(paused)
+}
+
+func (c storeControls) setLists(idx string, ignore, allow *[]string) error {
+	st, err := c.reg.Get(idx)
+	if err != nil {
+		return err
+	}
+	if ignore != nil {
+		if _, err := st.SetIgnorePatterns(*ignore); err != nil {
+			return err
+		}
+	}
+	if allow != nil {
+		if _, err := st.SetAllowPatterns(*allow); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c storeControls) purge(idx, pattern string, dry bool) (raglit.PurgeResult, error) {
+	st, err := c.reg.Get(idx)
+	if err != nil {
+		return raglit.PurgeResult{}, err
+	}
+	return st.Purge(pattern, dry)
+}
+
+// daemonControls backs manage_index with the daemon's HTTP surface.
+type daemonControls struct{ base string }
+
+func (c daemonControls) state(idx string) (controlState, error) {
+	q := url.Values{"index": {idx}}
+	b, err := daemonGet(c.base, "/api/index/ignore", q)
+	if err != nil {
+		return controlState{}, err
+	}
+	var lists struct {
+		Patterns []string `json:"patterns"`
+		Builtin  []string `json:"builtin"`
+		Allow    []string `json:"allow"`
+	}
+	if err := json.Unmarshal(b, &lists); err != nil {
+		return controlState{}, err
+	}
+	b, err = daemonGet(c.base, "/indexes", nil)
+	if err != nil {
+		return controlState{}, err
+	}
+	var all struct {
+		Indexes []idxRow `json:"indexes"`
+	}
+	if err := json.Unmarshal(b, &all); err != nil {
+		return controlState{}, err
+	}
+	out := controlState{Index: idx, Ignore: lists.Patterns, Allow: lists.Allow, Builtin: lists.Builtin}
+	for _, r := range all.Indexes {
+		if r.Name == idx {
+			out.Paused = r.Paused
+		}
+	}
+	return out, nil
+}
+
+func (c daemonControls) setPaused(idx string, paused bool) error {
+	_, err := daemonPostJSON(c.base, "/api/index/pause?"+urlValues("index", idx).Encode(), map[string]any{"paused": paused})
+	return err
+}
+
+func (c daemonControls) setLists(idx string, ignore, allow *[]string) error {
+	body := map[string]any{}
+	if ignore != nil {
+		body["patterns"] = *ignore
+	}
+	if allow != nil {
+		body["allow"] = *allow
+	}
+	_, err := daemonDo(c.base, "PUT", "/api/index/ignore?"+urlValues("index", idx).Encode(), body)
+	return err
+}
+
+func (c daemonControls) purge(idx, pattern string, dry bool) (raglit.PurgeResult, error) {
+	var res raglit.PurgeResult
+	b, err := daemonPostJSON(c.base, "/api/index/purge?"+urlValues("index", idx).Encode(),
+		map[string]any{"pattern": pattern, "dry_run": dry})
+	if err != nil {
+		return res, err
+	}
+	return res, json.Unmarshal(b, &res)
+}

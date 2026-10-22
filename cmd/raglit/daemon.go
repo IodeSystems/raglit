@@ -435,11 +435,21 @@ func daemonIngest(base string, targets []string, index, title string, fresh bool
 // daemonPostJSON POSTs body as JSON and returns the response body, erroring on a
 // non-200 (with the daemon's error body). Used by the MCP client proxies.
 func daemonPostJSON(base, path string, body any) ([]byte, error) {
+	return daemonDo(base, http.MethodPost, path, body)
+}
+
+// daemonDo sends body as JSON with any method; daemonPostJSON's contract.
+func daemonDo(base, method, path string, body any) ([]byte, error) {
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.Post(strings.TrimRight(base, "/")+path, "application/json", bytes.NewReader(buf))
+	req, err := http.NewRequest(method, strings.TrimRight(base, "/")+path, bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

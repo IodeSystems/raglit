@@ -62,3 +62,43 @@ func TestPurgeOp(t *testing.T) {
 		t.Errorf("empty pattern: %d, want 422", code)
 	}
 }
+
+// PUT changes only the list it is given.
+func TestIgnorePutKeepsTheOtherList(t *testing.T) {
+	srv, _ := settingsServer(t, `{}`)
+	doAs(t, "PUT", srv.URL+"/api/index/ignore?index=default", "", `{"patterns":["**/dist/**"]}`)
+	_, body := doAs(t, "PUT", srv.URL+"/api/index/ignore?index=default", "", `{"allow":["**/Pods/**"]}`)
+	if !strings.Contains(body, `"patterns":["**/dist/**"]`) || !strings.Contains(body, `"allow":["**/Pods/**"]`) {
+		t.Fatalf("lists after two PUTs: %s", body)
+	}
+}
+
+// manage_index over the daemon proxy: pause, ignore, allow and a purge dry run
+// and confirm, each answered with the resulting state.
+func TestManageIndexTool(t *testing.T) {
+	srv, _ := gatTestServer(t) // seeds file:///notes.md
+	h := daemonToolHandlers(srv.URL, 8, "", nil).manageIndex
+	if out := callTool(t, h, map[string]any{"action": "pause", "index": "default"}); !strings.Contains(out, `"paused":true`) {
+		t.Fatalf("pause: %s", out)
+	}
+	if out := callTool(t, h, map[string]any{"action": "resume", "index": "default"}); !strings.Contains(out, `"paused":false`) {
+		t.Fatalf("resume: %s", out)
+	}
+	if out := callTool(t, h, map[string]any{"action": "ignore", "pattern": "**/dist/**"}); !strings.Contains(out, `"ignore":["**/dist/**"]`) {
+		t.Fatalf("ignore: %s", out)
+	}
+	if out := callTool(t, h, map[string]any{"action": "allow", "pattern": "**/Pods/**"}); !strings.Contains(out, `"allow":["**/Pods/**"]`) ||
+		!strings.Contains(out, `"ignore":["**/dist/**"]`) {
+		t.Fatalf("allow: %s", out)
+	}
+	if out := callTool(t, h, map[string]any{"action": "unignore", "pattern": "**/dist/**"}); !strings.Contains(out, `"ignore":[]`) {
+		t.Fatalf("unignore: %s", out)
+	}
+	if out := callTool(t, h, map[string]any{"action": "purge", "pattern": "notes.md"}); !strings.Contains(out, `"documents":1`) || !strings.Contains(out, `"removed":false`) {
+		t.Fatalf("purge dry run: %s", out)
+	}
+	callTool(t, h, map[string]any{"action": "purge", "pattern": "notes.md", "confirm": true})
+	if out := callTool(t, h, map[string]any{"action": "purge", "pattern": "notes.md"}); !strings.Contains(out, `"documents":0`) {
+		t.Fatalf("document left after purge: %s", out)
+	}
+}

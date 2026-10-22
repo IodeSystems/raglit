@@ -22,6 +22,9 @@ import (
 // the shared daemon this project only sees its own indexes.
 func daemonToolHandlers(base string, defLimit int, ns string, shared []string) toolHandlers {
 	return toolHandlers{
+		manageIndex: manageIndexHandler(daemonControls{base}, func(name string) (string, error) {
+			return nsWriteIndex(ns, shared, name)
+		}, func(name string) string { return nsStrip(ns, name) }),
 		search: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			q, err := req.RequireString("query")
 			if err != nil {

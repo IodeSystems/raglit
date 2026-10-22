@@ -84,6 +84,12 @@ func runServe(args []string) error {
 		getDocument:   getDocumentHandler(reg),
 		getFields:     getFieldsHandler(reg),
 		ocr:           ocrHandler(buildToolOCR(lf, homeOf())),
+		manageIndex: manageIndexHandler(storeControls{reg}, func(name string) (string, error) {
+			if name == "" {
+				name = "default"
+			}
+			return name, nil
+		}, func(name string) string { return name }),
 	})
 	return server.ServeStdio(s)
 }
@@ -100,11 +106,15 @@ type toolHandlers struct {
 	getDocument   server.ToolHandlerFunc
 	getFields     server.ToolHandlerFunc
 	ocr           server.ToolHandlerFunc
+	manageIndex   server.ToolHandlerFunc
 }
 
 // addRaglitTools registers the tool definitions once, backed by the given
 // handlers. One tool contract, either backing.
 func addRaglitTools(s *server.MCPServer, h toolHandlers) {
+	if h.manageIndex != nil {
+		s.AddTool(manageIndexTool(), h.manageIndex)
+	}
 	s.AddTool(
 		mcp.NewTool("search",
 			mcp.WithDescription(
