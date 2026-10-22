@@ -165,6 +165,26 @@ Deployment note: the PATH belongs in a systemd DROP-IN
 (`~/.config/systemd/user/raglit.service.d/path.conf`), never in the unit —
 `raglit service install` regenerates the unit and says so in its header.
 
+## Service on macOS, reload, admin token (✅ 2026-10-22; fleet standard CLI-10/12)
+
+- `raglit service` drives a launchd agent on darwin (`service_launchd.go`).
+  It records the installer's PATH, refuses root, and waits for bootout before
+  bootstrap.
+- `reload` sends SIGHUP; the daemon re-execs when no job is running.
+- With OIDC on, `<root>/admin.token` is accepted as the admin.
+  `service login-admin` opens `/auth/admin#token=…`.
+  USER decisions: the token exists only with OIDC on; with no `auth.admin`, the
+  token is the only admin (`raglit#local-admin`).
+- `make install` builds the UI, links into `~/.local/bin`, and self-update
+  rebuilds through `make stamped`.
+- **risks:**
+  - `launchctl` calls are untested on a Mac; only the plist is tested.
+  - A reload re-exec skips deferred cleanup, the same as self-update.
+  - Units installed before this have no ExecReload; reinstall to get `reload`.
+  - Token rotation means deleting the file and restarting.
+  - The CLI does not read admin.token on its own; use
+    `RAGLIT_TOKEN=$(cat ~/.raglit/admin.token)`.
+
 ## A hole must be findable, and `project=` does not namespace over HTTP
 
 The ingest salvage keeps a document that lost a page. That trade is only sound if
