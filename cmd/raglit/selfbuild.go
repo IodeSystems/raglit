@@ -98,10 +98,16 @@ func rebuildRaglit(srcDir, exe string) error {
 	// first, so a failed build would leave a zero-length binary where a working
 	// one was — and this binary is the one running the rebuild.
 	tmp := exe + ".new"
-	build := exec.Command("go", "build",
-		"-o", tmp,
-		"-ldflags", "-X main.srcDir="+srcDir,
-		"./cmd/raglit")
+	// Through the Makefile when it can, so the rebuilt binary embeds the real
+	// UI; a bare go build embeds the committed placeholder page.
+	build := exec.Command("make", "--no-print-directory", "stamped", "OUT="+tmp)
+	if _, err := exec.LookPath("make"); err != nil || !hasNPM() {
+		fmt.Fprintln(os.Stderr, "raglit: make or npm not found — rebuilding without the UI (the placeholder page is served)")
+		build = exec.Command("go", "build",
+			"-o", tmp,
+			"-ldflags", "-X main.srcDir="+srcDir,
+			"./cmd/raglit")
+	}
 	build.Dir = srcDir
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
@@ -113,17 +119,24 @@ func rebuildRaglit(srcDir, exe string) error {
 	return os.Rename(tmp, exe)
 }
 
+func hasNPM() bool { _, err := exec.LookPath("npm"); return err == nil }
+
 // sourceNewerThan reports whether any file that affects the build is newer than
 // t. .git and testdata are pruned — neither changes what compiles.
 func sourceNewerThan(dir string, t time.Time) bool {
 	newer := false
-	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || newer {
 			return err //nolint:nilerr // an unreadable corner must not claim staleness
 		}
 		if d.IsDir() {
 			switch d.Name() {
 			case ".git", "node_modules", "testdata":
+				return filepath.SkipDir
+			}
+			// Build OUTPUT: the stamped build writes it and puts the placeholder
+			// back afterwards, so its mtimes say nothing about the source.
+			if path == filepath.Join(dir, "web", "dist") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -140,14 +153,14 @@ func sourceNewerThan(dir string, t time.Time) bool {
 }
 
 // buildInput reports whether a filename affects the compiled binary: Go source,
-// the module files, the embedded schema and the embedded UI.
+// the module files, the embedded schema and the UI source.
 func buildInput(name string) bool {
 	switch name {
 	case "go.mod", "go.sum":
 		return true
 	}
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".go", ".sql", ".html", ".css", ".js":
+	case ".go", ".sql", ".html", ".css", ".js", ".ts", ".tsx":
 		return true
 	}
 	return false

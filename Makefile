@@ -18,7 +18,7 @@ ifeq ($(GOBIN),)
 GOBIN   := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: build install release test lint clean web web-dev generate
+.PHONY: build install stamped release test lint clean web web-dev generate
 
 # Codegen runs OUR sqlc, never the one on PATH.
 #
@@ -82,9 +82,26 @@ build: ## build ./raglit, source-stamped
 # shadowing a current one is the problem this file exists to stop.
 BINDIR ?= $(HOME)/.local/bin
 
-install: ## install a self-updating raglit to $(GOBIN), linked from $(BINDIR)
+# `stamped` builds a source-stamped binary at $(OUT) WITH the real UI: vite
+# into web/dist, go build, then web/dist back to the committed placeholder so
+# the tree stays clean. Without the UI step the binary embeds the placeholder
+# page. Self-update (cmd/raglit/selfbuild.go) rebuilds through this target too,
+# so a rebuilt binary keeps its UI.
+OUT ?= $(GOBIN)/raglit
+
+web/node_modules/.package-lock.json: web/package.json web/package-lock.json
+	@command -v npm >/dev/null || { echo "npm not found — the UI build needs node (brew install node / apt-get install nodejs npm)"; exit 1; }
+	cd web && npm ci
+	@touch $@
+
+stamped: web/node_modules/.package-lock.json
+	cd web && npm run build
+	@go build -ldflags "$(LDFLAGS)" -o $(OUT) ./cmd/raglit; s=$$?; \
+		git checkout -- web/dist && git clean -fdq web/dist; exit $$s
+
+install: ## install a self-updating raglit (with the UI) to $(GOBIN), linked from $(BINDIR)
 	@mkdir -p $(GOBIN) $(BINDIR)
-	go build -ldflags "$(LDFLAGS)" -o $(GOBIN)/raglit ./cmd/raglit
+	@$(MAKE) --no-print-directory stamped OUT=$(GOBIN)/raglit
 	@if [ "$(abspath $(BINDIR))" != "$(abspath $(GOBIN))" ]; then ln -sfn $(GOBIN)/raglit $(BINDIR)/raglit; echo "linked $(BINDIR)/raglit -> $(GOBIN)/raglit"; fi
 	@echo "installed $(GOBIN)/raglit (self-updating from $(SRCDIR))"
 
