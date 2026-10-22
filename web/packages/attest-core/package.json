@@ -3,14 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Machine reading, human verdict \u2014 the client half, with no framework in it.",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "description": "Machine reading, human verdict — the client half, with no framework in it.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+    ".": "./src/index.ts"
   },
   "files": [
     "dist",
@@ -18,7 +15,6 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepare": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsc -p tsconfig.json && node --test dist/*.test.js"
   }
