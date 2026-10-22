@@ -3,8 +3,10 @@ package raglit
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	agent "github.com/iodesystems/agentkit/agent"
+	"github.com/iodesystems/agentkit/llm"
 	"math"
 	"regexp"
 	"strconv"
@@ -207,19 +209,40 @@ func TokensToChars(tokens int) int {
 // endpoint that truncates returns maxEmbedProbeChars (treated as "effectively
 // unbounded"). Store the result in Config.EmbedLimitChars to cap the fragment
 // ceiling by the model, not by taste.
+//
+// Only a rejection that says the input is too long moves the boundary. Any other
+// failure stops the probe with that error. Counting every error as "too long"
+// made a busy endpoint teach a limit far below the real one: corrallm answers
+// 429 when a model's slots are full, the client waits out its retry budget, and
+// the probe then read the give-up as a refusal of that length.
 func (e *Embedder) DiscoverEmbedLimit(ctx context.Context) (int, error) {
-	accepts := func(n int) bool {
+	accepts := func(n int) (bool, error) {
 		_, err := e.EmbedDocs(ctx, []string{strings.Repeat("a ", n/2+1)[:n]})
-		return err == nil
+		switch {
+		case err == nil:
+			return true, nil
+		case inputRejected(err):
+			return false, nil
+		default:
+			return false, fmt.Errorf("raglit: embed limit probe at %d chars: %w", n, err)
+		}
 	}
 	const floor = 256
-	if !accepts(floor) {
+	ok, err := accepts(floor)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
 		return 0, fmt.Errorf("raglit: embed endpoint rejected even a %d-char input", floor)
 	}
 	lo := floor
 	hi := 0
 	for n := floor * 2; n <= maxEmbedProbeChars; n *= 2 {
-		if accepts(n) {
+		ok, err := accepts(n)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
 			lo = n
 			if n == maxEmbedProbeChars {
 				return maxEmbedProbeChars, nil
@@ -234,13 +257,40 @@ func (e *Embedder) DiscoverEmbedLimit(ctx context.Context) (int, error) {
 	}
 	for hi-lo > floor {
 		mid := (lo + hi) / 2
-		if accepts(mid) {
+		ok, err := accepts(mid)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
 			lo = mid
 		} else {
 			hi = mid
 		}
 	}
 	return lo, nil
+}
+
+// inputRejected reports whether an embed error says the input was too long, as
+// opposed to the endpoint being busy, down, or misconfigured.
+//
+// agentkit returns an over-long 5xx as *llm.InputTooLargeError and retries 429
+// and other 5xx itself, so what reaches here is the final word. A 400 or 413 is
+// the OpenAI-compatible refusal of the request as sent; the probe varies only
+// the length, so for the probe that means too long. The wording check catches a
+// backend that says so under another status.
+func inputRejected(err error) bool {
+	var big *llm.InputTooLargeError
+	if errors.As(err, &big) {
+		return true
+	}
+	m := strings.ToLower(err.Error())
+	for _, s := range []string{"status 400", "status 413", "too large", "too long",
+		"exceeds the available context", "exceed_context_size", "maximum context length"} {
+		if strings.Contains(m, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalize scales v to unit L2 length in place (a zero vector is left as-is).

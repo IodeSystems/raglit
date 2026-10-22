@@ -379,3 +379,45 @@ func TestPerInputLimitParsesTheStatedNumber(t *testing.T) {
 		}
 	}
 }
+
+// busyVecClient refuses every input over max as too long, and fails anything
+// over busyAt the way agentkit reports a 429 retry budget running out.
+type busyVecClient struct{ max, busyAt int }
+
+func (c *busyVecClient) Embed(_ context.Context, _ string, texts []string) ([][]float32, error) {
+	for _, t := range texts {
+		if len(t) > c.busyAt {
+			return nil, fmt.Errorf("llm: retry budget 5m0s exhausted after 5m0s of 429 backpressure")
+		}
+		if len(t) > c.max {
+			return nil, fmt.Errorf("llm: status 413: input too large")
+		}
+	}
+	return [][]float32{{1, 0}}, nil
+}
+
+// A busy endpoint is not a short one: the probe stops with the error instead of
+// recording a limit below the real one, and the index stores nothing.
+func TestEmbedLimitProbeStopsOnBackpressure(t *testing.T) {
+	e := NewEmbedder(&busyVecClient{max: 8000, busyAt: 1000}, "m")
+	if n, err := e.DiscoverEmbedLimit(context.Background()); err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("got %d, %v; want the backpressure error", n, err)
+	}
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got := s.EmbedLimitChars(context.Background(), e, 0); got != 0 {
+		t.Errorf("limit %d from a busy probe, want 0 (uncapped)", got)
+	}
+	if _, ok := s.Meta(embedLimitKey("m")); ok {
+		t.Error("a busy probe stored a limit")
+	}
+
+	// A 413 is a verdict on the length.
+	n, err := NewEmbedder(&busyVecClient{max: 8000, busyAt: 1 << 30}, "m").DiscoverEmbedLimit(context.Background())
+	if err != nil || n > 8000 || n < 8000-256 {
+		t.Errorf("got %d, %v; want just under 8000", n, err)
+	}
+}
