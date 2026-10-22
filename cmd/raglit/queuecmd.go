@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -116,6 +117,7 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		EmbedTokenCounter: embedCounter,
 		FigurePrompt:      raglit.FigurePromptVersion(),
 	}
+	cheapEngine := cfg.OCR.CheapEngine
 	if *lf.visionModel != "" {
 		client := lf.visionClient()
 		// Every retry, recovery and give-up this client makes, attributed to the
@@ -174,6 +176,13 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		if *lf.segmentModel != "" && *lf.segmentModel != *lf.visionModel {
 			log.Printf("raglit: segmenter model=%s (vision model=%s)", *lf.segmentModel, *lf.visionModel)
 		}
+	} else if ocr := tesseractOnlyOCR(home); ocr != nil {
+		// No vision model (USER 2026-10-22: vision may be unavailable): scans and
+		// images are read by the local engine alone. Without one, they fail as
+		// unreadable, which is what w.OCR == nil already does.
+		w.OCR = ocr
+		cheapEngine = ocr.Cheap.Name()
+		log.Printf("raglit: no vision model — scans and images are read by %s only", cheapEngine)
 	}
 	// What each ingested document IS, asked once per document (identity.go). Set
 	// on the STORE rather than the worker because the identity call happens in
@@ -189,7 +198,7 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 		fw, fs, ff := raglit.ResolveFragParams(cfg.FragWindow, cfg.FragStride, cfg.FragFloor, cfg.EmbedLimitChars)
 		w.RecipeHash = raglit.HashHex([]byte(ingestRecipe(recipeInputs{
 			VisionModel: *lf.visionModel, EmbedModel: *lf.embedModel,
-			CheapEngine: cfg.OCR.CheapEngine,
+			CheapEngine: cheapEngine,
 			FragWindow:  fw, FragStride: fs, FragFloor: ff,
 			IndexHint: store.IndexHint(),
 		})))
@@ -587,4 +596,23 @@ func openQueueStore(openStore func() (*raglit.Store, error), homeOf func() ragli
 		return nil, "", oerr
 	}
 	return st, string(home) + " (daemon-scoped)", nil
+}
+
+// tesseractOnlyOCR is an OCR with no vision model: the configured cheap engine,
+// else tesseract when it is on PATH. nil when neither exists. Every page is
+// taken from the engine as read (OCR.PageAsSeen), and figures are not
+// described, since describing one needs the vision model.
+func tesseractOnlyOCR(home raglit.Home) *raglit.OCR {
+	ocr := raglit.NewOCR(nil)
+	attachCheapOCR(ocr, home, "")
+	if ocr.Cheap == nil {
+		cfg, _, _ := raglit.LoadConfig(home)
+		t := raglit.NewTesseractEngine(cfg.OCR.TesseractBin, cfg.OCR.TesseractLang)
+		if _, err := exec.LookPath(t.Bin); err != nil {
+			return nil
+		}
+		ocr.Cheap = t
+	}
+	ocr.DescribeFigures, ocr.Assist = false, false
+	return ocr
 }

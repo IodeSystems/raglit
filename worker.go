@@ -513,7 +513,7 @@ func (w *Worker) segmenter() *Segmenter {
 	if w.Segmenter != nil {
 		return w.Segmenter
 	}
-	if w.OCR == nil {
+	if w.OCR == nil || w.OCR.Client == nil {
 		return nil
 	}
 	return NewSegmenter(w.OCR.Client)

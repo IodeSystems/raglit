@@ -103,3 +103,14 @@ func TestParseTesseractTSV(t *testing.T) {
 		t.Errorf("empty tsv → want blank page, got %+v", empty)
 	}
 }
+
+// No vision model: the cheap engine's read is kept even when the gate calls it
+// gibberish, because there is nothing to escalate to.
+func TestCascade_NoVisionModelKeepsTheCheapRead(t *testing.T) {
+	garble := PageOCR{Text: "brqwx ttttt zxcvb knmpq wrtgh sdfgh jklmn bcdfg pqrst vwxyz", MeanConfidence: 0.92, BoxCount: 10}
+	o := &OCR{Cheap: stubEngine{"tesseract", garble, nil}}
+	text, engine, err := o.PageWithEngine(context.Background(), PageImage{Page: 1, Data: []byte("x"), Mime: "image/png"})
+	if err != nil || engine != "tesseract" || text != garble.Text {
+		t.Fatalf("got %q from %q (err %v), want the tesseract read", text, engine, err)
+	}
+}

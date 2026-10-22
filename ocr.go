@@ -169,6 +169,13 @@ func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine strin
 				"mean_confidence": po.MeanConfidence, "boxes": po.BoxCount,
 				"median_glyph_px": po.MedianGlyphPx,
 			})
+			if o.Client == nil {
+				// No vision model to escalate to: the engine's read is the read,
+				// gibberish or not. Refusing it would leave the page unread, which
+				// is worse than a poor read that search can still hit.
+				o.tracef("cheap only: no vision model — %s read accepted as is", o.Cheap.Name())
+				return strings.TrimSpace(po.Text), o.Cheap.Name(), 0, nil
+			}
 			if o.Assist {
 				assist = spellingAssist(po.Text)
 				o.tracef("assist: ON — %d chars of digit-masked words appended to the prompt", len(assist))
