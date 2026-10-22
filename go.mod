@@ -54,7 +54,3 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 	nhooyr.io/websocket v1.8.17 // indirect
 )
-
-// sqlc-go-codegen-metaquery v1.7.0 has no publishable release (see .replace-allow);
-// the relative replace is the sanctioned mechanism until one exists.
-replace github.com/iodesystems/sqlc-go-codegen-metaquery => ../sqlc-go-codegen-metaquery

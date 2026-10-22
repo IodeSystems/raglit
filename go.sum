@@ -54,6 +54,8 @@ github.com/iodesystems/agentkit v0.5.0 h1:Y0Bg0w6Xa+BOTy0fdC1lsRfvyA2O6cDphcbb+f
 github.com/iodesystems/agentkit v0.5.0/go.mod h1:3YrLqwl305SCujUXQkim8INHf7y3kaXsqjaUUipGtks=
 github.com/iodesystems/gwag/v2 v2.1.0 h1:Y7fBcpX9irvyo3Mb6VtxIbjEQCCua9j1MexD0SP+I9g=
 github.com/iodesystems/gwag/v2 v2.1.0/go.mod h1:rIS9cEjTNucbB1AI5UL9QNJkuXu7pJRsAJrmG4qYz+w=
+github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0 h1:Hs4F5H+x/KWuX9N0/K1rQ812xYz8f4E+luXk1KtJQ4o=
+github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0/go.mod h1:wrk1YFVXQlFNMUsrBcn9sCWUiey1i4EdEMhR47+BU7I=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
