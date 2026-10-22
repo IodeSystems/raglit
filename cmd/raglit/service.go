@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// raglit as a systemd user service.
+// raglit as a systemd user service — or, on macOS, a launchd user agent
+// (service_launchd.go). The verbs and install flags are the same on both.
 //
 // The daemon was started by hand — `setsid nohup raglit daemon … &` from
 // whatever shell happened to be open, reparented to init, logging to a file
@@ -23,14 +25,15 @@ import (
 const serviceUnitName = "raglit"
 
 func serviceUsage() {
-	fmt.Fprint(os.Stderr, `raglit service — run the daemon under systemd (user)
+	fmt.Fprint(os.Stderr, `raglit service — run the daemon under systemd (user), or launchd on macOS
 
   raglit service install [flags] [-- <daemon flags>...]
   raglit service uninstall
   raglit service start | stop | restart | status | logs
 
 install flags:
-  --name NAME     unit name without .service (default raglit)
+  --name NAME     unit name without .service (default raglit); on macOS the
+                  agent is com.iodesystems.NAME
   --exec PATH     raglit binary for the unit (default: this one, symlinks resolved)
   --env K=V       environment for the unit (repeatable)
   --dev           supervise a self-updating build (rebuilds from source)
@@ -179,13 +182,6 @@ func serviceInstall(args []string) error {
 		return fmt.Errorf("those daemon flags do not parse — refusing to write a unit that would crash-loop")
 	}
 
-	dir, err := unitDir()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	// The MODE is recorded in the unit, not left to whichever build last wrote
 	// the binary.
 	//
@@ -207,6 +203,18 @@ func serviceInstall(args []string) error {
 		envs = append(envs, "RAGLIT_NO_AUTOBUILD=1")
 	}
 
+	if runtime.GOOS == "darwin" {
+		fmt.Printf("  exec   %s\n  mode   %s\n  daemon %s\n", *execPath, mode, strings.Join(daemonArgs, " "))
+		return launchdInstall(*name, *execPath, daemonArgs, envs, *enable, *start)
+	}
+
+	dir, err := unitDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
 	unit := *name + ".service"
 	path := filepath.Join(dir, unit)
 	if err := os.WriteFile(path, []byte(renderUnit(*execPath, daemonArgs, envs)), 0o644); err != nil {
@@ -248,6 +256,9 @@ func serviceUninstall(args []string) error {
 	fs := flag.NewFlagSet("service uninstall", flag.ExitOnError)
 	name := fs.String("name", serviceUnitName, "unit name without .service")
 	fs.Parse(args)
+	if runtime.GOOS == "darwin" {
+		return launchdUninstall(*name)
+	}
 
 	unit := *name + ".service"
 	_ = systemctl("stop", unit).Run()
@@ -269,6 +280,9 @@ func serviceCtl(verb string, args []string) error {
 	fs := flag.NewFlagSet("service "+verb, flag.ExitOnError)
 	name := fs.String("name", serviceUnitName, "unit name without .service")
 	fs.Parse(args)
+	if runtime.GOOS == "darwin" {
+		return launchdCtl(verb, *name)
+	}
 	return systemctl(verb, *name+".service").Run()
 }
 
@@ -277,6 +291,9 @@ func serviceLogs(args []string) error {
 	name := fs.String("name", serviceUnitName, "unit name without .service")
 	n := fs.String("n", "200", "lines to show")
 	fs.Parse(args)
+	if runtime.GOOS == "darwin" {
+		return launchdLogs(*name, *n)
+	}
 	c := exec.Command("journalctl", "--user", "-u", *name+".service", "-n", *n, "--no-pager")
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	return c.Run()
