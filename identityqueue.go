@@ -378,6 +378,9 @@ func (s *Store) captionCopiesExample(ctx context.Context, path, name string) boo
 //
 // Returns nil when the queue is empty.
 func (s *Store) claimNextIdentityJob() (*IdentityJob, error) {
+	if s.Paused() {
+		return nil, nil
+	}
 	var j IdentityJob
 	var force int
 	now := time.Now().UnixNano()

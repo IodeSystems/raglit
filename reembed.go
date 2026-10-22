@@ -86,9 +86,9 @@ func (s *Store) FragmentCount() (int, error) {
 
 // BackfillVectors embeds up to batch fragments that have no vector, then figure
 // descriptions with no text-space vector, and returns how many it embedded. 0
-// means there is nothing left (or no embedder).
+// means there is nothing left (or no embedder, or the index is paused).
 func (s *Store) BackfillVectors(ctx context.Context, batch int) (int, error) {
-	if s.embedder == nil {
+	if s.embedder == nil || s.Paused() {
 		return 0, nil
 	}
 	n, err := s.backfill(ctx, batch,

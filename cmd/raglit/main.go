@@ -86,6 +86,8 @@ func main() {
 		err = runWithdrawn(os.Args[2:])
 	case "forget":
 		err = runForget(os.Args[2:])
+	case "pause", "resume":
+		err = runPause(os.Args[1], os.Args[2:])
 	case "slice":
 		err = runSlice(os.Args[2:])
 	case "slices":
@@ -210,6 +212,10 @@ usage:
                 re-index — for a row that should never have existed (raglit's own
                 transcription sidecars, indexed as documents) rather than for a
                 document somebody ruled out.
+
+  raglit pause|resume [--daemon URL] [INDEX...]
+                a paused index runs no work: no ingest, captions or embeds. Jobs
+                still queue and run on resume. No INDEX lists every index.
 
   raglit marks [--todo] [--json] [DOCPATH]
                 what an overlapping pair IS, as opposed to how much text it shares.

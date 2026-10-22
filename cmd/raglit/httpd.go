@@ -314,6 +314,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("enqueueIdentity", http.MethodPost, "/api/identify/queue", "Queue documents for captioning; the daemon drains them at the endpoint's concurrency."), enqueueIdentityOp(reg))
 	gat.Register(api, g, op("identityJobs", http.MethodGet, "/api/identity-jobs", "The captioning queue: counts and rows."), identityJobsOp(reg))
 	gat.Register(api, g, op("identify", http.MethodPost, "/api/identify", "Say what a document IS: generate a caption/summary/kind, or record a person's."), identifyOp(reg))
+	gat.Register(api, g, op("pauseIndex", http.MethodPost, "/api/index/pause", "Pause or resume an index: a paused index runs no work; jobs queue and run on resume."), pauseOp(reg))
 	gat.Register(api, g, op("forget", http.MethodPost, "/api/forget", "Drop a document from the index (no grounds recorded; not a withdrawal)."), forgetOp(reg))
 	gat.Register(api, g, op("withdraw", http.MethodPost, "/api/withdraw", "Rule a document out of the corpus, with grounds. Survives re-ingest."), withdrawOp(reg))
 	gat.Register(api, g, op("restore", http.MethodPost, "/api/restore", "Return a withdrawn document to the corpus (does not re-index)."), restoreOp(reg))
@@ -497,6 +498,8 @@ type idxRow struct {
 	// Meaning is whether search by meaning (vec, hybrid) can run here: the
 	// daemon has an embedding model. False → offer exact-word search only.
 	Meaning bool `json:"meaning"`
+	// Paused: the index runs no work; jobs queue and run on resume.
+	Paused bool `json:"paused,omitempty"`
 }
 type listIndexesOut struct {
 	Body struct {
@@ -514,7 +517,7 @@ func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIn
 				continue
 			}
 			s, _ := st.IndexStatus()
-			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments, Meaning: st.CanSearchByMeaning()}
+			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments, Meaning: st.CanSearchByMeaning(), Paused: st.Paused()}
 			row.Root, _ = indexRoot(st)
 			if d, err := st.IndexDigest(); err == nil {
 				row.About, row.AboutStale = d.About, d.AboutStale

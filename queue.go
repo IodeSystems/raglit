@@ -234,6 +234,9 @@ func (s *Store) SetJobLane(id int64, lane Lane) error {
 // claim is the shared body: lane "" means any lane, which is what the CLI's
 // single-threaded drain wants.
 func (s *Store) claim(lane Lane) (*Job, error) {
+	if s.Paused() {
+		return nil, nil
+	}
 	ctx := context.Background()
 	tx, err := s.db.Begin()
 	if err != nil {

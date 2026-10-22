@@ -279,6 +279,9 @@ func runIdentityWorkers(ctx context.Context, reg *raglit.Registry, home raglit.H
 			if err != nil {
 				continue
 			}
+			if st.Paused() {
+				continue
+			}
 			// A row left 'running' by a dead process is work nobody is doing.
 			if n, err := st.ReclaimIdentityJobs(); err == nil && n > 0 {
 				log.Printf("raglit: identity queue %s: requeued %d orphaned job(s)", name, n)
