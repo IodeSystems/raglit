@@ -2,12 +2,13 @@
   "name": "raglit-web",
   "private": true,
   "type": "module",
-  "description": "The raglit review SPA. Built to web/dist, whose placeholder files are committed (the real bundle is generated) and embedded into the binary — see web/embed.go.",
+  "description": "The raglit review SPA. Built to web/dist, whose placeholder files are committed (the real bundle is generated) and embedded into the binary \u2014 see web/embed.go.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node -e \"require('fs').writeFileSync('dist/.gitkeep','')\"",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -b --noEmit",
+    "lint": "oxlint --type-aware"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -25,7 +26,9 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.1.1",
-    "typescript": "^6.0.3",
+    "oxlint": "^1.89.0",
+    "oxlint-tsgolint": "^7.0.2004",
+    "typescript": "^7.0.2",
     "vite": "^8.2.2"
   }
 }
