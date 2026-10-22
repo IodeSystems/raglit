@@ -110,11 +110,11 @@ function IgnoreCard({ index }: { index: string }) {
   const [err, setErr] = useState("");
   const [offer, setOffer] = useState<PurgeResult | null>(null);
 
-  const save = async (patterns: string[], added?: string) => {
+  const save = async (lists: { patterns?: string[]; allow?: string[] }, added?: string) => {
     setBusy(true);
     setErr("");
     try {
-      await putIgnore(index, patterns);
+      await putIgnore(index, lists);
       refresh();
       if (added) {
         const pre = await purgeIndex(index, added, true);
@@ -128,25 +128,67 @@ function IgnoreCard({ index }: { index: string }) {
   };
 
   const own = data?.patterns ?? [];
+  const allow = data?.allow ?? [];
+  const builtin = data?.builtin ?? [];
   const add = () => {
     const p = draft.trim();
     if (!p) return;
     setDraft("");
-    void save(own.includes(p) ? own : [...own, p], p);
+    void save({ patterns: own.includes(p) ? own : [...own, p] }, p);
   };
+  // A builtin is allowed on this index by putting the builtin glob itself on
+  // the allow list. Narrower allow globs (set through MCP or the API) are
+  // listed after it so they can be removed.
+  const toggleBuiltin = (p: string) =>
+    void save({
+      allow: allow.includes(p) ? allow.filter((x) => x !== p) : [...allow, p],
+    });
+  const extraAllow = allow.filter((p) => !builtin.includes(p));
 
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack spacing={1.5}>
         <Typography variant="h6">Ignore patterns</Typography>
         <Typography variant="body2" color="text.secondary">
-          Files matching these are refused when anything queues them: sync, the watcher, CLI
-          ingest, the API and MCP. {PATTERN_HELP}
+          Files matching these are refused when anything queues them: sync, the watcher, CLI ingest,
+          the API and MCP. {PATTERN_HELP}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Outlined patterns apply to every index. Click one to allow it on this index, for an index
+          that is an iOS or Android project.
         </Typography>
         {(error || err) && <ErrorText raw={err || error} />}
         <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-          {(data?.builtin ?? []).map((p) => (
-            <Chip key={"b:" + p} label={p} size="small" variant="outlined" title="Every index" />
+          {builtin.map((p) => {
+            const allowed = allow.includes(p);
+            return (
+              <Chip
+                key={"b:" + p}
+                label={allowed ? `${p} · allowed` : p}
+                size="small"
+                variant="outlined"
+                color={allowed ? "success" : "default"}
+                disabled={busy}
+                title={
+                  allowed
+                    ? "Allowed on this index; click to refuse again"
+                    : "Refused on every index; click to allow here"
+                }
+                onClick={() => toggleBuiltin(p)}
+                sx={allowed ? { textDecoration: "line-through" } : undefined}
+              />
+            );
+          })}
+          {extraAllow.map((p) => (
+            <Chip
+              key={"a:" + p}
+              label={`allow ${p}`}
+              size="small"
+              variant="outlined"
+              color="success"
+              disabled={busy}
+              onDelete={() => void save({ allow: allow.filter((x) => x !== p) })}
+            />
           ))}
           {own.map((p) => (
             <Chip
@@ -154,7 +196,7 @@ function IgnoreCard({ index }: { index: string }) {
               label={p}
               size="small"
               disabled={busy}
-              onDelete={() => void save(own.filter((x) => x !== p))}
+              onDelete={() => void save({ patterns: own.filter((x) => x !== p) })}
             />
           ))}
         </Box>
@@ -293,7 +335,13 @@ function PurgeDialog({
               {preview.sample.length > 0 && (
                 <Box
                   component="ul"
-                  sx={{ m: 0, pl: 2.5, fontFamily: "monospace", fontSize: 12, wordBreak: "break-all" }}
+                  sx={{
+                    m: 0,
+                    pl: 2.5,
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    wordBreak: "break-all",
+                  }}
                 >
                   {preview.sample.map((p) => (
                     <li key={p}>{p}</li>

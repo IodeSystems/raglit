@@ -341,14 +341,19 @@ export const listIndexes = () => getJSON<{ indexes: IndexInfo[] }>("/indexes");
 export const setIndexPaused = (index: string, paused: boolean) =>
   postJSON<{ ok: boolean }>("/api/index/pause", { index }, { paused });
 
-// Globs refused at enqueue. `builtin` applies to every index.
-export type IgnoreList = { patterns: string[]; builtin: string[] };
+// Globs refused at enqueue. `builtin` applies to every index except paths the
+// index's `allow` list exempts.
+export type IgnoreList = { patterns: string[]; builtin: string[]; allow: string[] };
 export const getIgnore = (index: string) => getJSON<IgnoreList>("/api/index/ignore", { index });
-export async function putIgnore(index: string, patterns: string[]): Promise<IgnoreList> {
+// Replaces the lists given; an omitted list is unchanged.
+export async function putIgnore(
+  index: string,
+  lists: { patterns?: string[]; allow?: string[] },
+): Promise<IgnoreList> {
   const r = await fetch(`/api/index/ignore?${new URLSearchParams({ index }).toString()}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ patterns }),
+    body: JSON.stringify(lists),
   });
   if (!r.ok) return fail(r);
   return (await r.json()) as IgnoreList;
