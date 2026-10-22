@@ -1,6 +1,6 @@
 import { Outlet, useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
 import Box from "@mui/material/Box";
+import Chip from "@mui/material/Chip";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 
@@ -22,13 +22,11 @@ import { indexSections } from "./NavDrawer";
 export function IndexShell() {
   const { index } = useParams({ from: "/i/$index" });
   const navigate = useNavigate();
-  const [indexes, setIndexes] = useState<IndexInfo[]>([]);
-
-  useEffect(() => {
-    listIndexes()
-      .then((got) => setIndexes(got.indexes ?? []))
-      .catch(() => setIndexes([]));
-  }, []);
+  // Polled, not fetched once: a paused index says so on every page, and a
+  // pause made elsewhere (the CLI, another tab) shows up here.
+  const { data: listed } = usePoll<{ indexes: IndexInfo[] }>(listIndexes, 15000, []);
+  const indexes = listed?.indexes ?? [];
+  const paused = indexes.find((i) => i.name === index)?.paused;
 
   // The Problems entry carries a count so a problem is visible from every page
   // of the index. "withdrawn" is a decision, not a problem, so it is not
@@ -81,6 +79,17 @@ export function IndexShell() {
         <CrumbLink key="projects" to="/">Projects</CrumbLink>,
         ...(project ? [<CrumbLink key="project" to={`/p/${project}`}>{project}</CrumbLink>] : []),
         switcher,
+        ...(paused
+          ? [
+              <Chip
+                key="paused"
+                label="Paused"
+                color="warning"
+                size="small"
+                onClick={() => void navigate({ to: "/i/$index/controls", params: { index } })}
+              />,
+            ]
+          : []),
       ]}
       search={
         <ShellSearch

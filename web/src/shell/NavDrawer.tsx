@@ -68,7 +68,10 @@ export function indexSections(index: string, problems?: number): NavSection[] {
     },
     {
       heading: "Index",
-      items: [{ label: "Branches", to: `${root}/branches` }],
+      items: [
+        { label: "Controls", to: `${root}/controls` },
+        { label: "Branches", to: `${root}/branches` },
+      ],
     },
   ];
 }

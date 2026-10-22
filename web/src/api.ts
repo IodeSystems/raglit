@@ -95,6 +95,8 @@ export type IndexInfo = {
   roles?: TagCount[];
   // Search by meaning (vec/hybrid) can run: the daemon has an embedding model.
   meaning?: boolean;
+  // The index runs no work; jobs queue and run on resume.
+  paused?: boolean;
 };
 
 // One scheduling lane's share of the queue. Lanes no longer SCHEDULE anything —
@@ -336,6 +338,8 @@ export type Branch = {
 export const listBranches = () => getJSON<{ branches: Branch[] }>("/api/branches");
 
 export const listIndexes = () => getJSON<{ indexes: IndexInfo[] }>("/indexes");
+export const setIndexPaused = (index: string, paused: boolean) =>
+  postJSON<{ ok: boolean }>("/api/index/pause", { index }, { paused });
 
 export const getStatus = (index: string) => getJSON<StatusSnapshot>("/status", { index });
 

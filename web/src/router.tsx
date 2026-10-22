@@ -23,6 +23,7 @@ const Project = lazyRouteComponent(() => import("./panes/Project"), "Project");
 const Activity = lazyRouteComponent(() => import("./panes/Activity"), "Activity");
 const Branches = lazyRouteComponent(() => import("./panes/Branches"), "Branches");
 const Health = lazyRouteComponent(() => import("./panes/Health"), "Health");
+const IndexControls = lazyRouteComponent(() => import("./panes/IndexControls"), "IndexControls");
 const Jobs = lazyRouteComponent(() => import("./panes/Jobs"), "Jobs");
 const Search = lazyRouteComponent(() => import("./panes/Search"), "Search");
 const ProjectSearch = lazyRouteComponent(() => import("./panes/Search"), "ProjectSearch");
@@ -117,6 +118,12 @@ const healthRoute = createRoute({
   getParentRoute: () => indexRoute,
   path: "health",
   component: Health,
+});
+
+const controlsRoute = createRoute({
+  getParentRoute: () => indexRoute,
+  path: "controls",
+  component: IndexControls,
 });
 
 // The job id is optional and lives in the path so a health row can link AT a
@@ -293,6 +300,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute.addChildren([
     dashboardRoute,
     healthRoute,
+    controlsRoute,
     jobsRoute,
     jobRoute,
     searchRoute,
