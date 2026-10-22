@@ -76,9 +76,16 @@ web-dev: ## vite dev server against a running daemon (RAGLIT_DAEMON=url to point
 build: ## build ./raglit, source-stamped
 	go build -ldflags "$(LDFLAGS)" -o raglit ./cmd/raglit
 
-install: ## install a self-updating raglit to $(GOBIN)
-	@mkdir -p $(GOBIN)
+# ~/.local/bin is on PATH by default on most Linux desktops and is where the
+# rest of the fleet installs; $(GOBIN) often is not. A SYMLINK, not a second
+# copy: two copies drift apart (a self-update rewrites one), and a stale copy
+# shadowing a current one is the problem this file exists to stop.
+BINDIR ?= $(HOME)/.local/bin
+
+install: ## install a self-updating raglit to $(GOBIN), linked from $(BINDIR)
+	@mkdir -p $(GOBIN) $(BINDIR)
 	go build -ldflags "$(LDFLAGS)" -o $(GOBIN)/raglit ./cmd/raglit
+	@if [ "$(abspath $(BINDIR))" != "$(abspath $(GOBIN))" ]; then ln -sfn $(GOBIN)/raglit $(BINDIR)/raglit; echo "linked $(BINDIR)/raglit -> $(GOBIN)/raglit"; fi
 	@echo "installed $(GOBIN)/raglit (self-updating from $(SRCDIR))"
 
 release: web ## install WITHOUT the source stamp — never self-updates (builds the UI first)

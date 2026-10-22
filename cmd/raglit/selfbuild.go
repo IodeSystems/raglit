@@ -47,13 +47,25 @@ import (
 // for released/plain builds → self-update disabled.
 var srcDir = ""
 
+// selfPath is this binary with symlinks resolved. `make install` links
+// ~/.local/bin/raglit to the real binary, and on macOS os.Executable can return
+// the link: a rebuild renamed over it would replace the link with a file and
+// leave the real binary stale.
+func selfPath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(exe)
+}
+
 // selfUpdate rebuilds and re-execs if the source tree is newer than this binary.
 // Called once at the top of main, before any command runs.
 func selfUpdate() {
 	if !selfUpdateEnabled() {
 		return
 	}
-	exe, err := os.Executable()
+	exe, err := selfPath()
 	if err != nil {
 		return
 	}
@@ -160,7 +172,7 @@ func daemonSelfUpdate(idle func() bool) {
 	if !daemonSelfUpdateEnabled() {
 		return
 	}
-	exe, err := os.Executable()
+	exe, err := selfPath()
 	if err != nil {
 		return
 	}
