@@ -73,6 +73,17 @@ export function indexSections(index: string, problems?: number): NavSection[] {
   ];
 }
 
+// Daemon-wide settings. Listed under the overview's sections and on the
+// settings pages themselves.
+export const settingsSection: NavSection = {
+  heading: "Settings",
+  items: [{ label: "Models", to: "/settings/models" }],
+};
+
+export function settingsSections(): NavSection[] {
+  return [{ heading: "", items: [{ label: "All projects", to: "/", exact: true }] }, settingsSection];
+}
+
 // `open` matters only at phone width, where the drawer leaves the flow and
 // slides in over the page (styles.css: .sidebar / .sidebar-open). On a desktop
 // it is always shown and the class does nothing.

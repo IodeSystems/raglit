@@ -596,3 +596,55 @@ export const listIdentityJobs = (index: string, state?: string, limit = 100) =>
     state,
     limit,
   });
+
+// ── model settings (cmd/raglit/settings.go) ───────────────────────────────
+
+export type ModelRole = "vision" | "embed" | "segment" | "audio";
+
+export type ProviderView = { name: string; kind: string; base_url: string; has_key: boolean };
+export type RoleView = { provider: string; model: string };
+export type ProviderPreset = { kind: string; label: string; base_url: string; key_hint: "required" | "optional" };
+
+export type ModelSettings = {
+  providers?: ProviderView[] | null;
+  roles: Record<ModelRole, RoleView>;
+  presets: ProviderPreset[];
+  tesseract: boolean;
+};
+
+export type ProviderIn = {
+  name: string;
+  kind: string;
+  base_url: string;
+  api_key?: string;
+  clear_key?: boolean;
+};
+
+export type ProviderModel = { id: string; vision: boolean; embed: boolean; audio: boolean; state?: string };
+export type ProviderModels = { models?: ProviderModel[] | null; capabilities: boolean; error?: string };
+
+export function getModelSettings() {
+  return getJSON<ModelSettings>("/api/settings/models");
+}
+
+export async function saveModelSettings(body: { providers: ProviderIn[]; roles: Record<ModelRole, RoleView> }) {
+  const r = await fetch("/api/settings/models", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) return fail(r);
+  return (await r.json()) as { saved: boolean; reload: string };
+}
+
+// A saved provider is listed by name (its stored key is used); an unsaved or
+// edited one by its URL and the key typed into the form.
+export function listProviderModels(q: { provider?: string; base_url?: string; api_key?: string }) {
+  return postJSON<ProviderModels>("/api/settings/models/list", undefined, q);
+}
+
+export function reembedImpact(embedModel: string) {
+  return getJSON<{ indexes: number; fragments: number }>("/api/settings/models/reembed-impact", {
+    embed_model: embedModel,
+  });
+}

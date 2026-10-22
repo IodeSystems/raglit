@@ -5,7 +5,7 @@ import { usePoll } from "../usePoll";
 import { ErrorText } from "../ui/Details";
 import { displayPath, documents, passages } from "../ui/display";
 import { AppShell } from "../shell/AppShell";
-import type { NavSection } from "../shell/NavDrawer";
+import { settingsSection, type NavSection } from "../shell/NavDrawer";
 import { IndexRows, useIndexInfo } from "./IndexRows";
 import "./scope.css";
 
@@ -110,5 +110,6 @@ export function rootSections(projects: Project[]): NavSection[] {
       heading: "Other indexes",
       items: loose.map((i) => ({ label: i.local, to: `/i/${i.name}`, count: i.failed })),
     },
+    settingsSection,
   ];
 }

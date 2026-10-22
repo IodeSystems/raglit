@@ -36,6 +36,7 @@ const Notes = lazyRouteComponent(() => import("./panes/Notes"), "Notes");
 const Email = lazyRouteComponent(() => import("./panes/Email"), "Email");
 const Attest = lazyRouteComponent(() => import("./panes/Attest"), "Attest");
 const AttestAsset = lazyRouteComponent(() => import("./panes/AttestAsset"), "AttestAsset");
+const ModelSettings = lazyRouteComponent(() => import("./panes/ModelSettings"), "ModelSettings");
 
 // The document path is ONE encoded segment, and the router already does that.
 //
@@ -91,6 +92,13 @@ const projectSearchRoute = createRoute({
     q: typeof s.q === "string" ? s.q : "",
     mode: typeof s.mode === "string" ? s.mode : "bm25",
   }),
+});
+
+// Daemon-wide settings: the models every index is read and embedded with.
+const modelSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/models",
+  component: ModelSettings,
 });
 
 const indexRoute = createRoute({
@@ -280,6 +288,7 @@ function PageRoute() {
 
 const routeTree = rootRoute.addChildren([
   homeRoute,
+  modelSettingsRoute,
   projectRoute.addChildren([projectIndexesRoute, projectSearchRoute]),
   indexRoute.addChildren([
     dashboardRoute,
