@@ -341,6 +341,29 @@ export const listIndexes = () => getJSON<{ indexes: IndexInfo[] }>("/indexes");
 export const setIndexPaused = (index: string, paused: boolean) =>
   postJSON<{ ok: boolean }>("/api/index/pause", { index }, { paused });
 
+// Globs refused at enqueue. `builtin` applies to every index.
+export type IgnoreList = { patterns: string[]; builtin: string[] };
+export const getIgnore = (index: string) => getJSON<IgnoreList>("/api/index/ignore", { index });
+export async function putIgnore(index: string, patterns: string[]): Promise<IgnoreList> {
+  const r = await fetch(`/api/index/ignore?${new URLSearchParams({ index }).toString()}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ patterns }),
+  });
+  if (!r.ok) return fail(r);
+  return (await r.json()) as IgnoreList;
+}
+
+export type PurgeResult = {
+  pattern: string;
+  documents: number;
+  sample: string[];
+  ingest_jobs: number;
+  caption_jobs: number;
+};
+export const purgeIndex = (index: string, pattern: string, dryRun: boolean) =>
+  postJSON<PurgeResult>("/api/index/purge", { index }, { pattern, dry_run: dryRun });
+
 export const getStatus = (index: string) => getJSON<StatusSnapshot>("/status", { index });
 
 export const listJobs = (index: string, limit = 200) =>
