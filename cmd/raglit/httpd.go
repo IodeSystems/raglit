@@ -164,17 +164,22 @@ func runHttpd(subcmd string, args []string) error {
 	if err != nil {
 		return err
 	}
-	authMW, err := daemonAuth(ctx, reg, cfg.Auth)
+	authMW, tokenPath, err := daemonAuth(ctx, reg, cfg.Auth, string(cfgHome))
 	if err != nil {
 		return err
 	}
+	adminTokenPath = tokenPath
 	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, gcPol, watch)
 	if err != nil {
 		return err
 	}
 	if authMW != nil {
 		handler = authMW(handler)
-		fmt.Fprintf(os.Stderr, "raglit httpd: OIDC auth on (issuer %s, admin %s)\n", cfg.Auth.Issuer, cfg.Auth.Admin)
+		admin := cfg.Auth.Admin
+		if admin == "" {
+			admin = localAdmin + " (admin token only)"
+		}
+		fmt.Fprintf(os.Stderr, "raglit httpd: OIDC auth on (issuer %s, admin %s)\n  admin token: %s — `raglit service login-admin` signs in with it\n", cfg.Auth.Issuer, admin, tokenPath)
 	}
 	// Record runtime state so clients discover this daemon (even on a non-default
 	// port) and `--stop` can signal it. Removed on clean shutdown.
@@ -409,8 +414,17 @@ type healthOut struct {
 		// were built from dirty trees, which is the ordinary state during
 		// development and the case commit metadata gets wrong.
 		ExeHash string `json:"exe_hash,omitempty"`
+		// Auth reports whether the daemon authenticates (an OIDC issuer is
+		// configured). AdminToken is where its admin token is, so
+		// `raglit service login-admin` asks rather than recomputes it.
+		Auth       bool   `json:"auth"`
+		AdminToken string `json:"admin_token,omitempty"`
 	}
 }
+
+// adminTokenPath is the running daemon's admin token file, "" with auth off.
+// Set once at startup, before the listeners open.
+var adminTokenPath string
 
 // toolsOut is the daemon's OWN view of the external extractors.
 //
@@ -455,6 +469,7 @@ func health(_ context.Context, _ *struct{}) (*healthOut, error) {
 	out.Body.Modified = thisBuild.Modified
 	// Computed at most once per daemon, on the first probe that asks.
 	out.Body.ExeHash = exeHash()
+	out.Body.Auth, out.Body.AdminToken = adminTokenPath != "", adminTokenPath
 	return out, nil
 }
 

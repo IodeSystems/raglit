@@ -13,6 +13,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -163,10 +164,13 @@ func authTestServerWith(t *testing.T, web bool) (*httptest.Server, *fakeIssuer, 
 	if web {
 		cfg.ClientID, cfg.RedirectURL = "raglit-web", srv.URL+"/auth/callback"
 	}
-	mw, err := daemonAuth(ctx, reg, cfg)
+	mw, tokenPath, err := daemonAuth(ctx, reg, cfg, root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// What the daemon sets at startup; health reports it.
+	adminTokenPath = tokenPath
+	t.Cleanup(func() { adminTokenPath = "" })
 	alice := raglit.WithPrincipal(ctx, fi.principal("alice"))
 	for name, vis := range map[string]raglit.Visibility{"a-priv": raglit.Private, "a-pub": raglit.Public} {
 		st, err := reg.Write(alice, name)
@@ -612,5 +616,90 @@ func TestAuth_FoldProject(t *testing.T) {
 	_ = json.Unmarshal([]byte(body), &rep)
 	if code != http.StatusOK || len(rep.Folded) != 1 {
 		t.Fatalf("fold: %d %s", code, clip(body, 400))
+	}
+}
+
+// The admin token: written 0600 at startup, accepted as a bearer token for the
+// configured admin, and exchanged for a session cookie by /auth/token — only
+// from this origin. Health names its path for `raglit service login-admin`.
+func TestAuth_AdminToken(t *testing.T) {
+	srv, _ := authTestServer(t)
+
+	var health struct {
+		Auth       bool   `json:"auth"`
+		AdminToken string `json:"admin_token"`
+	}
+	_, hb := doAs(t, "GET", srv.URL+"/api/health", "", "")
+	if err := json.Unmarshal([]byte(hb), &health); err != nil || !health.Auth || health.AdminToken == "" {
+		t.Fatalf("health = %s, want auth on and the token path", hb)
+	}
+	st, err := os.Stat(health.AdminToken)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("admin token file: %v, mode %v; want 0600", err, st)
+	}
+	raw, _ := os.ReadFile(health.AdminToken)
+	tok := strings.TrimSpace(string(raw))
+
+	// Bearer: the admin sees the legacy (admin-owned) index.
+	if code, body := doAs(t, "GET", srv.URL+"/indexes", tok, ""); code != http.StatusOK || !strings.Contains(body, "legacy") {
+		t.Fatalf("admin token as bearer: %d %s", code, clip(body, 200))
+	}
+
+	// The sign-in page is reachable without a session; a navigation elsewhere
+	// with no session names the command.
+	if code, body := doAs(t, "GET", srv.URL+"/auth/admin", "", ""); code != http.StatusOK || !strings.Contains(body, "/auth/token") {
+		t.Fatalf("/auth/admin: %d", code)
+	}
+	req, _ := http.NewRequest("GET", srv.URL+"/indexes", nil)
+	req.Header.Set("Accept", "text/html")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(b), "raglit service login-admin") {
+		t.Errorf("navigation without a session: %d, want 401 naming login-admin", resp.StatusCode)
+	}
+
+	jar, _ := cookiejar.New(nil)
+	browser := &http.Client{Jar: jar}
+	exchange := func(origin, token string) int {
+		req, _ := http.NewRequest("POST", srv.URL+"/auth/token", strings.NewReader(`{"token":"`+token+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := browser.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := exchange("https://evil.example", tok); code != http.StatusForbidden {
+		t.Errorf("cross-origin token exchange: %d, want 403", code)
+	}
+	if code := exchange(srv.URL, "wrong"); code != http.StatusUnauthorized {
+		t.Errorf("wrong token: %d, want 401", code)
+	}
+	if code := exchange(srv.URL, tok); code != http.StatusNoContent {
+		t.Fatalf("token exchange: %d, want 204", code)
+	}
+	resp2, err := browser.Get(srv.URL + "/indexes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK || !strings.Contains(string(b2), "legacy") {
+		t.Errorf("after the exchange the cookie is not the admin's: %d", resp2.StatusCode)
+	}
+	// Logout works without OIDC browser login.
+	browser.Get(srv.URL + "/auth/logout")
+	resp3, _ := browser.Get(srv.URL + "/indexes")
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusUnauthorized {
+		t.Errorf("after logout: %d, want 401", resp3.StatusCode)
 	}
 }

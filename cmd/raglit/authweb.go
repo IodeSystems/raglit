@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -37,16 +36,10 @@ const (
 type webLogin struct {
 	oauth    oauth2.Config
 	verifier *oidc.IDTokenVerifier
-	secure   bool // redirect URL is https → Secure cookies
+	store    *sessionStore // shared with the admin token (authsession.go)
 
-	mu       sync.Mutex
-	sessions map[string]session
-	pending  map[string]pendingLogin // state → login in flight
-}
-
-type session struct {
-	principal string
-	expires   time.Time
+	mu      sync.Mutex
+	pending map[string]pendingLogin // state → login in flight
 }
 
 type pendingLogin struct {
@@ -54,15 +47,14 @@ type pendingLogin struct {
 	expires               time.Time
 }
 
-func newWebLogin(p *oidc.Provider, clientID, redirectURL string) *webLogin {
+func newWebLogin(p *oidc.Provider, clientID, redirectURL string, store *sessionStore) *webLogin {
 	return &webLogin{
 		oauth: oauth2.Config{
 			ClientID: clientID, RedirectURL: redirectURL,
 			Endpoint: p.Endpoint(), Scopes: []string{oidc.ScopeOpenID, "profile"},
 		},
 		verifier: p.Verifier(&oidc.Config{ClientID: clientID}),
-		secure:   strings.HasPrefix(redirectURL, "https://"),
-		sessions: map[string]session{},
+		store:    store,
 		pending:  map[string]pendingLogin{},
 	}
 }
@@ -73,22 +65,6 @@ func randomToken() string {
 		panic(err) // crypto/rand does not fail on a working system
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
-}
-
-// principal returns the session's principal, "" when there is no live session.
-func (l *webLogin) principal(r *http.Request) string {
-	c, err := r.Cookie(sessionCookie)
-	if err != nil {
-		return ""
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s, ok := l.sessions[c.Value]
-	if !ok || time.Now().After(s.expires) {
-		delete(l.sessions, c.Value)
-		return ""
-	}
-	return s.principal
 }
 
 // sameOrigin reports whether a cookie-authenticated request came from this
@@ -115,32 +91,14 @@ func wantsPage(r *http.Request) bool {
 	return r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
-func (l *webLogin) cookie(name, value string, ttl time.Duration) *http.Cookie {
-	return &http.Cookie{
-		Name: name, Value: value, Path: "/", MaxAge: int(ttl.Seconds()),
-		HttpOnly: true, Secure: l.secure, SameSite: http.SameSiteLaxMode,
-	}
-}
-
-// handle serves /auth/login, /auth/callback and /auth/logout. false = not an
-// auth route.
+// handle serves /auth/login and /auth/callback. false = not one of them.
+// /auth/logout is shared with the admin token (authsession.go).
 func (l *webLogin) handle(w http.ResponseWriter, r *http.Request) bool {
 	switch r.URL.Path {
 	case "/auth/login":
 		l.login(w, r)
 	case "/auth/callback":
 		l.callback(w, r)
-	case "/auth/logout":
-		if c, err := r.Cookie(sessionCookie); err == nil {
-			l.mu.Lock()
-			delete(l.sessions, c.Value)
-			l.mu.Unlock()
-		}
-		http.SetCookie(w, l.cookie(sessionCookie, "", -time.Second))
-		// A page, not a redirect to "/": "/" would send the browser straight
-		// back through the IdP, whose own session logs it in again at once.
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><title>raglit</title><p>Logged out. <a href="/auth/login">Log in again</a>.</p>`)
 	default:
 		return false
 	}
@@ -165,7 +123,7 @@ func (l *webLogin) login(w http.ResponseWriter, r *http.Request) {
 	l.mu.Unlock()
 	// The state is also bound to THIS browser, so a callback URL handed to
 	// someone else does not log them in as the person who started it.
-	http.SetCookie(w, l.cookie(loginCookie, state, loginTTL))
+	http.SetCookie(w, l.store.cookie(loginCookie, state, loginTTL))
 	http.Redirect(w, r, l.oauth.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
 
@@ -199,11 +157,7 @@ func (l *webLogin) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid id token", http.StatusUnauthorized)
 		return
 	}
-	sid := randomToken()
-	l.mu.Lock()
-	l.sessions[sid] = session{principal: idt.Issuer + "#" + idt.Subject, expires: time.Now().Add(sessionTTL)}
-	l.mu.Unlock()
-	http.SetCookie(w, l.cookie(loginCookie, "", -time.Second))
-	http.SetCookie(w, l.cookie(sessionCookie, sid, sessionTTL))
+	http.SetCookie(w, l.store.cookie(loginCookie, "", -time.Second))
+	l.store.start(w, idt.Issuer+"#"+idt.Subject)
 	http.Redirect(w, r, p.next, http.StatusFound)
 }

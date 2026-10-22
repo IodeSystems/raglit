@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -31,8 +32,11 @@ import (
 
 // authenticator validates bearer tokens against one issuer.
 type authenticator struct {
-	verifier *oidc.IDTokenVerifier
-	web      *webLogin // nil = no browser login (authweb.go)
+	verifier   *oidc.IDTokenVerifier
+	web        *webLogin // nil = no browser login (authweb.go)
+	sessions   *sessionStore
+	adminToken string // authsession.go
+	admin      string // the principal the admin token acts as
 }
 
 // newAuthenticator discovers the issuer (/.well-known/openid-configuration) and
@@ -48,12 +52,15 @@ func newAuthenticator(ctx context.Context, cfg *raglit.AuthConfig) (*authenticat
 	if err != nil {
 		return nil, fmt.Errorf("auth: discover %s: %w", cfg.Issuer, err)
 	}
-	a := &authenticator{verifier: p.Verifier(&oidc.Config{ClientID: cfg.Audience})}
+	a := &authenticator{
+		verifier: p.Verifier(&oidc.Config{ClientID: cfg.Audience}),
+		sessions: newSessionStore(strings.HasPrefix(cfg.RedirectURL, "https://")),
+	}
 	if cfg.ClientID != "" || cfg.RedirectURL != "" {
 		if cfg.ClientID == "" || cfg.RedirectURL == "" {
 			return nil, fmt.Errorf("auth: browser login needs both client_id and redirect_url")
 		}
-		a.web = newWebLogin(p, cfg.ClientID, cfg.RedirectURL)
+		a.web = newWebLogin(p, cfg.ClientID, cfg.RedirectURL, a.sessions)
 	}
 	return a, nil
 }
@@ -76,27 +83,33 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if a.web != nil && a.web.handle(w, r) {
+		if a.handleAuth(w, r) || (a.web != nil && a.web.handle(w, r)) {
 			return
 		}
 		raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || strings.TrimSpace(raw) == "" {
-			if a.web != nil {
-				if p := a.web.principal(r); p != "" {
-					if !sameOrigin(r) {
-						http.Error(w, "cross-origin request refused", http.StatusForbidden)
-						return
-					}
-					next.ServeHTTP(w, r.WithContext(raglit.WithPrincipal(r.Context(), p)))
+			if p := a.sessions.principal(r); p != "" {
+				if !sameOrigin(r) {
+					http.Error(w, "cross-origin request refused", http.StatusForbidden)
 					return
 				}
-				if wantsPage(r) {
+				next.ServeHTTP(w, r.WithContext(raglit.WithPrincipal(r.Context(), p)))
+				return
+			}
+			if wantsPage(r) {
+				if a.web != nil {
 					http.Redirect(w, r, "/auth/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
-					return
+				} else {
+					signInPage(w, r)
 				}
+				return
 			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="raglit"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		if a.isAdminToken(strings.TrimSpace(raw)) {
+			next.ServeHTTP(w, r.WithContext(raglit.WithPrincipal(r.Context(), a.admin)))
 			return
 		}
 		p, err := a.principal(r.Context(), strings.TrimSpace(raw))
@@ -110,17 +123,29 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 }
 
 // daemonAuth turns on auth when the config names an issuer: the ACL on the
-// registry, and a middleware for the handler. Nil middleware = auth off.
-func daemonAuth(ctx context.Context, reg *raglit.Registry, cfg *raglit.AuthConfig) (func(http.Handler) http.Handler, error) {
+// registry, the admin token at <root>/admin.token, and a middleware for the
+// handler. Nil middleware = auth off. tokenPath is "" when auth is off.
+func daemonAuth(ctx context.Context, reg *raglit.Registry, cfg *raglit.AuthConfig, root string) (mw func(http.Handler) http.Handler, tokenPath string, err error) {
 	if cfg == nil || cfg.Issuer == "" {
-		return nil, nil
+		return nil, "", nil
 	}
-	if err := reg.EnableACL(cfg.Admin); err != nil {
-		return nil, fmt.Errorf("auth: %w", err)
+	// No configured admin: the admin token is the admin. Saves looking up an
+	// OIDC subject before the first sign-in.
+	admin := cfg.Admin
+	if admin == "" {
+		admin = localAdmin
+	}
+	if err := reg.EnableACL(admin); err != nil {
+		return nil, "", fmt.Errorf("auth: %w", err)
 	}
 	a, err := newAuthenticator(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return a.middleware, nil
+	tokenPath = filepath.Join(root, adminTokenFile)
+	if a.adminToken, err = ensureAdminToken(tokenPath); err != nil {
+		return nil, "", fmt.Errorf("auth: admin token: %w", err)
+	}
+	a.admin = admin
+	return a.middleware, tokenPath, nil
 }

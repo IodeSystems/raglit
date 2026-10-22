@@ -30,9 +30,14 @@ func serviceUsage() {
   raglit service install [flags] [-- <daemon flags>...]
   raglit service uninstall
   raglit service start | stop | restart | reload | status | logs
+  raglit service login-admin [--print] [--url URL]
 
 reload re-reads config.json (models, auth) without a restart: the daemon
 re-execs itself once no job is running.
+
+login-admin opens the review UI signed in as admin (needs auth on: an
+auth.issuer in config.json). --print prints the URL instead; it contains the
+admin token.
 
 install flags:
   --name NAME     unit name without .service (default raglit); on macOS the
@@ -64,6 +69,8 @@ func runService(args []string) error {
 		return serviceCtl(args[0], args[1:])
 	case "logs":
 		return serviceLogs(args[1:])
+	case "login-admin":
+		return serviceLoginAdmin(args[1:])
 	default:
 		serviceUsage()
 		os.Exit(2)
