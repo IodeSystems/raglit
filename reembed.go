@@ -59,6 +59,13 @@ func (s *Store) SyncEmbedModel(model string) (dropped bool, err error) {
 	return true, tx.Commit()
 }
 
+// EmbedModel is the model this index's vectors are recorded as coming from, ""
+// when no record exists yet.
+func (s *Store) EmbedModel() string {
+	m, _ := s.Meta(metaEmbedModel)
+	return m
+}
+
 // MissingVectors counts fragments with no vector. Only the document's own
 // words: identity and fields fragments are about a document and are never
 // embedded (SQLOwnWordsF).

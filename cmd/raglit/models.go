@@ -67,6 +67,10 @@ func fetchModels(ctx context.Context, base, key string) ([]modelInfo, error) {
 			State      string                     `json:"state"`
 			Quality    int                        `json:"quality"`
 			Modalities map[string]json.RawMessage `json:"modalities"`
+			// OpenRouter's shape for the same fact.
+			Architecture struct {
+				InputModalities []string `json:"input_modalities"`
+			} `json:"architecture"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -79,6 +83,10 @@ func fetchModels(ctx context.Context, base, key string) ([]modelInfo, error) {
 		}
 		_, vision := m.Modalities["image"]
 		_, audio := m.Modalities["audio"]
+		for _, in := range m.Architecture.InputModalities {
+			vision = vision || in == "image"
+			audio = audio || in == "audio"
+		}
 		models = append(models, modelInfo{
 			ID: m.ID, Type: m.Type, Capability: m.Capability, State: m.State,
 			Quality: m.Quality, Vision: vision, Audio: audio,
