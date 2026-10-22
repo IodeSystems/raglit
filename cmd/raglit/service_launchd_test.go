@@ -10,10 +10,10 @@ import (
 // The plist is well-formed XML, carries every daemon argument as its own
 // string (no shell splitting), and escapes what XML needs escaped.
 func TestRenderPlist(t *testing.T) {
-	out := renderPlist("raglit", "/Users/x/go/bin/raglit",
+	out := renderPlist("raglit", "/opt/rl/go/bin/raglit",
 		[]string{"-addr", "127.0.0.1:7420", "-note", "a & <b>"},
 		[]string{"PATH=/opt/homebrew/bin:/usr/bin", "RAGLIT_NO_AUTOBUILD=1"},
-		true, "/Users/x/Library/Logs/raglit/raglit.log")
+		true, "/opt/rl/Library/Logs/raglit/raglit.log")
 
 	dec := xml.NewDecoder(strings.NewReader(out))
 	dec.Strict = true
@@ -34,7 +34,7 @@ func TestRenderPlist(t *testing.T) {
 	joined := strings.Join(strs, "|")
 	for _, want := range []string{
 		"com.iodesystems.raglit",
-		"/Users/x/go/bin/raglit|daemon|-addr|127.0.0.1:7420|-note|a & <b>",
+		"/opt/rl/go/bin/raglit|daemon|-addr|127.0.0.1:7420|-note|a & <b>",
 		"PATH|/opt/homebrew/bin:/usr/bin",
 		"RAGLIT_NO_AUTOBUILD|1",
 	} {
@@ -67,8 +67,8 @@ func TestWithPath(t *testing.T) {
 
 // The bootstrap diagnosis reads the binary back out of the plist it wrote.
 func TestPlistExec(t *testing.T) {
-	p := renderPlist("raglit", "/Users/a & b/raglit", []string{"-addr", "x"}, nil, false, "/l")
-	if got := plistExec(p); got != "/Users/a & b/raglit" {
+	p := renderPlist("raglit", "/opt/a & b/raglit", []string{"-addr", "x"}, nil, false, "/l")
+	if got := plistExec(p); got != "/opt/a & b/raglit" {
 		t.Errorf("plistExec = %q", got)
 	}
 	if plistExec("<plist/>") != "" {
