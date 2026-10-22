@@ -73,7 +73,7 @@ func (s *Store) MissingVectors() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM fragments f
 		LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
-		WHERE fv.fragment_id IS NULL AND `+SQLOwnWordsF).Scan(&n)
+		WHERE fv.fragment_id IS NULL AND ` + SQLOwnWordsF).Scan(&n)
 	return n, err
 }
 
