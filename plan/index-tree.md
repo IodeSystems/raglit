@@ -26,12 +26,15 @@ type, size, earliest, latest".
 - Rollup per folder: document count, pages, bytes, earliest and latest
   modified time, extension counts and kind counts. Folders start collapsed.
 
-## Slices
+## Slices (✅ 2026-10-22)
 
-1. ◻ Columns, record at ingest, backfill, list fields.
-2. ◻ Tree view with rollups; a folder row links to purge with its glob.
+1. ✅ Columns, recorded at ingest, backfill, list fields — 847747e.
+2. ✅ Tree view with rollups and a per-folder purge link. The link fills in the
+   purge pattern on Controls (`?purge=`). Checked in the browser against a
+   scratch daemon: folder rollups, date spans, chips, collapsed single-child
+   folders, and the purge pattern (5 of 5 documents matched).
 
-**next:** slice 1.
+**next:** none. Deploy with the rest.
 
 **risks:**
 - URLs and uploads have no local file, so they show no size or date.
