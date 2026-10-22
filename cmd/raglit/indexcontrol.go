@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/iodesystems/raglit"
@@ -58,7 +57,7 @@ func runPause(verb string, args []string) error {
 			return err
 		}
 		for _, r := range out.Indexes {
-			state := "running"
+			state := "active"
 			if r.Paused {
 				state = "paused"
 			}
@@ -71,7 +70,7 @@ func runPause(verb string, args []string) error {
 		if _, err := daemonPostJSON(base, "/api/index/pause?"+urlValues("index", idx).Encode(), body); err != nil {
 			return fmt.Errorf("%s %s: %w", verb, idx, err)
 		}
-		fmt.Printf("%sd %s\n", strings.TrimSuffix(verb, "e"), idx)
+		fmt.Printf("%sd %s\n", verb, idx)
 	}
 	return nil
 }
