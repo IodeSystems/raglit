@@ -1,4 +1,4 @@
-import { useParams } from "@tanstack/react-router";
+import { useParams, useSearch } from "@tanstack/react-router";
 import { useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -231,7 +231,8 @@ function IgnoreCard({ index }: { index: string }) {
 // Purge by pattern: preview first, then confirm in a dialog that shows what
 // goes. The preview is the only guard; a purge cannot be undone.
 function PurgeCard({ index }: { index: string }) {
-  const [pattern, setPattern] = useState("");
+  const { purge } = useSearch({ from: "/i/$index/controls" });
+  const [pattern, setPattern] = useState(purge ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState<PurgeResult | null>(null);

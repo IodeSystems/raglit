@@ -120,10 +120,13 @@ const healthRoute = createRoute({
   component: Health,
 });
 
+// ?purge= prefills the purge pattern: the Documents tree links a folder here.
 const controlsRoute = createRoute({
   getParentRoute: () => indexRoute,
   path: "controls",
   component: IndexControls,
+  validateSearch: (s: Record<string, unknown>): { purge?: string } =>
+    typeof s.purge === "string" ? { purge: s.purge } : {},
 });
 
 // The job id is optional and lives in the path so a health row can link AT a

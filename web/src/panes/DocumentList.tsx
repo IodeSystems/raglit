@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { listDocuments, type DocumentRow } from "../api";
 import { aiTitleTooltip, displayPath, displayTitle, documents, fileName, kindLabel, passages, scannedPages } from "../ui/display";
 import { ErrorText } from "../ui/Details";
+import { DocTree } from "./DocTree";
 import "./DocumentList.css";
 import { useResetOn } from "../useResetOn";
 
@@ -86,6 +87,8 @@ export function DocumentList() {
   const [filter, setFilter] = useState("");
   const [kind, setKind] = useState<string | null>(null); // null = all kinds
   const [sort, setSort] = useState<SortKey>("title");
+  const [view, setView] = useState<"list" | "tree">("list");
+  const [root, setRoot] = useState<string | undefined>();
   const listRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
 
@@ -97,7 +100,11 @@ export function DocumentList() {
   useEffect(() => {
     let live = true;
     listDocuments(index)
-      .then((r) => live && setRows((r.documents ?? []).map((d) => toRow(d, r.root))))
+      .then((r) => {
+        if (!live) return;
+        setRoot(r.root);
+        setRows((r.documents ?? []).map((d) => toRow(d, r.root)));
+      })
       .catch((e: unknown) => live && setError(String(e)));
     return () => {
       live = false;
@@ -185,7 +192,20 @@ export function DocumentList() {
           aria-label="Filter documents"
           autoComplete="off"
         />
-        <label className="dl-sort">
+        <div className="dl-view" role="group" aria-label="View">
+          {(["list", "tree"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              className={view === v ? "on" : ""}
+              aria-pressed={view === v}
+              onClick={() => setView(v)}
+            >
+              {v === "list" ? "List" : "Tree"}
+            </button>
+          ))}
+        </div>
+        <label className="dl-sort" hidden={view === "tree"}>
           <span className="muted">Sort</span>
           <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
             {SORTS.map((s) => (
@@ -232,7 +252,14 @@ export function DocumentList() {
       {shown !== null && total === 0 && <div className="empty">This index has no documents yet.</div>}
       {shown?.length === 0 && total > 0 && <div className="empty">No documents match.</div>}
 
-      {!!shown?.length && (
+      {!!shown?.length && view === "tree" && (
+        <DocTree
+          index={index}
+          root={root}
+          docs={shown.map((r) => ({ doc: r.doc, rel: r.rel, title: r.title, kind: r.kind }))}
+        />
+      )}
+      {!!shown?.length && view === "list" && (
         <>
           <div className="dl-summary muted" aria-live="polite">
             {shown.length === total ? documents(total) : `${shown.length.toLocaleString()} of ${documents(total)}`}

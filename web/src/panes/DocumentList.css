@@ -40,3 +40,31 @@
   .dl-meta { width:100%; flex-wrap:wrap; }
   .dl-date { min-width:0; text-align:left; margin-left:auto; }
 }
+
+/* Tree view (panes/DocTree.tsx). */
+.dl-view { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.dl-view button { padding:3px 10px; font-size:var(--fs-sm); background:var(--bg); border:none; color:var(--fg); }
+.dl-view button.on { background:var(--accent); color:#fff; }
+
+.dt-row { display:flex; align-items:center; gap:var(--sp-2); padding:7px 14px;
+  border-bottom:1px solid var(--line); color:inherit; text-decoration:none; min-width:0; }
+.dt-row:hover { background:var(--chip); }
+.dt-root { background:var(--chip); }
+.dt-toggle, .dt-name { background:none; border:none; padding:0; color:inherit; cursor:pointer; }
+.dt-toggle { width:16px; color:var(--muted); flex-shrink:0; }
+.dt-name { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:40%; }
+.dt-chips { display:flex; flex-wrap:wrap; gap:4px; flex:1; min-width:0; }
+.dt-chip { display:inline-flex; gap:4px; padding:1px 7px; border-radius:999px; font-size:var(--fs-sm);
+  border:1px solid var(--line); white-space:nowrap; }
+.dt-chip.kind { text-transform:capitalize; }
+.dt-stats { display:flex; gap:var(--sp-2); flex-shrink:0; font-size:var(--fs-sm); margin-left:auto; }
+.dt-num, .dt-date { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.dt-purge { font-size:var(--fs-sm); white-space:nowrap; flex-shrink:0; }
+.dt-fname { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:40%; }
+.dt-ftitle { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:var(--fs-sm); }
+
+@media (max-width:720px) {
+  .dt-row { flex-wrap:wrap; }
+  .dt-name, .dt-fname { max-width:none; }
+  .dt-stats { width:100%; margin-left:22px; }
+}

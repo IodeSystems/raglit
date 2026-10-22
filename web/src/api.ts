@@ -231,6 +231,8 @@ export type DocumentRow = {
   frag_mode?: string; // "llm-seg" | "text-overlap"
   engines?: Record<string, number>;
   added_at?: number; // ingest time, unix NANOseconds
+  src_size?: number; // source file bytes; absent when unknown
+  src_mtime?: number; // source file modified time, unix SECONDS; absent when unknown
   // What the document IS (identity.go). Empty when nobody has said.
   gen_name?: string; // generated (or corrected) title
   gen_kind?: string; // correspondence | court filing | deed | …
