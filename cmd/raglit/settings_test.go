@@ -152,3 +152,11 @@ func TestModelSettings_AdminOnly(t *testing.T) {
 		t.Errorf("non-admin PUT: %d, want 403", code)
 	}
 }
+
+// A role with no model shows no provider, not the legacy one.
+func TestModelSettings_EmptyRoleHasNoProvider(t *testing.T) {
+	out := modelSettingsFrom(raglit.Config{BaseURL: "http://x/v1", VisionModel: "v"})
+	if out.Body.Roles["vision"].Provider != "default" || out.Body.Roles["audio"].Provider != "" || out.Body.Roles["segment"].Provider != "" {
+		t.Fatalf("roles = %+v", out.Body.Roles)
+	}
+}

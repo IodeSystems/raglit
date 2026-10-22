@@ -83,18 +83,18 @@ func modelSettingsFrom(cfg raglit.Config) *modelSettingsOut {
 		b.Providers = append(b.Providers, providerView{Name: n, Kind: firstNonEmpty(p.Kind, "custom"), BaseURL: p.BaseURL, HasKey: p.APIKey != ""})
 	}
 	// The legacy endpoint, shown as a provider while any role still uses it.
-	legacy := func(p string) string {
-		if p == "" && cfg.BaseURL != "" {
+	legacy := func(p, model string) string {
+		if p == "" && model != "" && cfg.BaseURL != "" {
 			return legacyProvider
 		}
 		return p
 	}
 	usesLegacy := false
 	b.Roles = map[string]roleView{
-		"vision":  {Provider: legacy(cfg.VisionProvider), Model: cfg.VisionModel},
-		"embed":   {Provider: legacy(cfg.EmbedProvider), Model: cfg.EmbedModel},
-		"segment": {Provider: legacy(cfg.SegmentProvider), Model: cfg.SegmentModel},
-		"audio":   {Provider: legacy(cfg.AudioProvider), Model: cfg.AudioModel},
+		"vision":  {Provider: legacy(cfg.VisionProvider, cfg.VisionModel), Model: cfg.VisionModel},
+		"embed":   {Provider: legacy(cfg.EmbedProvider, cfg.EmbedModel), Model: cfg.EmbedModel},
+		"segment": {Provider: legacy(cfg.SegmentProvider, cfg.SegmentModel), Model: cfg.SegmentModel},
+		"audio":   {Provider: legacy(cfg.AudioProvider, cfg.AudioModel), Model: cfg.AudioModel},
 	}
 	for _, r := range b.Roles {
 		if r.Provider == legacyProvider {
