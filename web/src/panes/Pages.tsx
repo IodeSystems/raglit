@@ -7,6 +7,7 @@ import { NotesPanel } from "./Notes";
 import { ErrorText } from "../ui/Details";
 import { engineLabel } from "../ui/display";
 import "./Pages.css";
+import { useResetOn } from "../useResetOn";
 
 // The page list: every page's image beside the text that was indexed from it.
 //
@@ -263,23 +264,25 @@ function Reocr({ index, doc, page }: { index: string; doc: string; page: number 
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<{ text?: string; err?: string } | null>(null);
 
+  const reread = async () => {
+    setBusy(true);
+    setOut(null);
+    try {
+      const r = await postJSON<{ text?: string }>("/api/reocr", { index }, { path: doc, page });
+      setOut({ text: r.text || "No text was found on this page." });
+    } catch (e: unknown) {
+      setOut({ err: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="reocr">
       <button
         disabled={busy}
         title="Read this page's image again and show the result here. The indexed text does not change."
-        onClick={async () => {
-          setBusy(true);
-          setOut(null);
-          try {
-            const r = await postJSON<{ text?: string }>("/api/reocr", { index }, { path: doc, page });
-            setOut({ text: r.text || "No text was found on this page." });
-          } catch (e: unknown) {
-            setOut({ err: String(e) });
-          } finally {
-            setBusy(false);
-          }
-        }}
+        onClick={() => void reread()}
       >
         {busy ? "Reading…" : "Read page again"}
       </button>
@@ -313,10 +316,12 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
 function useLayout(index: string, doc: string, page: number) {
   const [pl, setPl] = useState<PageLayout | null>(null);
   const [err, setErr] = useState(false);
-  useEffect(() => {
-    let live = true;
+  useResetOn([index, doc, page], () => {
     setPl(null);
     setErr(false);
+  });
+  useEffect(() => {
+    let live = true;
     getPageLayout(index, doc, page)
       .then((v) => live && setPl(v))
       .catch(() => live && setErr(true));

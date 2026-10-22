@@ -157,7 +157,8 @@ const docRoute = createRoute({
     const rel = await relDocPath(params.index, params.doc);
     if (!rel || rel === params.doc) return;
     const leaf = matches[matches.length - 1];
-    throw redirect({
+    redirect({
+      throw: true,
       // The deepest match is the sub-tab being opened ("…/pages/$page",
       // "…/transcript"); redirecting to it keeps the reader where the link
       // pointed. Typed loosely because the leaf is any route under this one.
@@ -178,10 +179,8 @@ const docIndexRoute = createRoute({
     // A mail archive opens on its thread, not on its pages. "Page 7 of 26" is
     // the indexed shape of an email and not how anybody reads one — and the
     // pages view was the complaint that produced this route.
-    if (/\.(eml|mbox)$/i.test(params.doc)) {
-      throw redirect({ to: "/i/$index/d/$doc/email", params });
-    }
-    throw redirect({ to: "/i/$index/d/$doc/pages", params });
+    const to = /\.(eml|mbox)$/i.test(params.doc) ? "/i/$index/d/$doc/email" : "/i/$index/d/$doc/pages";
+    redirect({ to, params, throw: true });
   },
 });
 

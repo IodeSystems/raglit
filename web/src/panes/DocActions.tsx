@@ -72,7 +72,7 @@ export function DocActions({
           // fast path and the cross-index pool both short-circuit, so pressing
           // "re-ingest" on a file nobody edited does nothing at all — which
           // looks identical to a button that is broken.
-          act("ingest", () => postJSON("/ingest", { index }, { targets: [doc], fresh: true }))
+          void act("ingest", () => postJSON("/ingest", { index }, { targets: [doc], fresh: true }))
         }
       >
         {busy === "ingest" ? "Queued…" : "Re-index"}
@@ -84,7 +84,7 @@ export function DocActions({
         }
         // /api/reread takes `path` as a QUERY parameter only; sent in the body it
         // was a 422. The display path is accepted like the absolute one.
-        onClick={() => act("reread", () => postJSON("/api/reread", { index, path: detail.path || doc }))}
+        onClick={() => void act("reread", () => postJSON("/api/reread", { index, path: detail.path || doc }))}
       >
         {busy === "reread" ? "Queued…" : "Re-read pages"}
       </button>

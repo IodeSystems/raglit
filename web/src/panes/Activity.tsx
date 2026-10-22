@@ -50,10 +50,10 @@ export function Activity() {
         })
         .catch((e: Error) => live && setErr(e.message))
         .finally(() => live && setLoading(false));
-    load();
+    void load();
     // Work in flight changes on its own, so this polls. 3s matches the rest of
     // the app; live push is an open extension in the plan.
-    const t = setInterval(load, 3000);
+    const t = setInterval(() => void load(), 3000);
     return () => {
       live = false;
       clearInterval(t);
@@ -180,7 +180,7 @@ function QueueBand({
       </Stack>
       {queue.failed > 0 && (
         <div className="ops-head" style={{ marginTop: 8, marginBottom: 0 }}>
-          <button className="act primary" disabled={busy} onClick={retryAll}>
+          <button className="act primary" disabled={busy} onClick={() => void retryAll()}>
             {busy ? "Queuing…" : `Retry ${queue.failed.toLocaleString()} failed`}
           </button>
           {note && <span className="ops-note">{note}</span>}
@@ -237,7 +237,7 @@ function JobRow({
         </Link>
         <Box sx={{ flex: 1 }} />
         {job.state === "error" && (
-          <button className="act" disabled={busy} onClick={retry}>
+          <button className="act" disabled={busy} onClick={() => void retry()}>
             Retry
           </button>
         )}

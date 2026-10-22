@@ -68,7 +68,7 @@ export function Branches() {
     setBusy(true);
     setErr("");
     try {
-      const r = await fetch("/api/branches?" + new URLSearchParams({ name: b.name }), {
+      const r = await fetch(`/api/branches?${new URLSearchParams({ name: b.name }).toString()}`, {
         method: "DELETE",
       });
       if (!r.ok) throw new Error(await r.text());
@@ -115,7 +115,7 @@ export function Branches() {
                 .join(" · ")}
             </div>
             <div className="acts">
-              <button className="act" disabled={busy} onClick={() => drop(b)}>
+              <button className="act" disabled={busy} onClick={() => void drop(b)}>
                 Delete
               </button>
             </div>
@@ -132,7 +132,7 @@ export function Branches() {
         <Details>
           Branches need a scoped daemon (one started without <code>--home</code>).
         </Details>
-        <form className="acts" onSubmit={fork}>
+        <form className="acts" onSubmit={(e) => void fork(e)}>
           <input
             type="text"
             value={name}

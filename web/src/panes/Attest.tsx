@@ -7,6 +7,7 @@ import { ApiError, postJSON } from "../api";
 import { ErrorText } from "../ui/Details";
 import { fileName, producerLabel } from "../ui/display";
 import "./Attest.css";
+import { useResetOn } from "../useResetOn";
 
 export type { Stats };
 
@@ -126,8 +127,8 @@ export function Attest() {
 // Restarts when the transport (the index) changes.
 function useElapsed(loading: boolean, key: unknown): number {
   const [s, setS] = useState(0);
+  useResetOn([loading, key], () => setS(0));
   useEffect(() => {
-    setS(0);
     if (!loading) return;
     const t0 = Date.now();
     const id = window.setInterval(() => setS(Math.floor((Date.now() - t0) / 1000)), 1000);
@@ -219,27 +220,29 @@ export function SweepIndex({ index, onDone }: { index: string; onDone: () => voi
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [result, setResult] = useState<{ wrote: number; skipped: number } | null>(null);
+  const sweep = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await postJSON<{ wrote: number; skipped: number }>("/api/attest/readings", {
+        index,
+      });
+      setResult(r);
+      onDone();
+    } catch (e: unknown) {
+      setErr(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="attest-sweep">
       <button
         className="primary"
         disabled={busy}
         title="Prepare every readable document in this index for review. Documents nothing can read are skipped and counted."
-        onClick={async () => {
-          setBusy(true);
-          setErr("");
-          try {
-            const r = await postJSON<{ wrote: number; skipped: number }>("/api/attest/readings", {
-              index,
-            });
-            setResult(r);
-            onDone();
-          } catch (e: unknown) {
-            setErr(e instanceof ApiError ? e.message : String(e));
-          } finally {
-            setBusy(false);
-          }
-        }}
+        onClick={() => void sweep()}
       >
         {busy ? "Preparing…" : "Prepare index for review"}
       </button>

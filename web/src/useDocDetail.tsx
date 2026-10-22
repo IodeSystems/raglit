@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import type { ReactNode } from "react";
 
 import { docDetail, type DocDetail } from "./api";
+import { useResetOn } from "./useResetOn";
 
 // One fetch per document, shared by every sub-tab.
 //
@@ -16,22 +17,26 @@ export function useDocDetail(index: string, doc: string) {
 
   const load = useCallback(() => {
     let live = true;
-    setError("");
     docDetail(index, doc)
-      .then((d) => live && setDetail(d))
+      .then((d) => {
+        if (!live) return;
+        setDetail(d);
+        setError("");
+      })
       .catch((e: unknown) => live && setError(String(e)));
     return () => {
       live = false;
     };
   }, [index, doc]);
 
-  useEffect(() => {
-    // Clear first. Without this, walking from one document to another renders
-    // the PREVIOUS document's pages under the new document's title until the
-    // fetch lands — which is worse than a spinner, because it looks like data.
+  // Clear first. Without this, walking from one document to another renders
+  // the PREVIOUS document's pages under the new document's title until the
+  // fetch lands — which is worse than a spinner, because it looks like data.
+  useResetOn([index, doc], () => {
     setDetail(null);
-    return load();
-  }, [load]);
+    setError("");
+  });
+  useEffect(() => load(), [load]);
 
   return { detail, error, reload: load };
 }

@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import AppBar from "@mui/material/AppBar";
 import Box from "@mui/material/Box";
 import InputBase from "@mui/material/InputBase";
@@ -8,6 +8,7 @@ import Toolbar from "@mui/material/Toolbar";
 import Typography from "@mui/material/Typography";
 
 import { APPBAR_HEIGHT, NavDrawer, type NavSection } from "./NavDrawer";
+import { useResetOn } from "../useResetOn";
 import "./AppShell.css";
 
 // The one frame every page sits in: the daemon overview, a project, an index.
@@ -36,7 +37,7 @@ export function AppShell({
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   // A tap on a sidebar entry navigates; the drawer must not stay over the page
   // it just opened.
-  useEffect(() => setOpen(false), [pathname]);
+  useResetOn([pathname], () => setOpen(false));
 
   return (
     <Box sx={{ display: "flex" }}>
@@ -128,7 +129,7 @@ export function ShellSearch({
     select: (s) => (s.location.search as { q?: string }).q ?? "",
   });
   const [q, setQ] = useState(urlQ);
-  useEffect(() => setQ(urlQ), [urlQ]);
+  useResetOn([urlQ], () => setQ(urlQ));
 
   return (
     <Paper

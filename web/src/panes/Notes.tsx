@@ -79,10 +79,7 @@ export function NotesPanel({ pageScope }: { pageScope?: number }) {
             <span>{n.created_at}</span>
             <div className="grow" />
             <button
-              onClick={async () => {
-                await deleteNote(index, n.id);
-                load();
-              }}
+              onClick={() => void deleteNote(index, n.id).then(load)}
             >
               Delete
             </button>
@@ -112,26 +109,28 @@ function NoteForm({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!body.trim()) return;
+    setBusy(true);
+    setErr("");
+    try {
+      localStorage.setItem("raglit.author", author.trim());
+      const anchor = fixedPage ?? (page ? Number(page) : null);
+      await onSubmit(body.trim(), author.trim(), anchor);
+      setBody("");
+      setPage("");
+    } catch (e2: unknown) {
+      setErr(String(e2));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <form
       className="noteform"
-      onSubmit={async (e) => {
-        e.preventDefault();
-        if (!body.trim()) return;
-        setBusy(true);
-        setErr("");
-        try {
-          localStorage.setItem("raglit.author", author.trim());
-          const anchor = fixedPage ?? (page ? Number(page) : null);
-          await onSubmit(body.trim(), author.trim(), anchor);
-          setBody("");
-          setPage("");
-        } catch (e2: unknown) {
-          setErr(String(e2));
-        } finally {
-          setBusy(false);
-        }
-      }}
+      onSubmit={(e) => void save(e)}
     >
       <textarea
         value={body}

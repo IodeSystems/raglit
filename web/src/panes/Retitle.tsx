@@ -57,22 +57,24 @@ export function Retitle({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+    try {
+      await identify(index, doc, { name: name.trim(), summary: summary.trim(), kind });
+      onDone();
+    } catch (e2: unknown) {
+      setErr(String(e2));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <form
       className="noteform"
-      onSubmit={async (e) => {
-        e.preventDefault();
-        setBusy(true);
-        setErr("");
-        try {
-          await identify(index, doc, { name: name.trim(), summary: summary.trim(), kind });
-          onDone();
-        } catch (e2: unknown) {
-          setErr(String(e2));
-        } finally {
-          setBusy(false);
-        }
-      }}
+      onSubmit={(e) => void save(e)}
     >
       <div className="row">
         <input

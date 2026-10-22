@@ -30,7 +30,10 @@ async function fail(r: Response): Promise<never> {
   throw new ApiError(msg, r.status);
 }
 
-export async function getJSON<T>(path: string, params?: Record<string, unknown>): Promise<T> {
+// Query values the URL can carry; an object here would serialize as "[object Object]".
+type QueryParams = Record<string, string | number | boolean | null | undefined>;
+
+export async function getJSON<T>(path: string, params?: QueryParams): Promise<T> {
   const r = await fetch(path + qs(params));
   if (!r.ok) return fail(r);
   return (await r.json()) as T;
@@ -38,7 +41,7 @@ export async function getJSON<T>(path: string, params?: Record<string, unknown>)
 
 export async function postJSON<T>(
   path: string,
-  params?: Record<string, unknown>,
+  params?: QueryParams,
   body?: unknown,
 ): Promise<T> {
   const r = await fetch(path + qs(params), {
@@ -53,7 +56,7 @@ export async function postJSON<T>(
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-function qs(params?: Record<string, unknown>): string {
+function qs(params?: QueryParams): string {
   if (!params) return "";
   const u = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {

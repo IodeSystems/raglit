@@ -27,12 +27,12 @@ export function ProjectShell() {
 
   return (
     <AppShell
-      crumbs={[<CrumbLink to="/">Projects</CrumbLink>, project]}
+      crumbs={[<CrumbLink key="projects" to="/">Projects</CrumbLink>, project]}
       search={
         <ShellSearch
           placeholder={`Search every index in ${project}`}
           onSearch={(q, nav) =>
-            nav({ to: "/p/$project/search", params: { project }, search: { q, mode: "bm25" } })
+            void nav({ to: "/p/$project/search", params: { project }, search: { q, mode: "bm25" } })
           }
         />
       }

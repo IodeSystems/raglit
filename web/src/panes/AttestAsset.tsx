@@ -58,13 +58,13 @@ export function AttestAsset() {
   // serves assets WITH A MACHINE READING, so a 404 here means nothing has read
   // this document yet — a state with an action, not a broken mount.
   const unread = wb.error !== null && /\b404\b|not found/i.test(wb.error);
-  if (unread) return <Unread index={index} asset={asset} onDone={wb.reload} />;
+  if (unread) return <Unread index={index} asset={asset} onDone={() => void wb.reload()} />;
   if (wb.error && !wb.state) {
     return (
       <div className="empty attest-state">
         <div className="attest-state-title">This review could not be loaded.</div>
         <ErrorText raw={wb.error} />
-        <button onClick={() => wb.reload()}>Try again</button>
+        <button onClick={() => void wb.reload()}>Try again</button>
       </div>
     );
   }

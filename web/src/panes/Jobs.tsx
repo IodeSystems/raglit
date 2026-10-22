@@ -84,7 +84,7 @@ function JobList({ index }: { index: string }) {
           <span className="ops-note">
             {failed.length.toLocaleString()} of the {jobs.length.toLocaleString()} imports shown did not finish.
           </span>
-          <button className="act primary" disabled={bulk} onClick={retryFailed}>
+          <button className="act primary" disabled={bulk} onClick={() => void retryFailed()}>
             {bulk ? "Retrying…" : `Retry ${failed.length.toLocaleString()} failed`}
           </button>
           {note && <span className="ops-note">{note}</span>}
@@ -133,7 +133,7 @@ function JobList({ index }: { index: string }) {
                     <JobDetailCell job={j} />
                   </td>
                   <td className="actions">
-                    <JobActions job={j} busy={busy === j.id} act={act} />
+                    <JobActions job={j} busy={busy === j.id} act={(k, id) => void act(k, id)} />
                   </td>
                 </tr>
               );
@@ -243,7 +243,7 @@ function JobDetail({ index, id }: { index: string; id: number }) {
         </div>
         {j.error && <ErrorText raw={j.error} />}
         <div className="acts">
-          <JobActions job={j} busy={busy} act={(k) => act(k)} />
+          <JobActions job={j} busy={busy} act={(k) => void act(k)} />
           <Link className="act" to="/i/$index/jobs" params={{ index }}>
             All imports
           </Link>

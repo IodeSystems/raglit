@@ -174,7 +174,7 @@ function RetryAll({ index, problems, onDone }: { index: string; problems: Proble
   };
   return (
     <div className="ops-head">
-      <button className="act primary" disabled={busy} onClick={go}>
+      <button className="act primary" disabled={busy} onClick={() => void go()}>
         {busy ? "Retrying…" : `Retry all ${ids.length.toLocaleString()}`}
       </button>
       {note && <span className="ops-note">{note}</span>}
@@ -285,7 +285,7 @@ function ProblemRow({
       setErr("A withdrawal needs a reason.");
       return;
     }
-    run(() => postJSON("/api/withdraw", { index, path: doc, reason, by: whoami() }));
+    void run(() => postJSON("/api/withdraw", { index, path: doc, reason, by: whoami() }));
   };
 
   const forget = () => run(() => postJSON("/api/forget", { index, path: doc }));
@@ -344,7 +344,7 @@ function ProblemRow({
       <code
         title="Click to copy"
         style={{ cursor: "copy" }}
-        onClick={() => navigator.clipboard?.writeText(p.fix!)}
+        onClick={() => void navigator.clipboard?.writeText(p.fix!)}
       >
         {p.fix}
       </code>

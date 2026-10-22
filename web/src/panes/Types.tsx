@@ -12,6 +12,7 @@ import { listDocTypes, type DocTypeInfo, type FieldsCoverage } from "../api";
 import { mono } from "../theme";
 import { Details } from "../ui/Details";
 import { humanizeError } from "../ui/display";
+import { useResetOn } from "../useResetOn";
 
 // Types & fields — the schemaed-documents feature, which until now existed only
 // at the CLI.
@@ -27,8 +28,8 @@ export function Types() {
   const [err, setErr] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
+  useResetOn([index], () => setLoading(true));
   useEffect(() => {
-    setLoading(true);
     listDocTypes(index)
       .then((got) => {
         setTypes(got.types ?? []);
@@ -197,5 +198,5 @@ function fieldNames(schema: unknown): string[] {
   if (!schema || typeof schema !== "object") return [];
   const props = (schema as { properties?: unknown }).properties;
   if (!props || typeof props !== "object") return [];
-  return Object.keys(props as Record<string, unknown>);
+  return Object.keys(props);
 }

@@ -12,6 +12,7 @@ import { AISummaryLabel, AITitleLabel } from "../ui/Label";
 import { useIndexInfo } from "./IndexRows";
 import { SEARCH_MODES, displayPath, displayTitle, fileName, isOtherKind, kindLabel, passages } from "../ui/display";
 import "./Search.css";
+import { useResetOn } from "../useResetOn";
 
 // ── shaping the hits ─────────────────────────────────────────────────────────
 
@@ -142,15 +143,14 @@ function SearchPane({
   const [error, setError] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
+  useResetOn([scope, q, mode], () => {
     setOpen(new Set());
-    if (!q) {
-      setHits(null);
-      return;
-    }
-    let live = true;
     setError("");
     setHits(null);
+  });
+  useEffect(() => {
+    if (!q) return;
+    let live = true;
     search(scope, q, mode)
       .then((r) => live && setHits(r.hits ?? []))
       .catch(
@@ -421,7 +421,7 @@ export function Search() {
       q={q}
       mode={mode}
       onMode={(m) =>
-        navigate({
+        void navigate({
           to: "/i/$index/search",
           params: { index },
           search: { q, mode: m },
@@ -445,7 +445,7 @@ export function ProjectSearch() {
       q={q}
       mode={mode}
       onMode={(m) =>
-        navigate({
+        void navigate({
           to: "/p/$project/search",
           params: { project },
           search: { q, mode: m },

@@ -50,7 +50,7 @@ export function IndexShell() {
       size="small"
       variant="outlined"
       aria-label="Index"
-      onChange={(e) => navigate({ to: "/i/$index", params: { index: e.target.value } })}
+      onChange={(e) => void navigate({ to: "/i/$index", params: { index: e.target.value } })}
       sx={{
         minWidth: { xs: 0, sm: 180 },
         maxWidth: { xs: "45vw", sm: 320 },
@@ -78,15 +78,15 @@ export function IndexShell() {
   return (
     <AppShell
       crumbs={[
-        <CrumbLink to="/">Projects</CrumbLink>,
-        ...(project ? [<CrumbLink to={`/p/${project}`}>{project}</CrumbLink>] : []),
+        <CrumbLink key="projects" to="/">Projects</CrumbLink>,
+        ...(project ? [<CrumbLink key="project" to={`/p/${project}`}>{project}</CrumbLink>] : []),
         switcher,
       ]}
       search={
         <ShellSearch
           placeholder="Search this index"
           onSearch={(q, nav) =>
-            nav({ to: "/i/$index/search", params: { index }, search: { q, mode: "bm25" } })
+            void nav({ to: "/i/$index/search", params: { index }, search: { q, mode: "bm25" } })
           }
         />
       }

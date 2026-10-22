@@ -5,6 +5,7 @@ import { listDocuments, type DocumentRow } from "../api";
 import { aiTitleTooltip, displayPath, displayTitle, documents, fileName, kindLabel, passages, scannedPages } from "../ui/display";
 import { ErrorText } from "../ui/Details";
 import "./DocumentList.css";
+import { useResetOn } from "../useResetOn";
 
 // Every document in the index.
 //
@@ -88,11 +89,13 @@ export function DocumentList() {
   const listRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    let live = true;
+  useResetOn([index], () => {
     setRows(null);
     setError("");
     setKind(null);
+  });
+  useEffect(() => {
+    let live = true;
     listDocuments(index)
       .then((r) => live && setRows((r.documents ?? []).map((d) => toRow(d, r.root))))
       .catch((e: unknown) => live && setError(String(e)));

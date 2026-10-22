@@ -5,6 +5,7 @@ import { getEmailThread, type EmailMessage, type EmailAttachment } from "../api"
 import { useDoc } from "../useDocDetail";
 import { ErrorText } from "../ui/Details";
 import { displayPath } from "../ui/display";
+import { useResetOn } from "../useResetOn";
 
 // A mail archive as a conversation.
 //
@@ -25,10 +26,12 @@ export function Email() {
   const [msgs, setMsgs] = useState<EmailMessage[] | null>(null);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    let live = true;
+  useResetOn([index, doc], () => {
     setError("");
     setMsgs(null);
+  });
+  useEffect(() => {
+    let live = true;
     getEmailThread(index, doc)
       .then((r) => live && setMsgs(r.messages ?? []))
       .catch((e: unknown) => live && setError(String(e)));
