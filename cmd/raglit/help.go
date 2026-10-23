@@ -24,7 +24,8 @@ func printRootHelp(w io.Writer) {
 		}
 	}
 	fmt.Fprint(w, "\nraglit help COMMAND   details     raglit COMMAND -h   flags\n"+
-		"raglit help flags     flags shared by most commands\n")
+		"raglit help flags     flags shared by most commands\n"+
+		"raglit completion bash|zsh|fish   shell completion script\n")
 }
 
 func printEntries(w io.Writer, es []helpEntry) {
@@ -84,7 +85,7 @@ const helpFlags = `flags shared by most commands:
   --home DIR      index home; default: nearest ./.raglit walking up from cwd,
                   else $RAGLIT_HOME or ~/local/raglit
   --db FILE       raw index file (overrides --home; implies --embedded)
-  -n N            search/serve: max results
+  -n, --limit N   search/serve: max results
   --mode M        search: bm25 (default) | vec | hybrid
   --llm-url, --llm-model, --embed-model, --llm-key ($RAGLIT_LLM_KEY)
                   model endpoint overrides; default: config
