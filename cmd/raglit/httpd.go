@@ -857,8 +857,8 @@ type ingestOut struct {
 		Queued int     `json:"queued"`
 		JobIDs []int64 `json:"job_ids"`
 		// Ignored counts targets an ignore pattern refused (index Controls).
-		Ignored int `json:"ignored,omitempty"`
-		Index  string  `json:"index"`
+		Ignored int    `json:"ignored,omitempty"`
+		Index   string `json:"index"`
 	}
 }
 
