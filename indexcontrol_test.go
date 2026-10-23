@@ -68,7 +68,13 @@ func TestEnqueueRefusesIgnoredPaths(t *testing.T) {
 	if _, err := s.Enqueue("/w/.claude/worktrees/a/mobile/node_modules/x/README.md", ""); !errors.Is(err, ErrIgnored) {
 		t.Fatalf("node_modules enqueued: %v", err)
 	}
-	if _, err := s.Enqueue("/w/.claude/worktrees/a/README.md", ""); err != nil {
+	// Agent worktrees are copies of the repo; the rest of a dot-dir is not.
+	for _, p := range []string{"/w/.claude/worktrees/a/README.md", "/w/.dun/worktrees/s1/main.go"} {
+		if _, err := s.Enqueue(p, ""); !errors.Is(err, ErrIgnored) {
+			t.Errorf("worktree copy enqueued: %s: %v", p, err)
+		}
+	}
+	if _, err := s.Enqueue("/home/u/.claude/skills/x/SKILL.md", ""); err != nil {
 		t.Fatalf("an unignored path was refused: %v", err)
 	}
 	for _, p := range []string{

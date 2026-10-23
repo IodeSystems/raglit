@@ -58,8 +58,17 @@ const (
 // variant, and images go to the vision model. A bare `build` is NOT here: a
 // corpus folder named "build" is legitimate, so only the platform-qualified
 // paths are.
+//
+// Agent worktrees are global too (USER 2026-10-23): a git worktree under
+// .claude/worktrees or .dun/worktrees is a full copy of the repo, so indexing
+// one returns every hit twice, and an agent run leaves dozens. Measured: 2,174
+// of 2,582 documents in one dun index were worktree copies. These are
+// specific dot-dir paths, not dot-dirs in general, so ~/.claude/skills stays
+// indexable.
 var enqueueIgnore = []string{
 	"**/node_modules/**",
+	"**/.claude/worktrees/**",
+	"**/.dun/worktrees/**",
 	"**/.gradle/**",
 	"**/Pods/**",
 	"**/android/build/**",
