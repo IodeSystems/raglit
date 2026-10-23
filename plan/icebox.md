@@ -223,6 +223,9 @@ has no crawler. Works today: .html goes through pandoc, .md/.txt/.pdf as is.
 - A hybrid hit ranked only by bm25 (outside the vector top 4×limit) has no
   `similarity`. Filling it needs the query vector passed into the lexical
   side; do it if a caller's threshold drops good hits.
-- Hybrid latency (one query embedding per index searched) not measured.
+- Hybrid latency, measured 2026-10-23 with the CLI against the live daemon (raglit:code):
+  0.12–0.13 s warm against 0.10 s for bm25; 1.2 s on the first search after a restart
+  (embedding model cold). The query is embedded once per index searched; cache
+  it per request if a search spans many embedded indexes.
 - Stopword list (hitmatch.go) is English and short; it affects only
   matched_terms/query_terms, not ranking.
