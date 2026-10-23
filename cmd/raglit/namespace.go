@@ -72,10 +72,9 @@ const nsUnmatchable = "\x00*"
 //	"shared:*"        → "shared__*"             (every index in that namespace)
 //	"other:secret"    → rejected (ok=false)     (namespace not addressable here)
 //
-// Restricting the namespace to the project itself or its declared `shared`
-// entries preserves isolation — a project can't reach an arbitrary project's
-// indexes by guessing "<name>:<index>". ns=="" (embedded) passes the token
-// through unchanged.
+// Writes and wildcards are restricted to the project itself or its declared
+// `shared` entries. A read of one named index of another project goes through
+// nsNamedIndex instead. ns=="" (embedded) passes the token through unchanged.
 func nsResolveToken(ownNS string, shared []string, token string) (string, bool) {
 	token = strings.TrimSpace(token)
 	if ownNS == "" {
@@ -109,8 +108,9 @@ func nsWriteIndex(ownNS string, shared []string, token string) (string, error) {
 // project plus its shared namespaces. Empty/"all" → "<ns>__*" plus "<shared>__*"
 // for each shared namespace. An explicit selection is a comma-separated list of
 // tokens, each resolved via nsResolveToken ("<ns>:<local>" addressing allowed for
-// own + shared); tokens naming an unreachable namespace are dropped, and if none
-// survive the selector matches nothing (never "all"). ns=="" returns sel as-is.
+// own + shared) or, for one named index of another project, nsNamedIndex; other
+// tokens are dropped, and if none survive the selector matches nothing (never
+// "all"). ns=="" returns sel as-is.
 func nsReadSelector(ns string, shared []string, sel string) string {
 	if ns == "" {
 		return strings.TrimSpace(sel)
@@ -132,12 +132,33 @@ func nsReadSelector(ns string, shared []string, sel string) string {
 		}
 		if d, ok := nsResolveToken(ns, shared, tok); ok {
 			parts = append(parts, d)
+		} else if d, ok := nsNamedIndex(tok); ok {
+			parts = append(parts, d)
 		}
 	}
 	if len(parts) == 0 {
 		return nsUnmatchable // explicit selection, nothing reachable → no hits
 	}
 	return strings.Join(parts, ",")
+}
+
+// nsNamedIndex lets a READ name one index of any project, "other:idx"
+// (USER 2026-10-23): an index is made to be used by many sessions, and
+// declaring every project in `shared` first made that a config edit per
+// project. The daemon's ACL is the gate: with OIDC on, an index the caller may
+// not read is "no such index". With it off every index is readable over HTTP
+// by its full name anyway, so the namespace was never the protection.
+//
+// Only a named index: "other:*" stays unreachable unless declared shared, so
+// a client cannot list a project it was not told about. Writes never come
+// here (nsWriteIndex).
+func nsNamedIndex(token string) (string, bool) {
+	nsPart, local, addressed := strings.Cut(strings.TrimSpace(token), ":")
+	local = strings.TrimSpace(local)
+	if !addressed || strings.TrimSpace(nsPart) == "" || local == "" || strings.Contains(local, "*") {
+		return "", false
+	}
+	return raglit.NormalizeIndexName(nsPart) + nsSep + raglit.NormalizeIndexName(local), true
 }
 
 func containsStr(ss []string, s string) bool {

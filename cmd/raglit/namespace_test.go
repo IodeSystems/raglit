@@ -56,8 +56,10 @@ func TestNSReadSelector(t *testing.T) {
 		{"acme", []string{"shared"}, "shared:*", "shared__*"},               // whole shared namespace
 		{"acme", []string{"shared"}, "acme:code", "acme__code"},             // own by name
 		{"acme", []string{"shared"}, "code,shared:handbook", "acme__code,shared__handbook"},
-		{"acme", []string{"shared"}, "other:secret", nsUnmatchable}, // unreachable → nothing
-		{"acme", nil, "shared:handbook", nsUnmatchable},             // shared not declared
+		{"acme", []string{"shared"}, "other:secret", "other__secret"}, // one named index: the daemon ACL decides
+		{"acme", nil, "shared:handbook", "shared__handbook"},          // shared need not be declared to read one
+		{"acme", nil, "other:*", nsUnmatchable},                       // a whole undeclared project: no
+		{"acme", nil, "other:", nsUnmatchable},
 		{"", []string{"shared"}, "", ""},
 	}
 	for _, c := range cases {
@@ -251,7 +253,7 @@ func TestSharedFlagAddsToConfig(t *testing.T) {
 	if sel := nsReadSelector("acme", got, "handbook:default"); sel != "handbook__default" {
 		t.Errorf("a flag-linked namespace must be searchable, got %q", sel)
 	}
-	if sel := nsReadSelector("acme", nil, "handbook:default"); sel != nsUnmatchable {
-		t.Errorf("without the flag the namespace is unreachable, got %q", sel)
+	if sel := nsReadSelector("acme", nil, ""); sel != "acme__*" {
+		t.Errorf("without the flag a search of everything stays in this project, got %q", sel)
 	}
 }
