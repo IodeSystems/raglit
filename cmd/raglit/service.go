@@ -51,7 +51,7 @@ install flags:
 Everything after -- is passed to 'raglit daemon' verbatim and is validated
 before the unit is written:
 
-  raglit service install --enable --start -- -addr 127.0.0.1:7420,.76 -embed
+  raglit service install --enable --start -- --addr 127.0.0.1:7420,.76 --embed
 `)
 }
 
@@ -114,7 +114,7 @@ func renderUnit(execPath string, daemonArgs, envs []string) string {
 	b.WriteString("[Service]\nType=simple\n")
 	// Prove the flags parse before the daemon is asked to serve with them. Under
 	// Restart=on-failure a bad flag is not one error, it is a crash loop.
-	fmt.Fprintf(&b, "ExecStartPre=%s daemon -check %s\n", quoteUnit(execPath), strings.Join(parts[2:], " "))
+	fmt.Fprintf(&b, "ExecStartPre=%s daemon --check %s\n", quoteUnit(execPath), strings.Join(parts[2:], " "))
 	fmt.Fprintf(&b, "ExecStart=%s\n", strings.Join(parts, " "))
 	// SIGHUP to the main process only: the daemon re-execs itself (reloadOnHUP).
 	b.WriteString("ExecReload=/bin/kill -HUP $MAINPID\n")
@@ -127,7 +127,7 @@ func renderUnit(execPath string, daemonArgs, envs []string) string {
 OOMPolicy=continue
 
 # SIGTERM the daemon only and let it wind down its own workers; it already knows
-# how (raglit daemon -stop drives the same path). Signalling the whole cgroup
+# how (raglit daemon --stop drives the same path). Signalling the whole cgroup
 # would kill helper processes out from under an in-flight job instead.
 KillMode=mixed
 
@@ -161,13 +161,13 @@ func serviceInstall(args []string) error {
 	fs.Parse(args)
 	daemonArgs := fs.Args()
 
-	// -stop and -restart act on the daemon recorded in daemon.json and, in the
+	// --stop and --restart act on the daemon recorded in daemon.json and, in the
 	// case of -restart, relaunch it DETACHED. Baked into a unit that would mean
 	// systemd supervising a process that deliberately replaces itself with one
 	// systemd does not know about — two daemons, or none.
 	for _, a := range daemonArgs {
 		if t := strings.TrimLeft(a, "-"); t == "stop" || t == "restart" {
-			return fmt.Errorf("-%s manages a detached daemon and must not be in a unit; use `raglit service %s`", t, t)
+			return fmt.Errorf("--%s manages a detached daemon and must not be in a unit; use `raglit service %s`", t, t)
 		}
 	}
 
@@ -188,7 +188,7 @@ func serviceInstall(args []string) error {
 	*execPath = abs
 
 	// Validate through the daemon's OWN flag set before writing anything.
-	chk := exec.Command(*execPath, append([]string{"daemon", "-check"}, daemonArgs...)...)
+	chk := exec.Command(*execPath, append([]string{"daemon", "--check"}, daemonArgs...)...)
 	chk.Stderr = os.Stderr
 	if err := chk.Run(); err != nil {
 		return fmt.Errorf("those daemon flags do not parse — refusing to write a unit that would crash-loop")

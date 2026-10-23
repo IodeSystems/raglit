@@ -23,6 +23,7 @@ func runDoctor(args []string) error {
 	homeFlag := fs.String("home", "", "config home dir (default: nearest ./.raglit, else ~/local/raglit)")
 	daemonFlag := fs.String("daemon", "", "ask this daemon what IT can see (default $RAGLIT_DAEMON, config, else the shared daemon)")
 	localOnly := fs.Bool("local", false, "report only this shell's environment; do not ask the daemon")
+	fixUnit := fs.Bool("fix-unit", false, "rewrite a stale systemd unit the way `raglit service install` writes it")
 	fs.Parse(args)
 	home := raglit.DiscoverHome()
 	if *homeFlag != "" {
@@ -193,6 +194,7 @@ func runDoctor(args []string) error {
 	default:
 		fmt.Println("  ✗ OCR unavailable: configure a vision_model and/or a cheap_engine")
 	}
+	doctorUnit(*fixUnit)
 	return nil
 }
 
