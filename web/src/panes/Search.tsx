@@ -183,8 +183,10 @@ function SearchPane({
   // Offer search by meaning only where some index in scope can run it.
   const info = useIndexInfo();
   const meaning = [...info.values()].some((i) => i.meaning && inScope(i.name, scope));
-  const modes = SEARCH_MODES.filter((m) => m.value === "bm25" || meaning || m.value === mode);
-  const modeOption = SEARCH_MODES.find((m) => m.value === mode);
+  // No mode in the URL is the daemon's default; show what that runs as.
+  const shown = mode || (meaning ? "hybrid" : "bm25");
+  const modes = SEARCH_MODES.filter((m) => m.value === "bm25" || meaning || m.value === shown);
+  const modeOption = SEARCH_MODES.find((m) => m.value === shown);
 
   return (
     <div className="panel">
@@ -212,7 +214,7 @@ function SearchPane({
         <label className="sr-mode">
           Match
           <select
-            value={mode}
+            value={shown}
             onChange={(e) => onMode(e.target.value)}
             title={modeOption?.hint}
           >
@@ -221,7 +223,7 @@ function SearchPane({
                 {m.label}
               </option>
             ))}
-            {!modeOption && <option value={mode}>{mode}</option>}
+            {!modeOption && <option value={shown}>{shown}</option>}
           </select>
         </label>
       </div>
@@ -273,7 +275,7 @@ function SearchPane({
         <div className="sr-state">
           <div className="sr-state-title">No passages match “{q}”</div>
           Check the spelling, or use fewer words.
-          {mode === "bm25" && (
+          {shown === "bm25" && meaning && (
             <div>
               <button className="sr-hintbtn" onClick={() => onMode("hybrid")}>
                 Try matching by meaning too

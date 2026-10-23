@@ -91,7 +91,7 @@ const projectSearchRoute = createRoute({
   component: ProjectSearch,
   validateSearch: (s: Record<string, unknown>) => ({
     q: typeof s.q === "string" ? s.q : "",
-    mode: typeof s.mode === "string" ? s.mode : "bm25",
+    mode: typeof s.mode === "string" ? s.mode : "",
   }),
 });
 
@@ -150,7 +150,7 @@ const searchRoute = createRoute({
   component: Search,
   validateSearch: (s: Record<string, unknown>) => ({
     q: typeof s.q === "string" ? s.q : "",
-    mode: typeof s.mode === "string" ? s.mode : "bm25",
+    mode: typeof s.mode === "string" ? s.mode : "",
   }),
 });
 

@@ -32,7 +32,7 @@ export function ProjectShell() {
         <ShellSearch
           placeholder={`Search every index in ${project}`}
           onSearch={(q, nav) =>
-            void nav({ to: "/p/$project/search", params: { project }, search: { q, mode: "bm25" } })
+            void nav({ to: "/p/$project/search", params: { project }, search: { q, mode: "" } })
           }
         />
       }

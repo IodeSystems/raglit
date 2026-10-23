@@ -95,7 +95,7 @@ export function IndexShell() {
         <ShellSearch
           placeholder="Search this index"
           onSearch={(q, nav) =>
-            void nav({ to: "/i/$index/search", params: { index }, search: { q, mode: "bm25" } })
+            void nav({ to: "/i/$index/search", params: { index }, search: { q, mode: "" } })
           }
         />
       }

@@ -87,7 +87,8 @@ export const pages = (n: number) => plural(n, "page", "pages");
 export const documents = (n: number) => plural(n, "document", "documents");
 
 // Search modes, in the order the picker shows them. The value is what the
-// daemon takes (cmd/raglit/main.go: bm25 | vec | hybrid).
+// daemon takes (cmd/raglit/main.go: bm25 | vec | hybrid). An empty mode is the
+// daemon's default: hybrid where the index has embeddings, else bm25.
 export const SEARCH_MODES: { value: string; label: string; hint: string }[] = [
   { value: "bm25", label: "Exact words", hint: "Matches the words you type" },
   { value: "vec", label: "By meaning", hint: "Matches passages about the same thing" },
