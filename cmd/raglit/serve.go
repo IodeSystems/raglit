@@ -141,7 +141,11 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 		mcp.NewTool("search",
 			mcp.WithDescription(
 				"Search the document index(es). Returns ranked fragments as JSON "+
-					"{hits:[{index,doc_id,title,page,score,snippet,origin}]}, best first. A hit "+
+					"{hits:[{index,doc_id,title,page,score,snippet,origin,similarity,matched_terms,query_terms}]}, "+
+					"best first. `score` is per mode (bm25, cosine, or a hybrid rank fusion) and not "+
+					"comparable across modes; `similarity` is the raw cosine when the vector side ranked "+
+					"the hit (use it for a fixed cut-off); `matched_terms` of `query_terms` is how many "+
+					"of the query's words (stopwords out) the fragment contains. A hit "+
 					"with origin=\"identity\" is the document's GENERATED caption/summary, and one "+
 					"with origin=\"fields\" is its document type's schema filled out FROM it — "+
 					"both are a model's reading, so use them to find the document and cite the "+
@@ -154,6 +158,10 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 					"fusion, each hit tagged by index). Searching a BRANCH also searches its "+
 					"sibling branches you can read; pass siblings=false to search it alone."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("natural-language or keyword query")),
+			mcp.WithString("mode", mcp.Enum("bm25", "vec", "hybrid"), mcp.Description(
+				"bm25 = exact words; vec = by meaning (embedding cosine); hybrid = both, rank-fused. "+
+					"Default: hybrid on an index with embeddings (list_indexes `meaning`), else bm25. "+
+					"vec/hybrid on a server with no embedding model is an error.")),
 			mcp.WithBoolean("siblings", mcp.Description("also search a branch's readable sibling branches (default true)")),
 			mcp.WithString("index", mcp.Description("index name, or comma-separated names; empty = all")),
 			mcp.WithString("path", mcp.Description("constrain to documents whose path starts with this prefix (a subtree; use a trailing / for a clean directory)")),
@@ -601,20 +609,32 @@ func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
 		}
 		limit := req.GetInt("limit", defLimit)
 		path := req.GetString("path", "")
+		mode := req.GetString("mode", "")
+		byMeaning := mode == "vec" || mode == "hybrid"
 		names := selectIndexes(ctx, reg, req.GetString("index", ""))
 
 		// Search each selected index; over-fetch, then RRF-merge across indexes.
 		lists := map[string][]raglit.Hit{}
+		meaningful := 0
 		for _, name := range names {
 			st, err := reg.Get(name)
 			if err != nil {
 				continue
 			}
-			hits, err := st.SearchPath(q, path, limit*2)
+			// Same rule as the daemon's search: an index that cannot search by
+			// meaning sits out an explicit vec/hybrid search.
+			if byMeaning && !st.CanSearchByMeaning() {
+				continue
+			}
+			meaningful++
+			hits, err := searchByMode(st, q, searchMode(st, mode), path, limit*2)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("search", err), nil
 			}
 			lists[name] = hits
+		}
+		if byMeaning && meaningful == 0 && len(names) > 0 {
+			return mcp.NewToolResultError("search by meaning is not set up here (no embedding model); use mode=bm25"), nil
 		}
 		merged := rrfMerge(lists, limit)
 
@@ -1023,6 +1043,10 @@ func taggedHits(hits []indexedHit) any {
 		// Trust is the same fact structured: method, level, described %, and the
 		// per-facet confidences. A facet that is absent is NOT claimed.
 		Trust *raglit.HitTrust `json:"trust,omitempty"`
+		// Similarity, MatchedTerms, QueryTerms: see hitRow.
+		Similarity   *float64 `json:"similarity,omitempty"`
+		MatchedTerms []string `json:"matched_terms"`
+		QueryTerms   int      `json:"query_terms"`
 	}
 	out := struct {
 		Hits []outHit `json:"hits"`
@@ -1037,6 +1061,7 @@ func taggedHits(hits []indexedHit) any {
 			Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 			Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
 			Caveat: h.Caveat(), Trust: h.Trust,
+			Similarity: h.Similarity, MatchedTerms: h.Matched, QueryTerms: h.QueryTerms,
 		})
 	}
 	return out

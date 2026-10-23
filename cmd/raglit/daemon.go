@@ -70,6 +70,19 @@ func isUnder(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// searchMode is the mode one index searches in. An empty mode is hybrid where
+// the index has embeddings and bm25 where it does not, so the default finds
+// fragments by meaning without failing on an index that cannot.
+func searchMode(st *raglit.Store, mode string) string {
+	if mode == "" {
+		if st.CanSearchByMeaning() {
+			return "hybrid"
+		}
+		return "bm25"
+	}
+	return mode
+}
+
 // searchByMode dispatches bm25 (default) / vec / hybrid, optionally scoped to a
 // path subtree (pathPrefix; empty = whole index).
 func searchByMode(st *raglit.Store, q, mode, pathPrefix string, limit int) ([]raglit.Hit, error) {
@@ -536,7 +549,10 @@ func daemonDelete(base, path string, q url.Values) ([]byte, error) {
 // daemonSearchPrint queries the daemon and prints ranked hits. ns is the project
 // namespace, stripped from each hit's index tag for display.
 func daemonSearchPrint(base, query, index, mode, path string, limit int, ns string) error {
-	q := url.Values{"q": {query}, "mode": {mode}, "n": {strconv.Itoa(limit)}}
+	q := url.Values{"q": {query}, "n": {strconv.Itoa(limit)}}
+	if mode != "" {
+		q.Set("mode", mode)
+	}
 	if index != "" {
 		q.Set("index", index)
 	}
@@ -549,11 +565,14 @@ func daemonSearchPrint(base, query, index, mode, path string, limit int, ns stri
 	}
 	var resp struct {
 		Hits []struct {
-			Index   string  `json:"index"`
-			DocID   string  `json:"doc_id"`
-			Page    int     `json:"page"`
-			Score   float64 `json:"score"`
-			Snippet string  `json:"snippet"`
+			Index   string   `json:"index"`
+			DocID   string   `json:"doc_id"`
+			Page    int      `json:"page"`
+			Score   float64  `json:"score"`
+			Snippet string   `json:"snippet"`
+			Sim     *float64 `json:"similarity"`
+			Matched []string `json:"matched_terms"`
+			Terms   int      `json:"query_terms"`
 		} `json:"hits"`
 	}
 	if err := json.Unmarshal(b, &resp); err != nil {
@@ -568,9 +587,25 @@ func daemonSearchPrint(base, query, index, mode, path string, limit int, ns stri
 		if h.Page > 0 {
 			loc = fmt.Sprintf("%s p%d", h.DocID, h.Page)
 		}
-		fmt.Printf("%d. [%.3f] (%s) %s\n   %s\n", i+1, h.Score, nsStrip(ns, h.Index), loc, clip(oneLine(h.Snippet), 160))
+		fmt.Printf("%d. [%.3f] (%s) %s%s\n   %s\n", i+1, h.Score, nsStrip(ns, h.Index), loc, hitMeasures(h.Sim, h.Matched, h.Terms), clip(oneLine(h.Snippet), 160))
 	}
 	return nil
+}
+
+// hitMeasures is the cosine and term coverage after a hit's location, so a
+// weak hit reads as weak: "  sim 0.412 · 1/5 terms".
+func hitMeasures(sim *float64, matched []string, terms int) string {
+	var parts []string
+	if sim != nil {
+		parts = append(parts, fmt.Sprintf("sim %.3f", *sim))
+	}
+	if terms > 0 {
+		parts = append(parts, fmt.Sprintf("%d/%d terms", len(matched), terms))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + strings.Join(parts, " · ")
 }
 
 // daemonStatusPrint fetches + renders the daemon's status.

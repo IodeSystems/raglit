@@ -88,7 +88,7 @@ const helpFlags = `flags shared by most commands:
                   else $RAGLIT_HOME or ~/local/raglit
   --db FILE       raw index file (overrides --home; implies --embedded)
   -n, --limit N   search/serve: max results
-  --mode M        search: bm25 (default) | vec | hybrid
+  --mode M        search: bm25 | vec | hybrid (default: hybrid where embedded, else bm25)
   --llm-url, --llm-model, --embed-model, --llm-key ($RAGLIT_LLM_KEY)
                   model endpoint overrides; default: config
 `

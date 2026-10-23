@@ -669,11 +669,18 @@ type hitRow struct {
 	// summary alone, for a UI that already shows the name, kind and the
 	// AI-summary label. Snippet keeps the labelled text agents read.
 	Summary string `json:"summary,omitempty"`
+	// Similarity is the raw cosine for a hit the vector side ranked; Score in
+	// hybrid is a fused rank, not comparable to a fixed threshold.
+	Similarity *float64 `json:"similarity,omitempty"`
+	// MatchedTerms and QueryTerms are the bm25 term coverage: which of the
+	// query's QueryTerms (stopwords out) the fragment contains.
+	MatchedTerms []string `json:"matched_terms"`
+	QueryTerms   int      `json:"query_terms"`
 }
 type searchIn struct {
 	Query    string `query:"q"`
 	Index    string `query:"index"`
-	Mode     string `query:"mode"`
+	Mode     string `query:"mode" doc:"bm25 | vec | hybrid; empty: hybrid on an index with embeddings, else bm25"`
 	Path     string `query:"path"`
 	Limit    int    `query:"n"`
 	Siblings string `query:"siblings" doc:"a branch also searches its readable sibling branches; \"false\" to search the branch alone"`
@@ -714,10 +721,11 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			}
 			meaningful++
 			var hits []raglit.Hit
+			mode := searchMode(st, in.Mode)
 			if plan.own[name] {
-				hits, err = st.SearchOwnLayer(ctx, in.Query, in.Mode, in.Path, limit*2)
+				hits, err = st.SearchOwnLayer(ctx, in.Query, mode, in.Path, limit*2)
 			} else {
-				hits, err = searchByMode(st, in.Query, in.Mode, in.Path, limit*2)
+				hits, err = searchByMode(st, in.Query, mode, in.Path, limit*2)
 			}
 			if err != nil {
 				return nil, huma.Error500InternalServerError("search", err)
@@ -743,6 +751,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 				Index: ih.index, DocID: h.Path, Title: title, Page: h.Page,
 				Score: h.Score, Snippet: clip(oneLine(h.Text), 300), Origin: h.Origin,
 				Caveat: h.Caveat(), Trust: h.Trust, Rel: h.Path,
+				Similarity: h.Similarity, MatchedTerms: h.Matched, QueryTerms: h.QueryTerms,
 			}
 			if st, err := reg.Read(ctx, ih.index); err == nil {
 				v, ok := views[ih.index]

@@ -168,7 +168,7 @@ func runSearch(args []string) error {
 	client := addClientFlags(fs) // --daemon + --embedded
 	shared := addSharedFlag(fs)
 	limit := fs.IntP("limit", "n", 10, "max results")
-	mode := fs.String("mode", "bm25", "bm25 | vec | hybrid (vec/hybrid need embeddings)")
+	mode := fs.String("mode", "", "bm25 | vec | hybrid (default: hybrid where the index has embeddings, else bm25)")
 	path := fs.String("path", "", "constrain to documents whose path starts with this prefix (a subtree)")
 	fs.Parse(args)
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
@@ -200,6 +200,12 @@ func runSearch(args []string) error {
 
 	ctx := context.Background()
 	var hits []raglit.Hit
+	if *mode == "" {
+		*mode = "bm25"
+		if lf.resolve(homeOf()); lf.requireEmbed() == nil {
+			*mode = "hybrid"
+		}
+	}
 	switch *mode {
 	case "bm25":
 		hits, err = store.SearchPath(query, *path, *limit)
@@ -242,7 +248,7 @@ func runSearch(args []string) error {
 				loc += "  [generated text, not the document's own words]"
 			}
 		}
-		fmt.Printf("%d. [%.3f] %s\n   %s\n", i+1, h.Score, loc, clip(oneLine(h.Text), 160))
+		fmt.Printf("%d. [%.3f] %s%s\n   %s\n", i+1, h.Score, loc, hitMeasures(h.Similarity, h.Matched, h.QueryTerms), clip(oneLine(h.Text), 160))
 	}
 	return nil
 }

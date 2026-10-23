@@ -28,7 +28,10 @@ raglit watch [start|list|stop]
               no --index: the indexes whose scopes match this directory, plus
               the ambient global ones. --index names exactly what to search
               ("proj:idx" for another project's). --project P with no --index
-              searches P's indexes. Needs no project.`},
+              searches P's indexes. Needs no project.
+              --mode: hybrid (default where the index has embeddings, else
+              bm25) | bm25 (exact words) | vec (meaning). Each hit shows
+              "sim" (cosine) and "N/M terms" (query words it contains).`},
 		{"status", "indexes and queue progress", `raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)`},
 		{"index", "--list | NAME CMD — list indexes, or work on one", `raglit index --list
               every index: documents, state, scopes, and ✓ where a search from

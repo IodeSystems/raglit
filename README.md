@@ -97,10 +97,13 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   entries — so merges and retries keep reusing pooled work rather than re-indexing
   it. `--pool-max` (entry cap) and `--pool-ttl` (evict unused; off by default) are
   optional; `POST /api/pool/gc` runs it on demand and `GET /api/pool` reports size.
-- **Search** — BM25 (`--mode bm25`, default), vectors (`--mode vec`), or hybrid
-  RRF (`--mode hybrid`), optionally scoped to an index and/or a **path subtree**
-  (`--path /repo/src/api/` — a prefix match, so hierarchical corpora don't need a
-  separate index per directory). Results are precise citations: document → page →
+- **Search** — BM25 (`--mode bm25`), vectors (`--mode vec`), or hybrid RRF
+  (`--mode hybrid`; the default on an index with embeddings, else BM25). Each hit
+  carries `similarity` (raw cosine, when the vector side ranked it) and
+  `matched_terms` / `query_terms` (term coverage, stopwords out), so a caller
+  can cut weak hits at a fixed threshold. Optionally scoped to an index and/or
+  a **path subtree** (`--path /repo/src/api/` — a prefix match, so hierarchical
+  corpora don't need a separate index per directory). Results are precise citations: document → page →
   fragment. `search_figures` does the same over described figures.
 - **Serve** — expose the index(es) to any MCP client (Claude Desktop, agentkit):
 

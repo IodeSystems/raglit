@@ -278,3 +278,19 @@ func TestSearchByMeaningWithoutEmbedder(t *testing.T) {
 		}
 	}
 }
+
+// With no mode, search runs hybrid where the index has embeddings and bm25
+// where it does not — so the default never fails on a daemon without a model —
+// and every hit reports its term coverage.
+func TestSearchDefaultMode(t *testing.T) {
+	srv, _ := gatTestServer(t)
+	b := httpGet(t, srv.URL+"/search?index=default&q=how%20the%20refresh%20token%20expires")
+	for _, want := range []string{`"matched_terms":["refresh","token"]`, `"query_terms":3`} {
+		if !strings.Contains(b, want) {
+			t.Fatalf("%s not in\n%s", want, clip(b, 600))
+		}
+	}
+	if strings.Contains(b, `"similarity"`) {
+		t.Fatalf("bm25 fallback hit carries a similarity:\n%s", clip(b, 600))
+	}
+}

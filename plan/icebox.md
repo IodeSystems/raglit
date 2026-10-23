@@ -217,3 +217,12 @@ has no crawler. Works today: .html goes through pandoc, .md/.txt/.pdf as is.
 - Crawler hygiene that is raglit-relevant: write to a temp name then rename
   (the watcher must not ingest half-written files); keep a stable file name
   per URL so a re-crawl updates one document instead of adding another.
+
+## ⏸ Search measures — follow-ups (hybrid default landed 2026-10-23)
+
+- A hybrid hit ranked only by bm25 (outside the vector top 4×limit) has no
+  `similarity`. Filling it needs the query vector passed into the lexical
+  side; do it if a caller's threshold drops good hits.
+- Hybrid latency (one query embedding per index searched) not measured.
+- Stopword list (hitmatch.go) is English and short; it affects only
+  matched_terms/query_terms, not ranking.
