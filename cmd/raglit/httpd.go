@@ -859,6 +859,9 @@ type ingestIn struct {
 		// unchanged-bytes fast path and the cross-index pool. Additive and
 		// optional: an older client omits it and gets the cached behaviour.
 		Fresh bool `json:"fresh,omitempty"`
+		// Scope is the client's project directory: an index whose scopes
+		// were never set takes it (raglit/indexscope.go).
+		Scope string `json:"scope,omitempty"`
 	}
 }
 type ingestOut struct {
@@ -885,6 +888,11 @@ func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut
 		st, err := writeIdx(ctx, reg, idx)
 		if err != nil {
 			return nil, err
+		}
+		if in.Body.Scope != "" {
+			if err := applyScope(st, nil, nil, nil, nil, in.Body.Scope); err != nil {
+				return nil, huma.Error500InternalServerError("scope", err)
+			}
 		}
 		ids := make([]int64, 0, len(in.Body.Targets))
 		ignored := 0

@@ -106,6 +106,20 @@ func watchHome(homeFlag, project string) (raglit.Home, error) {
 	return raglit.Home(filepath.Join(raglit.DefaultRoot(), "projects", raglit.NormalizeIndexName(project))), nil
 }
 
+// projectDirOf is the directory a project home belongs to (the one holding
+// .raglit), or "" for a home that is no project's: the shared default home, or
+// one watchHome made under the daemon root.
+func projectDirOf(h raglit.Home) string {
+	if h == "" || h == raglit.DefaultHome() {
+		return ""
+	}
+	abs, err := filepath.Abs(string(h))
+	if err != nil || strings.HasPrefix(abs, filepath.Join(raglit.DefaultRoot(), "projects")+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.Dir(abs)
+}
+
 // addWatchRoot records dir as a root of index name and turns watching on. It
 // reports whether the config changed. A config that does not exist yet is
 // created, carrying project when one was given, so a caller with no config of

@@ -161,6 +161,51 @@ func nsNamedIndex(token string) (string, bool) {
 	return raglit.NormalizeIndexName(nsPart) + nsSep + raglit.NormalizeIndexName(local), true
 }
 
+// clientView is how one client addresses the shared daemon: its project
+// namespace and shared namespaces, and, in scope mode, the directory it runs
+// in. cwd is set when no --project was given explicitly: a read that names no
+// index then reads the indexes scoped to cwd and the ambient globals
+// ("@cwd:DIR"). An explicit --project keeps the old meaning of "no index",
+// that project's indexes and its shared ones, which dun relies on. claim is
+// the client's project directory, sent with an ingest so a new index takes it
+// as its scope.
+type clientView struct {
+	ns     string
+	shared []string
+	cwd    string
+	claim  string
+}
+
+func (cv clientView) read(sel string) string {
+	if strings.TrimSpace(sel) == "" && cv.cwd != "" {
+		return "@cwd:" + cv.cwd
+	}
+	if cv.ns == "" && cv.cwd != "" {
+		// No project: "proj:idx" is that index; a bare name goes as given,
+		// and the daemon finds the one index whose local name it is.
+		parts := strings.Split(sel, ",")
+		for i, tok := range parts {
+			if d, ok := nsNamedIndex(tok); ok {
+				parts[i] = d
+			} else {
+				parts[i] = strings.TrimSpace(tok)
+			}
+		}
+		return strings.Join(parts, ",")
+	}
+	return nsReadSelector(cv.ns, cv.shared, sel)
+}
+
+// write resolves an ingest/forget/manage target. A client with no project
+// reads but does not write: an unnamespaced write would land in another
+// project's index, or create one nobody owns.
+func (cv clientView) write(token string) (string, error) {
+	if cv.ns == "" && cv.cwd != "" {
+		return "", fmt.Errorf("%w: writes need one — pass --project, or run in a project (raglit init)", errNoProject)
+	}
+	return nsWriteIndex(cv.ns, cv.shared, token)
+}
+
 func containsStr(ss []string, s string) bool {
 	for _, x := range ss {
 		if x == s {

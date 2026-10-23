@@ -21,14 +21,21 @@ import (
 // ("<ns>__<local>", "<ns>__*" for all) and stripped back out of responses, so on
 // the shared daemon this project only sees its own indexes.
 func daemonToolHandlers(base string, defLimit int, ns string, shared []string) toolHandlers {
+	return daemonToolHandlersFor(base, defLimit, clientView{ns: ns, shared: shared})
+}
+
+// daemonToolHandlersFor is daemonToolHandlers for a client view: with cwd set,
+// a call that names no index reads the indexes scoped to cwd (index scopes).
+func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandlers {
+	ns, shared := cv.ns, cv.shared
 	return toolHandlers{
 		forget: forgetHandler(func(name string) (string, error) {
-			return nsWriteIndex(ns, shared, name)
+			return cv.write(name)
 		}, func(name string) string { return nsStrip(ns, name) }, func(index, path string) error {
 			return daemonForgetIn(base, index, path)
 		}),
 		manageIndex: manageIndexHandler(daemonControls{base}, func(name string) (string, error) {
-			return nsWriteIndex(ns, shared, name)
+			return cv.write(name)
 		}, func(name string) string { return nsStrip(ns, name) }),
 		search: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			q, err := req.RequireString("query")
@@ -36,7 +43,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 				return mcp.NewToolResultError("query is required"), nil
 			}
 			v := url.Values{"q": {q}}
-			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			v.Set("index", cv.read(req.GetString("index", "")))
 			setIf(v, "path", req.GetString("path", ""))
 			if n := req.GetInt("limit", defLimit); n > 0 {
 				v.Set("n", strconv.Itoa(n))
@@ -53,7 +60,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 				return mcp.NewToolResultError("query is required"), nil
 			}
 			v := url.Values{"q": {q}}
-			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			v.Set("index", cv.read(req.GetString("index", "")))
 			setIf(v, "path", req.GetString("path", ""))
 			if n := req.GetInt("limit", defLimit); n > 0 {
 				v.Set("n", strconv.Itoa(n))
@@ -67,7 +74,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			if u == "" && len(paths) == 0 {
 				return mcp.NewToolResultError("url or paths is required"), nil
 			}
-			idx, err := nsWriteIndex(ns, shared, req.GetString("index", ""))
+			idx, err := cv.write(req.GetString("index", ""))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("ingest", err), nil
 			}
@@ -76,7 +83,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 				r := batchResult{Index: nsStrip(ns, idx), JobIDs: []int64{}, Missing: missing}
 				if len(targets) > 0 {
 					b, err := daemonPostJSON(base, "/ingest", map[string]any{
-						"targets": targets, "index": idx, "title": req.GetString("title", ""),
+						"targets": targets, "index": idx, "title": req.GetString("title", ""), "scope": cv.claim,
 					})
 					if err != nil {
 						return mcp.NewToolResultErrorFromErr("ingest", err), nil
@@ -95,7 +102,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 				return batchText(r), nil
 			}
 			b, err := daemonPostJSON(base, "/ingest", map[string]any{
-				"targets": []string{u}, "index": idx, "title": req.GetString("title", ""),
+				"targets": []string{u}, "index": idx, "title": req.GetString("title", ""), "scope": cv.claim,
 			})
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("ingest", err), nil
@@ -116,7 +123,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 		},
 
 		status: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := url.Values{"index": {nsReadSelector(ns, shared, req.GetString("index", ""))}}
+			v := url.Values{"index": {cv.read(req.GetString("index", ""))}}
 			return proxyGet(base, "/status", v, ns)
 		},
 
@@ -124,6 +131,11 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			b, err := daemonGet(base, "/indexes", nil)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("daemon", err), nil
+			}
+			if cv.cwd != "" {
+				// Scope mode: every index, with its scopes, so a caller can name
+				// one it is not in the scope of.
+				return mcp.NewToolResultText(string(stripSchema(b))), nil
 			}
 			return mcp.NewToolResultText(string(filterIndexList(stripSchema(b), ns, shared))), nil
 		},
@@ -134,14 +146,14 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 				return mcp.NewToolResultError("path is required"), nil
 			}
 			v := url.Values{"path": {path}}
-			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			v.Set("index", cv.read(req.GetString("index", "")))
 			return proxyGet(base, "/api/fields", v, ns)
 		},
 
 		listDocuments: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v := url.Values{}
 			setIf(v, "name", req.GetString("name", ""))
-			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			v.Set("index", cv.read(req.GetString("index", "")))
 			return proxyGet(base, "/api/find-documents", v, ns)
 		},
 
@@ -155,7 +167,7 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 			setIntIf(v, "from", req.GetInt("from", 0))
 			setIntIf(v, "to", req.GetInt("to", 0))
 			setIntIf(v, "max_chars", req.GetInt("max_chars", 0))
-			v.Set("index", nsReadSelector(ns, shared, req.GetString("index", "")))
+			v.Set("index", cv.read(req.GetString("index", "")))
 			return proxyGet(base, "/api/get-document", v, ns)
 		},
 

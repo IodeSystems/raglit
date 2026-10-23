@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -379,10 +380,29 @@ func addClientFlags(fs *flag.FlagSet) (resolve func(homeOf func() raglit.Home, d
 		}
 		ns, err := resolveProject(*project, homeOf)
 		if err != nil {
-			return "", "", err
+			return durl, "", err // durl too: a read needs no project (readView)
 		}
 		return durl, ns, nil
 	}
+}
+
+// errNoProject is a daemon client with no project name. Writes need one; a
+// read goes on without (readView).
+var errNoProject = errors.New("no project name")
+
+// readView is the clientView for a command that reads: resolve's result, with
+// a missing project allowed, and scope mode unless --project was given.
+func readView(fs *flag.FlagSet, durl, ns string, err error, homeOf func() raglit.Home, shared []string) (clientView, error) {
+	if err != nil && !(errors.Is(err, errNoProject) && durl != "") {
+		return clientView{}, err
+	}
+	cv := clientView{ns: ns, shared: shared, claim: projectDirOf(homeOf())}
+	if !fs.Changed("project") {
+		if wd, err := os.Getwd(); err == nil {
+			cv.cwd = wd
+		}
+	}
+	return cv, nil
 }
 
 // resolveProject picks the project namespace: an explicit --project wins, else the
@@ -396,9 +416,9 @@ func resolveProject(flagVal string, homeOf func() raglit.Home) (string, error) {
 		}
 	}
 	if raw == "" {
-		return "", fmt.Errorf("no project name — set \"project\" in %s (run `raglit init`) or pass --project. "+
+		return "", fmt.Errorf("%w — set \"project\" in %s (run `raglit init`) or pass --project. "+
 			"The shared daemon namespaces every project's indexes by name so they don't collide; a client without one is refused. "+
-			"(Use --embedded for a single-session, in-process index with no project.)", homeOf().ConfigPath())
+			"(Use --embedded for a single-session, in-process index with no project.)", errNoProject, homeOf().ConfigPath())
 	}
 	return raglit.NormalizeIndexName(raw), nil
 }
@@ -428,8 +448,10 @@ func addSharedFlag(fs *flag.FlagSet) func() []string {
 	return func() []string { return strings.Split(*v, ",") }
 }
 
-func daemonIngest(base string, targets []string, index, title string, fresh bool) error {
-	body, _ := json.Marshal(map[string]any{"targets": targets, "index": index, "title": title, "fresh": fresh})
+// daemonIngest queues targets. scope is the client's project directory (or
+// ""): an index whose scopes were never set takes it.
+func daemonIngest(base string, targets []string, index, title string, fresh bool, scope string) error {
+	body, _ := json.Marshal(map[string]any{"targets": targets, "index": index, "title": title, "fresh": fresh, "scope": scope})
 	resp, err := http.Post(strings.TrimRight(base, "/")+"/ingest", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err

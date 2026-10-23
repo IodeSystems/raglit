@@ -266,7 +266,7 @@ func runIngest(args []string) error {
 		if err != nil {
 			return err
 		}
-		return daemonIngest(dURL, targets, idx, *title, *fresh)
+		return daemonIngest(dURL, targets, idx, *title, *fresh, projectDirOf(homeOf()))
 	}
 
 	store, err := openStore()

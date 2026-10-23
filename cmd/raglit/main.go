@@ -179,13 +179,17 @@ func runSearch(args []string) error {
 	// Default: query the shared daemon (auto-started if needed); --embedded/--db
 	// open the index in-process.
 	dURL, ns, err := client(homeOf, fs.Lookup("db").Value.String() != "")
-	if err != nil {
+	if err != nil && dURL == "" {
 		return err
 	}
 	if dURL != "" {
-		// Empty --index → this project's indexes + its shared namespaces.
-		sel := nsReadSelector(ns, projectShared(homeOf, shared()...), fs.Lookup("index").Value.String())
-		return daemonSearchPrint(dURL, query, sel, *mode, *path, *limit, ns)
+		// Empty --index → the indexes scoped to this directory and the ambient
+		// globals; with an explicit --project, that project's and its shared.
+		cv, err := readView(fs, dURL, ns, err, homeOf, projectShared(homeOf, shared()...))
+		if err != nil {
+			return err
+		}
+		return daemonSearchPrint(dURL, query, cv.read(fs.Lookup("index").Value.String()), *mode, *path, *limit, ns)
 	}
 
 	store, err := openStore()

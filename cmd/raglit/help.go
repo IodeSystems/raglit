@@ -78,7 +78,9 @@ const helpFlags = `flags shared by most commands:
   --project NAME  this client's project; namespaces its indexes on the shared
                   daemon (default: config "project")
   --index NAME    the index (default: config default_index, else "default").
-                  "proj:idx" names another project's index
+                  "proj:idx" names another project's index. Searching with
+                  no --index reads the indexes scoped to this directory
+                  and the ambient globals (raglit help index)
   --daemon URL    the daemon to use (or $RAGLIT_DAEMON; default: daemon.json,
                   else http://127.0.0.1:7420, auto-started)
   --embedded      no daemon: open the index in this process (no project needed)

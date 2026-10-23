@@ -42,14 +42,19 @@ func runServe(args []string) error {
 	// (single writer + worker pool + LLM caller), not N processes fighting over the
 	// same index. --embedded opts out and runs the index in-process (single-session).
 	durl, ns, err := client(homeOf, false)
-	if err != nil {
+	if err != nil && durl == "" {
 		return err
 	}
 	if durl != "" {
+		// No project: the tools read (by scope or by name) and refuse writes.
+		cv, err := readView(fs, durl, ns, err, homeOf, projectShared(homeOf, shared()...))
+		if err != nil {
+			return err
+		}
 		rt := newRestartTransport(durl)
 		http.DefaultClient.Transport = rt
 		s := server.NewMCPServer("raglit", version, server.WithToolHandlerMiddleware(restartNotes(rt, durl)))
-		addRaglitTools(s, daemonToolHandlers(durl, *defLimit, ns, projectShared(homeOf, shared()...)))
+		addRaglitTools(s, daemonToolHandlersFor(durl, *defLimit, cv))
 		return server.ServeStdio(s)
 	}
 
@@ -538,7 +543,8 @@ func uniqueLocal(names []string, n string) string {
 	}
 	var match string
 	for _, nm := range names {
-		if nm == n {
+		// "default" is always listed, so it is no evidence of an index.
+		if nm == n && n != "default" {
 			return n
 		}
 		if strings.HasSuffix(nm, nsSep+n) {

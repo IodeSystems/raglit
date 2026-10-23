@@ -30,22 +30,32 @@ project dir.
 
 ## Slices
 
-1. ◐ Store: Scopes/SetScopes/Ambient/SetAmbient, ScopeMatches; Registry
+1. ✅ Store: Scopes/SetScopes/Ambient/SetAmbient, ScopeMatches; Registry
    ScopedFor(ctx, dir).
-2. ◻ Daemon: `@cwd:` + bare-name tokens in selectIndexes; idxRow scopes and
+2. ✅ Daemon: `@cwd:` + bare-name tokens in selectIndexes; idxRow scopes and
    ambient; POST /api/index/scope; startup migration (project dir from
    watches.json, else the index's doc root unless it is /, $HOME or above
    $HOME, else opt-in global).
-3. ◻ Ingest claims a scope: the client sends its project dir; an index whose
+3. ✅ Ingest claims a scope: the client sends its project dir; an index whose
    scopes were never set takes it.
-4. ◻ Client: search CLI and MCP serve send `@cwd:`; `raglit index list` lists
+4. ✅ Client: search CLI and MCP serve send `@cwd:`; `raglit index list` lists
    every index (scope or global mode, ✓ when it applies here);
    `raglit index NAME scope add|rm PATTERN`, `raglit index NAME global
    ambient|opt-in`.
 
-**next:** slice 1.
+**next:** watch the live daemon's migration log (journalctl --user -u raglit
+| grep scoped) and correct wrong guesses with `raglit index NAME scope`.
+Tell dun-a8: no change for `--project P` callers.
+
+Live-tested 2026-10-23 on a scratch daemon (127.0.0.1:7499): ingest claim,
+scope reads, search with no project, ambient/opt-in, `proj:idx` with no
+project, MCP search in scope mode, MCP ingest refused with no project.
 
 **risks:**
+- MCP list_indexes in scope mode returns every index unfiltered (with
+  scopes); with OIDC on the daemon still filters by ACL.
+- A bare name with no project that two projects share matches nothing; the
+  error says to write proj:idx only in `raglit index NAME`, not in search.
 - Config `shared` is not consulted in scope mode; a shared index must carry
   its own scope or be ambient.
 - Migration by doc root guesses: an index fed from several projects gets

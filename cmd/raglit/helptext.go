@@ -24,14 +24,28 @@ var helpGroups = []helpGroup{
 raglit watch [start|list|stop]
               register this project's configured roots with the daemon, list
               every watched project, or stop watching this one.`},
-		{"search", "\"query\" — search this project's indexes", `raglit search [--home DIR] [--mode M] [-n N] "query"`},
+		{"search", "\"query\" — search the indexes that apply here", `raglit search [--index A,B] [--mode M] [-n N] "query"
+              no --index: the indexes whose scopes match this directory, plus
+              the ambient global ones. --index names exactly what to search
+              ("proj:idx" for another project's). --project P with no --index
+              searches P's indexes. Needs no project.`},
 		{"status", "indexes and queue progress", `raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)`},
 		{"index", "--list | NAME CMD — list indexes, or work on one", `raglit index --list
-              this project's indexes with document counts and state.
+              every index: documents, state, scopes, and ✓ where a search from
+              here with no --index reads it.
+raglit index NAME scope [add|rm PATTERN...]
+              the directories an index applies in. A directory covers itself
+              and everything under it; a glob (*, **) matches directories.
+              "." is this directory. An ingest from a project gives a new
+              index that project's directory.
+raglit index NAME global [ambient|opt-in]
+              no scopes: every search reads it (ambient), or only a search
+              that names it (opt-in, the default).
 raglit index NAME status|search|forget|pause|resume|purge|unwatch ...
               one index: queue state, search it, drop paths from it, pause or
               resume its work, purge a glob, or stop watching a directory.
-              raglit index NAME -h lists the subcommands.
+              raglit index NAME -h lists the subcommands. NAME may be
+              proj:idx.
 raglit index [--home DIR] [--embed] FILE|DIR...
               legacy: index local files in-process now, with no daemon.`},
 		{"serve", "stdio MCP server for an LLM session", `raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)`},

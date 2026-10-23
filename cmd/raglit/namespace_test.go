@@ -257,3 +257,29 @@ func TestSharedFlagAddsToConfig(t *testing.T) {
 		t.Errorf("without the flag a search of everything stays in this project, got %q", sel)
 	}
 }
+
+// Scope mode: no index named → "@cwd:"; with no project, "proj:idx" is that
+// index and writes are refused; an explicit project keeps nsReadSelector.
+func TestClientViewSelectors(t *testing.T) {
+	free := clientView{cwd: "/src/app"}
+	if got := free.read(""); got != "@cwd:/src/app" {
+		t.Errorf("no index, scope mode = %q", got)
+	}
+	if got := free.read("beta:default, notes"); got != "beta__default,notes" {
+		t.Errorf("no project, named = %q", got)
+	}
+	if _, err := free.write("notes"); err == nil {
+		t.Error("a write with no project must be refused")
+	}
+	proj := clientView{ns: "acme", cwd: "/src/app"}
+	if got := proj.read("code"); got != "acme__code" {
+		t.Errorf("project, named = %q", got)
+	}
+	if d, err := proj.write("code"); err != nil || d != "acme__code" {
+		t.Errorf("project write = %q, %v", d, err)
+	}
+	pinned := clientView{ns: "acme"} // --project given: no cwd
+	if got := pinned.read(""); got != "acme__*" {
+		t.Errorf("explicit project, no index = %q", got)
+	}
+}

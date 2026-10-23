@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,7 @@ import (
 
 // `raglit index` (USER 2026-10-23): one place for per-index work.
 //
-//	raglit index --list               this project's indexes
+//	raglit index --list               every index: scope, and whether it applies here
 //	raglit index NAME SUBCOMMAND ...  one index (indexSubs)
 //	raglit index FILE|DIR...          legacy: index files in-process now
 
@@ -40,6 +41,8 @@ func init() {
 		"resume":  {"resume a paused index", indexPause("resume")},
 		"purge":   {"[--yes] GLOB — remove documents matching GLOB", indexPurge},
 		"unwatch": {"DIR — stop indexing DIR into this index; its documents stay", indexUnwatch},
+		"scope":   {"[add|rm PATTERN...] — directories a search with no index named reads it from", indexScope},
+		"global":  {"[ambient|opt-in] — no scopes: every search reads it (ambient) or only when named", indexGlobal},
 	}
 }
 
@@ -97,15 +100,133 @@ func indexTarget(name string, args []string, extra func(*flag.FlagSet)) (base, f
 		return raglit.DiscoverHome()
 	}
 	base, ns, err := client(homeOf, false)
-	if err != nil {
+	if err != nil && !(errors.Is(err, errNoProject) && base != "") {
 		return
 	}
 	if base == "" {
 		err = fmt.Errorf("index %s: needs the daemon — remove --embedded/--db", name)
 		return
 	}
-	full, err = nsWriteIndex(ns, projectShared(homeOf), name)
+	full, err = indexFullName(base, ns, projectShared(homeOf), name)
 	return
+}
+
+// indexFullName is the daemon's name for NAME: "proj:idx" is that project's
+// index; a bare name is this project's, or, with no project, the index of that
+// full name or the one index whose local name it is.
+func indexFullName(base, ns string, shared []string, name string) (string, error) {
+	if d, ok := nsNamedIndex(name); ok {
+		return d, nil
+	}
+	if ns != "" {
+		return nsWriteIndex(ns, shared, name)
+	}
+	b, err := daemonGet(base, "/indexes", nil)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Indexes []idxRow `json:"indexes"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return "", err
+	}
+	names := make([]string, 0, len(out.Indexes))
+	for _, r := range out.Indexes {
+		names = append(names, r.Name)
+	}
+	if full := uniqueLocal(names, name); containsStr(names, full) {
+		return full, nil
+	}
+	return "", fmt.Errorf("no index %q (or more than one project has one: name it proj:%s)", name, name)
+}
+
+func indexScope(name string, args []string) error {
+	base, full, rest, err := indexTarget(name, args, nil)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{}
+	if len(rest) > 0 {
+		verb, pats := rest[0], rest[1:]
+		if len(pats) == 0 || (verb != "add" && verb != "rm") {
+			return fmt.Errorf("usage: raglit index %s scope [add|rm PATTERN...]", name)
+		}
+		for i, p := range pats {
+			if pats[i], err = scopePattern(p); err != nil {
+				return err
+			}
+		}
+		if verb == "add" {
+			body["add"] = pats
+		} else {
+			body["remove"] = pats
+		}
+	}
+	return printScope(base, full, body)
+}
+
+func indexGlobal(name string, args []string) error {
+	base, full, rest, err := indexTarget(name, args, nil)
+	if err != nil {
+		return err
+	}
+	mode := "opt-in"
+	if len(rest) > 0 {
+		mode = rest[0]
+	}
+	if len(rest) > 1 || (mode != "ambient" && mode != "opt-in") {
+		return fmt.Errorf("usage: raglit index %s global [ambient|opt-in]", name)
+	}
+	return printScope(base, full, map[string]any{"scopes": []string{}, "ambient": mode == "ambient"})
+}
+
+func printScope(base, full string, body map[string]any) error {
+	b, err := daemonPostJSON(base, "/api/index/scope?"+urlValues("index", full).Encode(), body)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Scopes  []string `json:"scopes"`
+		Ambient bool     `json:"ambient"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s\n", full, scopeText(out.Scopes, out.Ambient))
+	return nil
+}
+
+func scopeText(scopes []string, ambient bool) string {
+	switch {
+	case len(scopes) > 0:
+		return strings.Join(scopes, ", ")
+	case ambient:
+		return "global, ambient (every search)"
+	default:
+		return "global, opt-in (only when named)"
+	}
+}
+
+// scopePattern makes a scope absolute: "." is this directory, "~" the home
+// directory, a relative path is joined to this directory. A glob keeps its
+// wildcards.
+func scopePattern(p string) (string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		p = filepath.Join(h, strings.TrimPrefix(p, "~"))
+	}
+	if !filepath.IsAbs(p) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		p = filepath.Join(wd, p)
+	}
+	return p, nil
 }
 
 func indexPause(verb string) func(string, []string) error {
@@ -169,8 +290,9 @@ func indexUnwatch(name string, args []string) error {
 	return nil
 }
 
-// runIndexList prints this project's indexes: the daemon's counts, joined
-// with the roots the config feeds each one.
+// runIndexList prints every index the daemon holds: documents, state, its
+// scopes (or global mode), and ✓ when a search from here with no index named
+// reads it. Configured roots are joined for this project's indexes.
 func runIndexList(args []string) error {
 	fs := flag.NewFlagSet("index --list", flag.ContinueOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
@@ -185,7 +307,7 @@ func runIndexList(args []string) error {
 		return raglit.DiscoverHome()
 	}
 	base, ns, err := client(homeOf, false)
-	if err != nil {
+	if err != nil && !(errors.Is(err, errNoProject) && base != "") {
 		return err
 	}
 	if base == "" {
@@ -201,6 +323,7 @@ func runIndexList(args []string) error {
 	if err := json.Unmarshal(b, &out); err != nil {
 		return err
 	}
+	wd, _ := os.Getwd()
 	cfgHome := homeOf()
 	if h, err := watchHome(*homeFlag, fs.Lookup("project").Value.String()); err == nil {
 		cfgHome = h
@@ -209,23 +332,31 @@ func runIndexList(args []string) error {
 	baseDir := filepath.Dir(string(cfgHome))
 	seen := map[string]bool{}
 	for _, r := range out.Indexes {
-		if ns != "" && !strings.HasPrefix(r.Name, ns+nsSep) {
-			continue
+		if r.Documents == 0 && r.Name == "default" {
+			continue // always listed by the daemon; empty unless something used it
 		}
-		local := nsStrip(ns, r.Name)
-		seen[local] = true
-		state := "active"
+		here := " "
+		if len(r.Scopes) > 0 && raglit.ScopeMatches(r.Scopes, wd) || len(r.Scopes) == 0 && r.Ambient {
+			here = "✓"
+		}
+		state := ""
 		if r.Paused {
-			state = "paused"
+			state = "  paused"
 		}
-		fmt.Printf("%-24s %7d docs  %s%s\n", local, r.Documents, state, roots(cfg, local, baseDir))
+		var fed string
+		if local, own := strings.CutPrefix(r.Name, ns+nsSep); ns != "" && own {
+			seen[local] = true
+			fed = roots(cfg, local, baseDir)
+		}
+		fmt.Printf("%s %-32s %7d docs  %s%s%s\n", here, r.Name, r.Documents, scopeText(r.Scopes, r.Ambient), state, fed)
 	}
 	// Configured but never ingested: no documents yet, so the daemon has no row.
 	for name := range cfg.Indexes {
-		if !seen[name] {
-			fmt.Printf("%-24s %7d docs  %s%s\n", name, 0, "empty", roots(cfg, name, baseDir))
+		if !seen[name] && ns != "" {
+			fmt.Printf("  %-32s %7d docs  empty%s\n", ns+nsSep+name, 0, roots(cfg, name, baseDir))
 		}
 	}
+	fmt.Println("\n✓ = a search from here with no --index reads it.  raglit index NAME scope|global")
 	return nil
 }
 
