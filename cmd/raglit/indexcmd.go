@@ -331,6 +331,10 @@ func runIndexList(args []string) error {
 	cfg, _, _ := raglit.LoadConfig(cfgHome)
 	baseDir := filepath.Dir(string(cfgHome))
 	seen := map[string]bool{}
+	w := 8
+	for _, r := range out.Indexes {
+		w = max(w, len(r.Name))
+	}
 	for _, r := range out.Indexes {
 		if r.Documents == 0 && r.Name == "default" {
 			continue // always listed by the daemon; empty unless something used it
@@ -348,12 +352,12 @@ func runIndexList(args []string) error {
 			seen[local] = true
 			fed = roots(cfg, local, baseDir)
 		}
-		fmt.Printf("%s %-32s %7d docs  %s%s%s\n", here, r.Name, r.Documents, scopeText(r.Scopes, r.Ambient), state, fed)
+		fmt.Printf("%s %-*s %7d docs  %s%s%s\n", here, w, r.Name, r.Documents, scopeText(r.Scopes, r.Ambient), state, fed)
 	}
 	// Configured but never ingested: no documents yet, so the daemon has no row.
 	for name := range cfg.Indexes {
 		if !seen[name] && ns != "" {
-			fmt.Printf("  %-32s %7d docs  empty%s\n", ns+nsSep+name, 0, roots(cfg, name, baseDir))
+			fmt.Printf("  %-*s %7d docs  empty%s\n", w, ns+nsSep+name, 0, roots(cfg, name, baseDir))
 		}
 	}
 	fmt.Println("\n✓ = a search from here with no --index reads it.  raglit index NAME scope|global")
