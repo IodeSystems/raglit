@@ -204,3 +204,16 @@ only for documents a VLM already transcribed — can land first.
   and one plan line (plan/knowledge.md:304). **blocking decision:** edit
   another repo — ask first.
 - doctor does not check a launchd plist for single-dash flags.
+
+## ⏸ Site crawling — decided: crawlers live outside raglit
+
+USER 2026-10-23: each crawler is user code somewhere else; it writes files
+into a directory, and `raglit watch DIR --index NAME` indexes them. raglit
+has no crawler. Works today: .html goes through pandoc, .md/.txt/.pdf as is.
+- Gap: a hit cites the local file path, not the page URL. For now the
+  crawler writes the URL into the file (first line of a .md). A raglit-side
+  origin URL (manifest or sidecar in DIR → document source) only if that
+  proves insufficient.
+- Crawler hygiene that is raglit-relevant: write to a temp name then rename
+  (the watcher must not ingest half-written files); keep a stable file name
+  per URL so a re-crawl updates one document instead of adding another.
