@@ -405,16 +405,27 @@ func resolveProject(flagVal string, homeOf func() raglit.Home) (string, error) {
 
 // projectShared returns the home config's `shared` namespaces (normalized) — the
 // other projects whose indexes this project also SEARCHES (e.g. common ~/doc).
-func projectShared(homeOf func() raglit.Home) []string {
+// extra adds more, from --shared: a caller with no config of its own (dun)
+// links another project's indexes that way.
+func projectShared(homeOf func() raglit.Home, extra ...string) []string {
 	cfg, _, _ := raglit.LoadConfig(homeOf())
-	out := make([]string, 0, len(cfg.Shared))
-	for _, s := range cfg.Shared {
+	var out []string
+	for _, s := range append(append([]string{}, cfg.Shared...), extra...) {
 		if strings.TrimSpace(s) == "" {
 			continue // don't let NormalizeIndexName turn "" into "default"
 		}
-		out = append(out, raglit.NormalizeIndexName(s))
+		if n := raglit.NormalizeIndexName(s); !containsStr(out, n) {
+			out = append(out, n)
+		}
 	}
 	return out
+}
+
+// addSharedFlag adds --shared a,b: more namespaces, on top of the config's
+// `shared`, with the same reach (search, and "<ns>:<index>" addressing).
+func addSharedFlag(fs *flag.FlagSet) func() []string {
+	v := fs.String("shared", "", `comma-separated project namespaces to also reach (adds to config "shared")`)
+	return func() []string { return strings.Split(*v, ",") }
 }
 
 func daemonIngest(base string, targets []string, index, title string, fresh bool) error {

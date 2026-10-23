@@ -32,6 +32,7 @@ func runServe(args []string) error {
 	_, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
 	client := addClientFlags(fs) // --daemon + --embedded
+	shared := addSharedFlag(fs)
 	defLimit := fs.Int("n", 8, "default max results")
 	embed := fs.Bool("embed", false, "embedded mode: embed ingested fragments")
 	fs.Parse(args)
@@ -48,7 +49,7 @@ func runServe(args []string) error {
 		rt := newRestartTransport(durl)
 		http.DefaultClient.Transport = rt
 		s := server.NewMCPServer("raglit", version, server.WithToolHandlerMiddleware(restartNotes(rt, durl)))
-		addRaglitTools(s, daemonToolHandlers(durl, *defLimit, ns, projectShared(homeOf)))
+		addRaglitTools(s, daemonToolHandlers(durl, *defLimit, ns, projectShared(homeOf, shared()...)))
 		return server.ServeStdio(s)
 	}
 

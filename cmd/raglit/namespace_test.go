@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -233,5 +234,24 @@ func TestServeClient_SharedNamespace(t *testing.T) {
 	list := callTool(t, acme.listIndexes, nil)
 	if !strings.Contains(list, `"name":"default"`) || !strings.Contains(list, `"name":"shared__default"`) || strings.Contains(list, "other") {
 		t.Fatalf("list_indexes shared scoping wrong: %s", list)
+	}
+}
+
+// --shared adds to the config's `shared`, so a caller with no config of its
+// own (dun) can still reach another project's indexes.
+func TestSharedFlagAddsToConfig(t *testing.T) {
+	home := raglit.Home(t.TempDir())
+	if err := os.WriteFile(home.ConfigPath(), []byte(`{"shared":["Common Docs"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := projectShared(func() raglit.Home { return home }, "handbook", "", "common docs")
+	if strings.Join(got, ",") != "commondocs,handbook" {
+		t.Fatalf("shared = %v, want config then flag, normalized, no duplicates", got)
+	}
+	if sel := nsReadSelector("acme", got, "handbook:default"); sel != "handbook__default" {
+		t.Errorf("a flag-linked namespace must be searchable, got %q", sel)
+	}
+	if sel := nsReadSelector("acme", nil, "handbook:default"); sel != nsUnmatchable {
+		t.Errorf("without the flag the namespace is unreachable, got %q", sel)
 	}
 }

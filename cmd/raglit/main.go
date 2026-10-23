@@ -518,6 +518,7 @@ func runSearch(args []string) error {
 	openStore, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
 	client := addClientFlags(fs) // --daemon + --embedded
+	shared := addSharedFlag(fs)
 	limit := fs.Int("n", 10, "max results")
 	mode := fs.String("mode", "bm25", "bm25 | vec | hybrid (vec/hybrid need embeddings)")
 	path := fs.String("path", "", "constrain to documents whose path starts with this prefix (a subtree)")
@@ -535,7 +536,7 @@ func runSearch(args []string) error {
 	}
 	if dURL != "" {
 		// Empty --index → this project's indexes + its shared namespaces.
-		sel := nsReadSelector(ns, projectShared(homeOf), fs.Lookup("index").Value.String())
+		sel := nsReadSelector(ns, projectShared(homeOf, shared()...), fs.Lookup("index").Value.String())
 		return daemonSearchPrint(dURL, query, sel, *mode, *path, *limit, ns)
 	}
 
