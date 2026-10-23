@@ -22,6 +22,11 @@ import (
 // the shared daemon this project only sees its own indexes.
 func daemonToolHandlers(base string, defLimit int, ns string, shared []string) toolHandlers {
 	return toolHandlers{
+		forget: forgetHandler(func(name string) (string, error) {
+			return nsWriteIndex(ns, shared, name)
+		}, func(name string) string { return nsStrip(ns, name) }, func(index, path string) error {
+			return daemonForgetIn(base, index, path)
+		}),
 		manageIndex: manageIndexHandler(daemonControls{base}, func(name string) (string, error) {
 			return nsWriteIndex(ns, shared, name)
 		}, func(name string) string { return nsStrip(ns, name) }),
@@ -57,13 +62,37 @@ func daemonToolHandlers(base string, defLimit int, ns string, shared []string) t
 		},
 
 		ingest: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			u, err := req.RequireString("url")
-			if err != nil {
-				return mcp.NewToolResultError("url is required"), nil
+			u := req.GetString("url", "")
+			paths := req.GetStringSlice("paths", nil)
+			if u == "" && len(paths) == 0 {
+				return mcp.NewToolResultError("url or paths is required"), nil
 			}
 			idx, err := nsWriteIndex(ns, shared, req.GetString("index", ""))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("ingest", err), nil
+			}
+			if len(paths) > 0 {
+				targets, missing := batchTargets(append(paths, u))
+				r := batchResult{Index: nsStrip(ns, idx), JobIDs: []int64{}, Missing: missing}
+				if len(targets) > 0 {
+					b, err := daemonPostJSON(base, "/ingest", map[string]any{
+						"targets": targets, "index": idx, "title": req.GetString("title", ""),
+					})
+					if err != nil {
+						return mcp.NewToolResultErrorFromErr("ingest", err), nil
+					}
+					var out struct {
+						Queued  int     `json:"queued"`
+						JobIDs  []int64 `json:"job_ids"`
+						Ignored int     `json:"ignored"`
+					}
+					_ = json.Unmarshal(b, &out)
+					r.Queued, r.Ignored = out.Queued, out.Ignored
+					if out.JobIDs != nil {
+						r.JobIDs = out.JobIDs
+					}
+				}
+				return batchText(r), nil
 			}
 			b, err := daemonPostJSON(base, "/ingest", map[string]any{
 				"targets": []string{u}, "index": idx, "title": req.GetString("title", ""),

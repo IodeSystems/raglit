@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,5 +74,37 @@ func TestStripSchema(t *testing.T) {
 	// No $schema → unchanged.
 	if got := string(stripSchema([]byte(`{"a":1}`))); got != `{"a":1}` {
 		t.Fatalf("stripSchema passthrough = %s", got)
+	}
+}
+
+// dun indexes 100+ files as one batch: paths[] in one ingest call, a missing
+// path reported rather than failing the rest, and forget by either spelling.
+func TestServeClient_BatchIngestAndForget(t *testing.T) {
+	srv, _ := gatTestServer(t)
+	h := daemonToolHandlers(srv.URL, 8, "", nil)
+
+	dir := t.TempDir()
+	for _, f := range []string{"a.md", "b.md"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("batch "+f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := callTool(t, h.ingest, map[string]any{
+		"index": "default", "paths": []any{dir, filepath.Join(dir, "gone.md")},
+	})
+	var r batchResult
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Queued != 2 || len(r.JobIDs) != 2 || len(r.Missing) != 1 {
+		t.Fatalf("batch ingest = %s, want 2 queued and 1 missing", out)
+	}
+
+	out = callTool(t, h.forget, map[string]any{"index": "default", "paths": []any{"/notes.md"}})
+	if !strings.Contains(out, `"forgotten":1`) {
+		t.Fatalf("forget = %s", out)
+	}
+	if out := callTool(t, h.listDocuments, map[string]any{"name": "notes"}); strings.Contains(out, "notes.md") {
+		t.Fatalf("file:///notes.md survived a forget of /notes.md: %s", out)
 	}
 }

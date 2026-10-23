@@ -82,6 +82,18 @@ func runServe(args []string) error {
 		search:        searchHandler(reg, *defLimit),
 		searchFigures: searchFiguresHandler(reg, *defLimit),
 		ingest:        ingestHandler(reg),
+		forget: forgetHandler(func(name string) (string, error) {
+			if name == "" {
+				name = "default"
+			}
+			return name, nil
+		}, func(name string) string { return name }, func(index, path string) error {
+			st, err := reg.Get(index)
+			if err != nil {
+				return err
+			}
+			return st.DeleteDocument(path)
+		}),
 		status:        statusHandler(reg),
 		listIndexes:   listHandler(reg),
 		listDocuments: listDocumentsHandler(reg),
@@ -111,6 +123,7 @@ type toolHandlers struct {
 	getFields     server.ToolHandlerFunc
 	ocr           server.ToolHandlerFunc
 	manageIndex   server.ToolHandlerFunc
+	forget        server.ToolHandlerFunc
 }
 
 // addRaglitTools registers the tool definitions once, backed by the given
@@ -165,12 +178,18 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 					"worker fetches + segments + indexes it). file://<path> or http(s)://... ; "+
 					"PDFs are OCR'd when a vision model is configured. `index` names the target "+
 					"index (default \"default\", created if new). Poll index_status."),
-			mcp.WithString("url", mcp.Required(), mcp.Description("file://<path> or http(s)://<url>")),
+			mcp.WithString("url", mcp.Description("file://<path> or http(s)://<url>; give url or paths")),
+			mcp.WithArray("paths", mcp.WithStringItems(), mcp.Description(
+				"many at once: file paths, directories (walked) or file:// URLs. Returns "+
+					"{index, queued, job_ids, ignored, missing} instead of one job")),
 			mcp.WithString("index", mcp.Description("target index (default \"default\")")),
 			mcp.WithString("title", mcp.Description("optional document title")),
 		),
 		h.ingest,
 	)
+	if h.forget != nil {
+		s.AddTool(forgetTool(), h.forget)
+	}
 	s.AddTool(
 		mcp.NewTool("index_status",
 			mcp.WithDescription(
@@ -686,14 +705,24 @@ func searchFiguresHandler(reg *raglit.Registry, defLimit int) server.ToolHandler
 
 func ingestHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		url, err := req.RequireString("url")
-		if err != nil {
-			return mcp.NewToolResultError("url is required"), nil
+		url := req.GetString("url", "")
+		paths := req.GetStringSlice("paths", nil)
+		if url == "" && len(paths) == 0 {
+			return mcp.NewToolResultError("url or paths is required"), nil
 		}
 		name := req.GetString("index", "default")
 		st, err := reg.Get(name)
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("open index", err), nil
+		}
+		if len(paths) > 0 {
+			targets, missing := batchTargets(append(paths, url))
+			r, err := storeIngestBatch(st, name, targets, req.GetString("title", ""))
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("enqueue", err), nil
+			}
+			r.Missing = missing
+			return batchText(r), nil
 		}
 		id, err := st.Enqueue(url, req.GetString("title", ""))
 		if err != nil {
