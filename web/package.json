@@ -2,7 +2,7 @@
   "name": "raglit-web",
   "private": true,
   "type": "module",
-  "description": "The raglit review SPA. Built to web/dist, whose placeholder files are committed (the real bundle is generated) and embedded into the binary \u2014 see web/embed.go.",
+  "description": "The raglit review SPA. Built to web/dist, whose placeholder files are committed (the real bundle is generated) and embedded into the binary — see web/embed.go.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node -e \"require('fs').writeFileSync('dist/.gitkeep','')\"",
@@ -19,7 +19,9 @@
     "@mui/material": "^9.3.1",
     "@tanstack/react-router": "^1.95.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

@@ -70,6 +70,16 @@
      readable measure. Monospace is for code, ids and commands only (F9). */
   .prose { font-family:var(--font-body); font-size:var(--fs-base); line-height:1.6;
     white-space:pre-wrap; overflow-wrap:anywhere; max-width:var(--measure); }
+  /* Rendered Markdown (Transcript): block elements own the line breaks. */
+  .prose.markdown { white-space:normal; }
+  .prose.markdown table { border-collapse:collapse; display:block; overflow-x:auto; }
+  .prose.markdown th, .prose.markdown td { border:1px solid var(--line); padding:2px var(--sp-2); }
+  .prose.markdown blockquote { margin:0; padding-left:var(--sp-3); border-left:3px solid var(--line); }
+  .prose.markdown .imgalt { color:var(--muted); }
+  .textmode { display:flex; gap:4px; margin-bottom:var(--sp-3); }
+  .textmode button { font:inherit; font-size:var(--fs-sm); padding:2px 10px; cursor:pointer;
+    background:var(--panel); color:inherit; border:1px solid var(--line); border-radius:var(--radius); }
+  .textmode button[aria-pressed="true"] { background:var(--code-bg); font-weight:600; }
   /* Scoped to .pageheader / .pagemain rather than the bare elements, 2026-08-19.
      MUI's AppBar renders a <header> and the new shell's content region is a
      <main>, so bare-element layout rules here reached inside the redesigned
