@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // Daemon mode.

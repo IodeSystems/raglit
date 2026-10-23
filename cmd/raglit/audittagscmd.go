@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // `raglit audit-tags` — the tag vocabulary of an index, and the drift in it.
@@ -199,3 +199,4 @@ type stringList []string
 
 func (l *stringList) String() string     { return strings.Join(*l, ", ") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
+func (l *stringList) Type() string       { return "string" }

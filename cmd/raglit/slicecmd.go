@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // Slicing a bundle into the documents inside it.
@@ -270,28 +270,14 @@ func compactPages(ps []int) string {
 }
 
 // parseInterleaved parses flags that appear ANYWHERE in the argument list,
-// returning the positional arguments in order.
-//
-// Go's flag package stops at the first non-flag token, so
-// `raglit slice doc.pdf 3-6 --title "x"` silently drops --title and reports
-// four positionals. People write flags last; a CLI that only accepts them first
-// is one that fails in the shape everyone tries.
-//
-// Uses flag's own parsing repeatedly rather than guessing which flags take
-// values — that knowledge lives in the FlagSet and duplicating it is how a
-// hand-rolled splitter eats the value of a flag it does not know about.
+// returning the positional arguments in order: `raglit slice doc.pdf 3-6
+// --title "x"` takes --title. pflag does this itself (interspersed); this
+// was a loop over Go's flag package, which stops at the first positional.
 func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
-	var positional []string
-	for {
-		if err := fs.Parse(args); err != nil {
-			return nil, err
-		}
-		if fs.NArg() == 0 {
-			return positional, nil
-		}
-		positional = append(positional, fs.Arg(0))
-		args = fs.Args()[1:]
+	if err := fs.Parse(args); err != nil {
+		return nil, err
 	}
+	return fs.Args(), nil
 }
 
 // daemonIndexName is this project's namespaced index on the shared daemon.

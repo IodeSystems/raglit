@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // rootTestServer: an index holding two corpus documents under one tree and one

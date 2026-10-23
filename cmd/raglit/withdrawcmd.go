@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // `raglit withdraw` rules a document out of the corpus, with grounds.

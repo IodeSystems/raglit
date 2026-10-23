@@ -1,10 +1,10 @@
 package main
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 func resolvedFlags(t *testing.T, cfg raglit.Config, args ...string) *llmFlags {
@@ -56,7 +56,7 @@ func TestProviders_PerRoleEndpoints(t *testing.T) {
 
 	// --llm-url / --llm-key override every role.
 	cfg.VisionProvider = "router"
-	lf = resolvedFlags(t, cfg, "-llm-url", "http://flag/v1", "-llm-key", "flag-key")
+	lf = resolvedFlags(t, cfg, "--llm-url", "http://flag/v1", "--llm-key", "flag-key")
 	for name, ep := range map[string]endpoint{"vision": lf.vision, "embed": lf.embed} {
 		if ep != (endpoint{"http://flag/v1", "flag-key"}) {
 			t.Errorf("%s with flags = %+v", name, ep)

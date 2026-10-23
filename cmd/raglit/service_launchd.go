@@ -22,7 +22,7 @@ import (
 //     while `raglit doctor` in a shell says it is. So install records PATH
 //     unless --env sets it.
 //   - There is no ExecStartPre. The flags are validated by install (the same
-//     `daemon -check`) before the plist is written.
+//     `daemon --check`) before the plist is written.
 //   - There is no journal. Output goes to ~/Library/Logs/raglit/NAME.log, and
 //     `logs` reads its tail.
 

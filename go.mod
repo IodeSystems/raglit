@@ -12,6 +12,7 @@ require (
 	github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0
 	github.com/mark3labs/mcp-go v1.0.0
 	github.com/pdfcpu/pdfcpu v0.15.0
+	github.com/spf13/pflag v1.0.10
 	golang.org/x/image v0.45.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/text v0.41.0

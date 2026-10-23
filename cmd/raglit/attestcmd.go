@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"image"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/iodesystems/raglit"
 	"github.com/iodesystems/raglit/attest"
+	flag "github.com/spf13/pflag"
 )
 
 // runAttest hands a region read to a person to rule on.

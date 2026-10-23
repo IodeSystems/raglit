@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"flag"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -23,6 +22,7 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // fakeIssuer is an in-process OIDC issuer: discovery + JWKS, and a signer for

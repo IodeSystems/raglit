@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"github.com/iodesystems/raglit"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	flag "github.com/spf13/pflag"
 )
 
 const version = "0.1.0"
@@ -33,7 +33,7 @@ func runServe(args []string) error {
 	lf := addLLMFlags(fs)
 	client := addClientFlags(fs) // --daemon + --embedded
 	shared := addSharedFlag(fs)
-	defLimit := fs.Int("n", 8, "default max results")
+	defLimit := fs.IntP("limit", "n", 8, "default max results")
 	embed := fs.Bool("embed", false, "embedded mode: embed ingested fragments")
 	fs.Parse(args)
 

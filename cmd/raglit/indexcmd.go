@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // `raglit index` (USER 2026-10-23): one place for per-index work.
@@ -44,7 +44,7 @@ func init() {
 }
 
 func runIndexCmd(args []string) error {
-	if len(args) > 0 && (args[0] == "--list" || args[0] == "-list" || args[0] == "list") {
+	if len(args) > 0 && (args[0] == "--list" || args[0] == "list") {
 		return runIndexList(args[1:])
 	}
 	if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {

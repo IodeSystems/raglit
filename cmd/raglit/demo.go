@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"embed"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 //go:embed demodata/*.md

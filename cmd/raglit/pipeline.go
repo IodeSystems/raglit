@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/iodesystems/agentkit/llm"
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // llmFlags holds the shared model-connection flags: a vision model for OCR, an

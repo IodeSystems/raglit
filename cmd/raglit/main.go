@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 func main() {
@@ -273,7 +273,7 @@ func runSearch(args []string) error {
 	lf := addLLMFlags(fs)
 	client := addClientFlags(fs) // --daemon + --embedded
 	shared := addSharedFlag(fs)
-	limit := fs.Int("n", 10, "max results")
+	limit := fs.IntP("limit", "n", 10, "max results")
 	mode := fs.String("mode", "bm25", "bm25 | vec | hybrid (vec/hybrid need embeddings)")
 	path := fs.String("path", "", "constrain to documents whose path starts with this prefix (a subtree)")
 	fs.Parse(args)
@@ -390,11 +390,11 @@ func runReread(args []string) error {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "--dry-run", a == "-dry-run":
+		case a == "--dry-run":
 			dry = true
-		case strings.HasPrefix(a, "--suspect="), strings.HasPrefix(a, "-suspect="):
+		case strings.HasPrefix(a, "--suspect="):
 			suspectRoot = a[strings.Index(a, "=")+1:]
-		case a == "--suspect", a == "-suspect":
+		case a == "--suspect":
 			if i+1 < len(args) {
 				i++
 				suspectRoot = args[i]

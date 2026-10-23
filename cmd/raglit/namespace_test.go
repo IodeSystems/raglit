@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"flag"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 func TestNSIndex(t *testing.T) {

@@ -1,13 +1,14 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	flag "github.com/spf13/pflag"
 )
 
 // raglit as a systemd user service — or, on macOS, a launchd user agent
@@ -148,6 +149,7 @@ type repeatable []string
 
 func (r *repeatable) String() string     { return strings.Join(*r, ",") }
 func (r *repeatable) Set(v string) error { *r = append(*r, v); return nil }
+func (r *repeatable) Type() string       { return "string" }
 
 func serviceInstall(args []string) error {
 	fs := flag.NewFlagSet("service install", flag.ExitOnError)
@@ -162,7 +164,7 @@ func serviceInstall(args []string) error {
 	daemonArgs := fs.Args()
 
 	// --stop and --restart act on the daemon recorded in daemon.json and, in the
-	// case of -restart, relaunch it DETACHED. Baked into a unit that would mean
+	// case of --restart, relaunch it DETACHED. Baked into a unit that would mean
 	// systemd supervising a process that deliberately replaces itself with one
 	// systemd does not know about — two daemons, or none.
 	for _, a := range daemonArgs {
@@ -301,7 +303,7 @@ func serviceCtl(verb string, args []string) error {
 func serviceLogs(args []string) error {
 	fs := flag.NewFlagSet("service logs", flag.ExitOnError)
 	name := fs.String("name", serviceUnitName, "unit name without .service")
-	n := fs.String("n", "200", "lines to show")
+	n := fs.StringP("lines", "n", "200", "lines to show")
 	fs.Parse(args)
 	if runtime.GOOS == "darwin" {
 		return launchdLogs(*name, *n)

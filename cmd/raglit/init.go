@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/iodesystems/agentkit/llm"
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // runInit is the setup wizard. By default it writes a PROJECT-LOCAL home —

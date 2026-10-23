@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -31,6 +30,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/iodesystems/gwag/v2/gw/gat"
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 func runHttpd(subcmd string, args []string) error {
@@ -39,7 +39,7 @@ func runHttpd(subcmd string, args []string) error {
 	rootFlag := fs.String("root", "", "scoped storage root (default $RAGLIT_ROOT or ~/.raglit); each index at <root>/indexes/<name>")
 	lf := addLLMFlags(fs)
 	addr := fs.String("addr", defaultDaemonAddr, "listen address(es), comma-separated; a bare `.N` matches this host's own interface ending .N (e.g. 127.0.0.1:7420,.76)")
-	defLimit := fs.Int("n", 8, "default search results")
+	defLimit := fs.IntP("limit", "n", 8, "default search results")
 	embed := fs.Bool("embed", false, "embed ingested fragments (enables vector search)")
 	poolMaxBytes := fs.Int64("pool-max-bytes", 4<<30, "keep the shared pool under this many bytes, evicting oldest-accessed (0 = unlimited)")
 	poolMax := fs.Int("pool-max", 0, "also cap the pool at N entries, LRU (0 = unlimited)")

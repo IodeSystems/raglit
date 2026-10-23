@@ -1,10 +1,10 @@
 package main
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // The caption model falls back to the segment model, then the vision model.

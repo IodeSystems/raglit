@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // runSimilar answers "do we already hold this?" for a candidate file, at page
@@ -33,7 +33,7 @@ func runSimilar(args []string) error {
 	status := fs.Bool("status", false, "report sketch coverage, then exit")
 	all := fs.Bool("all", false, "audit the whole index: compare every sketched document")
 	asJSON := fs.Bool("json", false, "emit the report as JSON")
-	limit := fs.Int("n", 0, "max matches per probe (0 = all)")
+	limit := fs.IntP("limit", "n", 0, "max matches per probe (0 = all)")
 	minChars := fs.Int("min-chars", 0, "minimum matched folded chars to report (0 = default)")
 	minCov := fs.Float64("min-coverage", 0, "additional block-coverage floor (0 = none)")
 	width := fs.Int("width", 0, "shingle width in folded chars (0 = default)")

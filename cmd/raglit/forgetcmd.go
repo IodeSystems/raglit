@@ -2,9 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"strings"
+
+	flag "github.com/spf13/pflag"
 )
 
 // `raglit forget` removes a document from the INDEX. The file on disk is

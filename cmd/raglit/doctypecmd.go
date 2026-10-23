@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // `raglit hint` and `raglit doctype` — what a person tells the models about
@@ -253,9 +253,6 @@ func docTypeAdd(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 || *file == "" {
-		// Flags come before the name, as everywhere else here: Go's flag package
-		// stops parsing at the first non-flag argument, so `add <name> --file f`
-		// silently drops the flag rather than failing on it.
 		return fmt.Errorf("doctype add: usage is `doctype add --file <F> <NAME>`")
 	}
 	var b []byte

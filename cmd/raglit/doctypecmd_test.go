@@ -142,12 +142,16 @@ func TestDocTypeAdd_RegistersFromAFileAndRefusesTheWrongArgOrder(t *testing.T) {
 		t.Error(err)
 	}
 
-	// Go's flag package stops parsing at the first non-flag argument, so
-	// `add <name> --file f` silently drops the flag. Refused with the usage,
-	// rather than registering a type with no schema.
-	err = runDocType([]string{"add", "--db", db, "invoice2", "--file", f})
+	// A flag after the name is parsed (pflag), not dropped: the type gets its
+	// schema.
+	if err := runDocType([]string{"add", "--db", db, "invoice2", "--file", f}); err != nil {
+		t.Errorf("flag-after-name: %v", err)
+	}
+	// No --file at all is refused with the usage, rather than registering a
+	// type with no schema.
+	err = runDocType([]string{"add", "--db", db, "invoice3"})
 	if err == nil || !strings.Contains(err.Error(), "--file <F> <NAME>") {
-		t.Errorf("flag-after-name = %v, want the usage", err)
+		t.Errorf("no --file = %v, want the usage", err)
 	}
 }
 

@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/iodesystems/raglit"
+	flag "github.com/spf13/pflag"
 )
 
 // Index controls over HTTP and the CLI: pause and resume. See
