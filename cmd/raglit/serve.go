@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -44,7 +45,9 @@ func runServe(args []string) error {
 		return err
 	}
 	if durl != "" {
-		s := server.NewMCPServer("raglit", version)
+		rt := newRestartTransport(durl)
+		http.DefaultClient.Transport = rt
+		s := server.NewMCPServer("raglit", version, server.WithToolHandlerMiddleware(restartNotes(rt, durl)))
 		addRaglitTools(s, daemonToolHandlers(durl, *defLimit, ns, projectShared(homeOf)))
 		return server.ServeStdio(s)
 	}

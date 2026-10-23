@@ -205,3 +205,26 @@ it silently answers about the plain `default` index instead of the project's.
 The CLI is unaffected because it resolves the namespaced name itself. Anything
 driving the daemon over HTTP with `project=` is being told about the wrong
 corpus, and getting a confident empty answer rather than an error.
+
+## MCP serve across a daemon restart (✅ 2026-10-22)
+
+USER 2026-10-22: what happens to raglit MCPs when the service restarts or
+upgrades? Before: every tool call in the restart gap failed with "connection
+refused", and the serve process kept its old build with no sign of it.
+
+- `serveretry.go`: in client mode, `serve` retries a failed dial for up to 20s
+  (backoff 100ms → 1s). A failed dial sent nothing, so a POST retry is safe.
+- When the address came from daemon.json (not `--daemon` or `daemon_url`),
+  each retry re-reads daemon.json and follows the daemon to a new address.
+- After a call that waited, the first result carries a note when the daemon's
+  build differs from serve's, telling the agent to reconnect (`/mcp`).
+- Verified: unit tests (same-port restart with a POST body, address follow,
+  pinned address not followed) and a live stdio session where a call sent
+  while the daemon was down returned after the restart.
+- **risks:**
+  - The build note is untested: test binaries carry no build stamp, so
+    `skewNote` returns "" in tests.
+  - A request already sent when the daemon stops is not retried (it could
+    have run). The 5s graceful shutdown lets most of those finish.
+  - A gap longer than 20s (a self-update that compiles before re-exec, a
+    crash loop) still fails the call.
