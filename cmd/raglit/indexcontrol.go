@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/iodesystems/raglit"
@@ -34,6 +35,74 @@ func pauseOp(reg *raglit.Registry) func(context.Context, *pauseIn) (*okOut, erro
 		out.Body.OK = true
 		return out, nil
 	}
+}
+
+type scopeIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	Body  struct {
+		Scopes  *[]string `json:"scopes,omitempty" doc:"replace the scopes; [] makes the index global"`
+		Add     []string  `json:"add,omitempty" doc:"scopes to add"`
+		Remove  []string  `json:"remove,omitempty" doc:"scopes to remove"`
+		Ambient *bool     `json:"ambient,omitempty" doc:"a global index: true = every search reads it, false = only when named"`
+		// Claim sets the scopes only when they were never set: an ingest from
+		// a project gives a new index that project's directory.
+		Claim string `json:"claim,omitempty" doc:"set scopes to [claim] if they were never set"`
+	}
+}
+
+type scopeOut struct {
+	Body struct {
+		Scopes  []string `json:"scopes"`
+		Ambient bool     `json:"ambient"`
+	}
+}
+
+func scopeOp(reg *raglit.Registry) func(context.Context, *scopeIn) (*scopeOut, error) {
+	return func(ctx context.Context, in *scopeIn) (*scopeOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		if err := applyScope(st, in.Body.Scopes, in.Body.Add, in.Body.Remove, in.Body.Ambient, in.Body.Claim); err != nil {
+			return nil, huma.Error500InternalServerError("scope", err)
+		}
+		out := &scopeOut{}
+		out.Body.Scopes, _ = st.Scopes()
+		out.Body.Ambient = st.Ambient()
+		return out, nil
+	}
+}
+
+func applyScope(st *raglit.Store, replace *[]string, add, remove []string, ambient *bool, claim string) error {
+	cur, set := st.Scopes()
+	switch {
+	case claim != "":
+		if set {
+			break
+		}
+		cur = []string{claim}
+	case replace != nil:
+		cur = *replace
+	}
+	drop := map[string]bool{}
+	for _, r := range remove {
+		drop[filepath.Clean(r)], drop[r] = true, true
+	}
+	next := []string{}
+	for _, c := range append(cur, add...) {
+		if !drop[c] {
+			next = append(next, c)
+		}
+	}
+	if claim == "" || !set {
+		if _, err := st.SetScopes(next); err != nil {
+			return err
+		}
+	}
+	if ambient != nil {
+		return st.SetAmbient(*ambient)
+	}
+	return nil
 }
 
 // runPause is `raglit pause` and `raglit resume`. With no index named it lists

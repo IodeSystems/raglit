@@ -122,7 +122,7 @@ func TestSelectIndexesWildcard(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := selectIndexes(reg, "acme__*")
+	got := selectIndexes(context.Background(), reg, "acme__*")
 	if len(got) != 2 {
 		t.Fatalf("acme__* = %v, want 2 acme indexes", got)
 	}

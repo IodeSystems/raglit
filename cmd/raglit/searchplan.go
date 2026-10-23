@@ -35,7 +35,7 @@ func planSearch(ctx context.Context, reg *raglit.Registry, sel string, siblings 
 		p.names = append(p.names, n)
 		return true
 	}
-	selected := reg.Readable(ctx, selectIndexes(reg, sel))
+	selected := reg.Readable(ctx, selectIndexes(ctx, reg, sel))
 	for _, n := range selected {
 		add(n)
 	}

@@ -140,6 +140,7 @@ func runHttpd(subcmd string, args []string) error {
 	// change. Registrations persist under the daemon root and reload here.
 	watch := newWatcher(reg, string(cfgHome), *watchInterval)
 	watch.load()
+	migrateScopes(reg, watch.registered())
 	go watch.run(ctx)
 
 	// Background pool GC: keep the pool within the (lax, size-based) budget hourly.
@@ -316,6 +317,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("identityJobs", http.MethodGet, "/api/identity-jobs", "The captioning queue: counts and rows."), identityJobsOp(reg))
 	gat.Register(api, g, op("identify", http.MethodPost, "/api/identify", "Say what a document IS: generate a caption/summary/kind, or record a person's."), identifyOp(reg))
 	gat.Register(api, g, op("pauseIndex", http.MethodPost, "/api/index/pause", "Pause or resume an index: a paused index runs no work; jobs queue and run on resume."), pauseOp(reg))
+	gat.Register(api, g, op("scopeIndex", http.MethodPost, "/api/index/scope", "Set an index's scopes (the directories a search with no index named reads it from) and whether a global index is ambient."), scopeOp(reg))
 	gat.Register(api, g, op("getIgnore", http.MethodGet, "/api/index/ignore", "An index's ignore patterns: paths they match are refused at enqueue."), getIgnoreOp(reg))
 	gat.Register(api, g, op("putIgnore", http.MethodPut, "/api/index/ignore", "Replace an index's ignore and/or allow patterns. Indexed documents are untouched; purge removes them."), putIgnoreOp(reg))
 	gat.Register(api, g, op("purgeIndex", http.MethodPost, "/api/index/purge", "Remove every document matching a glob, with its pending jobs; dry_run previews."), purgeOp(reg))
@@ -504,6 +506,11 @@ type idxRow struct {
 	Meaning bool `json:"meaning"`
 	// Paused: the index runs no work; jobs queue and run on resume.
 	Paused bool `json:"paused,omitempty"`
+	// Scopes: the directories a search with no index named reads this index
+	// from. Empty: global, read by every search when Ambient, else only when
+	// named. See raglit/indexscope.go.
+	Scopes  []string `json:"scopes"`
+	Ambient bool     `json:"ambient,omitempty"`
 }
 type listIndexesOut struct {
 	Body struct {
@@ -523,6 +530,8 @@ func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIn
 			s, _ := st.IndexStatus()
 			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments, Meaning: st.CanSearchByMeaning(), Paused: st.Paused()}
 			row.Root, _ = indexRoot(st)
+			row.Scopes, _ = st.Scopes()
+			row.Ambient = st.Ambient()
 			if d, err := st.IndexDigest(); err == nil {
 				row.About, row.AboutStale = d.About, d.AboutStale
 				row.Kinds, row.Content, row.Roles = d.Kinds, d.Content, d.Roles
@@ -627,7 +636,7 @@ type statusOut struct {
 
 func statusOp(reg *raglit.Registry) func(context.Context, *statusIn) (*statusOut, error) {
 	return func(ctx context.Context, in *statusIn) (*statusOut, error) {
-		return &statusOut{Body: aggregateStatus(reg, reg.Readable(ctx, selectIndexes(reg, in.Index)))}, nil
+		return &statusOut{Body: aggregateStatus(reg, reg.Readable(ctx, selectIndexes(ctx, reg, in.Index)))}, nil
 	}
 }
 
@@ -1133,7 +1142,7 @@ func findDocumentsOp(reg *raglit.Registry) func(context.Context, *findDocumentsI
 		out := &findDocumentsOut{}
 		out.Body.Documents = []findDocRow{}
 		name := strings.ToLower(strings.TrimSpace(in.Name))
-		for _, idx := range selectIndexes(reg, in.Index) {
+		for _, idx := range selectIndexes(ctx, reg, in.Index) {
 			st, err := reg.Read(ctx, idx)
 			if err != nil {
 				continue
@@ -1178,7 +1187,7 @@ func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (
 		}
 		type cand struct{ index, path string }
 		var cands []cand
-		for _, idx := range selectIndexes(reg, in.Index) {
+		for _, idx := range selectIndexes(ctx, reg, in.Index) {
 			st, err := reg.Read(ctx, idx)
 			if err != nil {
 				continue

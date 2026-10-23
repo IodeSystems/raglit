@@ -496,9 +496,13 @@ const ingestRunners = 8
 // selectIndexes resolves the `index` argument to a concrete set of names: empty
 // → all; else the comma-separated list. A member ending in "*" is a prefix
 // wildcard, expanded against the existing indexes — clients pass "<project>__*"
-// to scope "all" to their own namespace. Non-wildcard names pass through (an
-// unknown one is opened empty → no hits).
-func selectIndexes(reg *raglit.Registry, arg string) []string {
+// to scope "all" to their own namespace. "@cwd:DIR" is the indexes a search
+// from DIR reads when it names none (index scopes, Registry.ScopedFor). A bare
+// name that is not an index but is the local name of exactly one namespaced
+// index ("notes" → "proj__notes") is that index: a client with no project names
+// indexes that way. Other names pass through (an unknown one is opened empty →
+// no hits).
+func selectIndexes(ctx context.Context, reg *raglit.Registry, arg string) []string {
 	arg = strings.TrimSpace(arg)
 	if arg == "" || arg == "all" {
 		return reg.Names()
@@ -509,6 +513,10 @@ func selectIndexes(reg *raglit.Registry, arg string) []string {
 		if n == "" {
 			continue
 		}
+		if dir, ok := strings.CutPrefix(n, "@cwd:"); ok {
+			out = append(out, reg.ScopedFor(ctx, dir)...)
+			continue
+		}
 		if prefix, ok := strings.CutSuffix(n, "*"); ok {
 			for _, nm := range reg.Names() {
 				if strings.HasPrefix(nm, prefix) {
@@ -517,9 +525,33 @@ func selectIndexes(reg *raglit.Registry, arg string) []string {
 			}
 			continue
 		}
-		out = append(out, n)
+		out = append(out, uniqueLocal(reg.Names(), n))
 	}
 	return out
+}
+
+// uniqueLocal maps a bare name to the one index whose local part it is, when
+// the name is not itself an index and exactly one such index exists.
+func uniqueLocal(names []string, n string) string {
+	if strings.Contains(n, nsSep) {
+		return n
+	}
+	var match string
+	for _, nm := range names {
+		if nm == n {
+			return n
+		}
+		if strings.HasSuffix(nm, nsSep+n) {
+			if match != "" {
+				return n // ambiguous: leave it, it matches nothing
+			}
+			match = nm
+		}
+	}
+	if match == "" {
+		return n
+	}
+	return match
 }
 
 // coversTopTags is how much of an index's vocabulary an empty search reports:
@@ -556,14 +588,14 @@ func coversFor(reg *raglit.Registry, names []string, path string) []raglit.Index
 }
 
 func searchHandler(reg *raglit.Registry, defLimit int) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		q, err := req.RequireString("query")
 		if err != nil {
 			return mcp.NewToolResultError("query is required"), nil
 		}
 		limit := req.GetInt("limit", defLimit)
 		path := req.GetString("path", "")
-		names := selectIndexes(reg, req.GetString("index", ""))
+		names := selectIndexes(ctx, reg, req.GetString("index", ""))
 
 		// Search each selected index; over-fetch, then RRF-merge across indexes.
 		lists := map[string][]raglit.Hit{}
@@ -674,7 +706,7 @@ func searchFiguresHandler(reg *raglit.Registry, defLimit int) server.ToolHandler
 		limit := req.GetInt("limit", defLimit)
 		path := req.GetString("path", "")
 		var all []taggedFigure
-		for _, name := range selectIndexes(reg, req.GetString("index", "")) {
+		for _, name := range selectIndexes(ctx, reg, req.GetString("index", "")) {
 			st, err := reg.Get(name)
 			if err != nil {
 				continue
@@ -734,8 +766,8 @@ func ingestHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 }
 
 func statusHandler(reg *raglit.Registry) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		names := selectIndexes(reg, req.GetString("index", ""))
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		names := selectIndexes(ctx, reg, req.GetString("index", ""))
 		agg := raglit.NewStatus()
 		for _, name := range names {
 			st, err := reg.Get(name)
@@ -803,7 +835,7 @@ func listHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 // listDocumentsHandler lists documents across the selected indexes, filtered by
 // an optional case-insensitive name substring, each tagged with its index.
 func listDocumentsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := strings.ToLower(strings.TrimSpace(req.GetString("name", "")))
 		type docOut struct {
 			Index     string `json:"index"`
@@ -817,7 +849,7 @@ func listDocumentsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 		out := struct {
 			Documents []docOut `json:"documents"`
 		}{Documents: []docOut{}}
-		for _, idx := range selectIndexes(reg, req.GetString("index", "")) {
+		for _, idx := range selectIndexes(ctx, reg, req.GetString("index", "")) {
 			st, err := reg.Get(idx)
 			if err != nil {
 				continue
@@ -850,7 +882,7 @@ func listDocumentsHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 // match → error, multiple → an ambiguity error listing candidates, one → its
 // reassembled text (optionally page-ranged and length-capped).
 func getDocumentHandler(reg *raglit.Registry) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		ref, err := req.RequireString("path")
 		if err != nil {
 			return mcp.NewToolResultError("path is required"), nil
@@ -858,7 +890,7 @@ func getDocumentHandler(reg *raglit.Registry) server.ToolHandlerFunc {
 		// Resolve candidates across the selected indexes.
 		type cand struct{ index, path, title string }
 		var cands []cand
-		for _, idx := range selectIndexes(reg, req.GetString("index", "")) {
+		for _, idx := range selectIndexes(ctx, reg, req.GetString("index", "")) {
 			st, err := reg.Get(idx)
 			if err != nil {
 				continue

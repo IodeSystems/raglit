@@ -121,6 +121,18 @@ type watchInfo struct {
 	Files    int    `json:"files"`
 }
 
+// registered is the registered project homes.
+func (w *watcher) registered() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	homes := make([]string, 0, len(w.homes))
+	for h := range w.homes {
+		homes = append(homes, h)
+	}
+	sort.Strings(homes)
+	return homes
+}
+
 // List reports the registered homes with their project + live file count.
 func (w *watcher) List() []watchInfo {
 	w.mu.Lock()
