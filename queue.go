@@ -87,48 +87,47 @@ func (s *Store) EnqueueFresh(url, title string, fresh bool) (int64, error) {
 	if pat := s.IgnoredBy(url); pat != "" {
 		return 0, fmt.Errorf("%w: %s matches %q", ErrIgnored, url, pat)
 	}
-	// One transaction, so two callers racing on the same url cannot both see an
-	// empty queue and both insert.
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("raglit: enqueue: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	var existing int64
-	err = tx.QueryRow(
-		`SELECT id FROM ingest_jobs WHERE url = ? AND state IN ('pending','running') AND fresh >= ? ORDER BY id LIMIT 1`,
-		url, boolInt(fresh),
-	).Scan(&existing)
-	switch {
-	case err == nil:
-		return existing, tx.Commit()
-	case !errors.Is(err, sql.ErrNoRows):
-		return 0, fmt.Errorf("raglit: enqueue: %w", err)
-	}
-
-	id, err := gq(tx).EnqueueJob(context.Background(), gen.EnqueueJobParams{
-		Url: url, Title: title, EnqueuedAt: time.Now().UnixNano(),
-	})
-	if err != nil {
-		return 0, fmt.Errorf("raglit: enqueue: %w", err)
-	}
-	if fresh {
-		if _, err := tx.Exec(`UPDATE ingest_jobs SET fresh = 1 WHERE id = ?`, id); err != nil {
+	// ONE statement, not a transaction — the same hazard claimNextIdentityJob
+	// documents. A deferred transaction that SELECTs the queue and then INSERTs
+	// takes a read snapshot first; if a worker commits in between, the upgrade
+	// to a write fails with SQLITE_BUSY_SNAPSHOT at once, and busy_timeout does
+	// not apply. With the worker pool committing steadily, `sync` failed that
+	// way on most attempts. An INSERT ... SELECT takes the write lock when the
+	// statement starts, so it waits its turn, and the NOT EXISTS check and the
+	// insert see the same queue: two callers racing on one url cannot both
+	// insert. fresh and lane are set in the same row for the same reason — a
+	// row with no lane is claimed by nobody and reports `pending` forever.
+	now := time.Now().UnixNano()
+	for range 3 {
+		var id int64
+		err := s.db.QueryRow(
+			`INSERT INTO ingest_jobs(url, title, state, enqueued_at, fresh, lane)
+			 SELECT ?, ?, 'pending', ?, ?, ?
+			  WHERE NOT EXISTS (SELECT 1 FROM ingest_jobs
+			                     WHERE url = ? AND state IN ('pending','running') AND fresh >= ?)
+			 RETURNING id`,
+			url, title, now, boolInt(fresh), string(LaneFor(url)), url, boolInt(fresh),
+		).Scan(&id)
+		if err == nil {
+			return id, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
 			return 0, fmt.Errorf("raglit: enqueue: %w", err)
 		}
+		// A queued job already covers this url: return it.
+		err = s.db.QueryRow(
+			`SELECT id FROM ingest_jobs WHERE url = ? AND state IN ('pending','running') AND fresh >= ? ORDER BY id LIMIT 1`,
+			url, boolInt(fresh),
+		).Scan(&id)
+		if err == nil {
+			return id, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("raglit: enqueue: %w", err)
+		}
+		// It finished between the two statements; insert again.
 	}
-	// The lane is set HERE, in the same transaction, because a row with no lane
-	// is claimed by nobody: each lane's claim asks for its own lane by name. A
-	// job that reached the queue and was never scheduled is the worst of the
-	// failure modes available — it reports `pending` forever and nothing is
-	// wrong with it.
-	if err := gq(tx).SetJobLane(context.Background(), gen.SetJobLaneParams{
-		Lane: string(LaneFor(url)), ID: id,
-	}); err != nil {
-		return 0, fmt.Errorf("raglit: enqueue: %w", err)
-	}
-	return id, tx.Commit()
+	return 0, fmt.Errorf("raglit: enqueue: %s: queue changed on every attempt", url)
 }
 
 func boolInt(b bool) int {

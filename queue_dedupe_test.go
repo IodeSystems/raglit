@@ -1,7 +1,9 @@
 package raglit
 
 import (
+	"fmt"
 	"path/filepath"
+	"time"
 	"testing"
 )
 
@@ -110,5 +112,61 @@ func TestDedupeLeavesRunningJobsAlone(t *testing.T) {
 	}
 	if running != 1 {
 		t.Errorf("dedupe removed a running job")
+	}
+}
+
+// Enqueue while other writers commit, as `sync` does against a daemon whose
+// worker pool is draining the queue. A SELECT-then-INSERT transaction failed
+// here with SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot wait out.
+func TestEnqueueWhileWorkersCommit(t *testing.T) {
+	s := testStore(t)
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := s.db.Exec(`UPDATE ingest_jobs SET started_at = ? WHERE id = (SELECT MIN(id) FROM ingest_jobs)`, i); err != nil {
+				done <- err
+				return
+			}
+			// A worker commits per document, not in a tight loop; a writer that
+			// never yields starves the others past busy_timeout, fix or no fix.
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	errs := make(chan error, 4)
+	for w := range 4 {
+		go func() {
+			for i := range 50 {
+				if _, err := s.Enqueue(fmt.Sprintf("file:///w%d/%d.md", w, i), ""); err != nil {
+					errs <- err
+					return
+				}
+				// The same url again from another worker's point of view: dedup.
+				if _, err := s.Enqueue(fmt.Sprintf("file:///w%d/%d.md", w, i), ""); err != nil {
+					errs <- err
+					return
+				}
+			}
+			errs <- nil
+		}()
+	}
+	for range 4 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ingest_jobs`).Scan(&n); err != nil || n != 200 {
+		t.Fatalf("queued %d jobs (err %v), want 200", n, err)
 	}
 }
