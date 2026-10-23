@@ -251,50 +251,34 @@ func (s *Store) claim(lane Lane) (*Job, error) {
 	if s.Paused() {
 		return nil, nil
 	}
-	ctx := context.Background()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	qtx := gq(tx)
-
-	var row gen.GetOldestPendingJobRow
-	if lane == "" {
-		row, err = qtx.GetOldestPendingJob(ctx)
-	} else {
-		var r gen.GetOldestPendingJobInLaneRow
-		r, err = qtx.GetOldestPendingJobInLane(ctx, string(lane))
-		row = gen.GetOldestPendingJobRow(r)
-	}
+	// ONE statement, for the reason claimNextIdentityJob gives: a transaction
+	// that SELECTs the oldest row and then UPDATEs it upgrades a read snapshot
+	// to a write, which fails with SQLITE_BUSY at once when another writer
+	// committed in between — and every worker and every enqueue is a writer.
+	// UPDATE ... RETURNING takes the write lock first and waits its turn.
+	//
+	// The claiming pid is stamped so that a row left 'running' by a dead
+	// process can be told from a live worker's (reclaimOrphanedJobs). fresh is
+	// read from the claimed row itself: a job that cannot report it would
+	// silently take the cached path, the one thing --fresh exists to prevent.
+	now := time.Now().UnixNano()
+	var j Job
+	var fresh int
+	err := s.db.QueryRow(
+		`UPDATE ingest_jobs SET state='running', started_at=?, owner_pid=?
+		  WHERE id = (SELECT id FROM ingest_jobs
+		               WHERE state='pending' AND (? = '' OR lane = ?) ORDER BY id LIMIT 1)
+		 RETURNING id, url, title, enqueued_at, fresh`,
+		now, os.Getpid(), string(lane), string(lane),
+	).Scan(&j.ID, &j.URL, &j.Title, &j.EnqueuedAt, &fresh)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UnixNano()
-	// Stamp the claiming process. If we die mid-ingest this row would otherwise
-	// read 'running' forever; reclaimOrphanedJobs uses the pid to tell a live
-	// worker from a dead one's leftovers.
-	if err := qtx.SetJobRunning(ctx, gen.SetJobRunningParams{
-		StartedAt: now, OwnerPid: int64(os.Getpid()), ID: row.ID,
-	}); err != nil {
-		return nil, err
-	}
-	// Read the fresh flag inside the same transaction that claims the row. Raw
-	// SQL because the generated query layer predates the column (see migrate);
-	// a job that cannot report it would silently take the cached path, which is
-	// the one thing --fresh exists to prevent.
-	var fresh int
-	if err := tx.QueryRow(`SELECT fresh FROM ingest_jobs WHERE id = ?`, row.ID).Scan(&fresh); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return &Job{ID: row.ID, URL: row.Url, Title: row.Title, State: JobRunning,
-		EnqueuedAt: row.EnqueuedAt, StartedAt: now, Fresh: fresh != 0}, nil
+	j.State, j.StartedAt, j.Fresh = JobRunning, now, fresh != 0
+	return &j, nil
 }
 
 // completeJob marks a job done with the fragment count it produced and the

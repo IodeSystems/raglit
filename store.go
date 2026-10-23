@@ -1050,6 +1050,31 @@ func ftsQuery(q string) string {
 	return strings.Join(quoted, " OR ")
 }
 
+// writeTx runs fn in a BEGIN IMMEDIATE transaction on one pooled connection.
+// For a transaction whose reads decide its writes: IMMEDIATE takes the write
+// lock before the first read, so it waits under busy_timeout like any writer,
+// where a deferred BEGIN would read a snapshot and then fail to upgrade it
+// with SQLITE_BUSY the moment another writer had committed.
+func (s *Store) writeTx(ctx context.Context, fn func(*sql.Conn) error) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	if err := fn(conn); err != nil {
+		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		return err
+	}
+	return nil
+}
+
 // isReadableText reports whether an extracted fragment is text at all.
 //
 // Two failures produce the same symptom — bytes where a transcription should be:

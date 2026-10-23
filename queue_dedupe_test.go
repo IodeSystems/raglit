@@ -1,8 +1,10 @@
 package raglit
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"time"
 	"testing"
 )
@@ -168,5 +170,61 @@ func TestEnqueueWhileWorkersCommit(t *testing.T) {
 	var n int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ingest_jobs`).Scan(&n); err != nil || n != 200 {
 		t.Fatalf("queued %d jobs (err %v), want 200", n, err)
+	}
+}
+
+// Claims and page readings while enqueues commit: the worker's claim and
+// AddPageReading read before they write, and as deferred transactions they
+// failed with SQLITE_BUSY the moment another writer committed in between.
+func TestClaimAndPageReadingWhileWritersCommit(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	for i := range 200 {
+		if _, err := s.Enqueue(fmt.Sprintf("file:///q/%d.md", i), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	errs := make(chan error, 8)
+	var claimed sync.Map
+	for range 4 {
+		go func() {
+			for {
+				j, err := s.claim("")
+				if err != nil {
+					errs <- fmt.Errorf("claim: %w", err)
+					return
+				}
+				if j == nil {
+					errs <- nil
+					return
+				}
+				if _, dup := claimed.LoadOrStore(j.ID, true); dup {
+					errs <- fmt.Errorf("job %d claimed twice", j.ID)
+					return
+				}
+			}
+		}()
+	}
+	for w := range 2 {
+		go func() {
+			for i := range 50 {
+				if err := s.AddPageReading(ctx, PageReading{
+					Doc: fmt.Sprintf("/d/%d.pdf", w), Page: 1 + i%5, Text: fmt.Sprintf("reading %d", i), Source: "ocr",
+				}); err != nil {
+					errs <- fmt.Errorf("page reading: %w", err)
+					return
+				}
+				if _, err := s.Enqueue(fmt.Sprintf("file:///p%d/%d.md", w, i), ""); err != nil {
+					errs <- fmt.Errorf("enqueue: %w", err)
+					return
+				}
+			}
+			errs <- nil
+		}()
+	}
+	for range 6 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
 	}
 }

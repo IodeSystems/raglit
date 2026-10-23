@@ -40,12 +40,34 @@ func (s *Store) AddPageReading(ctx context.Context, r PageReading) error {
 	if r.Doc == "" || r.Page < 1 {
 		return fmt.Errorf("raglit: a page reading needs a document and a page")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
+	// BEGIN IMMEDIATE: the reads below decide the write, so they must see the
+	// queue the write lands in. A deferred transaction would read first and
+	// fail to upgrade with SQLITE_BUSY if the worker pool committed meanwhile —
+	// and the ingest callers drop this error, so the page reading would be
+	// lost without a word. Taking the write lock up front waits under
+	// busy_timeout instead.
+	active := 1
+	if err := s.writeTx(ctx, func(tx *sql.Conn) error {
+		return addPageReadingTx(ctx, tx, r, &active)
+	}); err != nil {
 		return err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	// A correction changes what the document SAYS, so the caption written from
+	// the old reading is owed again — the same edge a re-read fires, from the
+	// other direction. The document's own caption is left alone when a person
+	// wrote it; IdentifyDocument refuses those anyway, and queueing work that is
+	// certain to be declined is just noise in the queue.
+	if active == 1 && r.Source == "corrected" && s.identifier != nil {
+		if cur, err := s.DocumentIdentity(r.Doc); err == nil && !cur.ByPerson() && !cur.Empty() {
+			_, _ = s.EnqueueIdentity(r.Doc, true)
+		}
+	}
+	return nil
+}
 
+// addPageReadingTx is AddPageReading's transaction body. It sets *active to 0
+// when the reading lands inactive or is not stored (identical text).
+func addPageReadingTx(ctx context.Context, tx *sql.Conn, r PageReading, active *int) error {
 	var next sql.NullInt64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT MAX(seq) FROM page_readings WHERE doc = ? AND page = ?`, r.Doc, r.Page).Scan(&next); err != nil {
@@ -62,7 +84,8 @@ func (s *Store) AddPageReading(ctx context.Context, r PageReading) error {
 		return err
 	}
 	if same > 0 {
-		return tx.Commit()
+		*active = 0
+		return nil
 	}
 
 	// A machine NEVER unseats a person.
@@ -74,7 +97,6 @@ func (s *Store) AddPageReading(ctx context.Context, r PageReading) error {
 	// survive only as history. So a machine reading lands INACTIVE when a person's
 	// correction holds the page: recorded in full, available to compare, not in
 	// force. A person's reading always takes the seat.
-	active := 1
 	if r.Source != "corrected" {
 		var heldByPerson int
 		if err := tx.QueryRowContext(ctx,
@@ -83,35 +105,20 @@ func (s *Store) AddPageReading(ctx context.Context, r PageReading) error {
 			return err
 		}
 		if heldByPerson > 0 {
-			active = 0
+			*active = 0
 		}
 	}
-	if active == 1 {
+	if *active == 1 {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE page_readings SET active = 0 WHERE doc = ? AND page = ?`, r.Doc, r.Page); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx,
+	_, err := tx.ExecContext(ctx,
 		`INSERT INTO page_readings(doc, page, seq, text, source, engine, model, note, read_by, read_at, active)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		r.Doc, r.Page, seq, r.Text, r.Source, r.Engine, r.Model, r.Note, r.By, r.At, active); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// A correction changes what the document SAYS, so the caption written from
-	// the old reading is owed again — the same edge a re-read fires, from the
-	// other direction. The document's own caption is left alone when a person
-	// wrote it; IdentifyDocument refuses those anyway, and queueing work that is
-	// certain to be declined is just noise in the queue.
-	if active == 1 && r.Source == "corrected" && s.identifier != nil {
-		if cur, err := s.DocumentIdentity(r.Doc); err == nil && !cur.ByPerson() && !cur.Empty() {
-			_, _ = s.EnqueueIdentity(r.Doc, true)
-		}
-	}
-	return nil
+		r.Doc, r.Page, seq, r.Text, r.Source, r.Engine, r.Model, r.Note, r.By, r.At, *active)
+	return err
 }
 
 // PageReadings returns every recorded version of one page, oldest first.
