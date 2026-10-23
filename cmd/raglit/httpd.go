@@ -321,6 +321,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("getIgnore", http.MethodGet, "/api/index/ignore", "An index's ignore patterns: paths they match are refused at enqueue."), getIgnoreOp(reg))
 	gat.Register(api, g, op("putIgnore", http.MethodPut, "/api/index/ignore", "Replace an index's ignore and/or allow patterns. Indexed documents are untouched; purge removes them."), putIgnoreOp(reg))
 	gat.Register(api, g, op("purgeIndex", http.MethodPost, "/api/index/purge", "Remove every document matching a glob, with its pending jobs; dry_run previews."), purgeOp(reg))
+	gat.Register(api, g, op("pruneIndex", http.MethodPost, "/api/index/prune", "Remove every document whose source file is gone, grouped by deleted directory; dry_run previews."), pruneOp(reg))
 	gat.Register(api, g, op("forget", http.MethodPost, "/api/forget", "Drop a document from the index (no grounds recorded; not a withdrawal)."), forgetOp(reg))
 	gat.Register(api, g, op("withdraw", http.MethodPost, "/api/withdraw", "Rule a document out of the corpus, with grounds. Survives re-ingest."), withdrawOp(reg))
 	gat.Register(api, g, op("restore", http.MethodPost, "/api/restore", "Return a withdrawn document to the corpus (does not re-index)."), restoreOp(reg))
@@ -511,6 +512,9 @@ type idxRow struct {
 	// named. See raglit/indexscope.go.
 	Scopes  []string `json:"scopes"`
 	Ambient bool     `json:"ambient,omitempty"`
+	// Prunable: documents whose source file is gone (raglit/prune.go). Out of
+	// search already; POST /api/index/prune removes them. Up to a minute stale.
+	Prunable int `json:"prunable,omitempty"`
 }
 type listIndexesOut struct {
 	Body struct {
@@ -528,7 +532,7 @@ func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIn
 				continue
 			}
 			s, _ := st.IndexStatus()
-			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments, Meaning: st.CanSearchByMeaning(), Paused: st.Paused()}
+			row := idxRow{Name: name, Documents: s.Documents, Fragments: s.Fragments, Meaning: st.CanSearchByMeaning(), Paused: st.Paused(), Prunable: s.Prunable}
 			row.Root, _ = indexRoot(st)
 			row.Scopes, _ = st.Scopes()
 			row.Ambient = st.Ambient()

@@ -40,6 +40,7 @@ func init() {
 		"pause":   {"stop this index's work; jobs keep queueing", indexPause("pause")},
 		"resume":  {"resume a paused index", indexPause("resume")},
 		"purge":   {"[--yes] GLOB — remove documents matching GLOB", indexPurge},
+		"prune":   {"[--yes] — remove documents whose file is gone", indexPrune},
 		"unwatch": {"DIR — stop indexing DIR into this index; its documents stay", indexUnwatch},
 		"scope":   {"[add|rm PATTERN...] — directories a search with no index named reads it from", indexScope},
 		"global":  {"[ambient|opt-in] — no scopes: every search reads it (ambient) or only when named", indexGlobal},
@@ -257,6 +258,24 @@ func indexPurge(name string, args []string) error {
 	return runPurge(append(a, full, rest[0]))
 }
 
+func indexPrune(name string, args []string) error {
+	var yes *bool
+	base, full, rest, err := indexTarget(name, args, func(fs *flag.FlagSet) {
+		yes = fs.Bool("yes", false, "remove the documents; without it, only report what would go")
+	})
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return fmt.Errorf("usage: raglit index %s prune [--yes]", name)
+	}
+	a := []string{"--daemon", base, "--index", full}
+	if *yes {
+		a = append(a, "--yes")
+	}
+	return runPrune(a)
+}
+
 func indexUnwatch(name string, args []string) error {
 	fs := flag.NewFlagSet("index "+name+" unwatch", flag.ContinueOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
@@ -346,6 +365,9 @@ func runIndexList(args []string) error {
 		state := ""
 		if r.Paused {
 			state = "  paused"
+		}
+		if r.Prunable > 0 {
+			state += fmt.Sprintf("  %d prunable", r.Prunable)
 		}
 		var fed string
 		if local, own := strings.CutPrefix(r.Name, ns+nsSep); ns != "" && own {

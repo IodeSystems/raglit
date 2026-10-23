@@ -32,26 +32,30 @@ type indexControls interface {
 	// setLists replaces the lists given; nil leaves one unchanged.
 	setLists(idx string, ignore, allow *[]string) error
 	purge(idx, pattern string, dry bool) (raglit.PurgeResult, error)
+	prune(idx string, dry bool) (raglit.PruneResult, error)
 }
 
 const manageIndexHelp = "Operate an index: pause/resume its work, edit the patterns refused at enqueue, " +
 	"or purge indexed documents by pattern. action: status | pause | resume | ignore | unignore | " +
-	"allow | disallow | purge. A paused index runs no imports, captions or embeds; jobs still queue. " +
+	"allow | disallow | purge | prune. A paused index runs no imports, captions or embeds; jobs still queue. " +
 	"`ignore PATTERN` refuses matching paths at enqueue on this index. Every index also refuses the " +
 	"builtin list (node_modules, mobile build output); `allow PATTERN` exempts matching paths from the " +
 	"builtin list on this index. Patterns are globs matched against the absolute path: **/dir/** is a " +
 	"directory anywhere, a glob with no / matches the file name. `purge PATTERN` reports what would be " +
-	"removed; pass confirm=true to remove it (cannot be undone; files on disk stay). Every action " +
-	"returns the index's resulting state."
+	"removed; pass confirm=true to remove it (cannot be undone; files on disk stay). `prune` (no " +
+	"pattern) reports the documents whose source file is gone — a deleted directory or worktree — " +
+	"grouped by deleted directory: {documents, dirs:[{dir, documents}], removed}. They are already " +
+	"out of search; confirm=true removes them. list_indexes reports `prunable` per index. Every " +
+	"other action returns the index's resulting state."
 
 func manageIndexTool() mcp.Tool {
 	return mcp.NewTool("manage_index",
 		mcp.WithDescription(manageIndexHelp),
 		mcp.WithString("action", mcp.Required(),
-			mcp.Enum("status", "pause", "resume", "ignore", "unignore", "allow", "disallow", "purge")),
+			mcp.Enum("status", "pause", "resume", "ignore", "unignore", "allow", "disallow", "purge", "prune")),
 		mcp.WithString("index", mcp.Description("index name (default \"default\")")),
 		mcp.WithString("pattern", mcp.Description("glob for ignore, unignore, allow, disallow and purge")),
-		mcp.WithBoolean("confirm", mcp.Description("purge only: true removes; false or omitted reports what would go")),
+		mcp.WithBoolean("confirm", mcp.Description("purge and prune: true removes; false or omitted reports what would go")),
 	)
 }
 
@@ -66,7 +70,7 @@ func manageIndexHandler(c indexControls, resolve func(string) (string, error), d
 			return mcp.NewToolResultErrorFromErr("manage_index", err), nil
 		}
 		pattern := req.GetString("pattern", "")
-		needPattern := action != "status" && action != "pause" && action != "resume"
+		needPattern := action != "status" && action != "pause" && action != "resume" && action != "prune"
 		if needPattern && pattern == "" {
 			return mcp.NewToolResultError(action + " needs a pattern"), nil
 		}
@@ -84,6 +88,13 @@ func manageIndexHandler(c indexControls, resolve func(string) (string, error), d
 				return fail(err)
 			}
 			return reply(map[string]any{"index": display(idx), "removed": req.GetBool("confirm", false), "purge": res})
+		}
+		if action == "prune" {
+			res, err := c.prune(idx, !req.GetBool("confirm", false))
+			if err != nil {
+				return fail(err)
+			}
+			return reply(map[string]any{"index": display(idx), "prune": res})
 		}
 		cur, err := c.state(idx)
 		if err != nil {
@@ -164,6 +175,14 @@ func (c storeControls) purge(idx, pattern string, dry bool) (raglit.PurgeResult,
 	return st.Purge(pattern, dry)
 }
 
+func (c storeControls) prune(idx string, dry bool) (raglit.PruneResult, error) {
+	st, err := c.reg.Get(idx)
+	if err != nil {
+		return raglit.PruneResult{}, err
+	}
+	return st.Prune(dry)
+}
+
 // daemonControls backs manage_index with the daemon's HTTP surface.
 type daemonControls struct{ base string }
 
@@ -221,6 +240,16 @@ func (c daemonControls) purge(idx, pattern string, dry bool) (raglit.PurgeResult
 	var res raglit.PurgeResult
 	b, err := daemonPostJSON(c.base, "/api/index/purge?"+urlValues("index", idx).Encode(),
 		map[string]any{"pattern": pattern, "dry_run": dry})
+	if err != nil {
+		return res, err
+	}
+	return res, json.Unmarshal(b, &res)
+}
+
+func (c daemonControls) prune(idx string, dry bool) (raglit.PruneResult, error) {
+	var res raglit.PruneResult
+	b, err := daemonPostJSON(c.base, "/api/index/prune?"+urlValues("index", idx).Encode(),
+		map[string]any{"dry_run": dry})
 	if err != nil {
 		return res, err
 	}

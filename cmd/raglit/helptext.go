@@ -44,7 +44,7 @@ raglit index NAME scope [add|rm PATTERN...]
 raglit index NAME global [ambient|opt-in]
               no scopes: every search reads it (ambient), or only a search
               that names it (opt-in, the default).
-raglit index NAME status|search|forget|pause|resume|purge|unwatch ...
+raglit index NAME status|search|forget|pause|resume|purge|prune|unwatch ...
               one index: queue state, search it, drop paths from it, pause or
               resume its work, purge a glob, or stop watching a directory.
               raglit index NAME -h lists the subcommands. NAME may be
@@ -81,6 +81,13 @@ raglit index [--home DIR] [--embed] FILE|DIR...
               remove every document whose path matches PATTERN (a glob:
               **/node_modules/** for a directory anywhere), with its pending
               jobs. Reports what would go unless --yes. Files on disk stay.`},
+		{"prune", "remove documents whose file is gone", `raglit prune [--index INDEX] [--yes] [--daemon URL]
+              documents whose source file was deleted (a removed worktree,
+              a deleted directory) are out of search already; prune lists
+              them per index and per deleted directory, and removes them
+              with --yes. No --index: every index. status and index list
+              show the count. A URL or a library-ingested name is never
+              prunable.`},
 		{"pause", "stop an index's work; jobs keep queueing", `raglit pause|resume [--daemon URL] [INDEX...]
               a paused index runs no work: no ingest, captions or embeds. Jobs
               still queue and run on resume. No INDEX lists every index.`},

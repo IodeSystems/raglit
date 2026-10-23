@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -230,6 +231,33 @@ func purgeOp(reg *raglit.Registry) func(context.Context, *purgeIn) (*purgeOut, e
 	}
 }
 
+type pruneIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	Body  struct {
+		DryRun bool `json:"dry_run,omitempty" doc:"count what would go, by directory; remove nothing"`
+	}
+}
+type pruneOut struct {
+	Body raglit.PruneResult
+}
+
+func pruneOp(reg *raglit.Registry) func(context.Context, *pruneIn) (*pruneOut, error) {
+	return func(ctx context.Context, in *pruneIn) (*pruneOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		res, err := st.Prune(in.Body.DryRun)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("prune", err)
+		}
+		if res.Removed {
+			log.Printf("raglit: %s: pruned %d document(s) whose file is gone", in.Index, res.Documents)
+		}
+		return &pruneOut{Body: res}, nil
+	}
+}
+
 // runPurge is `raglit purge INDEX PATTERN`: a dry run unless --yes.
 func runPurge(args []string) error {
 	fs := flag.NewFlagSet("purge", flag.ContinueOnError)
@@ -265,6 +293,74 @@ func runPurge(args []string) error {
 		verb, res.Documents, res.IngestJobs, res.CaptionJobs, idx)
 	if !*yes && res.Documents+res.IngestJobs+res.CaptionJobs > 0 {
 		fmt.Println("run again with --yes to remove them")
+	}
+	return nil
+}
+
+// runPrune is `raglit prune [--index INDEX] [--yes]`: list the documents whose
+// file is gone, per index and per deleted directory, and remove them with
+// --yes. No --index: every index on the daemon.
+func runPrune(args []string) error {
+	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
+	daemon := fs.String("daemon", "", "daemon URL (default: this machine's daemon)")
+	index := fs.String("index", "", "prune this index only (the daemon's name)")
+	yes := fs.Bool("yes", false, "remove the documents; without it, only report what would go")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("prune: usage: raglit prune [--index INDEX] [--yes]")
+	}
+	base := controlBase(*daemon)
+	names := []string{*index}
+	if *index == "" {
+		b, err := daemonGet(base, "/indexes", nil)
+		if err != nil {
+			return err
+		}
+		var out struct {
+			Indexes []idxRow `json:"indexes"`
+		}
+		if err := json.Unmarshal(b, &out); err != nil {
+			return err
+		}
+		names = names[:0]
+		for _, r := range out.Indexes {
+			names = append(names, r.Name)
+		}
+	}
+	total := 0
+	for _, idx := range names {
+		b, err := daemonPostJSON(base, "/api/index/prune?"+urlValues("index", idx).Encode(),
+			map[string]any{"dry_run": !*yes})
+		if err != nil {
+			if *index == "" {
+				// One index the caller cannot write must not stop the rest.
+				fmt.Fprintf(os.Stderr, "%s: %v\n", idx, err)
+				continue
+			}
+			return err
+		}
+		var res raglit.PruneResult
+		if err := json.Unmarshal(b, &res); err != nil {
+			return err
+		}
+		if res.Documents == 0 {
+			continue
+		}
+		total += res.Documents
+		fmt.Printf("%s: %d document(s)\n", idx, res.Documents)
+		for _, d := range res.Dirs {
+			fmt.Printf("  %6d  %s\n", d.Documents, d.Dir)
+		}
+	}
+	switch {
+	case total == 0:
+		fmt.Println("nothing to prune: every indexed file is still on disk")
+	case *yes:
+		fmt.Printf("pruned %d document(s) whose file is gone\n", total)
+	default:
+		fmt.Printf("would prune %d document(s) whose file is gone (already out of search); run again with --yes to remove them\n", total)
 	}
 	return nil
 }

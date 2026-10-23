@@ -133,6 +133,7 @@ raglit ingest TARGET... [--now]      queue folders / files / URLs (lazy; --now d
 raglit search "query" [--mode M] [--path P]  M = bm25 | vec | hybrid; P = path-prefix scope
 raglit status                        documents/fragments, queue progress, rate, ETAs
 raglit identify [DOC...] [--list]    what a document IS: caption, summary, kind (never renames)
+raglit prune [--index N] [--yes]     documents whose file is gone (already out of search); --yes removes
 raglit serve                         stdio MCP server
 raglit daemon                        HTTP API + workers + review UI at /
 raglit review                        the daemon, framed as the status/job/OCR review UI

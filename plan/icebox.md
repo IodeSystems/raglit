@@ -229,3 +229,13 @@ has no crawler. Works today: .html goes through pandoc, .md/.txt/.pdf as is.
   it per request if a search spans many embedded indexes.
 - Stopword list (hitmatch.go) is English and short; it affects only
   matched_terms/query_terms, not ranking.
+
+## ⏸ Prune — follow-ups (landed 2026-10-23)
+
+- The web UI does not show `prunable` or offer prune; status, `index list`,
+  `/indexes` and MCP `list_indexes` do.
+- Search drops gone hits after the SQL LIMIT, so a page can come back short
+  while many hits are gone. Fine until an index is mostly gone; prune fixes it.
+- An unmounted disk hides its documents (they reappear on mount) and prune
+  would delete them. The dry run shows the directory first; no guard beyond it.
+- search_figures, similar and list_documents do not filter gone documents.

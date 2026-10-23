@@ -38,6 +38,7 @@ var commands = map[string]func([]string) error{
 	"withdrawn":           runWithdrawn,
 	"forget":              runForget,
 	"purge":               runPurge,
+	"prune":               runPrune,
 	"pause":               func(a []string) error { return runPause("pause", a) },
 	"resume":              func(a []string) error { return runPause("resume", a) },
 	"slice":               runSlice,

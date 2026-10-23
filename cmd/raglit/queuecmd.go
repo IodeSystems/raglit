@@ -381,6 +381,9 @@ func renderStatus(st raglit.Status) {
 		fmt.Printf("names: %d pending, %d running, %d captioned, %d skipped, %d failed  (identify)\n",
 			iq.Pending, iq.Running, iq.Done, iq.Skipped, iq.Failed)
 	}
+	if st.Prunable > 0 {
+		fmt.Printf("prune: %d document(s) whose file is gone — out of search; remove with `raglit prune`\n", st.Prunable)
+	}
 	for _, it := range st.Items {
 		eta := "eta n/a"
 		if it.ETASeconds > 0 {

@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -292,5 +294,44 @@ func TestSearchDefaultMode(t *testing.T) {
 	}
 	if strings.Contains(b, `"similarity"`) {
 		t.Fatalf("bm25 fallback hit carries a similarity:\n%s", clip(b, 600))
+	}
+}
+
+// A document whose file is deleted shows as prunable in /indexes, and the
+// prune endpoint previews it and then removes it.
+func TestPruneEndpoint(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(t.TempDir(), "gone", "wt.md")
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Ingest(context.Background(), raglit.Document{Path: f, Fragments: []raglit.Fragment{{Text: "worktree copy"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetDocumentHash(f, "h"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Dir(f)); err != nil {
+		t.Fatal(err)
+	}
+	if b := httpGet(t, srv.URL+"/indexes"); !strings.Contains(b, `"prunable":1`) {
+		t.Fatalf("/indexes should report prunable:1:\n%s", clip(b, 400))
+	}
+	dry := httpPostJSON(t, srv.URL+"/api/index/prune?index=default", `{"dry_run":true}`)
+	if !strings.Contains(dry, `"documents":1`) || !strings.Contains(dry, `"removed":false`) || !strings.Contains(dry, filepath.Dir(f)) {
+		t.Fatalf("dry run:\n%s", dry)
+	}
+	if b := httpPostJSON(t, srv.URL+"/api/index/prune?index=default", `{}`); !strings.Contains(b, `"removed":true`) {
+		t.Fatalf("prune:\n%s", b)
+	}
+	if b := httpGet(t, srv.URL+"/indexes"); strings.Contains(b, `"prunable"`) || !strings.Contains(b, `"documents":1`) {
+		t.Fatalf("after prune:\n%s", clip(b, 400))
 	}
 }
