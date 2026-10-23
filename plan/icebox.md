@@ -195,3 +195,12 @@ only for documents a VLM already transcribed — can land first.
   reprocessing runs the whole pipeline by decision (fragmenters.md §4a) — and
   only pays off for vision-transcribed documents. Same shape as the vector/
   fragment cache split noted above.
+
+## ◻ CLI follow-ups (CLI work done → `plan/done/2026-10-23-cli.md`)
+
+- `--public` on watch / `index NAME public|private` (needs OIDC; USER
+  2026-10-23: later).
+- yscr has single-dash raglit flags in one comment (findings/registry.go:29)
+  and one plan line (plan/knowledge.md:304). **blocking decision:** edit
+  another repo — ask first.
+- doctor does not check a launchd plist for single-dash flags.
