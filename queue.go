@@ -425,6 +425,9 @@ type Status struct {
 	// markdown files is under a minute, and which one it is used to be
 	// unknowable without reading every URL.
 	Lanes map[string]LaneStatus `json:"lanes"`
+	// Prunable is how many documents' source files are gone (prune.go): out of
+	// search already, removed by `raglit prune`. Up to a minute stale.
+	Prunable int `json:"prunable,omitempty"`
 }
 
 // LaneStatus is one lane's share of the queue.
@@ -488,6 +491,7 @@ func (s *Store) IndexStatus() (Status, error) {
 		st.Identity = iq
 	}
 	st.Lanes = s.laneStatus()
+	st.Prunable = max(s.MissingCount(), 0)
 
 	counts, err := s.q.JobStateCounts(ctx)
 	if err != nil {

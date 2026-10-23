@@ -226,15 +226,24 @@ func (s *Store) Purge(pattern string, dry bool) (PurgeResult, error) {
 			return res, err
 		}
 	}
+	return res, s.removeDocuments(docs)
+}
+
+// removeDocuments deletes documents with everything hung off them, their caption
+// rows, and pending ingest jobs on their paths. Purge's and Prune's shared tail.
+func (s *Store) removeDocuments(docs []string) error {
 	for _, p := range docs {
 		if err := s.DeleteDocument(p); err != nil {
-			return res, fmt.Errorf("raglit: purge %s: %w", p, err)
+			return fmt.Errorf("raglit: remove %s: %w", p, err)
 		}
 		// A caption row for a document that no longer exists is history about
-		// nothing; the pending ones went above.
+		// nothing.
 		if _, err := s.db.Exec(`DELETE FROM identity_jobs WHERE path=? AND state<>'running'`, p); err != nil {
-			return res, err
+			return err
+		}
+		if _, err := s.db.Exec(`DELETE FROM ingest_jobs WHERE url IN (?, ?) AND state='pending'`, p, "file://"+p); err != nil {
+			return err
 		}
 	}
-	return res, nil
+	return nil
 }

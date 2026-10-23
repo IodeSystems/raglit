@@ -67,6 +67,9 @@ type Store struct {
 	// authority answers which reading of a source a person ruled governs.
 	// See SetAuthorityResolver.
 	authority func(source string) (string, bool)
+	// missing caches MissingCount (prune.go): counting stats every document,
+	// and status is polled.
+	missing missingCache
 }
 
 // SetAuthorityResolver supplies the person's ruling about which reading of a
@@ -705,6 +708,9 @@ type Hit struct {
 	// long query matched on one word is a weak hit whatever its bm25.
 	Matched    []string
 	QueryTerms int
+	// fromFile: the document was read from a source by the ingest pipeline,
+	// so a missing file means it is prunable (prune.go).
+	fromFile bool
 }
 
 // HitTrust is the caveat a search result carries: what produced this text, and
@@ -830,7 +836,7 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 	args := append([]any{match}, pargs...)
 	args = append(args, limit)
 	rows, err := s.db.Query(
-		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, bm25(fragments_fts) AS score
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, `+fromFileSQL+`, bm25(fragments_fts) AS score
 		 FROM fragments_fts
 		 JOIN fragments f ON f.id = fragments_fts.rowid
 		 JOIN documents d ON d.id = f.doc_id
@@ -846,7 +852,7 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 		var h Hit
 		var bm25 float64
 		var spans string
-		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin, &bm25); err != nil {
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin, &h.fromFile, &bm25); err != nil {
 			return nil, err
 		}
 		// A fragment can cross page boundaries; f.page is only where it started.
@@ -858,6 +864,8 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// A document whose file is gone is prunable, not searchable (prune.go).
+	hits = dropGone(hits)
 	return hits, s.markMatched(query, hits)
 }
 
@@ -926,7 +934,7 @@ func (s *Store) vecSearchLocal(qv []float32, query, pathPrefix string, limit int
 		where = " WHERE " + pred
 	}
 	rows, err := s.db.Query(
-		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, fv.vec
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, `+fromFileSQL+`, fv.vec
 		 FROM fragment_vectors fv
 		 JOIN fragments f ON f.id = fv.fragment_id
 		 JOIN documents d ON d.id = f.doc_id`+where, pargs...)
@@ -939,7 +947,7 @@ func (s *Store) vecSearchLocal(qv []float32, query, pathPrefix string, limit int
 		var h Hit
 		var blob []byte
 		var spans string
-		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin, &blob); err != nil {
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin, &h.fromFile, &blob); err != nil {
 			return nil, err
 		}
 		// A vector hit has no literal terms to locate, so this usually falls back
@@ -954,9 +962,18 @@ func (s *Store) vecSearchLocal(qv []float32, query, pathPrefix string, limit int
 		return nil, err
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
-	if len(hits) > limit {
-		hits = hits[:limit]
+	// Best first until limit, skipping documents whose file is gone (prune.go).
+	// After the sort, so only the hits returned are stat'ed, not every vector.
+	kept := hits[:0]
+	for _, h := range hits {
+		if len(kept) == limit {
+			break
+		}
+		if !h.gone() {
+			kept = append(kept, h)
+		}
 	}
+	hits = kept
 	for i := range hits {
 		sim := hits[i].Score
 		hits[i].Similarity = &sim

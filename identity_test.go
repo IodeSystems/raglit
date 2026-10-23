@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -244,19 +246,33 @@ func TestSetDocumentIdentity_ReplacesRatherThanAccumulates(t *testing.T) {
 }
 
 func TestCommitDoc_KeepsIdentityAndItsFragmentAcrossAReingest(t *testing.T) {
-	s := storeWithDoc(t)
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
-	if err := s.SetDocumentIdentity(ctx, "/corpus/0428_001.pdf", machineIdentity()); err != nil {
+	// A real file: commitDoc marks the document as read from one, and a
+	// document whose file is gone is out of search (prune.go).
+	doc := filepath.Join(t.TempDir(), "0428_001.pdf")
+	if err := os.WriteFile(doc, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest(ctx, Document{Path: doc, Title: "0428_001.pdf",
+		Fragments: []Fragment{{Page: 1, Ord: 0, Text: psaText}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDocumentIdentity(ctx, doc, machineIdentity()); err != nil {
 		t.Fatal(err)
 	}
 	// A re-ingest wipes the document's fragments. The caption must survive, and
 	// so must the fragment that makes it searchable — columns saying one thing
 	// while nothing is indexed is the half-state to avoid.
-	if err := s.commitDoc("/corpus/0428_001.pdf", "0428_001.pdf", "text-overlap", "r",
+	if err := s.commitDoc(doc, "0428_001.pdf", "text-overlap", "r",
 		[]stagedFrag{{page: 1, ord: 0, text: "fresh text"}}, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	id, err := s.DocumentIdentity("/corpus/0428_001.pdf")
+	id, err := s.DocumentIdentity(doc)
 	if err != nil || id.Empty() {
 		t.Fatalf("identity lost on re-ingest: %+v %v", id, err)
 	}
