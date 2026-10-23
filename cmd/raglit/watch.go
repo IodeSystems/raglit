@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 
 	"github.com/iodesystems/raglit"
 )
@@ -15,10 +16,16 @@ import (
 // `indexes` (roots) configured; set `"watch": true` in config so it survives and
 // re-registers via `raglit sync`. Subcommands:
 //
+//	raglit watch DIR --index NAME   add DIR to NAME and watch it (watchdir.go)
 //	raglit watch [start]   register this project home (idempotent)
 //	raglit watch list      list all homes the daemon is watching
 //	raglit watch stop      unregister this project home
 func runWatch(args []string) error {
+	// `raglit watch DIR --index NAME` (watchdir.go). The old forms take no
+	// --index, so naming one also selects it.
+	if len(args) > 0 && isDirArg(args[0]) || hasFlag(args, "index") {
+		return runWatchDir(args)
+	}
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
 	client := addClientFlags(fs) // --daemon + --embedded + --project
@@ -98,4 +105,18 @@ func watchList(base string) error {
 		fmt.Printf("%-10s %d file(s)  [%s]  %s\n", wi.Project, wi.Files, state, wi.Home)
 	}
 	return nil
+}
+
+// hasFlag reports whether args set the named flag, in any of Go's spellings.
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		a = strings.TrimLeft(a, "-")
+		if a == name || strings.HasPrefix(a, name+"=") {
+			return true
+		}
+	}
+	return false
 }
