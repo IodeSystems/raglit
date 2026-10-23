@@ -695,6 +695,16 @@ type Hit struct {
 	// Nil when nothing is recorded about how the document was read, which is not
 	// a claim of reliability — see HitTrust.
 	Trust *HitTrust
+	// Similarity is the cosine of the query and fragment vectors, set on a hit
+	// a vector search ranked. Nil when the vector side did not rank it (bm25,
+	// or a hybrid hit outside the vector pool). Score in hybrid is a fused
+	// rank, so a fixed cut-off reads this instead.
+	Similarity *float64
+	// Matched is the distinct query terms the fragment contains, in query
+	// order, and QueryTerms how many terms the query had after stopwords. A
+	// long query matched on one word is a weak hit whatever its bm25.
+	Matched    []string
+	QueryTerms int
 }
 
 // HitTrust is the caveat a search result carries: what produced this text, and
@@ -845,7 +855,10 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 		h.Score = -bm25 // flip so higher = better
 		hits = append(hits, h)
 	}
-	return hits, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return hits, s.markMatched(query, hits)
 }
 
 // VecSearch is VecSearchPath with no path constraint.
@@ -944,7 +957,11 @@ func (s *Store) vecSearchLocal(qv []float32, query, pathPrefix string, limit int
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
-	return hits, nil
+	for i := range hits {
+		sim := hits[i].Score
+		hits[i].Similarity = &sim
+	}
+	return hits, s.markMatched(query, hits)
 }
 
 // HybridSearch is HybridSearchPath with no path constraint.
@@ -993,9 +1010,11 @@ func fuseRRF(lex, vec []Hit, limit int) []Hit {
 	add := func(list []Hit) {
 		for rank, h := range list {
 			k := key{h.Path, h.ID}
-			if _, ok := fused[k]; !ok {
+			if f, ok := fused[k]; !ok {
 				hc := h
 				fused[k] = &hc
+			} else if f.Similarity == nil {
+				f.Similarity = h.Similarity
 			}
 			score[k] += 1.0 / (rrfK + float64(rank))
 		}
