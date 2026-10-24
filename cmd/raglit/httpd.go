@@ -280,6 +280,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	}
 	gat.Register(api, g, op("health", http.MethodGet, "/api/health", "Liveness probe."), health)
 	gat.Register(api, g, op("tools", http.MethodGet, "/api/tools", "External extractors as the DAEMON sees them (PATH included)."), toolsProbeOp(reg))
+	gat.Register(api, g, op("setup", http.MethodGet, "/api/setup", "What raglit can do with the DAEMON's models and tools, and what would add more (doctor --json, the raglit/setup notification)."), setupOp(reg, home))
 	gat.Register(api, g, op("pageLayout", http.MethodGet, "/api/page-layout", "One page's layout blocks, raw transcription and indexed text."), pageLayoutOp(reg))
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))

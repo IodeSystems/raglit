@@ -36,8 +36,11 @@ func runDoctor(args []string) error {
 		return err
 	}
 	if *asJSON {
-		env, url := doctorToolEnv(home, *daemonFlag, *localOnly)
-		b, err := json.MarshalIndent(buildDoctorReport(home, cfg, exists, env, url), "", "  ")
+		url := ""
+		if !*localOnly {
+			url = firstNonEmpty(resolveDaemon(*daemonFlag, func() raglit.Home { return home }), defaultDaemonURL)
+		}
+		b, err := json.MarshalIndent(buildDoctorReport(home, cfg, exists, url), "", "  ")
 		if err != nil {
 			return err
 		}
@@ -294,22 +297,4 @@ func fetchDaemonTools(base string) (raglit.ToolEnv, error) {
 		return body.Env, nil
 	}
 	return body.Body.Env, nil
-}
-
-// doctorToolEnv is the extractors as the daemon sees them, else as this
-// process does, and the daemon's URL when it answered ("" otherwise).
-func doctorToolEnv(home raglit.Home, daemonFlag string, localOnly bool) (raglit.ToolEnv, string) {
-	shell := raglit.ProbeTools()
-	shell.Who = "this process"
-	if localOnly {
-		return shell, ""
-	}
-	where := resolveDaemon(daemonFlag, func() raglit.Home { return home })
-	if where == "" {
-		where = defaultDaemonURL
-	}
-	if env, err := fetchDaemonTools(where); err == nil && len(env.Tools) > 0 {
-		return env, where
-	}
-	return shell, ""
 }

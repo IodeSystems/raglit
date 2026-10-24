@@ -65,3 +65,52 @@ func TestDoctorReportKeys(t *testing.T) {
 		t.Errorf("update present with nothing known: %s", b)
 	}
 }
+
+// The notification warns only when a core capability is off, and counts every
+// capability that is.
+func TestSetupNotificationLevel(t *testing.T) {
+	sum := func(off ...string) setupSummary {
+		s := setupSummary{}
+		for _, n := range []string{"semantic and hybrid search", "PDF text", "audio and video transcripts"} {
+			c := capability{Name: n, On: true}
+			for _, o := range off {
+				if o == n {
+					c.On = false
+				}
+			}
+			s.Capabilities = append(s.Capabilities, c)
+		}
+		return s
+	}
+	for _, c := range []struct {
+		off     []string
+		level   string
+		missing int
+	}{
+		{nil, "info", 0},
+		{[]string{"audio and video transcripts"}, "info", 1},
+		{[]string{"semantic and hybrid search", "audio and video transcripts"}, "warning", 2},
+	} {
+		n := setupNotification(sum(c.off...))
+		if n["level"] != c.level || n["logger"] != "raglit/setup" || n["data"].(setupData).Missing != c.missing {
+			t.Errorf("off %v: %v", c.off, n)
+		}
+	}
+}
+
+// The daemon answers /api/setup from its own config.
+func TestSetupEndpoint(t *testing.T) {
+	srv, _ := settingsServer(t, `{"base_url":"http://x/v1","embed_model":"e1"}`)
+	code, body := doAs(t, "GET", srv.URL+"/api/setup", "", "")
+	if code != 200 {
+		t.Fatalf("GET /api/setup: %d %s", code, body)
+	}
+	var s setupSummary
+	must(t, json.Unmarshal([]byte(body), &s))
+	if len(s.Capabilities) < 2 || s.Capabilities[1].Name != "semantic and hybrid search" || !s.Capabilities[1].On || s.Capabilities[1].Via != "e1" {
+		t.Fatalf("capabilities = %+v", s.Capabilities)
+	}
+	if s.ExtractorsSeenBy == "" || len(s.Roles) != 5 {
+		t.Fatalf("summary = %+v", s)
+	}
+}

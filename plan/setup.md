@@ -33,8 +33,12 @@ providers + a provider/model per role exist in config.json and through
    contract (origin release|go install|source, checkedAt, 2 s, 24 h cache,
    silent offline, modified checkout not checked); `-tags release` marks a
    release build (release_on.go). tesseract joined the probed tools.
-4. ◻ **MCP setup notification.** The same summary as a logging notification,
-   logger "raglit/setup", after `serve` starts.
+4. ✅ **MCP setup notification.** notifications/message {level, logger
+   "raglit/setup", data: {capabilities, roles, extractors, extractorsSeenBy,
+   missing}} once per session on the client's notifications/initialized.
+   level "warning" only when a core capability (keyword, semantic, PDF text,
+   scans) is off, else "info". Proxy mode reports the DAEMON's summary
+   (`GET /api/setup`, admin-only with auth on); doctor --json uses it too.
 5. ◻ **Releases.** `raglit_{os}_{arch}.tar.gz` + SHA256SUMS on GitHub releases.
    - blocking decision: Carl owns tagging and publishing; the workflow can be
      written and tested locally, a release is his call.

@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"os"
-	"runtime/debug"
 	"os/exec"
 	"runtime"
+	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/iodesystems/raglit"
 )
@@ -168,16 +173,77 @@ func hintFor(env raglit.ToolEnv, name string) string {
 	return ""
 }
 
-// buildDoctorReport is the whole `doctor --json` answer. daemonURL is "" when
-// no daemon answered.
-func buildDoctorReport(home raglit.Home, cfg raglit.Config, exists bool, env raglit.ToolEnv, daemonURL string) doctorReport {
+type setupOut struct {
+	Body setupSummary
+}
+
+// setupOp is the daemon's summary: ITS config and ITS PATH, which are what
+// ingest and search use, whatever the asking client's shell has. Host detail,
+// like /api/tools: admin only when auth is on.
+func setupOp(reg *raglit.Registry, home raglit.Home) func(context.Context, *struct{}) (*setupOut, error) {
+	return func(ctx context.Context, _ *struct{}) (*setupOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
+		cfg, _, err := raglit.LoadConfig(home)
+		if err != nil {
+			return nil, err
+		}
+		env := raglit.ProbeTools()
+		env.Who = fmt.Sprintf("daemon (pid %d)", os.Getpid())
+		return &setupOut{Body: buildSetupSummary(cfg, env)}, nil
+	}
+}
+
+// fetchDaemonSetup asks a daemon for its summary. Short timeout, no retry, as
+// fetchDaemonTools: a daemon that does not answer is a finding, not a wait.
+func fetchDaemonSetup(base string) (setupSummary, error) {
+	var s setupSummary
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" {
+		return s, fmt.Errorf("no daemon configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/setup", nil)
+	if err != nil {
+		return s, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return s, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return s, fmt.Errorf("%s/api/setup: HTTP %d", base, resp.StatusCode)
+	}
+	return s, json.NewDecoder(resp.Body).Decode(&s)
+}
+
+// localOrDaemonSetup is the daemon's summary when daemonURL answers, else this
+// process's own (cfg, its PATH), with the daemon's URL or "".
+func localOrDaemonSetup(cfg raglit.Config, daemonURL string) (setupSummary, string) {
+	if daemonURL != "" {
+		if s, err := fetchDaemonSetup(daemonURL); err == nil {
+			return s, daemonURL
+		}
+	}
+	env := raglit.ProbeTools()
+	env.Who = "this process"
+	return buildSetupSummary(cfg, env), ""
+}
+
+// buildDoctorReport is the whole `doctor --json` answer. daemonURL is "" for
+// --local.
+func buildDoctorReport(home raglit.Home, cfg raglit.Config, exists bool, daemonURL string) doctorReport {
+	summary, daemon := localOrDaemonSetup(cfg, daemonURL)
 	r := doctorReport{
 		Build:        thisBuild.String(),
 		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
 		Home:         string(home),
 		Configured:   exists,
-		Daemon:       daemonURL,
-		setupSummary: buildSetupSummary(cfg, env),
+		Daemon:       daemon,
+		setupSummary: summary,
 	}
 	if exe, err := selfPath(); err == nil {
 		r.Binary = exe

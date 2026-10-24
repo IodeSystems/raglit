@@ -55,6 +55,11 @@ func runServe(args []string) error {
 		http.DefaultClient.Transport = rt
 		s := server.NewMCPServer("raglit", version, server.WithToolHandlerMiddleware(restartNotes(rt, durl)))
 		addRaglitTools(s, daemonToolHandlersFor(durl, *defLimit, cv))
+		notifySetup(s, func() setupSummary {
+			cfg, _, _ := raglit.LoadConfig(homeOf())
+			sum, _ := localOrDaemonSetup(cfg, durl)
+			return sum
+		})
 		return server.ServeStdio(s)
 	}
 
@@ -83,6 +88,11 @@ func runServe(args []string) error {
 	go runIdentityWorkers(ctx, reg, homeOf())
 
 	s := server.NewMCPServer("raglit", version)
+	notifySetup(s, func() setupSummary {
+		cfg, _, _ := raglit.LoadConfig(homeOf())
+		sum, _ := localOrDaemonSetup(cfg, "")
+		return sum
+	})
 	addRaglitTools(s, toolHandlers{
 		search:        searchHandler(reg, *defLimit),
 		searchFigures: searchFiguresHandler(reg, *defLimit),
