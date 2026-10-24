@@ -22,9 +22,9 @@ providers + a provider/model per role exist in config.json and through
    - risks: a daemon under systemd does not see a shell's variables; only
      `api_key_file` or the unit's environment reaches it. Legacy top-level
      `api_key` has no reference form (RAGLIT_LLM_KEY covers it).
-2. ◻ **identity_provider.** The caption/summary role on its own provider; a
-   role in `/api/settings/models` ("identity").
-   - next: config field, pipeline resolves it like segment, settings role.
+2. ✅ **identity_provider.** The caption/summary role on its own provider;
+   role "identity" in `/api/settings/models` and a "Summary" card in the UI.
+   A save that omits the role keeps it.
 3. ◻ **`raglit doctor --json`.** {capabilities:[{name, on, needs, how}],
    roles:[{role, provider, model, set}], extractors:[{name, found, adds,
    install:{cmd, needs}}], update:{origin, current, latest, available, how,
@@ -36,6 +36,13 @@ providers + a provider/model per role exist in config.json and through
 5. ◻ **Releases.** `raglit_{os}_{arch}.tar.gz` + SHA256SUMS on GitHub releases.
    - blocking decision: Carl owns tagging and publishing; the workflow can be
      written and tested locally, a release is his call.
+
+## Findings
+
+- `go install …/cmd/raglit@ver` embeds the PLACEHOLDER web UI: web/dist is a
+  committed two-file stub, and the real UI is built by `make stamped|release`
+  (needs node). A release archive must be built with the UI; plain go install
+  gives CLI + MCP + API, no UI.
 
 ## Assumptions
 

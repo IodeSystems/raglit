@@ -197,3 +197,32 @@ func TestModelSettings_KeyReference(t *testing.T) {
 		t.Fatalf("providers = %+v", got.Providers)
 	}
 }
+
+// The summary role (identity) saves its own provider and model, and a save
+// that does not name the role keeps it.
+func TestModelSettings_IdentityRole(t *testing.T) {
+	srv, home := settingsServer(t, `{}`)
+	save := `{"providers":[{"name":"a","base_url":"http://a/v1"},{"name":"b","base_url":"http://b/v1"}],
+	 "roles":{"segment":{"provider":"a","model":"seg"},"identity":{"provider":"b","model":"sum"}}}`
+	if code, body := doAs(t, "PUT", srv.URL+"/api/settings/models", "", save); code != http.StatusOK {
+		t.Fatalf("PUT: %d %s", code, body)
+	}
+	old := `{"providers":[{"name":"a","base_url":"http://a/v1"},{"name":"b","base_url":"http://b/v1"}],
+	 "roles":{"segment":{"provider":"a","model":"seg"}}}`
+	if code, body := doAs(t, "PUT", srv.URL+"/api/settings/models", "", old); code != http.StatusOK {
+		t.Fatalf("PUT: %d %s", code, body)
+	}
+	cfg, _, err := raglit.LoadConfig(home)
+	must(t, err)
+	if cfg.IdentityProvider != "b" || cfg.IdentityModel != "sum" {
+		t.Fatalf("identity = %q/%q, want b/sum", cfg.IdentityProvider, cfg.IdentityModel)
+	}
+	_, body := doAs(t, "GET", srv.URL+"/api/settings/models", "", "")
+	var got struct {
+		Roles map[string]roleView `json:"roles"`
+	}
+	must(t, json.Unmarshal([]byte(body), &got))
+	if got.Roles["identity"] != (roleView{"b", "sum"}) {
+		t.Fatalf("identity role = %+v", got.Roles["identity"])
+	}
+}

@@ -31,8 +31,8 @@ import (
 // provider. Saving writes it as a real provider.
 const legacyProvider = "default"
 
-// modelRoles in display order. Segment and audio may be empty.
-var modelRoles = []string{"vision", "embed", "segment", "audio"}
+// modelRoles in display order. Segment, audio and identity may be empty.
+var modelRoles = []string{"vision", "embed", "segment", "identity", "audio"}
 
 type providerView struct {
 	Name    string `json:"name"`
@@ -100,6 +100,8 @@ func modelSettingsFrom(cfg raglit.Config) *modelSettingsOut {
 		"embed":   {Provider: legacy(cfg.EmbedProvider, cfg.EmbedModel), Model: cfg.EmbedModel},
 		"segment": {Provider: legacy(cfg.SegmentProvider, cfg.SegmentModel), Model: cfg.SegmentModel},
 		"audio":   {Provider: legacy(cfg.AudioProvider, cfg.AudioModel), Model: cfg.AudioModel},
+		// Captions and summaries. Empty → the segment model.
+		"identity": {Provider: legacy(cfg.IdentityProvider, cfg.IdentityModel), Model: cfg.IdentityModel},
 	}
 	for _, r := range b.Roles {
 		if r.Provider == legacyProvider {
@@ -213,6 +215,13 @@ func applyModelSettings(cfg *raglit.Config, in *saveModelSettingsIn) error {
 	if cfg.AudioProvider, cfg.AudioModel, err = role("audio"); err != nil {
 		return err
 	}
+	// A save that does not name identity (a form from before the role existed)
+	// keeps it rather than clearing it.
+	if _, sent := in.Body.Roles["identity"]; sent {
+		if cfg.IdentityProvider, cfg.IdentityModel, err = role("identity"); err != nil {
+			return err
+		}
+	}
 	cfg.Providers = provs
 	return nil
 }
@@ -224,6 +233,7 @@ var settingsKeys = []string{
 	"embed_provider", "embed_model",
 	"segment_provider", "segment_model",
 	"audio_provider", "audio_model",
+	"identity_provider", "identity_model",
 }
 
 // patchConfig writes only settingsKeys from cfg into home's config.json,

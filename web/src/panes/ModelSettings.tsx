@@ -60,8 +60,14 @@ const ROLES: { role: ModelRole; title: string; what: string; empty: string }[] =
   {
     role: "segment",
     title: "Text",
-    what: "Splits transcribed pages into passages and writes document captions.",
+    what: "Splits transcribed pages into passages.",
     empty: "Same as vision",
+  },
+  {
+    role: "identity",
+    title: "Summary",
+    what: "Writes each document's caption, summary and kind.",
+    empty: "Same as text",
   },
   { role: "audio", title: "Audio", what: "Transcribes recordings.", empty: "None" },
 ];
@@ -77,6 +83,7 @@ function suits(role: ModelRole, m: { vision: boolean; embed: boolean; audio: boo
     case "audio":
       return m.audio;
     case "segment":
+    case "identity":
       return !m.embed && !m.audio;
   }
 }

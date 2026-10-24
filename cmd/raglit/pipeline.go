@@ -233,7 +233,7 @@ func (f *llmFlags) identifier(home raglit.Home) *raglit.Identifier {
 	}
 	ep := f.or(f.segment)
 	if cfg.IdentityModel != "" {
-		ep = endpoint{url: *f.url, key: *f.key}
+		ep = f.endpointFor(cfg, cfg.IdentityProvider)
 	}
 	c := llm.NewClient(ep.url, ep.key, model)
 	c.Retry5xxAttempts = visionRetry5xxAttempts

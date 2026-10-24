@@ -633,7 +633,7 @@ export const listIdentityJobs = (index: string, state?: string, limit = 100) =>
 
 // ── model settings (cmd/raglit/settings.go) ───────────────────────────────
 
-export type ModelRole = "vision" | "embed" | "segment" | "audio";
+export type ModelRole = "vision" | "embed" | "segment" | "identity" | "audio";
 
 export type ProviderView = { name: string; kind: string; base_url: string; has_key: boolean };
 export type RoleView = { provider: string; model: string };

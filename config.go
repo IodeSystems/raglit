@@ -90,6 +90,10 @@ type Config struct {
 	// transcript (identity.go). Empty → the segment model, else the vision
 	// model; set this to caption with a different text model than either.
 	IdentityModel string `json:"identity_model,omitempty"`
+	// IdentityProvider is IdentityModel's provider. Empty → the legacy
+	// base_url/api_key, as before providers. Unused when IdentityModel is empty:
+	// identity then runs on the segment model and its provider.
+	IdentityProvider string `json:"identity_provider,omitempty"`
 	// IdentitySlots is how many captioning requests are in the model at once.
 	// 0 → DefaultIdentitySlots (2), which is what this endpoint serves
 	// concurrently. Raising it past what the server actually runs does not make
