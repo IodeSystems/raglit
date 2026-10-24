@@ -25,12 +25,14 @@ providers + a provider/model per role exist in config.json and through
 2. ✅ **identity_provider.** The caption/summary role on its own provider;
    role "identity" in `/api/settings/models` and a "Summary" card in the UI.
    A save that omits the role keeps it.
-3. ◻ **`raglit doctor --json`.** {capabilities:[{name, on, needs, how}],
-   roles:[{role, provider, model, set}], extractors:[{name, found, adds,
-   install:{cmd, needs}}], update:{origin, current, latest, available, how,
-   note, checked_at}}.
-   - risks: `latest` needs a release source; until slice 5 it is unknown for
-     every origin but "source".
+3. ✅ **`raglit doctor --json`.** {binary, build, platform, home, configured,
+   daemon, capabilities:[{name, on, via|needs+how}], roles:[{role, provider,
+   model, set, hasKey, fallsBackTo, adds}], extractors:[{name, found, path,
+   adds, optional, install:{cmd, needs}}], extractorsSeenBy, update}. camelCase
+   like poly-lsp. `update` is poly-lsp's updatecheck.go ported verbatim in
+   contract (origin release|go install|source, checkedAt, 2 s, 24 h cache,
+   silent offline, modified checkout not checked); `-tags release` marks a
+   release build (release_on.go). tesseract joined the probed tools.
 4. ◻ **MCP setup notification.** The same summary as a logging notification,
    logger "raglit/setup", after `serve` starts.
 5. ◻ **Releases.** `raglit_{os}_{arch}.tar.gz` + SHA256SUMS on GitHub releases.

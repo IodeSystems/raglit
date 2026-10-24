@@ -24,6 +24,7 @@ func runDoctor(args []string) error {
 	daemonFlag := fs.String("daemon", "", "ask this daemon what IT can see (default $RAGLIT_DAEMON, config, else the shared daemon)")
 	localOnly := fs.Bool("local", false, "report only this shell's environment; do not ask the daemon")
 	fixUnit := fs.Bool("fix-unit", false, "rewrite a stale systemd unit the way `raglit service install` writes it")
+	asJSON := fs.Bool("json", false, "print capabilities, roles, extractors and update status as JSON (for tools such as dun)")
 	fs.Parse(args)
 	home := raglit.DiscoverHome()
 	if *homeFlag != "" {
@@ -33,6 +34,15 @@ func runDoctor(args []string) error {
 	cfg, exists, err := raglit.LoadConfig(home)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		env, url := doctorToolEnv(home, *daemonFlag, *localOnly)
+		b, err := json.MarshalIndent(buildDoctorReport(home, cfg, exists, env, url), "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
 	}
 	fmt.Printf("raglit doctor — OCR readiness\n  home:   %s\n", home)
 	if !exists {
@@ -182,6 +192,18 @@ func runDoctor(args []string) error {
 		}
 	}
 
+	fmt.Println("\ncapabilities:")
+	for _, c := range buildSetupSummary(cfg, report).Capabilities {
+		if c.On {
+			fmt.Printf("  ✓ %s (%s)\n", c.Name, c.Via)
+		} else {
+			fmt.Printf("  · %s — needs %s\n", c.Name, c.Needs)
+		}
+	}
+	if u := newUpdateChecker().check(classifyBuild(readBuildInfo(), releaseBuild)); u != nil {
+		fmt.Printf("\nupdate: %s\n", u.text())
+	}
+
 	// Verdict — which tiers are live.
 	fmt.Println("\nverdict:")
 	switch {
@@ -272,4 +294,22 @@ func fetchDaemonTools(base string) (raglit.ToolEnv, error) {
 		return body.Env, nil
 	}
 	return body.Body.Env, nil
+}
+
+// doctorToolEnv is the extractors as the daemon sees them, else as this
+// process does, and the daemon's URL when it answered ("" otherwise).
+func doctorToolEnv(home raglit.Home, daemonFlag string, localOnly bool) (raglit.ToolEnv, string) {
+	shell := raglit.ProbeTools()
+	shell.Who = "this process"
+	if localOnly {
+		return shell, ""
+	}
+	where := resolveDaemon(daemonFlag, func() raglit.Home { return home })
+	if where == "" {
+		where = defaultDaemonURL
+	}
+	if env, err := fetchDaemonTools(where); err == nil && len(env.Tools) > 0 {
+		return env, where
+	}
+	return shell, ""
 }

@@ -79,6 +79,10 @@ var probeSpec = []struct {
 		brew: "macOS's built-in textutil reads .doc (/usr/bin/textutil); Homebrew has no antiword or catdoc", optional: true,
 		alts: []string{"antiword", "catdoc", "textutil"}},
 	{name: "magick", purpose: "HEIC/HEIF (iPhone photos) → PNG", apt: "sudo apt-get install imagemagick", brew: "brew install imagemagick", optional: true, alts: []string{"magick", "convert"}},
+	// Scans and photos are read by a vision model when one is configured; with
+	// none, tesseract is the only reader, so a missing tesseract leaves them
+	// unreadable rather than degraded.
+	{name: "tesseract", purpose: "scans and photos → text, no model needed", apt: "sudo apt-get install tesseract-ocr tesseract-ocr-eng", brew: "brew install tesseract", optional: true},
 	{name: "xls2csv", purpose: "legacy binary .xls → text", apt: "sudo apt-get install catdoc",
 		brew: "no Homebrew formula (catdoc is not packaged); save legacy .xls as .xlsx, which raglit reads with no tool", optional: true},
 }

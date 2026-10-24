@@ -61,8 +61,11 @@ raglit index [--home DIR] [--embed] FILE|DIR...
               run the daemon under systemd (Linux) or launchd (macOS). reload
               re-reads config; the daemon re-execs once no job is running.`},
 		{"init", "set up this project (endpoint, models)", `raglit init   [--home DIR]                 configure endpoint + models (writes ./.raglit)`},
-		{"doctor", "check tools and model endpoints", `raglit doctor [--home DIR] [--fix-unit]    OCR readiness: cheap engine + vision endpoint;
-                                             a stale systemd unit (--fix-unit rewrites it)`},
+		{"doctor", "check tools and model endpoints", `raglit doctor [--home DIR] [--fix-unit] [--json]   OCR readiness: cheap engine + vision endpoint;
+                                             a stale systemd unit (--fix-unit rewrites it);
+                                             what raglit can do here and what would add more
+              --json  {capabilities, roles, extractors, update, ...} for tools
+                      such as dun; update is poly-lsp's shape (24 h cache)`},
 	}},
 	{"ingest", "queueing, re-reading and removing documents", []helpEntry{
 		{"ingest", "queue folders, files or URLs", `raglit ingest [--home DIR] [--now] TARGET...  queue folders/files/URLs (file://, http(s)://)
