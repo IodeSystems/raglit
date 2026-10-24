@@ -167,9 +167,10 @@ type PurgeResult struct {
 const purgeSample = 20
 
 // Purge removes every document whose path matches pattern, with its fragments,
-// vectors, pages and fields, and drops pending ingest and caption jobs on
-// matching paths. dry reports the same counts and removes nothing. The files on
-// disk are untouched. Matched like an ignore pattern: against the absolute
+// vectors, pages, fields and page images, and drops pending ingest and caption
+// jobs on matching paths. dry reports the same counts and removes nothing. Files
+// on the user's disk are untouched; an upload's file goes with its document
+// (RemoveDocument). Matched like an ignore pattern: against the absolute
 // path, or the file name for a glob with no "/".
 func (s *Store) Purge(pattern string, dry bool) (PurgeResult, error) {
 	pattern = strings.TrimSpace(pattern)
@@ -226,14 +227,15 @@ func (s *Store) Purge(pattern string, dry bool) (PurgeResult, error) {
 			return res, err
 		}
 	}
-	return res, s.removeDocuments(docs)
+	return res, s.removeDocuments(docs, true)
 }
 
 // removeDocuments deletes documents with everything hung off them, their caption
-// rows, and pending ingest jobs on their paths. Purge's and Prune's shared tail.
-func (s *Store) removeDocuments(docs []string) error {
+// rows, and pending ingest jobs on their paths. Purge's and Prune's shared tail;
+// stored is RemoveDocument's.
+func (s *Store) removeDocuments(docs []string, stored bool) error {
 	for _, p := range docs {
-		if err := s.DeleteDocument(p); err != nil {
+		if err := s.RemoveDocument(p, stored); err != nil {
 			return fmt.Errorf("raglit: remove %s: %w", p, err)
 		}
 		// A caption row for a document that no longer exists is history about

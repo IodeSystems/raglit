@@ -47,7 +47,7 @@ func TestPruneMissingFiles(t *testing.T) {
 	if n := s.MissingCount(); n != 2 {
 		t.Fatalf("MissingCount = %d, want 2", n)
 	}
-	dry, err := s.Prune(true)
+	dry, err := s.Prune(true, false)
 	must(t, err)
 	wantDirs := []PruneDir{{Dir: dir, Documents: 1}, {Dir: filepath.Join(dir, "wt"), Documents: 1}}
 	if dry.Documents != 2 || dry.Removed || !reflect.DeepEqual(dry.Dirs, wantDirs) {
@@ -56,7 +56,7 @@ func TestPruneMissingFiles(t *testing.T) {
 	if st, _ := s.IndexStatus(); st.Documents != 5 {
 		t.Fatalf("a dry run removed documents: %d left", st.Documents)
 	}
-	res, err := s.Prune(false)
+	res, err := s.Prune(false, false)
 	must(t, err)
 	if res.Documents != 2 || !res.Removed {
 		t.Fatalf("prune = %+v", res)

@@ -56,22 +56,29 @@ func sourceGone(path string) bool {
 // prunable.
 const fromFileSQL = `(d.frag_mode <> '' OR d.content_hash <> '')`
 
+// missingSource reports a document read from a local file that is gone. An
+// upload or extracted attachment is never missing: raglit holds its bytes, and
+// prune does not delete them (USER 2026-10-24).
+func (s *Store) missingSource(path string) bool {
+	return sourceGone(path) && !s.inOwnStorage(path)
+}
+
 // gone reports a hit on a document whose source file is gone.
-func (h Hit) gone() bool { return h.fromFile && sourceGone(h.Path) }
+func (s *Store) gone(h Hit) bool { return h.fromFile && s.missingSource(h.Path) }
 
 // dropGone removes hits whose source file is gone, keeping order.
-func dropGone(hits []Hit) []Hit {
+func (s *Store) dropGone(hits []Hit) []Hit {
 	out := hits[:0]
 	for _, h := range hits {
-		if !h.gone() {
+		if !s.gone(h) {
 			out = append(out, h)
 		}
 	}
 	return out
 }
 
-// MissingDocuments is this layer's documents whose source file is gone, among
-// those read from a file (fromFileSQL).
+// MissingDocuments is this layer's documents whose local source file is gone,
+// among those read from a file (fromFileSQL).
 func (s *Store) MissingDocuments() ([]string, error) {
 	rows, err := s.db.Query(`SELECT d.path FROM documents d WHERE ` + fromFileSQL + ` ORDER BY d.path`)
 	if err != nil {
@@ -84,7 +91,7 @@ func (s *Store) MissingDocuments() ([]string, error) {
 		if err := rows.Scan(&p); err != nil {
 			return nil, err
 		}
-		if sourceGone(p) {
+		if s.missingSource(p) {
 			out = append(out, p)
 		}
 	}
@@ -125,24 +132,61 @@ type PruneDir struct {
 
 // PruneResult is what Prune removes, or would remove.
 type PruneResult struct {
+	// Documents whose local file was not found.
 	Documents int        `json:"documents"`
 	Dirs      []PruneDir `json:"dirs"`
 	// Removed is false on a dry run.
 	Removed bool `json:"removed"`
+	// Page and figure images under pages/ that no document names. Removed with
+	// the documents.
+	OrphanPages     int   `json:"orphan_pages"`
+	OrphanPageBytes int64 `json:"orphan_page_bytes"`
+	// Copies under originals/ (Home.OriginalsDir), except an upload's.
+	DanglingOriginals     int   `json:"dangling_originals"`
+	DanglingOriginalBytes int64 `json:"dangling_original_bytes"`
+	// OriginalsRemoved is true when deleteOriginals removed them.
+	OriginalsRemoved bool `json:"originals_removed"`
 }
 
-// Prune removes every document whose source file is gone, with its fragments,
-// vectors, pages, fields and caption rows, and pending ingest jobs on those
-// files. dry reports the same and removes nothing.
+// Prune removes every document whose local source file is gone, with its
+// fragments, vectors, pages, fields, caption rows and page images, and pending
+// ingest jobs on those files, and the page images no document names. dry
+// reports the same and removes nothing. deleteOriginals removes the dangling
+// copies under originals/, dry or not: they are reported always and removed
+// only when asked.
 //
 // Dirs groups by the top-most directory that is gone, so a deleted worktree is
 // one line however deep its tree was; a file deleted from a directory that
 // still exists is counted under that directory.
-func (s *Store) Prune(dry bool) (PruneResult, error) {
+func (s *Store) Prune(dry, deleteOriginals bool) (PruneResult, error) {
 	res := PruneResult{Dirs: []PruneDir{}}
 	docs, err := s.MissingDocuments()
 	if err != nil {
 		return res, err
+	}
+	pages, err := s.orphanPages()
+	if err != nil {
+		return res, err
+	}
+	originals, err := s.danglingOriginals()
+	if err != nil {
+		return res, err
+	}
+	res.OrphanPages = len(pages)
+	for _, p := range pages {
+		res.OrphanPageBytes += fileSize(p)
+	}
+	res.DanglingOriginals = len(originals)
+	for _, p := range originals {
+		res.DanglingOriginalBytes += fileSize(p)
+	}
+	if deleteOriginals {
+		for _, p := range originals {
+			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return res, err
+			}
+		}
+		res.OriginalsRemoved = true
 	}
 	res.Documents = len(docs)
 	byDir := map[string]int{}
@@ -159,10 +203,17 @@ func (s *Store) Prune(dry bool) (PruneResult, error) {
 		}
 		return res.Dirs[i].Dir < res.Dirs[j].Dir
 	})
-	if dry || len(docs) == 0 {
+	if dry {
 		return res, nil
 	}
-	if err := s.removeDocuments(docs); err != nil {
+	root := s.PagesRoot()
+	for _, p := range pages {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return res, err
+		}
+		removeEmptyDir(filepath.Dir(p), root)
+	}
+	if err := s.removeDocuments(docs, false); err != nil {
 		return res, err
 	}
 	s.missing.mu.Lock()
@@ -188,4 +239,120 @@ func goneRoot(dir string) string {
 		}
 		dir = parent
 	}
+}
+
+// orphanPages is every file under this index's pages/ that no page or figure
+// row names and whose directory is no document's (Home.PageDir). Both, not
+// either: a document moved by attachmigrate keeps rows naming its old
+// directory until it is read again, and its files must not read as orphans.
+func (s *Store) orphanPages() ([]string, error) {
+	root := s.PagesRoot()
+	if root == "" {
+		return nil, nil
+	}
+	named := map[string]bool{}
+	rows, err := s.db.Query(`SELECT image_path FROM ocr_pages WHERE image_path <> ''
+		UNION SELECT image_path FROM media WHERE image_path <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		named[s.rerootPageImage(p)] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	dirs, err := s.documentTags()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, _ := pathUnder(p, root)
+		if top, _, _ := strings.Cut(rel, string(filepath.Separator)); !named[p] && !dirs[top] {
+			out = append(out, p)
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out, err
+}
+
+// danglingOriginals is every copy under originals/, except one whose document
+// is still indexed from raglit's own storage: that is an upload's, and prune
+// does not delete uploads (USER 2026-10-24). Nothing reads originals/, so any
+// other copy is dangling.
+func (s *Store) danglingOriginals() ([]string, error) {
+	if !s.withHome {
+		return nil, nil
+	}
+	ents, err := os.ReadDir(s.home.OriginalsDir())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	uploads := map[string]bool{}
+	paths, err := s.documentPaths()
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range paths {
+		if s.inOwnStorage(p) {
+			uploads[tag(p)] = true
+		}
+	}
+	var out []string
+	for _, e := range ents {
+		if !e.IsDir() && !uploads[e.Name()] {
+			out = append(out, filepath.Join(s.home.OriginalsDir(), e.Name()))
+		}
+	}
+	return out, nil
+}
+
+// documentTags is the Home.PageDir name of every document in this layer.
+func (s *Store) documentTags() (map[string]bool, error) {
+	paths, err := s.documentPaths()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		out[tag(p)] = true
+	}
+	return out, nil
+}
+
+func (s *Store) documentPaths() ([]string, error) {
+	rows, err := s.db.Query(`SELECT path FROM documents`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }

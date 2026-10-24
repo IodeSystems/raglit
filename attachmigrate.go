@@ -113,15 +113,10 @@ func (s *Store) moveAttachment(ctx context.Context, mv AttachmentMove) error {
 			_ = os.Remove(mv.OldPath)
 		}
 	}
-	// Everything else raglit keyed by the OLD path. Both are derived names, not
-	// stored ones, so a row whose path changes silently stops finding them.
-	for _, d := range [][2]string{
-		{s.home.OriginalPath(mv.OldPath), s.home.OriginalPath(mv.NewPath)},
-		{s.home.PageDir(mv.OldPath), s.home.PageDir(mv.NewPath)},
-	} {
-		if _, err := os.Stat(d[0]); err == nil {
-			_ = os.Rename(d[0], d[1])
-		}
+	// The page directory is keyed by the OLD path. A derived name, not a stored
+	// one, so a row whose path changes silently stops finding it.
+	if old := s.home.PageDir(mv.OldPath); pathExists(old) {
+		_ = os.Rename(old, s.home.PageDir(mv.NewPath))
 	}
 	// The row last: if anything above failed we have not yet claimed the document
 	// lives somewhere it does not.
