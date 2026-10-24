@@ -49,9 +49,9 @@ providers + a provider/model per role exist in config.json and through
    THIRD_PARTY_NOTICES.md + README.md, the binary serves the built UI, and
    the stamp is clean (the first run was stamped dirty by the UI build; fixed
    in b8cf7b8, and the smoke step now fails on it).
-   - blocking decision: Carl owns the first tag (v0.1.0 matches the code).
-     No release exists yet, so a release build reports no update block until
-     one does.
+   - v0.1.0 released 2026-10-24 (tag on a32c5db): 4 tarballs + SHA256SUMS.
+     The downloaded linux_amd64 asset passes its checksum, is stamped v0.1.0
+     clean, and doctor reports update {origin release, latest v0.1.0}.
    - risks: macOS binaries are cross-built and never run.
 
 6. ✅ **License conformance.** `tools/notices` (`make notices`): every Go
