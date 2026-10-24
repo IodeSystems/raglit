@@ -44,13 +44,15 @@ providers + a provider/model per role exist in config.json and through
    and cross-builds linux/darwin × amd64/arm64 with `-trimpath -tags
    release`, smoke-tests linux_amd64 (`--help`, `doctor --json --local`), and
    on a `v*` tag publishes the four tarballs + SHA256SUMS. workflow_dispatch
-   is a dry run. Build + package + smoke reproduced locally 2026-10-24; the
-   workflow itself has not run on GitHub.
-   - blocking decision: Carl owns pushing it, the first tag, and enabling
-     Actions. No release exists yet, so a release build reports no update
-     block until one does.
-   - risks: the test job's apt package list is a guess at what CI needs; the
-     suite has only run on this dev box.
+   is a dry run. 2026-10-24: dry run green on GitHub (run 40130473952, at
+   b8cf7b8): tests pass in CI, tarballs hold raglit + LICENSE +
+   THIRD_PARTY_NOTICES.md + README.md, the binary serves the built UI, and
+   the stamp is clean (the first run was stamped dirty by the UI build; fixed
+   in b8cf7b8, and the smoke step now fails on it).
+   - blocking decision: Carl owns the first tag (v0.1.0 matches the code).
+     No release exists yet, so a release build reports no update block until
+     one does.
+   - risks: macOS binaries are cross-built and never run.
 
 6. ✅ **License conformance.** `tools/notices` (`make notices`): every Go
    module the binary links (GOWORK=off) and every npm production package must
