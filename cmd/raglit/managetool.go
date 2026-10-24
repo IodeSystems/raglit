@@ -42,10 +42,11 @@ const manageIndexHelp = "Operate an index: pause/resume its work, edit the patte
 	"builtin list (node_modules, mobile build output); `allow PATTERN` exempts matching paths from the " +
 	"builtin list on this index. Patterns are globs matched against the absolute path: **/dir/** is a " +
 	"directory anywhere, a glob with no / matches the file name. `purge PATTERN` reports what would be " +
-	"removed; pass confirm=true to remove it (cannot be undone; files on disk stay). `prune` (no " +
-	"pattern) reports the documents whose source file is gone — a deleted directory or worktree — " +
-	"grouped by deleted directory: {documents, dirs:[{dir, documents}], removed}. They are already " +
-	"out of search; confirm=true removes them. list_indexes reports `prunable` per index. Every " +
+	"removed; pass confirm=true to remove it (cannot be undone; files on the user's disk stay, uploaded files " +
+	"go). `prune` (no pattern) reports the documents whose local file is gone — a deleted directory or " +
+	"worktree — grouped by deleted directory: {documents, dirs:[{dir, documents}], removed, orphan_pages, " +
+	"dangling_originals}. They are already out of search; confirm=true removes them and the orphan page " +
+	"images. Dangling originals are removed only by the CLI's --delete-orphan-originals. list_indexes reports `prunable` per index. Every " +
 	"other action returns the index's resulting state."
 
 func manageIndexTool() mcp.Tool {
@@ -180,7 +181,7 @@ func (c storeControls) prune(idx string, dry bool) (raglit.PruneResult, error) {
 	if err != nil {
 		return raglit.PruneResult{}, err
 	}
-	return st.Prune(dry)
+	return st.Prune(dry, false)
 }
 
 // daemonControls backs manage_index with the daemon's HTTP surface.

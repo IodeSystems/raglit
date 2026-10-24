@@ -235,6 +235,9 @@ type pruneIn struct {
 	Index string `query:"index" doc:"index name (default: the default index)"`
 	Body  struct {
 		DryRun bool `json:"dry_run,omitempty" doc:"count what would go, by directory; remove nothing"`
+		// Separate from dry_run: the copies are reported always and removed only
+		// when asked (USER 2026-10-24).
+		DeleteOrphanOriginals bool `json:"delete_orphan_originals,omitempty" doc:"also remove the dangling copies under originals/ (never an upload's), dry run or not"`
 	}
 }
 type pruneOut struct {
@@ -247,12 +250,16 @@ func pruneOp(reg *raglit.Registry) func(context.Context, *pruneIn) (*pruneOut, e
 		if err != nil {
 			return nil, err
 		}
-		res, err := st.Prune(in.Body.DryRun)
+		res, err := st.Prune(in.Body.DryRun, in.Body.DeleteOrphanOriginals)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("prune", err)
 		}
 		if res.Removed {
-			log.Printf("raglit: %s: pruned %d document(s) whose file is gone", in.Index, res.Documents)
+			log.Printf("raglit: %s: pruned %d document(s) whose file is gone, %d orphan page image(s)",
+				in.Index, res.Documents, res.OrphanPages)
+		}
+		if res.OriginalsRemoved && res.DanglingOriginals > 0 {
+			log.Printf("raglit: %s: removed %d dangling original(s)", in.Index, res.DanglingOriginals)
 		}
 		return &pruneOut{Body: res}, nil
 	}
@@ -289,7 +296,7 @@ func runPurge(args []string) error {
 	if *yes {
 		verb = "purged"
 	}
-	fmt.Printf("%s %d document(s), %d pending import and %d pending caption job(s) from %s; files on disk are untouched\n",
+	fmt.Printf("%s %d document(s), %d pending import and %d pending caption job(s) from %s; files on your disk are untouched, uploaded files are deleted\n",
 		verb, res.Documents, res.IngestJobs, res.CaptionJobs, idx)
 	if !*yes && res.Documents+res.IngestJobs+res.CaptionJobs > 0 {
 		fmt.Println("run again with --yes to remove them")
@@ -297,19 +304,22 @@ func runPurge(args []string) error {
 	return nil
 }
 
-// runPrune is `raglit prune [--index INDEX] [--yes]`: list the documents whose
-// file is gone, per index and per deleted directory, and remove them with
-// --yes. No --index: every index on the daemon.
+// runPrune is `raglit prune [--index INDEX] [--yes] [--delete-orphan-originals]`:
+// list the documents whose local file is gone, per index and per deleted
+// directory, and remove them with --yes; report the page images and originals/
+// copies no document needs, and remove the copies with --delete-orphan-originals.
+// No --index: every index on the daemon.
 func runPrune(args []string) error {
 	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
 	daemon := fs.String("daemon", "", "daemon URL (default: this machine's daemon)")
 	index := fs.String("index", "", "prune this index only (the daemon's name)")
-	yes := fs.Bool("yes", false, "remove the documents; without it, only report what would go")
+	yes := fs.Bool("yes", false, "remove the documents and orphan page images; without it, only report what would go")
+	originals := fs.Bool("delete-orphan-originals", false, "remove the dangling copies under originals/ (never an upload's)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("prune: usage: raglit prune [--index INDEX] [--yes]")
+		return fmt.Errorf("prune: usage: raglit prune [--index INDEX] [--yes] [--delete-orphan-originals]")
 	}
 	base := controlBase(*daemon)
 	names := []string{*index}
@@ -329,10 +339,11 @@ func runPrune(args []string) error {
 			names = append(names, r.Name)
 		}
 	}
-	total := 0
+	var total, pages, origs int
+	var pageBytes, origBytes int64
 	for _, idx := range names {
 		b, err := daemonPostJSON(base, "/api/index/prune?"+urlValues("index", idx).Encode(),
-			map[string]any{"dry_run": !*yes})
+			map[string]any{"dry_run": !*yes, "delete_orphan_originals": *originals})
 		if err != nil {
 			if *index == "" {
 				// One index the caller cannot write must not stop the rest.
@@ -345,22 +356,38 @@ func runPrune(args []string) error {
 		if err := json.Unmarshal(b, &res); err != nil {
 			return err
 		}
+		pages, pageBytes = pages+res.OrphanPages, pageBytes+res.OrphanPageBytes
+		origs, origBytes = origs+res.DanglingOriginals, origBytes+res.DanglingOriginalBytes
 		if res.Documents == 0 {
 			continue
 		}
 		total += res.Documents
-		fmt.Printf("%s: %d document(s)\n", idx, res.Documents)
+		fmt.Printf("%s: %d local file(s) not found\n", idx, res.Documents)
 		for _, d := range res.Dirs {
 			fmt.Printf("  %6d  %s\n", d.Documents, d.Dir)
 		}
 	}
 	switch {
 	case total == 0:
-		fmt.Println("nothing to prune: every indexed file is still on disk")
+		fmt.Println("no local file missing: every indexed file is still on disk")
 	case *yes:
-		fmt.Printf("pruned %d document(s) whose file is gone\n", total)
+		fmt.Printf("pruned %d document(s) whose local file was not found\n", total)
 	default:
-		fmt.Printf("would prune %d document(s) whose file is gone (already out of search); run again with --yes to remove them\n", total)
+		fmt.Printf("%d document(s) whose local file was not found (already out of search); --yes removes them\n", total)
+	}
+	switch {
+	case pages == 0:
+	case *yes:
+		fmt.Printf("removed %d orphan page image(s), %s\n", pages, humanBytes(pageBytes))
+	default:
+		fmt.Printf("%d orphan page image(s), %s, belong to no document; --yes removes them\n", pages, humanBytes(pageBytes))
+	}
+	switch {
+	case origs == 0:
+	case *originals:
+		fmt.Printf("removed %d dangling original(s), %s\n", origs, humanBytes(origBytes))
+	default:
+		fmt.Printf("%d dangling original(s), %s, under originals/; --delete-orphan-originals removes them\n", origs, humanBytes(origBytes))
 	}
 	return nil
 }
@@ -375,4 +402,16 @@ func controlBase(flagVal string) string {
 		addr = st.Addr
 	}
 	return localBase(addr)
+}
+
+// humanBytes is n as KB, MB or GB, one decimal.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1e9:
+		return fmt.Sprintf("%.1f GB", float64(n)/1e9)
+	case n >= 1e6:
+		return fmt.Sprintf("%.1f MB", float64(n)/1e6)
+	default:
+		return fmt.Sprintf("%.1f KB", float64(n)/1e3)
+	}
 }

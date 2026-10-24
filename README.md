@@ -133,7 +133,7 @@ raglit ingest TARGET... [--now]      queue folders / files / URLs (lazy; --now d
 raglit search "query" [--mode M] [--path P]  M = bm25 | vec | hybrid; P = path-prefix scope
 raglit status                        documents/fragments, queue progress, rate, ETAs
 raglit identify [DOC...] [--list]    what a document IS: caption, summary, kind (never renames)
-raglit prune [--index N] [--yes]     documents whose file is gone (already out of search); --yes removes
+raglit prune [--index N] [--yes]     documents whose local file is gone (already out of search); --yes removes
 raglit serve                         stdio MCP server
 raglit daemon                        HTTP API + workers + review UI at /
 raglit review                        the daemon, framed as the status/job/OCR review UI
@@ -320,12 +320,14 @@ watches via `Opts.ExtraArgs {"index": ...}` — all by default). raglit's
 ./.raglit/                 (per-project; or $RAGLIT_HOME / ~/local/raglit / --home)
   config.json              endpoint + model settings (from `raglit init`)
   index.sqlite             the default index (index-<name>.sqlite for others)
-  originals/               copies of ingested sources
+  uploads/                 uploaded documents (the index is their only home)
   pages/                   page images for OCR
 ```
 
-Everything for an index is under one directory — copy it, back it up, or delete
-it wholesale.
+Everything raglit holds for an index is under one directory — copy it, back it
+up, or delete it wholesale. A local-disk document is read from its file and not
+copied: when the file is gone, the document is out of search and `raglit prune`
+removes it.
 
 ## Roadmap
 

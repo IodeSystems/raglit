@@ -805,7 +805,7 @@ func forgetOp(reg *raglit.Registry) func(context.Context, *forgetIn) (*okOut, er
 		if err != nil {
 			return nil, err
 		}
-		if err := st.DeleteDocument(in.Path); err != nil {
+		if err := st.RemoveDocument(in.Path, true); err != nil {
 			return nil, huma.Error500InternalServerError("forget", err)
 		}
 		out := &okOut{}

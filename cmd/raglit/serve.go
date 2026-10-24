@@ -97,7 +97,7 @@ func runServe(args []string) error {
 			if err != nil {
 				return err
 			}
-			return st.DeleteDocument(path)
+			return st.RemoveDocument(path, true)
 		}),
 		status:        statusHandler(reg),
 		listIndexes:   listHandler(reg),

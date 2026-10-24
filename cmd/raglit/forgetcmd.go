@@ -8,8 +8,9 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
-// `raglit forget` removes a document from the INDEX. The file on disk is
-// untouched.
+// `raglit forget` removes a document from the INDEX, with its page images. A
+// file on the user's disk is untouched; an upload's file goes with it, since the
+// index is its only home (Store.RemoveDocument).
 //
 // Deliberately not `withdraw`, and the difference is the point. A withdrawal is
 // a judgement — this document does not belong in the corpus — so it demands
@@ -67,7 +68,7 @@ func runForget(args []string) error {
 		if *dry {
 			verb = "would forget"
 		}
-		fmt.Printf("%s %d document(s) from %s — the files on disk are untouched\n", verb, len(targets), idx)
+		fmt.Printf("%s %d document(s) from %s — files on your disk are untouched; uploaded files are deleted\n", verb, len(targets), idx)
 		return nil
 	}
 	st, err := openCorpus(fs, openStore, homeOf)
@@ -99,7 +100,7 @@ func runForget(args []string) error {
 			}
 			continue
 		}
-		if err := st.DeleteDocument(p); err != nil {
+		if err := st.RemoveDocument(p, true); err != nil {
 			return err
 		}
 	}
@@ -107,7 +108,7 @@ func runForget(args []string) error {
 	if *dry {
 		verb = "would forget"
 	}
-	fmt.Printf("%s %d document(s) — the files on disk are untouched\n", verb, len(paths))
+	fmt.Printf("%s %d document(s) — files on your disk are untouched; uploaded files are deleted\n", verb, len(paths))
 	return nil
 }
 

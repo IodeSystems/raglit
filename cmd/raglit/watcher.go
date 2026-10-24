@@ -240,7 +240,7 @@ func (w *watcher) scanHome(home string) (int, int) {
 			continue
 		}
 		if store, err := w.reg.Get(st.index); err == nil {
-			_ = store.DeleteDocument(f) // source gone → drop the doc
+			_ = store.RemoveDocument(f, false) // source gone → drop the doc
 		}
 		delete(prev, f)
 		rm++

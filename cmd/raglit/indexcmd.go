@@ -259,19 +259,23 @@ func indexPurge(name string, args []string) error {
 }
 
 func indexPrune(name string, args []string) error {
-	var yes *bool
+	var yes, originals *bool
 	base, full, rest, err := indexTarget(name, args, func(fs *flag.FlagSet) {
-		yes = fs.Bool("yes", false, "remove the documents; without it, only report what would go")
+		yes = fs.Bool("yes", false, "remove the documents and orphan page images; without it, only report what would go")
+		originals = fs.Bool("delete-orphan-originals", false, "remove the dangling copies under originals/ (never an upload's)")
 	})
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("usage: raglit index %s prune [--yes]", name)
+		return fmt.Errorf("usage: raglit index %s prune [--yes] [--delete-orphan-originals]", name)
 	}
 	a := []string{"--daemon", base, "--index", full}
 	if *yes {
 		a = append(a, "--yes")
+	}
+	if *originals {
+		a = append(a, "--delete-orphan-originals")
 	}
 	return runPrune(a)
 }

@@ -72,7 +72,8 @@ raglit index [--home DIR] [--embed] FILE|DIR...
 		{"sync", "ingest the config's index roots", `raglit sync   [--home DIR] [--index N] [--dry-run]   ingest the config's [indexes] roots
               (per-index include/ignore globs, honors .gitignore; dedup skips unchanged)`},
 		{"forget", "drop documents from the index; files stay", `raglit forget [--dry-run] <path|dir>...
-              drop a document from the INDEX; the file on disk is untouched.
+              drop a document from the INDEX, with its page images. A file on
+              your disk is untouched; an uploaded file is deleted with it.
               Not a withdrawal: no grounds are recorded and nothing stops a
               re-index — for a row that should never have existed (raglit's own
               transcription sidecars, indexed as documents) rather than for a
@@ -80,14 +81,19 @@ raglit index [--home DIR] [--embed] FILE|DIR...
 		{"purge", "remove documents matching a glob", `raglit purge [--yes] [--daemon URL] INDEX PATTERN
               remove every document whose path matches PATTERN (a glob:
               **/node_modules/** for a directory anywhere), with its pending
-              jobs. Reports what would go unless --yes. Files on disk stay.`},
-		{"prune", "remove documents whose file is gone", `raglit prune [--index INDEX] [--yes] [--daemon URL]
-              documents whose source file was deleted (a removed worktree,
+              jobs and page images. Reports what would go unless --yes. Files
+              on your disk stay; uploaded files go with their documents.`},
+		{"prune", "remove documents whose file is gone", `raglit prune [--index INDEX] [--yes] [--delete-orphan-originals] [--daemon URL]
+              documents whose local file was deleted (a removed worktree,
               a deleted directory) are out of search already; prune lists
               them per index and per deleted directory, and removes them
               with --yes. No --index: every index. status and index list
-              show the count. A URL or a library-ingested name is never
-              prunable.`},
+              show the count. A URL, an upload or a library-ingested name
+              is never prunable.
+              Also reports page images no document names (--yes removes
+              them) and dangling copies under originals/, which raglit no
+              longer writes or reads (--delete-orphan-originals removes
+              them; an upload's copy stays).`},
 		{"pause", "stop an index's work; jobs keep queueing", `raglit pause|resume [--daemon URL] [INDEX...]
               a paused index runs no work: no ingest, captions or embeds. Jobs
               still queue and run on resume. No INDEX lists every index.`},

@@ -239,3 +239,10 @@ has no crawler. Works today: .html goes through pandoc, .md/.txt/.pdf as is.
 - An unmounted disk hides its documents (they reappear on mount) and prune
   would delete them. The dry run shows the directory first; no guard beyond it.
 - search_figures, similar and list_documents do not filter gone documents.
+- Withdraw still deletes rows only (`DeleteDocument`): its page images stay
+  until a prune sweeps them as orphans. Kept so Restore can re-read an upload.
+- MCP `manage_index` prune reports `dangling_originals` but cannot remove them;
+  only the CLI's `--delete-orphan-originals` does.
+- Orphan files of a deleted upload (an `uploads/` file no document names) are
+  not reported. Forget/purge now delete the file with the document, so only
+  uploads forgotten before 2026-10-24 can be orphaned.

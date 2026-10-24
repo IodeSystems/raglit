@@ -67,7 +67,8 @@ func batchText(r batchResult) *mcp.CallToolResult {
 func forgetTool() mcp.Tool {
 	return mcp.NewTool("forget",
 		mcp.WithDescription(
-			"Drop documents from an index; the files on disk are untouched. Paths are file paths "+
+			"Drop documents from an index, with their page images. Files on the user's disk are untouched; an "+
+				"uploaded file is deleted with its document. Paths are file paths "+
 				"or file:// URLs; either spelling drops the document however it was ingested. Nothing stops a later "+
 				"ingest from adding a path back. Returns {index, forgotten, paths}."),
 		mcp.WithString("index", mcp.Description("index (default: the default index)")),
