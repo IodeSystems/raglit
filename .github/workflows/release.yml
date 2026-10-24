@@ -73,6 +73,12 @@ jobs:
           npm run typecheck
           npm run build
 
+      # Fails on a dependency whose license is not on the allow-list; writes
+      # the notices every tarball carries (MIT, BSD and Apache-2.0 require
+      # them in binary copies).
+      - name: License check and notices
+        run: go run ./tools/notices -o THIRD_PARTY_NOTICES.md
+
       - name: Build and package
         env:
           CGO_ENABLED: "0"
@@ -83,10 +89,11 @@ jobs:
             asset="raglit_${goos}_${goarch}.tar.gz"
             rm -rf pkg && mkdir pkg
             GOOS=$goos GOARCH=$goarch go build -trimpath -tags release -o pkg/raglit ./cmd/raglit
-            for f in LICENSE README.md; do
+            for f in LICENSE THIRD_PARTY_NOTICES.md README.md; do
               if [ -f "$f" ]; then cp "$f" pkg/; fi
             done
             tar -czf "dist/$asset" -C pkg .
+            tar -tzf "dist/$asset" | grep -qx './THIRD_PARTY_NOTICES.md'
             tar -tzf "dist/$asset"
           done
 

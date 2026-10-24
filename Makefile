@@ -18,7 +18,7 @@ ifeq ($(GOBIN),)
 GOBIN   := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: build install stamped release test lint clean web web-dev generate
+.PHONY: build install stamped release test lint clean web web-dev generate notices
 
 # Codegen runs OUR sqlc, never the one on PATH.
 #
@@ -104,6 +104,11 @@ install: ## install a self-updating raglit (with the UI) to $(GOBIN), linked fro
 	@$(MAKE) --no-print-directory stamped OUT=$(GOBIN)/raglit
 	@if [ "$(abspath $(BINDIR))" != "$(abspath $(GOBIN))" ]; then ln -sfn $(GOBIN)/raglit $(BINDIR)/raglit; echo "linked $(BINDIR)/raglit -> $(GOBIN)/raglit"; fi
 	@echo "installed $(GOBIN)/raglit (self-updating from $(SRCDIR))"
+
+# Every dependency a release ships must be under an allowed license, and the
+# tarball carries their notices (tools/notices). Needs web/node_modules.
+notices: web/node_modules/.package-lock.json ## check dependency licenses; write THIRD_PARTY_NOTICES.md
+	go run ./tools/notices -o THIRD_PARTY_NOTICES.md
 
 release: web ## install WITHOUT the source stamp — never self-updates (builds the UI first)
 	go install ./cmd/raglit

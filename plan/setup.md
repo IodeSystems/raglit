@@ -52,12 +52,29 @@ providers + a provider/model per role exist in config.json and through
    - risks: the test job's apt package list is a guess at what CI needs; the
      suite has only run on this dev box.
 
+6. ✅ **License conformance.** `tools/notices` (`make notices`): every Go
+   module the binary links (GOWORK=off) and every npm production package must
+   be MIT, BSD-2/3, Apache-2.0, ISC, 0BSD, Unlicense, CC0 or public domain;
+   unrecognised license text fails until it is read and listed in `reviewed`.
+   Writes THIRD_PARTY_NOTICES.md (license + NOTICE texts); the release
+   workflow runs it and packs it into every tarball. 2026-10-24: 206
+   dependencies, all allowed. LICENSE (MIT, Iode Systems) added to raglit,
+   poly-lsp-mcp, mcpshell and dun.
+   - risks: a module's top-level license files only; vendored code under
+     another license inside a module is not seen.
+   - optional extensions: the same tool in poly-lsp-mcp (tree-sitter
+     grammars) and dun (mobile/ npm).
+
 ## Findings
 
 - `go install …/cmd/raglit@ver` embeds the PLACEHOLDER web UI: web/dist is a
   committed two-file stub, and the real UI is built by `make stamped|release`
   (needs node). A release archive must be built with the UI; plain go install
   gives CLI + MCP + API, no UI.
+
+- raglit's gitignored go.work makes local builds link other versions than a
+  release (mcp-go v1.3.0 local, v1.0.0 released); local tests do not cover the
+  released set.
 
 ## Assumptions
 
