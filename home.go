@@ -139,7 +139,11 @@ func normalizeIndexName(name string) string {
 // ConfigPath is the model-connection config (base URL, token, model ids).
 func (h Home) ConfigPath() string { return filepath.Join(string(h), "config.json") }
 
-// OriginalsDir holds copies of ingested source files.
+// OriginalsDir is where raglit used to copy every ingested source file. Nothing
+// writes it now and nothing ever read it back (USER 2026-10-24: a local file is
+// checked on disk, and missing means prunable; an upload already keeps its bytes
+// in uploads/). Prune reports what is left and removes it with
+// --delete-orphan-originals.
 func (h Home) OriginalsDir() string { return filepath.Join(string(h), "originals") }
 
 // PagesDir holds page images derived from originals (OCR input).
@@ -153,7 +157,7 @@ func (h Home) PagesDir() string { return filepath.Join(string(h), "pages") }
 // directories in one legal evidence tree, for a feature raglit owns end to end.
 // An extracted attachment is a real document — it is ingested, captioned and
 // searchable — but where its bytes LIVE is raglit's business, exactly as it
-// already is for originals/ and pages/.
+// already is for uploads/ and pages/.
 func (h Home) AttachmentsDir() string { return filepath.Join(string(h), "attachments") }
 
 // AttachmentDir is where one archive's attachments live, keyed by the archive's
@@ -163,9 +167,9 @@ func (h Home) AttachmentDir(archivePath string) string {
 	return filepath.Join(h.AttachmentsDir(), tag(archivePath))
 }
 
-// Ensure creates the home layout (home + originals/ + pages/ + attachments/) if absent.
+// Ensure creates the home layout (home + pages/ + attachments/) if absent.
 func (h Home) Ensure() error {
-	for _, d := range []string{string(h), h.OriginalsDir(), h.PagesDir(), h.AttachmentsDir()} {
+	for _, d := range []string{string(h), h.PagesDir(), h.AttachmentsDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("raglit: create %s: %w", d, err)
 		}

@@ -56,7 +56,7 @@ func (s *Store) DocCosts() ([]DocCost, error) {
 		}
 		c.Bytes = text + vec
 		if s.withHome {
-			c.Bytes += fileSize(s.home.OriginalPath(c.Path)) + dirSize(s.home.PageDir(c.Path))
+			c.Bytes += dirSize(s.home.PageDir(c.Path))
 		}
 		out = append(out, c)
 	}

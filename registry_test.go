@@ -31,9 +31,9 @@ func TestScopedRegistry_PerIndexIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Each index is its own scoped Home on disk (own index.sqlite + originals/pages).
+	// Each index is its own scoped Home on disk (own index.sqlite + pages).
 	for _, name := range []string{"alpha", "beta"} {
-		for _, sub := range []string{"index.sqlite", "originals", "pages"} {
+		for _, sub := range []string{"index.sqlite", "pages"} {
 			if _, err := os.Stat(filepath.Join(root, "indexes", name, sub)); err != nil {
 				t.Fatalf("scoped %s/%s missing: %v", name, sub, err)
 			}

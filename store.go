@@ -22,7 +22,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -593,41 +592,7 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 			return err
 		}
 	}
-	// Keep a copy of the source so the index is self-contained (a home store
-	// only; skipped for synthetic docs whose Path isn't a real file).
-	if s.withHome {
-		if err := s.storeOriginal(doc.Path); err != nil {
-			return fmt.Errorf("raglit: store original: %w", err)
-		}
-	}
 	return nil
-}
-
-// storeOriginal copies doc's source file into <home>/originals/ if it exists and
-// isn't already stored. A non-file path (synthetic ingest) is a no-op.
-func (s *Store) storeOriginal(docPath string) error {
-	fi, err := os.Stat(docPath)
-	if err != nil || fi.IsDir() {
-		return nil //nolint:nilerr // not a real file → nothing to store
-	}
-	dst := s.home.OriginalPath(docPath)
-	if _, err := os.Stat(dst); err == nil {
-		return nil // already stored (deterministic path)
-	}
-	in, err := os.Open(docPath)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
 }
 
 // IngestPDF pagifies an image/scanned PDF and indexes it via LLM segmentation:
@@ -865,7 +830,7 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 		return nil, err
 	}
 	// A document whose file is gone is prunable, not searchable (prune.go).
-	hits = dropGone(hits)
+	hits = s.dropGone(hits)
 	return hits, s.markMatched(query, hits)
 }
 
@@ -969,7 +934,7 @@ func (s *Store) vecSearchLocal(qv []float32, query, pathPrefix string, limit int
 		if len(kept) == limit {
 			break
 		}
-		if !h.gone() {
+		if !s.gone(h) {
 			kept = append(kept, h)
 		}
 	}
