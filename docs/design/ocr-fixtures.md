@@ -179,7 +179,7 @@ property of the document.
 ### The E-size sheet: 6 of 6, and tiling is what did it
 
 `ocr-esize-survey` — 27 x 36.7in, 991 sq in, the sheet
-plan/hierarchical-regions.md was opened for and which nothing had ever measured.
+docs/design/hierarchical-regions.md was opened for and which nothing had ever measured.
 Same model, same 200 dpi, same checks; the only variable is what reads it.
 
 | | facts | chars | dup ratio | what happened |

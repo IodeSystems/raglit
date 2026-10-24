@@ -1,6 +1,6 @@
 # raglit: a corpus of embeddings, and indexes as membership over it
 
-Status: MOSTLY ALREADY BUILT — corrected 2026-08-03 after reading pool.go. Prerequisite for `plan/answered-questions.md`
+Status: MOSTLY ALREADY BUILT — corrected 2026-08-03 after reading pool.go. Prerequisite for `docs/design/answered-questions.md`
 and for dun's durable memory (`~/inflight/shelf.md`).
 
 ## Goal (from user)

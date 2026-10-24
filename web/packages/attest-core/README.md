@@ -8,7 +8,7 @@ of how much was actually ruled on. **Only the LOCATOR varies** — a span of tim
 a recording, a box on a page, a run of bytes in a text, a binding between a
 sentence and a claim.
 
-The Go half is `raglit/attest`. Design and settled decisions: `raglit/plan/attest.md`.
+The Go half is `raglit/attest`. Design and settled decisions: `raglit/docs/design/attest.md`.
 
 ## What is here
 

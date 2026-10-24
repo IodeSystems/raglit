@@ -8,7 +8,7 @@ package main
 // binary page-image are plain chi routes (not JSON ops).
 //
 // Runs alongside the legacy stdlib `daemon`/`review` until it reaches parity;
-// then those switch over. See plan/daemon-stack.md.
+// then those switch over. See docs/design/daemon-stack.md.
 
 import (
 	"context"

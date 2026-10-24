@@ -224,7 +224,7 @@ distinct so nothing reads it as a whole page.
 ### A CONTENT loop usually means the page is SIDEWAYS
 
 The region walk measured this and the whole-page path did not know it. From its
-sweep of the survey (`plan/hierarchical-regions.md`, 2026-08-03):
+sweep of the survey (`docs/design/hierarchical-regions.md`, 2026-08-03):
 
 	whole sheet sideways  9,316 chars  89% of lines duplicated  2 bearings wrong
 	whole sheet upright   2,187 chars   2% duplicated           correct

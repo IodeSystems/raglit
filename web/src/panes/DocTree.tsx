@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import type { DocumentRow } from "../api";
 import { documents, fileName, kindLabel } from "../ui/display";
 
-// The index as folders, each rolled up (USER 2026-10-22, plan/index-tree.md):
+// The index as folders, each rolled up (USER 2026-10-22, docs/design/index-tree.md):
 // how many documents, pages and bytes are under it, the file types and the
 // kinds, and the span of the files' modified dates. It answers "what is in
 // here and what period does it cover" without opening anything — and shows a

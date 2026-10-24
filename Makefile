@@ -42,7 +42,7 @@ SQLC_SRC := $(abspath $(SRCDIR)/../sqlc)
 PLUGIN_SRC := $(abspath $(SRCDIR)/../sqlc-go-codegen-metaquery)
 
 bin/sqlc: $(SQLC_SRC)/go.mod
-	@test -d "$(SQLC_SRC)" || { echo "missing sibling checkout $(SQLC_SRC) — see plan/daemon-ui.md"; exit 1; }
+	@test -d "$(SQLC_SRC)" || { echo "missing sibling checkout $(SQLC_SRC) — see docs/design/daemon-ui.md"; exit 1; }
 	@mkdir -p bin
 	cd $(SQLC_SRC) && go build -o $(SRCDIR)/bin/sqlc ./cmd/sqlc
 	@echo "built $(SRCDIR)/bin/sqlc ($$($(SRCDIR)/bin/sqlc version)) from $(SQLC_SRC)"

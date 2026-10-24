@@ -13,7 +13,7 @@ export const APPBAR_HEIGHT = 56;
 
 // The side navigation, for every scope: the daemon, a project, an index.
 //
-// One component for all three is the F5 fix (plan/ui-redesign.md, review walk
+// One component for all three is the F5 fix (docs/design/ui-redesign.md, review walk
 // 2026-10-20). The overview and project pages used to have a top bar with a
 // centred page and the index pages a sidebar, so walking from a project into
 // one of its indexes changed the whole frame. Now only the entries change.

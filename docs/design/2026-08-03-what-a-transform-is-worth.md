@@ -6,7 +6,7 @@ balloons until nobody opens it. Says what was settled and where the detail lives
 
 Four fixtures, six configurations, one harness, plus the first execution of the
 region descent against the sheet it was designed for. Detail in
-`plan/ocr-fixtures.md` (the numbers) and `plan/hierarchical-regions.md` (what
+`docs/design/ocr-fixtures.md` (the numbers) and `docs/design/hierarchical-regions.md` (what
 they changed about the design).
 
 **Settled:**
@@ -44,6 +44,6 @@ rather than length, `transform-suspect`, self-refinement via `margin`, the grid
 rule for tiles, `--backfill-damage`, and two dead bench checks fixed (`DACE`,
 `Brannock`) plus a `make-fixtures.sh` that pointed at a nonexistent file.
 
-**NOT done, and still active in `plan/hierarchical-regions.md`:** the turn-3
+**NOT done, and still active in `docs/design/hierarchical-regions.md`:** the turn-3
 escalation loop, placeholder assembly, and wiring any of it into ingest. Nothing
 here changes how a document ingested today is read.

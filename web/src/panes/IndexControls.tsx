@@ -26,7 +26,7 @@ import {
 import { usePoll } from "../usePoll";
 import { ErrorText } from "../ui/Details";
 
-// Operator controls for one index (USER 2026-10-22, plan/index-controls.md):
+// Operator controls for one index (USER 2026-10-22, docs/design/index-controls.md):
 // pause, ignore patterns, purge by pattern. A daemon spending model calls on the
 // wrong files had no stop short of killing it, which stops every index.
 export function IndexControls() {

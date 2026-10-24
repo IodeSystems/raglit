@@ -53,7 +53,7 @@ in this set is structurally incapable of reaching the tiling path, the escalatio
 path, or anything else the descent exists for. Measured over the corpus, 14 of
 998 pages (1.4%) clear that bar, in 11 of 154 documents.
 
-See `plan/ocr-fixtures.md` for why these pages and what is known to be true
+See `docs/design/ocr-fixtures.md` for why these pages and what is known to be true
 about them. In short: text-and-drawing on one sheet, a number-dense monument
 table, a hand-drawn plan whose dimensions ARE the content, and one page of a
 thirty-page scanned instrument.

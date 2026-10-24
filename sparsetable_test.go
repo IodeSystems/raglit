@@ -276,7 +276,7 @@ func TestSparseTable_ContentLoopIsNeverSalvaged(t *testing.T) {
 // A CONTENT loop on a whole page is the measured signature of a page read
 // SIDEWAYS — so turn it, don't drop it.
 //
-// From the region walk's own sweep (plan/hierarchical-regions.md): the sideways
+// From the region walk's own sweep (docs/design/hierarchical-regions.md): the sideways
 // render duplicated 89% of its lines and got two bearings wrong; upright
 // duplicated 2% and was correct. "The wrong orientation does not lose text. It
 // makes the model run on." Page 9 of the dace exhibit failed exactly this way,

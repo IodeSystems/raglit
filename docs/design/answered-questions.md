@@ -1,6 +1,6 @@
 # raglit: the questions a document answers
 
-Status: PROPOSED 2026-08-02. Extends `plan/document-identity.md` — same
+Status: PROPOSED 2026-08-02. Extends `docs/design/document-identity.md` — same
 mechanism, one more origin.
 
 ## Goal (from user)

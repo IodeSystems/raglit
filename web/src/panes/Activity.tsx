@@ -27,7 +27,7 @@ import "./ops.css";
 //
 // This pane is the identity half, which had no surface at all. Merging the two
 // feeds into one ordered timeline is the next step and wants a server-side
-// change; see plan/ui-redesign.md §6.
+// change; see docs/design/ui-redesign.md §6.
 export function Activity() {
   const { index } = useParams({ from: "/i/$index" });
   const { root, ready } = useIndexRoot(index);

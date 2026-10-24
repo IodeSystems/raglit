@@ -19,7 +19,7 @@ import (
 )
 
 // Model settings over the API: providers, then a provider and model per role
-// (USER 2026-10-22, plan/model-settings.md). Admin-only with auth on, because
+// (USER 2026-10-22, docs/design/model-settings.md). Admin-only with auth on, because
 // it changes what every index is read and embedded with.
 //
 // A save patches config.json in place, touching only the keys it owns, so

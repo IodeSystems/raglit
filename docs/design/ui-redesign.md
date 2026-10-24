@@ -218,7 +218,7 @@ with nothing anywhere reporting it.
 | 3 | `invalid character '\n' in string literal` |
 
 239 of them are ONE bug, and it is the same one that stopped the FDA run
-(`plan/schema-ingest.md` §4a) from the opposite end: there, junk BEFORE the JSON
+(`docs/design/schema-ingest.md` §4a) from the opposite end: there, junk BEFORE the JSON
 (`'/' looking for beginning of value`); here, content AFTER a complete object.
 `extractJSON` is fragile at both ends and that single function accounts for both
 corpora. The remaining rows are the fix loop working and running out of attempts.

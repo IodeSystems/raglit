@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 // The daemon serves this bundle from a Go binary, so the build targets that and
 // nothing else.
 //
-// `dist` is committed and //go:embed'd — see plan/spa-ui.md. Two consequences
+// `dist` is committed and //go:embed'd — see docs/design/spa-ui.md. Two consequences
 // shape this config: asset names must not contain characters go:embed skips (a
 // leading `_` or `.` makes a file invisible to the embed, and the page then 404s
 // for an asset that is plainly on disk), and there is no CDN or separate origin,

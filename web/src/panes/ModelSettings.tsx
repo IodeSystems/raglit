@@ -31,7 +31,7 @@ import { ErrorText } from "../ui/Details";
 import "./scope.css";
 
 // Model settings: providers first, then a provider and a model for each role
-// (USER 2026-10-22, plan/model-settings.md; corrallm's add-model flow is the
+// (USER 2026-10-22, docs/design/model-settings.md; corrallm's add-model flow is the
 // pattern). Every change here is a draft until Save, which writes config.json
 // and has the daemon reload once no job is running.
 //

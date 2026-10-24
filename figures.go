@@ -274,7 +274,7 @@ func filepathExt(p string) string {
 // media rows, anchored to the fragment (by index) that holds each marker. The
 // image is the fragment's page image (the whole-page fallback: a figure whose
 // crop is the page still beats no media object); precise per-figure crops are a
-// later tier (see plan/fragmenters.md §3b). Ord is document-global.
+// later tier (see docs/design/fragmenters.md §3b). Ord is document-global.
 func extractMedia(frags []stagedFrag, provenance []stagedPage) []stagedMedia {
 	pageImg := map[int]string{}
 	for _, p := range provenance {

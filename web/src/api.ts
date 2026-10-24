@@ -549,7 +549,7 @@ export const deleteNote = (index: string, id: number) =>
 // Schemaed documents, and the OTHER queue.
 //
 // The daemon has served all of this for a while and the UI read none of it —
-// see plan/ui-redesign.md §1, which measured the UI reading 20 of 41 endpoints.
+// see docs/design/ui-redesign.md §1, which measured the UI reading 20 of 41 endpoints.
 
 // A registered document type: what a form of this corpus looks like, and how to
 // read one. Which fields a work order has is a property of the CORPUS, so this

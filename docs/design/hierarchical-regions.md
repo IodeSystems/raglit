@@ -3,7 +3,7 @@
 Status: **built** (`regions.go`, `regionread.go`, `regionfilter.go`,
 `regiondoc.go`, `raglit regions`, `raglit region`). Not yet wired into ingest —
 the descent runs only when asked for. The 2026-08-03 measurements that shaped
-what is here are archived in `plan/done/2026-08-03-what-a-transform-is-worth.md`;
+what is here are archived in `docs/design/2026-08-03-what-a-transform-is-worth.md`;
 what remains OPEN below is the turn-3 escalation loop, placeholder assembly, and
 the ingest trigger. Opened 2026-07-29 after a recorded land survey produced a
 confident, complete-looking transcription that had silently dropped the clause
@@ -729,7 +729,7 @@ grid or the right side of it depending on geometry nobody is choosing
 deliberately.
 
 Which means **there is no single correct render of a marginal page, and one render
-is a sample**. `201907220016` was recorded in plan/ocr-fixtures.md as recoverable
+is a sample**. `201907220016` was recorded in docs/design/ocr-fixtures.md as recoverable
 only via the digit-stripped tesseract assist; it is recoverable by rotating the
 page 2°, which is not a fact about tesseract or about the assist.
 
@@ -757,7 +757,7 @@ change" and "worse" — it could not have shown a gain, and the conclusion drawn
 from it was not supported. What follows replaces it.
 
 **On a real page with headroom.** `ocr-survey-facts` sits at 2 of the 4 facts
-plan/ocr-fixtures.md records, reproducibly:
+docs/design/ocr-fixtures.md records, reproducibly:
 
 | 400 dpi, unmodified page | cert | note2 | deed | DACE | |
 |---|---|---|---|---|---|
@@ -772,7 +772,7 @@ plan/ocr-fixtures.md records, reproducibly:
 | median 3x3 + unsharp | ✓ | ✗ | ✓ | ✗ | 2/4 |
 | CLAHE + unsharp | ✓ | ✗ | ✓ | ✗ | 2/4 |
 
-Local contrast recovers `201907220016`, which plan/ocr-fixtures.md records as
+Local contrast recovers `201907220016`, which docs/design/ocr-fixtures.md records as
 needing the digit-stripped tesseract assist. Replicated across two runs.
 
 Three things in that table, and two of them are warnings.

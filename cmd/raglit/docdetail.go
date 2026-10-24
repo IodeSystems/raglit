@@ -372,7 +372,7 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 				Untouched: state.Stats.Untouched,
 				// The review route in the SPA. The standalone page is still
 				// mounted at /attest/<index>?asset=… and still serves audio,
-				// which this route does not — see plan/spa-ui.md.
+				// which this route does not — see docs/design/spa-ui.md.
 				Workbench: "/i/" + url.PathEscape(in.Index) + "/attest/a/" + url.PathEscape(asset),
 			}
 			if rows, rerr := st.Attestations(asset); rerr == nil {

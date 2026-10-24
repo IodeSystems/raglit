@@ -10,7 +10,7 @@ import (
 
 // Repairing a region rather than improving it.
 //
-// Measured 2026-08-03 (plan/hierarchical-regions.md): a filter applied to an
+// Measured 2026-08-03 (docs/design/hierarchical-regions.md): a filter applied to an
 // undamaged render buys nothing and sometimes costs a fact, while on a damaged
 // one it is the difference between reading a page and reading nothing. A faded,
 // blurred crop of the survey's monument table read 0 of 5 facts unfiltered and 3

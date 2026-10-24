@@ -87,7 +87,7 @@ func runDoctor(args []string) error {
 				fmt.Println("     install:  brew install tesseract")
 			} else {
 				fmt.Println("     install:  sudo apt-get install tesseract-ocr tesseract-ocr-eng")
-				fmt.Println("     no sudo:  deb-extract into a prefix — recipe in raglit/plan/ocr-mcp.md")
+				fmt.Println("     no sudo:  deb-extract into a prefix — recipe in raglit/docs/design/ocr-mcp.md")
 			}
 		}
 	case "paddle", "paddleocr":

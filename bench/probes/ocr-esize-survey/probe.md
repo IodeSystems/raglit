@@ -10,7 +10,7 @@ limits: { maxTurnsPerStage: 2, maxToolCallsPerStage: 0 }
 
 A 27 x 36.7 inch record of survey — 991 square inches, 10.3 letter pages. This is
 the page the whole hierarchical-regions design was opened for, and until now it
-was described in `plan/hierarchical-regions.md` and measured by nothing.
+was described in `docs/design/hierarchical-regions.md` and measured by nothing.
 
 Every other fixture in this set is 8.5 x 11. That matters more than it sounds:
 the region reader's tiling path fires only on a region flagged `low-resolution`,

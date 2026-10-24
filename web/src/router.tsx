@@ -261,7 +261,7 @@ const branchesRoute = createRoute({
 });
 
 // Two surfaces the daemon has served for a while and the UI did not read at
-// all — see plan/ui-redesign.md §1.
+// all — see docs/design/ui-redesign.md §1.
 const typesRoute = createRoute({
   getParentRoute: () => indexRoute,
   path: "types",

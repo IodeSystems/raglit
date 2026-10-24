@@ -24,7 +24,7 @@ import (
 // What that produced was not a blank or an error. It was tidy prose that had
 // dropped the entire legal description and invented plausible auditor file
 // numbers. A transcription that READS complete and is not is the failure this
-// exists to prevent; see plan/hierarchical-regions.md.
+// exists to prevent; see docs/design/hierarchical-regions.md.
 //
 // The shape: ask the model what this whole region IS, and which sub-regions
 // merit a closer look. Recurse into those. The root says what the sheet is; the

@@ -2,7 +2,7 @@
 
 How this plan works: living plan per ~/CLAUDE.md "Planning" — current state and
 active slices only; finished slices move to plan/done/, deferred ones to
-plan/icebox.md.
+docs/design/icebox.md.
 
 USER 2026-10-24 (via dun): "can raglit be as pleasant to install as poly-lsp?
 With a few configuration parameters, like optional embedding/image/summary

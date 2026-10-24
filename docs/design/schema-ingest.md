@@ -8,7 +8,7 @@ How this plan works: see `~/CLAUDE.md` § Planning. Status marks: ◻ todo ·
 
 ## Goal
 
-`plan/schemaed-documents.md` ends by saying what it cannot say:
+`docs/design/schemaed-documents.md` ends by saying what it cannot say:
 
 > Every test here drives a FAKE chatter returning a canned string. That validates
 > the plumbing … and it validates none of the thing the feature actually IS.
@@ -244,7 +244,7 @@ start also finished `0 of 3 named`).
   the object came back as a span holding both. Here the reply held no object at
   all, so the whole thing came back and the error named the first character of
   the prose. It now takes the first BALANCED object, string-aware, preferring one
-  that parses; see `plan/ui-redesign.md` §0a for how it was found.
+  that parses; see `docs/design/ui-redesign.md` §0a for how it was found.
 - **note**: this appeared with the doc_type enum in the prompt (registered
   between the gold ingest and this sweep), so the ask CHANGED shape — but the
   gold documents failed to caption before any type existed, which argues against

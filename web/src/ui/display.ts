@@ -1,7 +1,7 @@
 // What a person sees in place of what the machine stores.
 //
 // Every visible path, label and error goes through here, so the decisions in
-// plan/ui-redesign.md ("Review walk 2026-10-20") are made once:
+// docs/design/ui-redesign.md ("Review walk 2026-10-20") are made once:
 //   - a path is shown relative to its index root, never with the home prefix;
 //   - internal names (frags, bm25, llm-seg, heavy/light lanes) get plain words;
 //   - an error is a one-line sentence, with the raw text kept for a

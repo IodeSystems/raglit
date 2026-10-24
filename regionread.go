@@ -592,7 +592,7 @@ func (rr *RegionReader) route(parent *Region, props []RegionProposal) ([]descent
 //
 // The substitute used to be "more text wins", and MEASURED, that rule is
 // backwards. Reading page 2 of the survey four ways (2026-08-03, see
-// plan/hierarchical-regions.md), the correct render was the shorter one every
+// docs/design/hierarchical-regions.md), the correct render was the shorter one every
 // time:
 //
 //	whole sheet sideways  9,316 chars   89% of lines duplicated   2 bearings wrong

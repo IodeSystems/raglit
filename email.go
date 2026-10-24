@@ -41,7 +41,7 @@ import (
 // discarded the part a dispute turns on.
 //
 // The decisions behind the mbox split and the attachment sidecar, and the list
-// of what this reader used to get silently wrong, are in plan/email.md.
+// of what this reader used to get silently wrong, are in docs/design/email.md.
 
 // emailPart is one message in an archive, flattened in reading order.
 type emailPart struct {

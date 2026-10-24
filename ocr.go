@@ -403,7 +403,7 @@ func (o *OCR) visionPage(ctx context.Context, img PageImage, assist string) (str
 			// and marked as a page whose tail was never read.
 			// A CONTENT loop on a whole page is the measured signature of a page
 			// read SIDEWAYS, and the region walk already knows it. From its own
-			// sweep of the survey (plan/hierarchical-regions.md, 2026-08-03):
+			// sweep of the survey (docs/design/hierarchical-regions.md, 2026-08-03):
 			//
 			//	whole sheet sideways  9,316 chars  89% of lines duplicated  2 bearings wrong
 			//	whole sheet upright   2,187 chars   2% duplicated           correct
@@ -717,7 +717,7 @@ func spellingAssist(text string) string {
 		return ""
 	}
 	// The block is a marker, not a mechanism: deleting the digits outright reads
-	// identically well (measured — see plan/ocr-fixtures.md). It is kept because
+	// identically well (measured — see docs/design/ocr-fixtures.md). It is kept because
 	// an elision that shows itself is easier to reason about than a silent gap.
 	masked := digitRun.ReplaceAllString(text, "\u2588")
 	if strings.TrimSpace(strings.ReplaceAll(masked, "\u2588", "")) == "" {

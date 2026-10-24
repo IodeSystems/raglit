@@ -2,7 +2,7 @@
 
 Not scheduled. Pick up explicitly. Each entry carries enough design to resume.
 
-## ◻ dun shared memory — follow-ups (auth itself done → `plan/done/2026-10-19-daemon-auth.md`)
+## ◻ dun shared memory — follow-ups (auth itself done → `docs/design/2026-10-19-daemon-auth.md`)
 
 Not scheduled. Each is opt-in.
 - ✅ **Maintainer** (dun point 4; USER 2026-10-20: in raglit, as a command):
@@ -164,7 +164,7 @@ worktrees) is the code side; this is its index-state analogue.
 
 ## 3. Fragmenters: specialized splitters, image embeddings, an eval harness
 
-Deferred out of `plan/fragmenters.md` (design agreed 2026-07-24) so the two
+Deferred out of `docs/design/fragmenters.md` (design agreed 2026-07-24) so the two
 shipping paths — deterministic overlapping blocks for text, LLM segmentation
 only for documents a VLM already transcribed — can land first.
 
@@ -196,7 +196,7 @@ only for documents a VLM already transcribed — can land first.
   only pays off for vision-transcribed documents. Same shape as the vector/
   fragment cache split noted above.
 
-## ◻ CLI follow-ups (CLI work done → `plan/done/2026-10-23-cli.md`)
+## ◻ CLI follow-ups (CLI work done → `docs/design/2026-10-23-cli.md`)
 
 - `--public` on watch / `index NAME public|private` (needs OIDC; USER
   2026-10-23: later).

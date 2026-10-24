@@ -2,7 +2,7 @@ import { listDocuments } from "./api";
 
 // Old document URLs carry the ABSOLUTE path ("/home/<user>/…/x.pdf"): every
 // link written before 2026-10-20, and every legacy hash link (legacyHash.ts).
-// The daemon still accepts that path, but the decision (plan/ui-redesign.md,
+// The daemon still accepts that path, but the decision (docs/design/ui-redesign.md,
 // review walk 2026-10-20) is that the absolute path never appears in a URL. So
 // the router asks here for the display path and redirects to it.
 //

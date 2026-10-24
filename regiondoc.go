@@ -103,7 +103,7 @@ type RegionSpan struct {
 // that it came from a low-resolution one — and ask for that crop.
 //
 // Whether leaves should replace fragments outright is still open; see
-// plan/hierarchical-regions.md. This assembles a transcription and decides
+// docs/design/hierarchical-regions.md. This assembles a transcription and decides
 // nothing about fragmentation.
 func RegionTranscript(root *Region) (string, []RegionSpan) {
 	if root == nil {

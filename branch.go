@@ -19,7 +19,7 @@ import (
 // docs + tombstones), so forking is cheap and a branch reflects only what it
 // changed. Overlaid: FTS, vector and hybrid search, figures, DocReview, page
 // images and layouts. BranchDiff lists what a branch changed; merge is not
-// built — see plan/daemon-stack.md P6.
+// built — see docs/design/daemon-stack.md P6.
 
 // shadowedPaths is the set of parent doc paths hidden by this branch: docs the
 // branch has its own copy of, plus tombstoned (deleted-in-branch) paths.
