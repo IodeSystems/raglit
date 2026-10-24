@@ -1,6 +1,7 @@
 {
   "name": "@iodesystems/attest-core",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "Machine reading, human verdict — the client half, with no framework in it.",

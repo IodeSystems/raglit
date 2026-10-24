@@ -1,6 +1,7 @@
 {
   "name": "@iodesystems/attest-react",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "Headless React bindings for the attest workbench. No styling, no design system.",
