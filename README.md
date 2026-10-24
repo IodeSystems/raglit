@@ -7,6 +7,20 @@ run.
 
 ## Quickstart
 
+Three ways to install. Each is one binary: CLI, daemon and MCP server; pure Go,
+no C compiler.
+
+| how | gets | updates |
+|---|---|---|
+| release tarball `raglit_{os}_{arch}.tar.gz` (+ `SHA256SUMS`) from GitHub releases | everything, web UI included | `doctor --json` checks the latest release |
+| `go install github.com/iodesystems/raglit/cmd/raglit@latest` | CLI, daemon, MCP; the web UI is a placeholder page (it needs node to build) | `doctor --json` checks the Go proxy |
+| `make install` in a checkout | everything; rebuilds itself when the checkout changes | `doctor --json` checks the checkout's upstream |
+
+`raglit doctor` says what this install can do and what would add more: models
+per role (embedding, vision, text, summary, audio) and external extractors
+(poppler, pandoc, tesseract, …). `--json` prints it for tools; `raglit serve`
+sends the same summary as an MCP log notification (logger `raglit/setup`).
+
 ```sh
 # build
 go install github.com/iodesystems/raglit/cmd/raglit@latest

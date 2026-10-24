@@ -39,9 +39,18 @@ providers + a provider/model per role exist in config.json and through
    level "warning" only when a core capability (keyword, semantic, PDF text,
    scans) is off, else "info". Proxy mode reports the DAEMON's summary
    (`GET /api/setup`, admin-only with auth on); doctor --json uses it too.
-5. ◻ **Releases.** `raglit_{os}_{arch}.tar.gz` + SHA256SUMS on GitHub releases.
-   - blocking decision: Carl owns tagging and publishing; the workflow can be
-     written and tested locally, a release is his call.
+5. ✅ **Releases.** `.github/workflows/release.yml`: test (CGO_ENABLED=0,
+   with the extractors apt-installed), then one Linux runner builds the UI
+   and cross-builds linux/darwin × amd64/arm64 with `-trimpath -tags
+   release`, smoke-tests linux_amd64 (`--help`, `doctor --json --local`), and
+   on a `v*` tag publishes the four tarballs + SHA256SUMS. workflow_dispatch
+   is a dry run. Build + package + smoke reproduced locally 2026-10-24; the
+   workflow itself has not run on GitHub.
+   - blocking decision: Carl owns pushing it, the first tag, and enabling
+     Actions. No release exists yet, so a release build reports no update
+     block until one does.
+   - risks: the test job's apt package list is a guess at what CI needs; the
+     suite has only run on this dev box.
 
 ## Findings
 

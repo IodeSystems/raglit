@@ -1,0 +1,144 @@
+name: release
+
+# Tag push (v*) builds four tarballs + SHA256SUMS and publishes a GitHub
+# release. workflow_dispatch is a dry run: builds and uploads workflow
+# artifacts, creates no release. Same scheme as poly-lsp-mcp, so dun's signed
+# manifest lists both the same way.
+#
+# Asset names carry no version, so
+#   https://github.com/IodeSystems/raglit/releases/latest/download/<asset>
+# is stable. Signing is not done here. The `release` build tag is the one
+# marker (cmd/raglit/release_on.go): `doctor --json` then checks GitHub for
+# updates instead of the Go proxy. No -X srcDir stamp, so a release binary
+# never rebuilds itself.
+#
+# raglit is pure Go (modernc sqlite), so one Linux runner cross-builds every
+# target. The web UI is built once with node and embedded in each binary:
+# `go install` alone embeds only the committed placeholder page.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet and test, CGO_ENABLED=0
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # The extractors raglit probes (tools.go), so tests that read PDFs,
+      # office files and scans run rather than skip.
+      - name: Extractors
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq poppler-utils pandoc antiword catdoc imagemagick tesseract-ocr tesseract-ocr-eng
+
+      - name: Vet and test
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go vet ./...
+          go test -count=1 -timeout 900s ./...
+
+  build:
+    name: build
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web UI
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - name: Build and package
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            goos=${target%/*}; goarch=${target#*/}
+            asset="raglit_${goos}_${goarch}.tar.gz"
+            rm -rf pkg && mkdir pkg
+            GOOS=$goos GOARCH=$goarch go build -trimpath -tags release -o pkg/raglit ./cmd/raglit
+            for f in LICENSE README.md; do
+              if [ -f "$f" ]; then cp "$f" pkg/; fi
+            done
+            tar -czf "dist/$asset" -C pkg .
+            tar -tzf "dist/$asset"
+          done
+
+      - name: Smoke
+        run: |
+          rm -rf smoke && mkdir smoke
+          tar -xzf dist/raglit_linux_amd64.tar.gz -C smoke
+          export RAGLIT_HOME="$RUNNER_TEMP/raglit-home" RAGLIT_ROOT="$RUNNER_TEMP/raglit-root"
+          ./smoke/raglit --help
+          ./smoke/raglit doctor --json --local | tee doctor.json
+          # A release build reports origin "release" whenever it reports one.
+          if grep -q '"origin"' doctor.json && ! grep -q '"origin": "release"' doctor.json; then
+            echo "release build did not report origin release" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: raglit-release
+          path: dist/raglit_*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: raglit-release
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          ls -l
+          test "$(ls -1 raglit_*.tar.gz | wc -l)" -eq 4
+          sha256sum raglit_*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes \
+            dist/raglit_linux_amd64.tar.gz \
+            dist/raglit_linux_arm64.tar.gz \
+            dist/raglit_darwin_amd64.tar.gz \
+            dist/raglit_darwin_arm64.tar.gz \
+            dist/SHA256SUMS
