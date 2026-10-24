@@ -3,6 +3,8 @@ package raglit
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // Config is raglit's model-connection setup, written by `raglit init` into
@@ -207,6 +209,42 @@ type Provider struct {
 	BaseURL string `json:"base_url"`
 	// APIKey is sent as a bearer token. Empty → no Authorization header.
 	APIKey string `json:"api_key,omitempty"`
+	// APIKeyEnv and APIKeyFile say where the key is instead of holding it: an
+	// environment variable of the process that makes the call, or a file whose
+	// contents, trimmed, are the key. A tool that already holds the user's key
+	// (dun) points at it rather than copying it into this file. APIKey wins
+	// when set. Read at each call, so a rotated key needs no restart.
+	//
+	// A daemon under systemd or launchd does not inherit a shell's variables,
+	// so api_key_env reaches it only through its unit; api_key_file reaches it
+	// always.
+	APIKeyEnv  string `json:"api_key_env,omitempty"`
+	APIKeyFile string `json:"api_key_file,omitempty"`
+}
+
+// Key is the bearer token: APIKey, else $APIKeyEnv, else APIKeyFile's contents
+// ("~/" is the home directory). "" when none of them gives one.
+func (p Provider) Key() string {
+	if p.APIKey != "" {
+		return p.APIKey
+	}
+	if p.APIKeyEnv != "" {
+		if v := strings.TrimSpace(os.Getenv(p.APIKeyEnv)); v != "" {
+			return v
+		}
+	}
+	if p.APIKeyFile != "" {
+		f := p.APIKeyFile
+		if rest, ok := strings.CutPrefix(f, "~/"); ok {
+			if h, err := os.UserHomeDir(); err == nil {
+				f = filepath.Join(h, rest)
+			}
+		}
+		if b, err := os.ReadFile(f); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
 }
 
 // Endpoint is the base URL and key of a named provider. "" or an unknown name
@@ -219,7 +257,7 @@ func (c *Config) Endpoint(provider string) (baseURL, apiKey string, ok bool) {
 	if !found {
 		return c.BaseURL, c.APIKey, false
 	}
-	return p.BaseURL, p.APIKey, true
+	return p.BaseURL, p.Key(), true
 }
 
 // SegmentProviderName is the segment role's provider. A segment role with no

@@ -39,6 +39,10 @@ type providerView struct {
 	Kind    string `json:"kind"`
 	BaseURL string `json:"base_url"`
 	HasKey  bool   `json:"has_key"`
+	// KeyEnv and KeyFile are where the key is read from, when it is referenced
+	// rather than stored. Not secret, so they are sent back.
+	KeyEnv  string `json:"api_key_env,omitempty"`
+	KeyFile string `json:"api_key_file,omitempty"`
 }
 
 type roleView struct {
@@ -80,7 +84,8 @@ func modelSettingsFrom(cfg raglit.Config) *modelSettingsOut {
 	sort.Strings(names)
 	for _, n := range names {
 		p := cfg.Providers[n]
-		b.Providers = append(b.Providers, providerView{Name: n, Kind: firstNonEmpty(p.Kind, "custom"), BaseURL: p.BaseURL, HasKey: p.APIKey != ""})
+		b.Providers = append(b.Providers, providerView{Name: n, Kind: firstNonEmpty(p.Kind, "custom"), BaseURL: p.BaseURL,
+			HasKey: p.Key() != "", KeyEnv: p.APIKeyEnv, KeyFile: p.APIKeyFile})
 	}
 	// The legacy endpoint, shown as a provider while any role still uses it.
 	legacy := func(p, model string) string {
@@ -130,6 +135,11 @@ type providerIn struct {
 	// unless ClearKey is set.
 	APIKey   string `json:"api_key,omitempty"`
 	ClearKey bool   `json:"clear_key,omitempty"`
+	// APIKeyEnv and APIKeyFile reference the key instead (raglit.Provider).
+	// Empty keeps the stored reference unless ClearKey is set, like APIKey, so
+	// a save from a form that does not show them keeps them.
+	APIKeyEnv  string `json:"api_key_env,omitempty"`
+	APIKeyFile string `json:"api_key_file,omitempty"`
 }
 
 type saveModelSettingsIn struct {
@@ -166,15 +176,18 @@ func applyModelSettings(cfg *raglit.Config, in *saveModelSettingsIn) error {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Errorf("provider %q: base URL must be http(s)://host…", p.Name)
 		}
-		key := p.APIKey
-		if key == "" && !p.ClearKey {
+		key, env, file := p.APIKey, p.APIKeyEnv, p.APIKeyFile
+		if !p.ClearKey {
 			if o, ok := old[p.Name]; ok {
-				key = o.APIKey
+				key = firstNonEmpty(key, o.APIKey)
+				env = firstNonEmpty(env, o.APIKeyEnv)
+				file = firstNonEmpty(file, o.APIKeyFile)
 			} else if p.Name == legacyProvider {
-				key = cfg.APIKey
+				key = firstNonEmpty(key, cfg.APIKey)
 			}
 		}
-		provs[p.Name] = raglit.Provider{Kind: p.Kind, BaseURL: strings.TrimRight(p.BaseURL, "/"), APIKey: key}
+		provs[p.Name] = raglit.Provider{Kind: p.Kind, BaseURL: strings.TrimRight(p.BaseURL, "/"),
+			APIKey: key, APIKeyEnv: env, APIKeyFile: file}
 	}
 	role := func(name string) (string, string, error) {
 		r := in.Body.Roles[name]

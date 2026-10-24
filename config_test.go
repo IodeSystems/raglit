@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -77,5 +78,28 @@ func TestConfigPerKindModelsRoundTrip(t *testing.T) {
 	}
 	if got2.PerKindModelsConfigured() {
 		t.Fatal("no per-kind models configured — routing must be a no-op")
+	}
+}
+
+// A provider's key is its literal key, else its environment variable, else its
+// file's trimmed contents.
+func TestProviderKey(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(f, []byte(" file-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RAGLIT_TEST_PROVIDER_KEY", "env-secret")
+	for _, c := range []struct {
+		p    Provider
+		want string
+	}{
+		{Provider{APIKey: "literal", APIKeyEnv: "RAGLIT_TEST_PROVIDER_KEY"}, "literal"},
+		{Provider{APIKeyEnv: "RAGLIT_TEST_PROVIDER_KEY", APIKeyFile: f}, "env-secret"},
+		{Provider{APIKeyEnv: "RAGLIT_TEST_UNSET_KEY", APIKeyFile: f}, "file-secret"},
+		{Provider{APIKeyFile: filepath.Join(t.TempDir(), "absent")}, ""},
+	} {
+		if got := c.p.Key(); got != c.want {
+			t.Errorf("%+v: Key = %q, want %q", c.p, got, c.want)
+		}
 	}
 }

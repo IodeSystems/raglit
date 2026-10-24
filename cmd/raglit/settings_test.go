@@ -160,3 +160,40 @@ func TestModelSettings_EmptyRoleHasNoProvider(t *testing.T) {
 		t.Fatalf("roles = %+v", out.Body.Roles)
 	}
 }
+
+// A provider can reference its key by environment variable or file. The
+// reference is saved, shown back (it is not secret), resolved for has_key, and
+// kept by a save that does not send it.
+func TestModelSettings_KeyReference(t *testing.T) {
+	srv, home := settingsServer(t, `{}`)
+	t.Setenv("RAGLIT_TEST_REF_KEY", "env-secret")
+	save := `{"providers":[{"name":"p","base_url":"http://p/v1","api_key_env":"RAGLIT_TEST_REF_KEY"}],
+	 "roles":{"embed":{"provider":"p","model":"e"}}}`
+	if code, body := doAs(t, "PUT", srv.URL+"/api/settings/models", "", save); code != http.StatusOK {
+		t.Fatalf("PUT: %d %s", code, body)
+	}
+	// A save from a form that does not know the reference keeps it.
+	again := `{"providers":[{"name":"p","base_url":"http://p/v1"}],"roles":{"embed":{"provider":"p","model":"e"}}}`
+	if code, body := doAs(t, "PUT", srv.URL+"/api/settings/models", "", again); code != http.StatusOK {
+		t.Fatalf("PUT: %d %s", code, body)
+	}
+	cfg, _, err := raglit.LoadConfig(home)
+	must(t, err)
+	if p := cfg.Providers["p"]; p.APIKey != "" || p.APIKeyEnv != "RAGLIT_TEST_REF_KEY" {
+		t.Fatalf("provider = %+v, want the env reference and no stored key", p)
+	}
+	if _, key, _ := cfg.Endpoint("p"); key != "env-secret" {
+		t.Fatalf("Endpoint key = %q, want the variable's value", key)
+	}
+	code, body := doAs(t, "GET", srv.URL+"/api/settings/models", "", "")
+	if code != http.StatusOK || strings.Contains(body, "env-secret") {
+		t.Fatalf("GET: %d %s", code, body)
+	}
+	var got struct {
+		Providers []providerView `json:"providers"`
+	}
+	must(t, json.Unmarshal([]byte(body), &got))
+	if len(got.Providers) != 1 || !got.Providers[0].HasKey || got.Providers[0].KeyEnv != "RAGLIT_TEST_REF_KEY" {
+		t.Fatalf("providers = %+v", got.Providers)
+	}
+}
