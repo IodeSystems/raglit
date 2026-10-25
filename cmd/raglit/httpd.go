@@ -698,6 +698,12 @@ type searchOut struct {
 		// is indistinguishable from a badly phrased query, and an agent that
 		// cannot tell the difference rephrases and asks again.
 		Covers []raglit.IndexDigest `json:"covers,omitempty"`
+		// Searched is every index this search read, after wildcards, access
+		// and sibling branches were applied: what "results from N indexes"
+		// counts. Skipped is the indexes in scope that sat out a meaning
+		// search because they have no embedding model.
+		Searched []string `json:"searched"`
+		Skipped  []string `json:"skipped,omitempty"`
 	}
 }
 
@@ -714,6 +720,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		plan := planSearch(ctx, reg, in.Index, siblingsOn(in.Siblings))
 		byMeaning := in.Mode == "vec" || in.Mode == "hybrid"
 		meaningful := 0
+		searched, skipped := []string{}, []string(nil)
 		for _, name := range plan.names {
 			st, err := reg.Read(ctx, name)
 			if err != nil {
@@ -722,9 +729,11 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 			// An index without an embedder cannot answer a meaning search; it
 			// sits out rather than failing the whole search.
 			if byMeaning && !st.CanSearchByMeaning() {
+				skipped = append(skipped, name)
 				continue
 			}
 			meaningful++
+			searched = append(searched, name)
 			var hits []raglit.Hit
 			mode := searchMode(st, in.Mode)
 			if plan.own[name] {
@@ -742,6 +751,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		}
 		out := &searchOut{}
 		out.Body.Hits = []hitRow{}
+		out.Body.Searched, out.Body.Skipped = searched, skipped
 		// Per index and per document, once: a page of hits is mostly a few
 		// documents several times over.
 		views := map[string]*docView{}

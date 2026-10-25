@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	gen "github.com/iodesystems/raglit/internal/db"
@@ -320,6 +321,52 @@ func jobInfoFromRow(j gen.IngestJob) JobInfo {
 		Fragments: int(j.Fragments), Mode: j.Mode, Lane: j.Lane,
 		EnqueuedAt: j.EnqueuedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
 	}
+}
+
+// DocJobs returns the finished ingest jobs (done or error) for one document,
+// oldest first: when it was read into the index, and from where. targets are
+// the forms a job's URL can take for it (the absolute path, the display path);
+// each matches bare and as a file:// URL.
+//
+// A query of its own rather than a filter over Jobs(): that answers "the last
+// N", and a document read a thousand jobs ago would have no history at all.
+func (s *Store) DocJobs(targets ...string) ([]JobInfo, error) {
+	var urls []any
+	for _, t := range targets {
+		if t != "" {
+			urls = append(urls, t, "file://"+t)
+		}
+	}
+	if len(urls) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT id, url, title, state, error, fragments, mode, lane, enqueued_at, started_at, finished_at
+		   FROM ingest_jobs
+		  WHERE state IN ('done', 'error') AND url IN (?`+strings.Repeat(", ?", len(urls)-1)+`)
+		  ORDER BY id`, urls...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JobInfo
+	for rows.Next() {
+		var j JobInfo
+		if err := rows.Scan(&j.ID, &j.URL, &j.Title, &j.State, &j.Error, &j.Fragments, &j.Mode,
+			&j.Lane, &j.EnqueuedAt, &j.StartedAt, &j.FinishedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// DocumentAddedAt is when the document was last written into the index, in
+// Unix nanoseconds; 0 when it is not in the index. Re-ingest updates it.
+func (s *Store) DocumentAddedAt(path string) int64 {
+	var at int64
+	_ = s.db.QueryRow(`SELECT added_at FROM documents WHERE path = ?`, path).Scan(&at)
+	return at
 }
 
 // Jobs lists ingest jobs, newest first, via a metaquery Builder: state filters

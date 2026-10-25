@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -333,5 +335,75 @@ func TestPruneEndpoint(t *testing.T) {
 	}
 	if b := httpGet(t, srv.URL+"/indexes"); strings.Contains(b, `"prunable"`) || !strings.Contains(b, `"documents":1`) {
 		t.Fatalf("after prune:\n%s", clip(b, 400))
+	}
+}
+
+// A search says which indexes it read, so "N results from M indexes" counts
+// what was searched and not only the indexes that happened to have hits.
+func TestSearchReportsSearchedIndexes(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	if _, err := reg.Get("empty"); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Hits     []struct{ Index string }
+		Searched []string
+	}
+	_ = json.Unmarshal([]byte(httpGet(t, srv.URL+"/search?index=default,empty&q=refresh")), &out)
+	if len(out.Hits) == 0 || strings.Join(out.Searched, ",") != "default,empty" {
+		t.Fatalf("searched = %v, %d hits; want default,empty with hits", out.Searched, len(out.Hits))
+	}
+}
+
+// A document's History starts with the ingest that read it: when, and from
+// where. Without it a freshly added document said "Nothing recorded".
+func TestDocDetailHistoryHasTheIngest(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(t.TempDir(), "renewal.md")
+	if err := os.WriteFile(f, []byte("# Renewal\n\nrenews automatically unless notice is given"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.Enqueue("file://"+f, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's own pending job is older; drain until this one is done.
+	w := &raglit.Worker{Store: st, Fetcher: raglit.Fetch}
+	for {
+		did, err := w.ProcessOne(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !did {
+			break
+		}
+	}
+	var det struct {
+		AddedAt string `json:"added_at"`
+		History []struct {
+			Kind, Source, Note, At string
+			Seq                    int64
+		}
+	}
+	_ = json.Unmarshal([]byte(httpGet(t, srv.URL+"/api/doc-detail?index=default&path="+url.QueryEscape(f))), &det)
+	if len(det.History) == 0 {
+		t.Fatalf("no history: %+v", det)
+	}
+	h := det.History[0]
+	if h.Kind != "ingest" || h.Seq != id || h.Source != "done" || !strings.Contains(h.Note, "renewal.md") ||
+		h.At == "" || det.AddedAt != h.At {
+		t.Fatalf("first history row = %+v, added_at %q; want the ingest of job %d", h, det.AddedAt, id)
+	}
+
+	// Ingested without a job (a direct Ingest, or a forgotten job): the
+	// document row still dates it.
+	det.History, det.AddedAt = nil, ""
+	_ = json.Unmarshal([]byte(httpGet(t, srv.URL+"/api/doc-detail?index=default&path="+url.QueryEscape("file:///notes.md"))), &det)
+	if len(det.History) == 0 || det.History[0].Kind != "ingest" || det.AddedAt == "" {
+		t.Fatalf("job-less document: %+v", det)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/iodesystems/raglit"
 	"github.com/iodesystems/raglit/attest"
@@ -57,6 +58,11 @@ type DocDetail struct {
 	// megabytes and nothing on the page needs it until somebody asks.
 	Original string `json:"original,omitempty"`
 
+	// AddedAt is when the document first came into the index (its earliest
+	// finished ingest, else the document row's time), RFC 3339. Where it came
+	// from is Path; together they are the provenance a reader asks for first.
+	AddedAt string `json:"added_at,omitempty"`
+
 	Pages []DocDetailPage `json:"pages,omitempty"`
 	Text  string          `json:"text,omitempty"`
 
@@ -98,7 +104,7 @@ type DocJob struct {
 
 // HistoryEvent is one thing that happened to this document.
 type HistoryEvent struct {
-	Kind   string `json:"kind"` // reading | verdict
+	Kind   string `json:"kind"` // ingest | reading | verdict
 	Page   int    `json:"page,omitempty"`
 	Seq    int    `json:"seq,omitempty"`
 	Source string `json:"source,omitempty"` // machine | corrected, or the verdict kind
@@ -400,6 +406,24 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 			}
 		}
 
+		// When it was read into the index, and from where: every finished
+		// ingest job for it. A document whose jobs were forgotten still says
+		// when it was last written, from the document row.
+		if jobs, jerr := st.DocJobs(abs, rel); jerr == nil && len(jobs) > 0 {
+			for _, j := range jobs {
+				ev := HistoryEvent{Kind: "ingest", Seq: int(j.ID), Source: j.State, At: nanoTime(j.FinishedAt),
+					Note: "from " + view.rel(strings.TrimPrefix(j.URL, "file://"))}
+				if j.State == "error" {
+					ev.Text = clip(j.Error, 400)
+				}
+				d.History = append(d.History, ev)
+			}
+			d.AddedAt = nanoTime(jobs[0].FinishedAt)
+		} else if at := st.DocumentAddedAt(abs); at > 0 {
+			d.History = append(d.History, HistoryEvent{Kind: "ingest", Source: "done", At: nanoTime(at), Note: "from " + rel})
+			d.AddedAt = nanoTime(at)
+		}
+
 		// What has been said about this document, over time.
 		if hist, herr := st.DocReadingHistory(abs); herr == nil {
 			for _, h := range hist {
@@ -430,6 +454,14 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 
 		return &docDetailOut{Body: d}, nil
 	}
+}
+
+// nanoTime formats a Unix-nanosecond stamp as RFC 3339 UTC; "" for 0.
+func nanoTime(ns int64) string {
+	if ns <= 0 {
+		return ""
+	}
+	return time.Unix(0, ns).UTC().Format(time.RFC3339)
 }
 
 // detailKind names what a reviewer is about to be shown, using the same split

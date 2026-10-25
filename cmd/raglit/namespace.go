@@ -223,7 +223,8 @@ func nsStrip(ns, full string) string {
 	return strings.TrimPrefix(full, ns+nsSep)
 }
 
-// stripNSJSON rewrites every "index" string field in a JSON document, removing
+// stripNSJSON rewrites every "index" string field in a JSON document, and every
+// string in a "searched" or "skipped" list (the indexes a search read), removing
 // the "<ns>__" prefix, so proxied daemon responses show local index names. Other
 // fields are untouched; malformed JSON is returned unchanged.
 func stripNSJSON(b []byte, ns string) []byte {
@@ -248,6 +249,16 @@ func walkStripIndex(v any, prefix string) {
 			if k == "index" {
 				if s, ok := val.(string); ok {
 					t[k] = strings.TrimPrefix(s, prefix)
+					continue
+				}
+			}
+			if k == "searched" || k == "skipped" {
+				if list, ok := val.([]any); ok {
+					for i, e := range list {
+						if s, ok := e.(string); ok {
+							list[i] = strings.TrimPrefix(s, prefix)
+						}
+					}
 					continue
 				}
 			}
