@@ -61,9 +61,37 @@ func fetchFile(path string) (Fetched, error) {
 	}
 	return Fetched{
 		Data:  data,
-		Title: filepath.Base(path),
+		Title: markdownTitle(path, data, filepath.Base(path)),
 		IsPDF: strings.EqualFold(filepath.Ext(path), ".pdf"),
 	}, nil
+}
+
+// markdownTitle is a Markdown file's first-level heading when its first
+// non-blank line is one ("# Incident report: checkout outage"), else fallback.
+// The heading is what the author called the document; the file name is what
+// the file system needed. Without it a corpus with no identity model listed
+// every Markdown document by file name. Other formats keep fallback.
+func markdownTitle(path string, data []byte, fallback string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown":
+	default:
+		return fallback
+	}
+	head := data
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	for _, ln := range strings.Split(string(head), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		if t, ok := strings.CutPrefix(ln, "# "); ok && strings.TrimSpace(t) != "" {
+			return strings.TrimSpace(t)
+		}
+		return fallback
+	}
+	return fallback
 }
 
 func fetchHTTP(ctx context.Context, rawURL string) (Fetched, error) {
@@ -89,6 +117,7 @@ func fetchHTTP(ctx context.Context, rawURL string) (Fetched, error) {
 	if title == "" || title == "." || title == "/" {
 		title = rawURL
 	}
+	title = markdownTitle(u.Path, data, title)
 	return Fetched{
 		Data:        data,
 		Title:       title,

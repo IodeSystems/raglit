@@ -27,6 +27,32 @@ func TestFetch_FileURLAndBarePath(t *testing.T) {
 	}
 }
 
+// A Markdown file whose first line is a level-1 heading is titled by it; a
+// level-2 heading, prose first, or another format keeps the file name.
+func TestFetch_MarkdownHeadingIsTheTitle(t *testing.T) {
+	dir := t.TempDir()
+	for name, c := range map[string]struct{ body, want string }{
+		"incident.md":    {"\n# Incident report: checkout outage\n\nDuration: 47 minutes.", "Incident report: checkout outage"},
+		"sub.md":         {"## Not a title\n\ntext", "sub.md"},
+		"prose.md":       {"Some text.\n# Late heading", "prose.md"},
+		"notes.txt":      {"# Looks like a heading", "notes.txt"},
+		"empty-h1.md":    {"# \n\ntext", "empty-h1.md"},
+		"guide.markdown": {"# Guide", "Guide"},
+	} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(c.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f, err := Fetch(context.Background(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Title != c.want {
+			t.Errorf("%s: title %q, want %q", name, f.Title, c.want)
+		}
+	}
+}
+
 func TestFetch_UnsupportedScheme(t *testing.T) {
 	if _, err := Fetch(context.Background(), "ftp://x/y"); err == nil {
 		t.Fatal("expected unsupported-scheme error")
