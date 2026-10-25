@@ -1,0 +1,61 @@
+name: ci
+
+# Every push to main and every pull request (Renovate's among them): vet,
+# test, the dependency license check and the web UI typecheck. release.yml
+# runs the same steps again on a tag; this catches a failure before the tag.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet and test, CGO_ENABLED=0
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # The extractors raglit probes (tools.go), so tests that read PDFs,
+      # office files and scans run rather than skip.
+      - name: Extractors
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq poppler-utils pandoc antiword catdoc imagemagick tesseract-ocr tesseract-ocr-eng
+
+      - name: Vet and test
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go vet ./...
+          go test -count=1 -timeout 900s ./...
+
+      # Fails on a dependency whose license is not on the allow-list.
+      - name: License check
+        run: go run ./tools/notices -o "$RUNNER_TEMP/THIRD_PARTY_NOTICES.md"
+
+  web:
+    name: web UI typecheck and build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web UI
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
