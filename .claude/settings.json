@@ -1,0 +1,6 @@
+{
+  "env": {
+    "AW4_VIA": "claude-code",
+    "AW4_VIA_MODEL": "claude-opus-5-5"
+  }
+}
