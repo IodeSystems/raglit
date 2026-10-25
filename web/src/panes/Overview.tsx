@@ -5,6 +5,8 @@ import { usePoll } from "../usePoll";
 import { ErrorText } from "../ui/Details";
 import { displayPath, documents, passages } from "../ui/display";
 import { AppShell } from "../shell/AppShell";
+import { useOperator } from "../ui/operator";
+import { RootSearchBox } from "./Search";
 import { settingsSection, type NavSection } from "../shell/NavDrawer";
 import { IndexRows, useIndexInfo } from "./IndexRows";
 import "./scope.css";
@@ -24,16 +26,23 @@ import "./scope.css";
 export function Overview() {
   const { data, error } = usePoll<{ projects?: Project[] }>(listProjects, 5000, []);
   const info = useIndexInfo();
-  const projects = data?.projects ?? [];
+  const operator = useOperator();
+  const projects = shownProjects(data?.projects ?? []);
 
   const named = projects.filter((p) => p.name);
   const indexCount = projects.reduce((n, p) => n + (p.indexes?.length ?? 0), 0);
   const docCount = projects.reduce((n, p) => n + (p.documents ?? 0), 0);
 
   return (
-    <AppShell crumbs={["Projects"]} nav={rootSections(projects)}>
+    <AppShell crumbs={["Projects"]} search={<RootSearchBox />} nav={rootSections(projects, operator)}>
       <div className="scopehead">
         <h1>Projects</h1>
+        {/* What this is, once, for somebody who was only told "the documents
+            are in raglit" (focus groups, 2026-10-24). */}
+        <p className="lede">
+          Your documents, read and indexed so you can search them and read them. Search everything
+          with the box above, or open a project.
+        </p>
         {!!projects.length && (
           <div className="facts">
             {named.length.toLocaleString()} {named.length === 1 ? "project" : "projects"}
@@ -53,13 +62,27 @@ export function Overview() {
       {!data && !error && <div className="empty">Loading…</div>}
       {data && !projects.length && <div className="empty">No indexes on this server yet.</div>}
       {projects.map((p) => (
-        <ProjectBlock key={p.name || "(none)"} p={p} info={info} />
+        <ProjectBlock key={p.name || "(none)"} p={p} info={info} operator={operator} />
       ))}
     </AppShell>
   );
 }
 
-function ProjectBlock({ p, info }: { p: Project; info: Map<string, IndexInfo> }) {
+// The daemon always lists an index called "default", created on first use
+// whether or not anybody indexes into it. Empty, it is a card that says
+// "0 documents" under "Other indexes" and reads as debris (focus groups,
+// 2026-10-24); it is not shown until it holds something.
+function shownProjects(projects: Project[]): Project[] {
+  return projects
+    .map((p) =>
+      p.name
+        ? p
+        : { ...p, indexes: (p.indexes ?? []).filter((i) => i.name !== "default" || (i.documents ?? 0) > 0) },
+    )
+    .filter((p) => p.name || (p.indexes ?? []).length > 0);
+}
+
+function ProjectBlock({ p, info, operator }: { p: Project; info: Map<string, IndexInfo>; operator: boolean }) {
   // A project with no namespace is not a project. It is whatever was indexed
   // without one, and calling it a project would invent a thing that does not
   // exist, so it is named for what it is and has no project page.
@@ -79,7 +102,8 @@ function ProjectBlock({ p, info }: { p: Project; info: Map<string, IndexInfo> })
           )}
         </h3>
         <span className="facts">
-          {documents(p.documents ?? 0)} · {passages(p.fragments ?? 0)}
+          {documents(p.documents ?? 0)}
+          {operator && <> · {passages(p.fragments ?? 0)}</>}
         </span>
       </div>
       {/* Absent is not "not watching": a project whose folder the daemon was
@@ -96,8 +120,8 @@ function ProjectBlock({ p, info }: { p: Project; info: Map<string, IndexInfo> })
   );
 }
 
-export function rootSections(projects: Project[]): NavSection[] {
-  const loose = projects.find((p) => !p.name)?.indexes ?? [];
+export function rootSections(projects: Project[], operator = true): NavSection[] {
+  const loose = shownProjects(projects).find((p) => !p.name)?.indexes ?? [];
   return [
     { heading: "", items: [{ label: "All projects", to: "/", exact: true }] },
     {
@@ -110,6 +134,6 @@ export function rootSections(projects: Project[]): NavSection[] {
       heading: "Other indexes",
       items: loose.map((i) => ({ label: i.local, to: `/i/${i.name}`, count: i.failed })),
     },
-    settingsSection,
+    ...(operator ? [settingsSection] : []),
   ];
 }

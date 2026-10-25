@@ -8,6 +8,7 @@ import { ErrorText } from "../ui/Details";
 import { engineLabel } from "../ui/display";
 import "./Pages.css";
 import { useResetOn } from "../useResetOn";
+import { useOperator } from "../ui/operator";
 
 // The page list: every page's image beside the text that was indexed from it.
 //
@@ -16,6 +17,13 @@ import { useResetOn } from "../useResetOn";
 // and it is also the only scope at which a note about a bundle means anything.
 // The earlier version highlighted a row and went no further, which left the page
 // route in the URL doing nothing a reader could see.
+// The number a reader sees for a page. A text file is stored as one page
+// numbered 0 — "Page 0 of 1" (focus groups, 2026-10-24) — so a document whose
+// pages start at 0 counts from 1 on screen. Routes keep the stored number.
+function pageLabel(page: number, pages: { page: number }[]): number {
+  return pages[0]?.page === 0 ? page + 1 : page;
+}
+
 export function Pages() {
   const { detail, index, doc } = useDoc();
   const [lightbox, setLightbox] = useState<string | null>(null);
@@ -42,7 +50,7 @@ export function Pages() {
                 to="/i/$index/d/$doc/pages/$page"
                 params={{ index, doc, page: String(p.page) }}
               >
-                Page {p.page} →
+                Page {pageLabel(p.page, pages)} →
               </Link>
               <PageBadges p={p} />
             </div>
@@ -93,16 +101,16 @@ export function PageDetail({ page }: { page: number }) {
         {prev && (
           <Link to="/i/$index/d/$doc/pages/$page"
                 params={{ index, doc, page: String(prev.page) }}>
-            ← Page {prev.page}
+            ← Page {pageLabel(prev.page, pages)}
           </Link>
         )}
         <span className="muted">
-          Page {p.page} of {pages.length}
+          Page {pageLabel(p.page, pages)} of {pages.length}
         </span>
         {next && (
           <Link to="/i/$index/d/$doc/pages/$page"
                 params={{ index, doc, page: String(next.page) }}>
-            Page {next.page} →
+            Page {pageLabel(next.page, pages)} →
           </Link>
         )}
       </div>
@@ -111,7 +119,7 @@ export function PageDetail({ page }: { page: number }) {
         <PageImageWithLayout p={p} onZoom={setLightbox} />
         <div>
           <div className="pagehead">
-            <span className="n">Page {p.page}</span>
+            <span className="n">Page {pageLabel(p.page, pages)}</span>
             <PageBadges p={p} />
           </div>
           <PageBody p={p} index={index} doc={doc} tall />
@@ -146,7 +154,7 @@ export function PageDetail({ page }: { page: number }) {
         </div>
       </div>
 
-      <h2 style={{ margin: "0 14px" }}>Notes on page {p.page}</h2>
+      <h2 style={{ margin: "0 14px" }}>Notes on page {pageLabel(p.page, pages)}</h2>
       <NotesPanel pageScope={p.page} />
       {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
     </>
@@ -263,6 +271,8 @@ function retryURL(url: string, attempt: number): string {
 function Reocr({ index, doc, page }: { index: string; doc: string; page: number }) {
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<{ text?: string; err?: string } | null>(null);
+  // Re-reading a page checks the reader, not the document: operator tools.
+  const operator = useOperator();
 
   const reread = async () => {
     setBusy(true);
@@ -277,6 +287,7 @@ function Reocr({ index, doc, page }: { index: string; doc: string; page: number 
     }
   };
 
+  if (!operator) return null;
   return (
     <div className="reocr">
       <button

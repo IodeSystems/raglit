@@ -8,6 +8,8 @@ import { getJSON, listIndexes, type IndexInfo } from "../api";
 import { usePoll } from "../usePoll";
 import { AppShell, CrumbLink, ShellSearch } from "./AppShell";
 import { indexSections } from "./NavDrawer";
+import { splitName } from "../ui/display";
+import { useOperator } from "../ui/operator";
 
 // Everything below /i/:index — the app bar, the scope switcher, the search box
 // and the nav drawer — rendered once and kept mounted while the routes
@@ -22,6 +24,7 @@ import { indexSections } from "./NavDrawer";
 export function IndexShell() {
   const { index } = useParams({ from: "/i/$index" });
   const navigate = useNavigate();
+  const operator = useOperator();
   // Polled, not fetched once: a paused index says so on every page, and a
   // pause made elsewhere (the CLI, another tab) shows up here.
   const { data: listed } = usePoll<{ indexes: IndexInfo[] }>(listIndexes, 15000, []);
@@ -94,27 +97,18 @@ export function IndexShell() {
       search={
         <ShellSearch
           placeholder="Search this index"
-          onSearch={(q, nav) =>
-            void nav({ to: "/i/$index/search", params: { index }, search: { q, mode: "" } })
+          pool={project ? `${project}__*` : ""}
+          defaults={[index]}
+          onSearch={(q, nav, within) =>
+            void nav({ to: "/i/$index/search", params: { index }, search: { q, mode: "", in: within || undefined } })
           }
         />
       }
-      nav={indexSections(index, problems)}
+      nav={indexSections(index, problems, operator)}
     >
       <Outlet />
     </AppShell>
   );
-}
-
-// `bramble-v-quill__default` is a project and an index run together. Split the
-// same way the daemon does (cmd/raglit/namespace.go: nsSep is "__"). An index
-// with no separator has no project — it is not "a project called default", it
-// is one nobody namespaced.
-export function splitName(name: string): { project: string; local: string } {
-  const sep = name.indexOf("__");
-  return sep > 0
-    ? { project: name.slice(0, sep), local: name.slice(sep + 2) }
-    : { project: "", local: name };
 }
 
 // In the closed picker the project is already the crumb before it, so `short`

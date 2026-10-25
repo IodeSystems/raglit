@@ -40,3 +40,9 @@
   .ops td.detail { min-width:160px; }
   .ops td.target { max-width:60vw; }
 }
+
+/* An index with nothing wrong (Health.tsx): a finding, in a card like every
+   other page's content, not a sentence floating in white. */
+.health-ok { padding:var(--sp-5) var(--sp-5); max-width:var(--measure); }
+.health-ok-title { font-size:var(--fs-lg); font-weight:600; color:var(--ink); margin-bottom:var(--sp-2); }
+.health-ok p { margin:0; color:var(--muted); line-height:1.5; }

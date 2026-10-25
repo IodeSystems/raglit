@@ -27,6 +27,7 @@ const IndexControls = lazyRouteComponent(() => import("./panes/IndexControls"), 
 const Jobs = lazyRouteComponent(() => import("./panes/Jobs"), "Jobs");
 const Search = lazyRouteComponent(() => import("./panes/Search"), "Search");
 const ProjectSearch = lazyRouteComponent(() => import("./panes/Search"), "ProjectSearch");
+const RootSearch = lazyRouteComponent(() => import("./panes/Search"), "RootSearch");
 const DocumentList = lazyRouteComponent(() => import("./panes/DocumentList"), "DocumentList");
 const Pages = lazyRouteComponent(() => import("./panes/Pages"), "Pages");
 const PageDetail = lazyRouteComponent(() => import("./panes/Pages"), "PageDetail");
@@ -53,6 +54,17 @@ const ModelSettings = lazyRouteComponent(() => import("./panes/ModelSettings"), 
 // the extra decode cancelled it, and unreadable in the address bar. Do not add
 // one back.
 const rootRoute = createRootRoute({ component: RootShell });
+
+// A search is its query, its mode and the indexes it reads (`in`, a comma list;
+// absent is the scope's default, and leaves the ordinary search's link short).
+// All three are in the URL, so a search is a link.
+function searchParams(s: Record<string, unknown>): { q: string; mode: string; in?: string } {
+  return {
+    q: typeof s.q === "string" ? s.q : "",
+    mode: typeof s.mode === "string" ? s.mode : "",
+    ...(typeof s.in === "string" && s.in ? { in: s.in } : {}),
+  };
+}
 
 // "/" is the whole daemon: projects, then their indexes, then an index's
 // branches. It used to REDIRECT to whichever index came back first, which made a
@@ -89,10 +101,17 @@ const projectSearchRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "search",
   component: ProjectSearch,
-  validateSearch: (s: Record<string, unknown>) => ({
-    q: typeof s.q === "string" ? s.q : "",
-    mode: typeof s.mode === "string" ? s.mode : "",
-  }),
+  validateSearch: searchParams,
+});
+
+// Every index on the daemon at once: the search box on the first page. Not
+// "/search": that is the daemon's search API, which the SPA catch-all must not
+// swallow (cmd/raglit/webui.go).
+const rootSearchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/find",
+  component: RootSearch,
+  validateSearch: searchParams,
 });
 
 // Daemon-wide settings: the models every index is read and embedded with.
@@ -148,10 +167,7 @@ const searchRoute = createRoute({
   getParentRoute: () => indexRoute,
   path: "search",
   component: Search,
-  validateSearch: (s: Record<string, unknown>) => ({
-    q: typeof s.q === "string" ? s.q : "",
-    mode: typeof s.mode === "string" ? s.mode : "",
-  }),
+  validateSearch: searchParams,
 });
 
 const docsRoute = createRoute({
@@ -298,6 +314,7 @@ function PageRoute() {
 
 const routeTree = rootRoute.addChildren([
   homeRoute,
+  rootSearchRoute,
   modelSettingsRoute,
   projectRoute.addChildren([projectIndexesRoute, projectSearchRoute]),
   indexRoute.addChildren([

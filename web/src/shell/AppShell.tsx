@@ -1,14 +1,23 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Fragment, useState, type ReactNode } from "react";
 import AppBar from "@mui/material/AppBar";
+import Badge from "@mui/material/Badge";
 import Box from "@mui/material/Box";
+import FormControlLabel from "@mui/material/FormControlLabel";
+import IconButton from "@mui/material/IconButton";
 import InputBase from "@mui/material/InputBase";
 import Paper from "@mui/material/Paper";
+import Switch from "@mui/material/Switch";
 import Toolbar from "@mui/material/Toolbar";
 import Typography from "@mui/material/Typography";
+import SearchIcon from "@mui/icons-material/Search";
+import TuneIcon from "@mui/icons-material/Tune";
 
 import { APPBAR_HEIGHT, NavDrawer, type NavSection } from "./NavDrawer";
 import { useResetOn } from "../useResetOn";
+import { IndexPicker, inParam, searchable } from "../ui/IndexPicker";
+import { setOperator, useOperator } from "../ui/operator";
+import { useIndexInfo } from "../panes/IndexRows";
 import "./AppShell.css";
 
 // The one frame every page sits in: the daemon overview, a project, an index.
@@ -91,6 +100,7 @@ export function AppShell({
           </nav>
           {search}
           <Box sx={{ flex: 1, display: { xs: "none", md: "block" } }} />
+          <OperatorSwitch />
         </Toolbar>
       </AppBar>
 
@@ -114,22 +124,64 @@ export function CrumbLink({ to, children }: { to: string; children: ReactNode })
   );
 }
 
+// The switch for operator tools (ui/operator.ts). In the app bar because it
+// changes every page, and because the person who needs it is the one who will
+// look for it there.
+function OperatorSwitch() {
+  const operator = useOperator();
+  return (
+    <FormControlLabel
+      sx={{ ml: 0, mr: 0, flexShrink: 0, "& .MuiFormControlLabel-label": { fontSize: 13, color: "text.secondary" } }}
+      control={
+        <Switch
+          size="small"
+          checked={operator}
+          onChange={(e) => setOperator(e.target.checked)}
+          slotProps={{ input: { "aria-label": "Operator tools" } }}
+        />
+      }
+      label={<Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Operator tools</Box>}
+      title="Show the controls for running raglit: re-indexing, import jobs, branches, settings"
+    />
+  );
+}
+
 // The search box in the app bar. Submitting navigates, so a search is a link
 // and the back button walks searches. Seeded from the URL so a pasted
 // /search?q=… shows its query in the box.
+//
+// The gear chooses which indexes the search reads, before searching (the
+// results page offers the same after). `pool` is the selector of the indexes
+// this scope may search ("" is every index); `defaults` is what it searches
+// when nobody chose ("" or absent is the whole pool). The choice travels as
+// `in`, a comma list, so it is part of the link too.
 export function ShellSearch({
   placeholder,
   onSearch,
+  pool = "",
+  defaults,
 }: {
   placeholder: string;
-  onSearch: (q: string, navigate: ReturnType<typeof useNavigate>) => void;
+  onSearch: (q: string, navigate: ReturnType<typeof useNavigate>, within: string) => void;
+  pool?: string;
+  defaults?: string[];
 }) {
   const navigate = useNavigate();
-  const urlQ = useRouterState({
-    select: (s) => (s.location.search as { q?: string }).q ?? "",
+  const url = useRouterState({
+    select: (s) => s.location.search as { q?: string; in?: string },
   });
+  const urlQ = url.q ?? "";
+  const urlIn = url.in ?? "";
   const [q, setQ] = useState(urlQ);
+  const [within, setWithin] = useState(urlIn);
+  const [picking, setPicking] = useState(false);
   useResetOn([urlQ], () => setQ(urlQ));
+  useResetOn([urlIn], () => setWithin(urlIn));
+
+  const info = useIndexInfo();
+  const candidates = [...info.values()].filter((i) => inPool(i.name, pool) && searchable(i));
+  const base = defaults ?? candidates.map((c) => c.name);
+  const selected = within ? within.split(",") : base;
 
   return (
     <Paper
@@ -138,12 +190,12 @@ export function ShellSearch({
       variant="outlined"
       onSubmit={(e) => {
         e.preventDefault();
-        onSearch(q.trim(), navigate);
+        onSearch(q.trim(), navigate, within);
       }}
       sx={{
         display: "flex",
         alignItems: "center",
-        px: 1,
+        pl: 1,
         flex: { xs: "1 1 auto", md: "1 1 420px" },
         minWidth: 0,
         maxWidth: 560,
@@ -159,6 +211,43 @@ export function ShellSearch({
         inputProps={{ "aria-label": placeholder }}
         sx={{ flex: 1, minWidth: 0, fontSize: 14 }}
       />
+      <IconButton
+        size="small"
+        aria-label="Choose indexes to search"
+        title={`Searching ${selected.length} of ${candidates.length || selected.length} indexes. Choose which.`}
+        onClick={() => setPicking(true)}
+      >
+        <Badge color="primary" variant="dot" invisible={!within}>
+          <TuneIcon fontSize="small" />
+        </Badge>
+      </IconButton>
+      <IconButton size="small" type="submit" aria-label="Search" title="Search">
+        <SearchIcon fontSize="small" />
+      </IconButton>
+      <IndexPicker
+        open={picking}
+        candidates={candidates}
+        selected={selected}
+        onClose={() => setPicking(false)}
+        onApply={(names) => {
+          const next = inParam(names, base);
+          setWithin(next);
+          setPicking(false);
+          // With a query typed, the choice is acted on at once; with none, it
+          // waits for the search it was made for.
+          if (q.trim()) onSearch(q.trim(), navigate, next);
+        }}
+      />
     </Paper>
   );
+}
+
+// inPool applies the daemon's index selector — a comma list of names and
+// "prefix*" wildcards, "" for every index — to one index name.
+export function inPool(name: string, pool: string): boolean {
+  if (!pool) return true;
+  return pool.split(",").some((t) => {
+    const s = t.trim();
+    return s.endsWith("*") ? name.startsWith(s.slice(0, -1)) : name === s;
+  });
 }

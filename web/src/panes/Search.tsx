@@ -6,11 +6,25 @@ import {
 } from "@tanstack/react-router";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { search, type Hit } from "../api";
+import { listProjects, search, type Hit, type Project } from "../api";
 import { ErrorText } from "../ui/Details";
+import { IndexPicker, inParam, searchable } from "../ui/IndexPicker";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
+import { useOperator } from "../ui/operator";
+import { AppShell, ShellSearch, inPool } from "../shell/AppShell";
+import { usePoll } from "../usePoll";
 import { useIndexInfo } from "./IndexRows";
-import { SEARCH_MODES, displayPath, displayTitle, fileName, isOtherKind, kindLabel, passages } from "../ui/display";
+import { rootSections } from "./Overview";
+import {
+  SEARCH_MODES,
+  displayPath,
+  displayTitle,
+  fileName,
+  isOtherKind,
+  kindLabel,
+  passages,
+  splitName,
+} from "../ui/display";
 import "./Search.css";
 import { useResetOn } from "../useResetOn";
 
@@ -47,8 +61,28 @@ const PREAMBLE = /^\s*\[what this document is[^\]]*\]\s*/i;
 // A court pleading's margin numbers ("1 2 3 … 32") read first by OCR.
 const LINE_NUMBERS = /^(?:\d{1,2}\s+){6,}/;
 
-function cleanSnippet(s: string): string {
-  return s.replace(PREAMBLE, "").replace(LINE_NUMBERS, "").trim();
+// Markdown syntax in the indexed text. The daemon sends a snippet as one line
+// (newlines folded), so a heading reads "# Deployment We ship…" with the "#"
+// mid-sentence; a reader sees syntax, not the document (focus groups,
+// 2026-10-24). Stripped, not rendered: a snippet is a cut, and rendering half
+// a table or an unclosed emphasis would make a worse mess than the plain words.
+const MD_HEADING = /(^|\s)#{1,6}\s+/g;
+const MD_EMPHASIS = /(\*\*|__|\*|`)(?=\S)([^*_`]+?)(?<=\S)\1/g;
+const MD_LINK = /!?\[([^\]]*)\]\([^)]*\)/g;
+const MD_LIST = /(^|\s)(?:[-*+]|\d+\.)\s+(?=\S)/g;
+const MD_QUOTE = /(^|\s)>\s+/g;
+
+export function cleanSnippet(s: string): string {
+  return s
+    .replace(PREAMBLE, "")
+    .replace(LINE_NUMBERS, "")
+    .replace(MD_LINK, "$1")
+    .replace(MD_HEADING, "$1")
+    .replace(MD_QUOTE, "$1")
+    .replace(MD_LIST, "$1")
+    .replace(MD_EMPHASIS, "$2")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 
@@ -114,45 +148,60 @@ function noMeaningSearch(err: string): boolean {
 // searching a whole project is the string "<project>__*" and needs no endpoint
 // of its own. What differs between the two callers is only what they put in the
 // URL when the mode changes, which is the onMode callback.
-// inScope applies the daemon's index selector — a comma list of names and
-// "prefix*" wildcards — to one index name.
-function inScope(name: string, scope: string): boolean {
-  return scope.split(",").some((t) => {
-    const s = t.trim();
-    return s.endsWith("*") ? name.startsWith(s.slice(0, -1)) : name === s;
-  });
-}
-
+//
+// `pool` is the selector of every index this scope MAY search ("" is the whole
+// daemon) and `defaults` what it searches when nobody chose (absent is the
+// whole pool); `within` is the reader's choice from the URL. The daemon says
+// which indexes it actually read, and the results say so: "3 results from 2
+// indexes", the count opening the same picker as the gear by the search box.
 function SearchPane({
-  scope,
+  pool,
+  defaults,
+  within,
   q,
   mode,
-  onMode,
+  go,
   fallbackIndex,
 }: {
-  scope: string;
+  pool: string;
+  defaults?: string[];
+  within: string;
   q: string;
   mode: string;
-  onMode: (mode: string) => void;
+  // Navigate to this search with a new mode or a new set of indexes.
+  go: (next: { mode: string; in: string }) => void;
   // Where a hit links when it does not name its own index. The daemon always
   // sends one; this is what keeps an older daemon's results clickable rather
   // than routing them to `undefined`.
   fallbackIndex: string;
 }) {
   const [hits, setHits] = useState<Hit[] | null>(null);
+  const [searched, setSearched] = useState<string[]>([]);
+  const [skipped, setSkipped] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [picking, setPicking] = useState(false);
+  const operator = useOperator();
+  const onMode = (m: string) => go({ mode: m, in: within });
 
+  const scope = within || (defaults ? defaults.join(",") : pool);
   useResetOn([scope, q, mode], () => {
     setOpen(new Set());
     setError("");
     setHits(null);
+    setSearched([]);
+    setSkipped([]);
   });
   useEffect(() => {
     if (!q) return;
     let live = true;
     search(scope, q, mode)
-      .then((r) => live && setHits(r.hits ?? []))
+      .then((r) => {
+        if (!live) return;
+        setHits(r.hits ?? []);
+        setSearched(r.searched ?? []);
+        setSkipped(r.skipped ?? []);
+      })
       .catch(
         (e: unknown) =>
           live && setError(e instanceof Error ? e.message : String(e)),
@@ -168,9 +217,11 @@ function SearchPane({
   );
   const re = useMemo(() => termRegex(queryTerms(q)), [q]);
 
-  // A project search spans indexes, so a hit has to say which one it is from —
-  // otherwise two documents of the same name in two indexes are one row twice.
-  const spansIndexes = scope.includes("*") || scope.includes(",");
+  // A search across indexes has to say which one each hit is from — otherwise
+  // two documents of the same name in two indexes are one row twice. Across
+  // projects, the project too.
+  const spansIndexes = searched.length > 1;
+  const spansProjects = new Set(searched.map((n) => splitName(n).project)).size > 1;
 
   const toggle = (key: string) =>
     setOpen((s) => {
@@ -182,7 +233,20 @@ function SearchPane({
 
   // Offer search by meaning only where some index in scope can run it.
   const info = useIndexInfo();
-  const meaning = [...info.values()].some((i) => i.meaning && inScope(i.name, scope));
+  const meaning = [...info.values()].some((i) => i.meaning && inPool(i.name, scope));
+  const candidates = [...info.values()].filter((i) => inPool(i.name, pool) && searchable(i));
+  const base = defaults ?? candidates.map((c) => c.name);
+  const chosen = within ? within.split(",") : base;
+  const indexesButton = (n: number) => (
+    <button
+      type="button"
+      className="sr-indexes"
+      onClick={() => setPicking(true)}
+      title={`Searched: ${searched.map((x) => splitName(x).local).join(", ")}. Choose which indexes to search.`}
+    >
+      {n.toLocaleString()} {n === 1 ? "index" : "indexes"}
+    </button>
+  );
   // No mode in the URL is the daemon's default; show what that runs as.
   const shown = mode || (meaning ? "hybrid" : "bm25");
   const modes = SEARCH_MODES.filter((m) => m.value === "bm25" || meaning || m.value === shown);
@@ -201,12 +265,15 @@ function SearchPane({
               <>Searching for “{q}”…</>
             )
           ) : hits.length === 0 ? (
-            ""
+            <>Nothing found in {indexesButton(searched.length)}</>
           ) : (
             <>
               {groups.length.toLocaleString()}{" "}
-              {groups.length === 1 ? "document" : "documents"} ·{" "}
-              {passages(hits.length)} for “{q}”
+              {groups.length === 1 ? "result" : "results"} for “{q}” from{" "}
+              {indexesButton(searched.length)}
+              {/* The passage count is how the index is cut up, which is an
+                  operator's question; a reader counts documents. */}
+              {operator && <span className="muted"> · {passages(hits.length)}</span>}
             </>
           )}
         </span>
@@ -273,7 +340,7 @@ function SearchPane({
 
       {hits?.length === 0 && (
         <div className="sr-state">
-          <div className="sr-state-title">No passages match “{q}”</div>
+          <div className="sr-state-title">Nothing matches “{q}”</div>
           Check the spelling, or use fewer words.
           {shown === "bm25" && meaning && (
             <div>
@@ -291,10 +358,23 @@ function SearchPane({
           group={g}
           re={re}
           showIndex={spansIndexes}
+          showProject={spansProjects}
           expanded={open.has(g.key)}
           onToggle={() => toggle(g.key)}
         />
       ))}
+
+      <IndexPicker
+        open={picking}
+        candidates={candidates}
+        selected={chosen}
+        skipped={skipped}
+        onClose={() => setPicking(false)}
+        onApply={(names) => {
+          setPicking(false);
+          go({ mode, in: inParam(names, base) });
+        }}
+      />
     </div>
   );
 }
@@ -303,12 +383,14 @@ function DocCard({
   group,
   re,
   showIndex,
+  showProject,
   expanded,
   onToggle,
 }: {
   group: DocGroup;
   re: RegExp | null;
   showIndex: boolean;
+  showProject: boolean;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -321,6 +403,7 @@ function DocCard({
   const title = name || best.title || fileName(rel);
   const machineName = !!name && best.name_source === "machine";
   const route = { index: group.index, doc: rel };
+  const where = splitName(group.index);
 
   return (
     <div className="sr-doc">
@@ -340,9 +423,11 @@ function DocCard({
         {machineName && <AITitleLabel model={best.name_model} />}
       </div>
       <div className="sr-sub">
+        {/* The index by its own name: "larkspur__handbook" is the daemon's
+            key, and the project is already in the breadcrumb. */}
         {showIndex && (
           <>
-            {group.index}
+            {showProject && where.project ? `${where.project} / ${where.local}` : where.local}
             <span className="sr-sep">·</span>
           </>
         )}
@@ -360,7 +445,9 @@ function DocCard({
             onClick={onToggle}
             aria-expanded={expanded}
           >
-            {expanded ? "Fewer passages" : `+${passages(rest.length)} more`}
+            {expanded
+              ? "Show fewer"
+              : `+${rest.length.toLocaleString()} more ${rest.length === 1 ? "match" : "matches"} in this document`}
           </button>
           {expanded && (
             <div className="sr-rest">
@@ -414,20 +501,19 @@ function Passage({
 
 export function Search() {
   const { index } = useParams({ from: "/i/$index" });
-  const { q, mode } = useSearch({ from: "/i/$index/search" });
+  const { q, mode, in: within = "" } = useSearch({ from: "/i/$index/search" });
   const navigate = useNavigate();
+  const { project } = splitName(index);
   return (
     <SearchPane
-      scope={index}
+      pool={project ? `${project}__*` : ""}
+      defaults={[index]}
+      within={within}
       fallbackIndex={index}
       q={q}
       mode={mode}
-      onMode={(m) =>
-        void navigate({
-          to: "/i/$index/search",
-          params: { index },
-          search: { q, mode: m },
-        })
+      go={(next) =>
+        void navigate({ to: "/i/$index/search", params: { index }, search: { q, mode: next.mode, in: next.in || undefined } })
       }
     />
   );
@@ -438,21 +524,64 @@ export function Search() {
 // the same question the same way.
 export function ProjectSearch() {
   const { project } = useParams({ from: "/p/$project" });
-  const { q, mode } = useSearch({ from: "/p/$project/search" });
+  const { q, mode, in: within = "" } = useSearch({ from: "/p/$project/search" });
   const navigate = useNavigate();
   return (
     <SearchPane
-      scope={`${project}__*`}
+      pool={`${project}__*`}
+      within={within}
       fallbackIndex={`${project}__default`}
       q={q}
       mode={mode}
-      onMode={(m) =>
-        void navigate({
-          to: "/p/$project/search",
-          params: { project },
-          search: { q, mode: m },
-        })
+      go={(next) =>
+        void navigate({ to: "/p/$project/search", params: { project }, search: { q, mode: next.mode, in: next.in || undefined } })
       }
+    />
+  );
+}
+
+// Every index on the daemon: the search box on the first page, for a reader
+// who does not know which project holds what they want.
+export function RootSearch() {
+  const { q, mode, in: within = "" } = useSearch({ from: "/find" });
+  const navigate = useNavigate();
+  const { data } = usePoll<{ projects?: Project[] }>(listProjects, 15000, []);
+  const operator = useOperator();
+  // Every index worth searching, once /indexes has answered; until then the
+  // whole daemon. Named rather than "" so the empty "default" is not counted
+  // in "from N indexes".
+  const info = useIndexInfo();
+  const defaults = info.size ? [...info.values()].filter(searchable).map((i) => i.name) : undefined;
+  return (
+    <AppShell
+      crumbs={[
+        <Link key="projects" to="/" className="appcrumbs-link">
+          Projects
+        </Link>,
+        "Search",
+      ]}
+      search={<RootSearchBox />}
+      nav={rootSections(data?.projects ?? [], operator)}
+    >
+      <SearchPane
+        pool=""
+        defaults={defaults}
+        within={within}
+        fallbackIndex="default"
+        q={q}
+        mode={mode}
+        go={(next) => void navigate({ to: "/find", search: { q, mode: next.mode, in: next.in || undefined } })}
+      />
+    </AppShell>
+  );
+}
+
+// The daemon-wide search box: on the first page and on its own results.
+export function RootSearchBox() {
+  return (
+    <ShellSearch
+      placeholder="Search every document"
+      onSearch={(q, nav, within) => void nav({ to: "/find", search: { q, mode: "", in: within || undefined } })}
     />
   );
 }

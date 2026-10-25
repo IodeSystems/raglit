@@ -99,7 +99,19 @@ export function Health() {
     );
   if (!data || !ready) return <div className="empty">Loading…</div>;
   const problems = data.problems ?? [];
-  if (!problems.length) return <div className="empty">No issues found in this index.</div>;
+  // Said as a finding, with what was checked: a lone sentence in an empty page
+  // read as unfinished (focus groups, 2026-10-24), and "no issues" means more
+  // when the reader can see what would have been one.
+  if (!problems.length)
+    return (
+      <div className="panel health-ok">
+        <div className="health-ok-title">Nothing needs attention</div>
+        <p>
+          Every document in this index was read, has searchable text, and still has its file. When an
+          import fails or a file moves, it is listed here with what to do about it.
+        </p>
+      </div>
+    );
 
   // Anything the list above does not name still gets shown.
   //

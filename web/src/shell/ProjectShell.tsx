@@ -31,8 +31,9 @@ export function ProjectShell() {
       search={
         <ShellSearch
           placeholder={`Search every index in ${project}`}
-          onSearch={(q, nav) =>
-            void nav({ to: "/p/$project/search", params: { project }, search: { q, mode: "" } })
+          pool={`${project}__*`}
+          onSearch={(q, nav, within) =>
+            void nav({ to: "/p/$project/search", params: { project }, search: { q, mode: "", in: within || undefined } })
           }
         />
       }

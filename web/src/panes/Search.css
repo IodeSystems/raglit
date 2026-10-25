@@ -5,6 +5,17 @@
   color: var(--muted);
   font-size: var(--fs-md);
 }
+/* "from 3 indexes": a link-styled button that opens the index picker. */
+.sr-indexes {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
 .sr-mode {
   display: flex;
   align-items: center;

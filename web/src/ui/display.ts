@@ -51,6 +51,17 @@ export function displayTitle(s: string): string {
   return s.replace(/^#+\s*/, "").replace(/^(?:\d{1,2}\s+){5,}\d{0,2}\s*/, "").trim();
 }
 
+// `bramble-v-quill__default` is a project and an index run together. Split the
+// same way the daemon does (cmd/raglit/namespace.go: nsSep is "__"). An index
+// with no separator has no project — it is not "a project called default", it
+// is one nobody namespaced.
+export function splitName(name: string): { project: string; local: string } {
+  const sep = name.indexOf("__");
+  return sep > 0
+    ? { project: name.slice(0, sep), local: name.slice(sep + 2) }
+    : { project: "", local: name };
+}
+
 export function fileName(path: string): string {
   const segs = stripScheme(path).split(/[\\/]/).filter(Boolean);
   return segs[segs.length - 1] ?? path;

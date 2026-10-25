@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listIndexes, type IndexInfo, type ProjectIndex } from "../api";
 import { documents, isOtherKind, kindLabel, passages } from "../ui/display";
 import "./scope.css";
+import { useOperator } from "../ui/operator";
 
 // The indexes of one project, as the overview and the project page both show
 // them: one row per index with what it holds, its branches under it.
@@ -53,6 +54,7 @@ function IndexRow({
   orphan?: boolean;
 }) {
   const kinds = (info?.kinds ?? []).filter((k) => !isOtherKind(k.tag)).slice(0, 4);
+  const operator = useOperator();
   return (
     <>
       <div className="idxrow">
@@ -62,7 +64,8 @@ function IndexRow({
             {i.local}
           </Link>
           <div className="idxrow-facts">
-            {documents(i.documents ?? 0)} · {passages(i.fragments ?? 0)}
+            {documents(i.documents ?? 0)}
+            {operator && <> · {passages(i.fragments ?? 0)}</>}
             {orphan && i.parent && <> · branch of {i.parent}</>}
           </div>
           {!!kinds.length && (

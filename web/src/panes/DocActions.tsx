@@ -3,6 +3,7 @@ import { useState } from "react";
 import { postJSON, type DocDetail } from "../api";
 import { ErrorText } from "../ui/Details";
 import { fileName } from "../ui/display";
+import { useOperator } from "../ui/operator";
 
 // What can be done to the document itself, as opposed to what can be said about
 // it.
@@ -25,6 +26,10 @@ export function DocActions({
 }) {
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  // Re-index and re-read are how the index is RUN, and beside the title they
+  // read to a reader as an admin panel (focus groups, 2026-10-24). Shown with
+  // operator tools on; downloading the file is a reader's act and stays.
+  const operator = useOperator();
   // Work already queued DISABLES both, and says why. The queue does not dedupe,
   // so a button that stays live while a job runs is an invitation to start the
   // same minutes-long VLM pass three times.
@@ -64,30 +69,34 @@ export function DocActions({
           Download original
         </a>
       )}
-      <button
-        disabled={blocked || !!busy}
-        title={why ?? "Add this document to the index again from the file as it is now"}
-        onClick={() =>
-          // fresh:true, not a plain re-ingest. Without it the unchanged-bytes
-          // fast path and the cross-index pool both short-circuit, so pressing
-          // "re-ingest" on a file nobody edited does nothing at all — which
-          // looks identical to a button that is broken.
-          void act("ingest", () => postJSON("/ingest", { index }, { targets: [doc], fresh: true }))
-        }
-      >
-        {busy === "ingest" ? "Queued…" : "Re-index"}
-      </button>
-      <button
-        disabled={blocked || !!busy}
-        title={
-          why ?? "Read the page images again from scratch, discarding the saved reading of every page"
-        }
-        // /api/reread takes `path` as a QUERY parameter only; sent in the body it
-        // was a 422. The display path is accepted like the absolute one.
-        onClick={() => void act("reread", () => postJSON("/api/reread", { index, path: detail.path || doc }))}
-      >
-        {busy === "reread" ? "Queued…" : "Re-read pages"}
-      </button>
+      {operator && (
+        <>
+          <button
+            disabled={blocked || !!busy}
+            title={why ?? "Add this document to the index again from the file as it is now"}
+            onClick={() =>
+              // fresh:true, not a plain re-ingest. Without it the unchanged-bytes
+              // fast path and the cross-index pool both short-circuit, so pressing
+              // "re-ingest" on a file nobody edited does nothing at all — which
+              // looks identical to a button that is broken.
+              void act("ingest", () => postJSON("/ingest", { index }, { targets: [doc], fresh: true }))
+            }
+          >
+            {busy === "ingest" ? "Queued…" : "Re-index"}
+          </button>
+          <button
+            disabled={blocked || !!busy}
+            title={
+              why ?? "Read the page images again from scratch, discarding the saved reading of every page"
+            }
+            // /api/reread takes `path` as a QUERY parameter only; sent in the body it
+            // was a 422. The display path is accepted like the absolute one.
+            onClick={() => void act("reread", () => postJSON("/api/reread", { index, path: detail.path || doc }))}
+          >
+            {busy === "reread" ? "Queued…" : "Re-read pages"}
+          </button>
+        </>
+      )}
       {blocked && (
         <span className="badge vision" title={inFlight.map((j) => `job #${j.id}: ${j.state}`).join("\n")}>
           {inFlight.length === 1

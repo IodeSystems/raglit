@@ -385,8 +385,13 @@ export const getJob = (index: string, id: number) =>
 export const listDocuments = (index: string) =>
   getJSON<{ root?: string; documents: DocumentRow[] }>("/api/documents", { index });
 
+// `searched` is every index the daemon actually read — after wildcards, access
+// and sibling branches — so "N results from M indexes" counts what was searched,
+// not only the indexes that happened to have hits. `skipped` sat out a search by
+// meaning because they have no embedding model.
+export type SearchResult = { hits: Hit[]; searched?: string[]; skipped?: string[] };
 export const search = (index: string, q: string, mode: string) =>
-  getJSON<{ hits: Hit[] }>("/search", { index, q, mode });
+  getJSON<SearchResult>("/search", { index, q, mode });
 
 // One document, assembled server-side. cmd/raglit/docdetail.go explains why the
 // join happens there and not here: a UI stitching five responses together gets
@@ -466,6 +471,8 @@ export type SeenInRow = {
 };
 
 export type HistoryEvent = {
+  // ingest | reading | verdict. An ingest row's `seq` is its job id, `source`
+  // the job's state (done | error), and `note` where it was read from.
   kind: string;
   page?: number;
   seq?: number;
@@ -475,6 +482,7 @@ export type HistoryEvent = {
   at?: string;
   active?: boolean;
   unit?: string;
+  text?: string;
 };
 
 export type AttestSummary = {
@@ -500,6 +508,8 @@ export type DocDetail = {
   kind?: string;
   identity?: DocIdentity;
   original?: string;
+  // When it first came into the index, RFC 3339.
+  added_at?: string;
   pages?: DocPage[];
   text?: string;
   seen_in?: SeenInRow[];

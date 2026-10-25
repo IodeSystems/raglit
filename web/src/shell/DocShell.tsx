@@ -9,6 +9,7 @@ import { ErrorText } from "../ui/Details";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
 import { displayPath, displayTitle, fileName, kindLabel } from "../ui/display";
 import { InlineMarkdown } from "../ui/InlineMarkdown";
+import { useOperator } from "../ui/operator";
 import "./DocShell.css";
 
 // Everything below /i/:index/d/:doc — the breadcrumb, the title block and the
@@ -25,6 +26,7 @@ export function DocShell() {
   const [editing, setEditing] = useState(false);
   const navigate = useNavigate();
   const router = useRouter();
+  const operator = useOperator();
 
   // The visible path is the one RELATIVE to the index root (F4). The daemon
   // sends it as detail.path; before it lands, the route's own value is cut down
@@ -71,7 +73,17 @@ export function DocShell() {
 
       <div className="doctitle">
         <h2>{title}</h2>
-        <div className="path" title={shownPath}>{shownPath}</div>
+        {/* Where it came from and when: the provenance a reader asks for
+            first. The path is not repeated when the title already is the path
+            (focus groups, 2026-10-24: "reads as a layout mistake"). */}
+        <div className="path" title={shownPath}>
+          {title !== shownPath && <span>{shownPath}</span>}
+          {detail?.added_at && (
+            <span className="muted">
+              {title !== shownPath && " · "}Added <time dateTime={detail.added_at}>{addedFmt(detail.added_at)}</time>
+            </span>
+          )}
+        </div>
         <div className="bykind">
           {identity?.kind && <span className="badge">{kindLabel(identity.kind)}</span>}
           {/* Who said so is not decoration. A machine's caption is a paraphrase
@@ -151,7 +163,7 @@ export function DocShell() {
           {/* The attest mount addresses assets ROOT-RELATIVE, so this takes
               detail.asset and not the absolute path the route carries. Passing
               the route's own `doc` here 404'd every review link. */}
-          {detail?.asset && (
+          {operator && detail?.asset && (
             <Link to="/i/$index/attest/a/$asset" params={{ index, asset: detail.asset }}
                   activeProps={{ className: "on" }}>
               Review
@@ -174,6 +186,13 @@ export function DocShell() {
       </div>
     </>
   );
+}
+
+const dateFmt = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" });
+
+function addedFmt(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? at : dateFmt.format(d);
 }
 
 // A zero is not shown. "Seen in (0)" and "Seen in" say the same thing, and the

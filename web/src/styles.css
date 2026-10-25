@@ -115,7 +115,9 @@
   th { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); font-weight:600; }
   tr:last-child td { border-bottom:none; }
   td.url { max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  td.actions { white-space:nowrap; text-align:right; }
+  /* Pinned to the right edge: in a table wider than its scroll box the row's
+     buttons were the part cut off ("Dism", focus groups 2026-10-24). */
+  td.actions { white-space:nowrap; text-align:right; position:sticky; right:0; background:var(--panel); }
   td.actions button { padding:3px 9px; font-size:12px; }
   .badge { display:inline-block; padding:1px 8px; border-radius:20px; font-size:11px; font-weight:600;
     background:var(--chip); }

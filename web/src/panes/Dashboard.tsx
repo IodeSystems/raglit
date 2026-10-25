@@ -18,9 +18,10 @@ import { usePoll } from "../usePoll";
 import { ErrorText, Details } from "../ui/Details";
 import { AISummaryLabel } from "../ui/Label";
 import { displayPath, documents, kindLabel, laneLabel, passages } from "../ui/display";
-import { splitName } from "../shell/IndexShell";
+import { splitName } from "../ui/display";
 import { useIndexInfo } from "./IndexRows";
 import "./scope.css";
+import { useOperator } from "../ui/operator";
 
 // The index overview: what this index holds, what needs attention, and what it
 // did lately.
@@ -37,6 +38,7 @@ export function Dashboard() {
   const { index } = useParams({ from: "/i/$index" });
   const { data, error } = usePoll<StatusSnapshot>(() => getStatus(index), 3000, [index]);
   const info = useIndexInfo().get(index);
+  const operator = useOperator();
 
   if (error) {
     return (
@@ -60,8 +62,12 @@ export function Dashboard() {
         <div className="facts">
           {documents(data.documents ?? 0)}
           <span className="sep">·</span>
-          {passages(data.fragments ?? 0)}
-          <span className="sep">·</span>
+          {operator && (
+            <>
+              {passages(data.fragments ?? 0)}
+              <span className="sep">·</span>
+            </>
+          )}
           {busy > 0
             ? `importing: ${(data.running ?? 0).toLocaleString()} in progress, ${(
                 data.pending ?? 0

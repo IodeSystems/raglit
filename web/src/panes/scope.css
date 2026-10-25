@@ -5,6 +5,7 @@
 .scopehead { margin:0 0 var(--sp-5); }
 .scopehead h1 { margin:0; font-size:var(--fs-xl); font-weight:650; letter-spacing:0; color:var(--ink);
   text-transform:none; line-height:1.3; overflow-wrap:anywhere; }
+.scopehead .lede { margin:var(--sp-2) 0 0; max-width:var(--measure); line-height:1.5; color:var(--ink); }
 .scopehead .facts { margin-top:var(--sp-1); color:var(--muted); font-size:var(--fs-base); }
 .scopehead .facts .sep { margin:0 var(--sp-2); opacity:.6; }
 .scopehead .about { margin-top:var(--sp-3); max-width:var(--measure); line-height:1.6; }

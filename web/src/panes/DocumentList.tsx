@@ -7,6 +7,7 @@ import { ErrorText } from "../ui/Details";
 import { DocTree } from "./DocTree";
 import "./DocumentList.css";
 import { useResetOn } from "../useResetOn";
+import { useOperator } from "../ui/operator";
 
 // Every document in the index.
 //
@@ -82,6 +83,7 @@ function compare(a: Row, b: Row, key: SortKey): number {
 
 export function DocumentList() {
   const { index } = useParams({ from: "/i/$index" });
+  const operator = useOperator();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
@@ -282,12 +284,15 @@ export function DocumentList() {
                   >
                     {r.title}
                   </div>
-                  <div className="dl-path">{r.rel}</div>
+                  {/* Not twice: with no better title the file name IS the
+                      title, and a second identical line read as a layout
+                      mistake (focus groups, 2026-10-24). */}
+                  {r.title !== r.rel && <div className="dl-path">{r.rel}</div>}
                 </div>
                 <div className="dl-meta">
                   {r.kind && <span className="badge dl-kind">{kindLabel(r.kind)}</span>}
                   {!!r.doc.vision && <span className="badge vision">{scannedPages(r.doc.vision)}</span>}
-                  <span className="muted dl-num">{passages(r.doc.fragments ?? 0)}</span>
+                  {operator && <span className="muted dl-num">{passages(r.doc.fragments ?? 0)}</span>}
                   {r.added && (
                     <time className="muted dl-date" dateTime={r.added.toISOString()} title="Date added">
                       {dateFmt.format(r.added)}

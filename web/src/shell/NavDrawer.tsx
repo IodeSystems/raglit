@@ -45,8 +45,24 @@ export type NavItem = {
 
 export type NavSection = { heading: string; items: NavItem[] };
 
-export function indexSections(index: string, problems?: number): NavSection[] {
+// Without operator tools (ui/operator.ts) a reader gets what a reader came for:
+// the documents, search, and whether anything is wrong. The rest is how the
+// index is run, and is one switch away.
+export function indexSections(index: string, problems?: number, operator = true): NavSection[] {
   const root = `/i/${index}`;
+  if (!operator) {
+    return [
+      {
+        heading: "",
+        items: [
+          { label: "Overview", to: root, exact: true },
+          { label: "Documents", to: `${root}/d` },
+          { label: "Search", to: `${root}/search` },
+          { label: "Problems", to: `${root}/health`, count: problems },
+        ],
+      },
+    ];
+  }
   return [
     {
       heading: "Corpus",

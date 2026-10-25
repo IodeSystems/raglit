@@ -8,6 +8,7 @@ import { ErrorText } from "../ui/Details";
 import { displayPath, documents, passages } from "../ui/display";
 import { IndexRows, useIndexInfo } from "./IndexRows";
 import "./scope.css";
+import { useOperator } from "../ui/operator";
 
 // One project: the indexes it owns, with its branches under the index each
 // overlays rather than beside it. The same index rows as the overview, so a
@@ -16,6 +17,7 @@ export function Project() {
   const { project } = useParams({ from: "/p/$project" });
   const { data, error } = usePoll<{ projects?: ProjectRow[] }>(listProjects, 5000, []);
   const info = useIndexInfo();
+  const operator = useOperator();
 
   if (error) {
     return (
@@ -44,8 +46,12 @@ export function Project() {
         <h1>{p.name}</h1>
         <div className="facts">
           {documents(p.documents ?? 0)}
-          <span className="sep">·</span>
-          {passages(p.fragments ?? 0)}
+          {operator && (
+            <>
+              <span className="sep">·</span>
+              {passages(p.fragments ?? 0)}
+            </>
+          )}
           {busy > 0 && (
             <>
               <span className="sep">·</span>
