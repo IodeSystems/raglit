@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -19,7 +20,17 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
-const version = "0.1.0"
+// version is the module version Go stamped into this binary: "0.2.1" for a
+// release, a pseudo-version or "devel" for a build from a checkout. It used to
+// be a literal, which read "0.1.0" in the v0.2.0 release.
+var version = versionFrom(readBuildInfo())
+
+func versionFrom(bi *debug.BuildInfo) string {
+	if bi == nil || bi.Main.Version == "" || bi.Main.Version == "(devel)" {
+		return "devel"
+	}
+	return strings.TrimPrefix(bi.Main.Version, "v")
+}
 
 // runServe exposes the home's indexes as a stdio MCP server. It hosts a SET of
 // named indexes (Slice G): search defaults to ALL of them (RRF-merged, each hit
