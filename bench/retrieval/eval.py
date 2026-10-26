@@ -16,6 +16,7 @@ indexed files.
 Usage:
   eval.py --snapshot DIR --queries FILE --out DIR --llm-url URL
           [--modes grep,bm25,vec,hybrid] [-n 20] [--raglit PATH] [--index-only]
+          [--repos gitaly,cli] [--frag-window N --frag-stride N --frag-floor N]
 """
 import argparse, json, os, re, statistics, subprocess, sys
 from collections import Counter
@@ -46,8 +47,11 @@ def prepare(a, snap, out):
     root.mkdir(parents=True, exist_ok=True)
     cfg = {"base_url": a.llm_url, "embed_model": a.embed_model, "project": "rtbench",
            "default_index": "org",
-           "indexes": {"org": {"roots": [str(snap / r) for r in REPOS],
+           "indexes": {"org": {"roots": [str(snap / r) for r in a.repos],
                                "include": INCLUDE, "ignore": IGNORE}}}
+    for k in ("frag_window", "frag_stride", "frag_floor"):
+        if getattr(a, k):
+            cfg[k] = getattr(a, k)
     (home / "config.json").write_text(json.dumps(cfg, indent=1))
     env = {**os.environ, "RAGLIT_HOME": str(home), "RAGLIT_ROOT": str(root)}
     if not (home / "index-org.sqlite").exists() or a.reindex:
@@ -94,7 +98,7 @@ def terms(q):
 def grep_rank(a, snap, files, q):
     distinct, total = Counter(), Counter()
     for t in terms(q):
-        r = subprocess.run(["grep", "-rIciwF", "--exclude-dir=.git", "-e", t] + REPOS,
+        r = subprocess.run(["grep", "-rIciwF", "--exclude-dir=.git", "-e", t] + a.repos,
                            capture_output=True, text=True, errors="replace", cwd=snap)
         for ln in r.stdout.splitlines():
             path, _, n = ln.rpartition(":")
@@ -142,7 +146,12 @@ def main():
     ap.add_argument("--raglit", default="raglit")
     ap.add_argument("--index-only", action="store_true")
     ap.add_argument("--reindex", action="store_true")
+    ap.add_argument("--repos", default=",".join(REPOS), help="subset of the snapshot to index and query")
+    ap.add_argument("--frag-window", type=int, default=0, help="fragment window in characters (raglit default 9000)")
+    ap.add_argument("--frag-stride", type=int, default=0)
+    ap.add_argument("--frag-floor", type=int, default=0)
     a = ap.parse_args()
+    a.repos = a.repos.split(",")
     if not a.llm_url:
         sys.exit("--llm-url (or $RAGLIT_LLM_URL) is required for the embedder")
     snap, out = Path(a.snapshot).resolve(), Path(a.out).resolve()
@@ -157,7 +166,7 @@ def main():
         keep = [f for f in q["relevant"] if f in files]
         dropped += len(q["relevant"]) - len(keep)
         q["relevant"] = keep
-    qs = [q for q in qs if q["relevant"]]
+    qs = [q for q in qs if q["relevant"] and set(q["repos"]) <= set(a.repos)]
     print(f"{len(qs)} queries, {len(files)} indexed files; {dropped} relevant files not in the index dropped",
           file=sys.stderr)
 
@@ -166,7 +175,7 @@ def main():
         for m in modes:
             ranked = grep_rank(a, snap, files, q["q"]) if m == "grep" else raglit_rank(a, home, env, snap, m, q["q"])
             row["m"][m] = metrics(ranked, q["relevant"])
-            row["top"][m] = ranked[:5]
+            row["top"][m] = ranked
         return row
 
     with ThreadPoolExecutor(a.jobs) as ex:
