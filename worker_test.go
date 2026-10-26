@@ -316,7 +316,9 @@ func TestWorker_LearnsTheEmbedBatchAndRetries(t *testing.T) {
 	if _, err := s.Enqueue(url, ""); err != nil {
 		t.Fatal(err)
 	}
-	w := &Worker{Store: s, Frag: FragConfig{EmbedLimitTokens: 8192}, Fetcher: func(context.Context, string) (Fetched, error) {
+	// A 9000-character window of dense CSV is past 4096 tokens, so the first
+	// embed is refused; the default window is too small to reach the limit.
+	w := &Worker{Store: s, Frag: FragConfig{Window: 9000, Stride: 6000, Floor: 3000, EmbedLimitTokens: 8192}, Fetcher: func(context.Context, string) (Fetched, error) {
 		return Fetched{Data: []byte(b.String())}, nil
 	}}
 	for range 3 {

@@ -300,6 +300,9 @@ first keeps them from drifting.
 2. **Window / stride / floor defaults.** RESOLVED for now: 9000 / 6000 / 3000
    (USER, 2026-07-24), inheriting the old floor/ceiling. Config-overridable, capped
    by the embed limit. Move with measurement once an eval harness exists.
+   MOVED 2026-10-26 to 1000 / 750 / 300, measured with bench/retrieval (GitLab
+   history, 253 queries): meaning search MRR 0.30 -> 0.55, hybrid level with
+   bm25 instead of far below it. Numbers in fragment.go.
 3. **Same-doc overlapping-hit dedup:** DECIDED — leave it to ranking (USER,
    2026-07-24). Offsets make a span-dedup exact if this is revisited.
 

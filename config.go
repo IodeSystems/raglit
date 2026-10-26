@@ -65,7 +65,7 @@ type Config struct {
 	// outside.
 	SegmentInputLimitTokens int `json:"segment_input_limit_tokens,omitempty"`
 	// FragWindow / FragStride / FragFloor tune the deterministic overlapping-window
-	// text fragmenter (chars). 0 → defaults (9000 / 6000 / 3000). window > stride
+	// text fragmenter (chars). 0 → defaults (1000 / 750 / 300; see fragment.go). window > stride
 	// gives the overlap; floor folds a short tail. They feed frag_recipe, so a
 	// change marks the affected documents for reprocessing.
 	FragWindow int `json:"frag_window,omitempty"`

@@ -14,13 +14,19 @@ import "strings"
 // are dedupable by span.
 
 const (
-	// Fragmenter defaults (chars), inherited from the old Assembler floor/ceiling
-	// (~500/~1500 words). Tunable via config (Config.FragWindow/Stride/Floor) and
-	// capped by the embed model's input limit. window > stride, so consecutive
-	// fragments overlap by window-stride characters.
-	defaultFragWindow = 9000 // ceiling: ~1500 words
-	defaultFragStride = 6000 // 33% overlap
-	defaultFragFloor  = 3000 // ~500 words; a tail shorter than this is folded, not emitted
+	// Fragmenter defaults (chars). Tunable via config (Config.FragWindow/Stride/
+	// Floor) and capped by the embed model's input limit. window > stride, so
+	// consecutive fragments overlap by window-stride characters.
+	//
+	// Measured 2026-10-26 on GitLab's history (bench/retrieval, Gitaly + glab,
+	// 253 queries): the old 9000/6000/3000, inherited from the Assembler's
+	// ~1500-word ceiling, embedded a whole file as one blurred vector. Search by
+	// meaning scored MRR 0.30 at 9000, 0.52 at 2000 and 0.55 at 1000, and hybrid
+	// went from below bm25 (0.40 vs 0.61) to level with it, with better recall.
+	// The cost is fragments: 2,605 at 9000, 14,240 at 1000.
+	defaultFragWindow = 1000 // ~170 words
+	defaultFragStride = 750  // 25% overlap
+	defaultFragFloor  = 300  // a tail shorter than this is folded, not emitted
 )
 
 // OffsetFrag is one windowed fragment plus its half-open [Start,End) span into
