@@ -1,0 +1,51 @@
+From wren.halvorsen@example.com Mon Mar 17 09:02:11 2025
+From: Wren Halvorsen <wren.halvorsen@example.com>
+To: ops@example.com
+Subject: checkout outage follow-ups
+Date: Mon, 17 Mar 2025 09:02:11 +0000
+Message-ID: <ops-1@example.com>
+
+All,
+
+The report for Friday is up. Action item 1, automating internal certificate
+renewal, has no owner yet. Proposal: we use Vault PKI and my team (ledger)
+owns it, since it was our certificate.
+
+Wren
+
+From priya.ramaswamy@example.com Mon Mar 17 11:40:03 2025
+From: Priya Ramaswamy <priya.ramaswamy@example.com>
+To: ops@example.com
+Subject: Re: checkout outage follow-ups
+Date: Mon, 17 Mar 2025 11:40:03 +0000
+Message-ID: <ops-2@example.com>
+In-Reply-To: <ops-1@example.com>
+
+I would rather not add Vault for this. We already run Kubernetes everywhere;
+cert-manager issues and renews from the platform CA with no new service.
+
+> Proposal: we use Vault PKI and my team (ledger)
+> owns it, since it was our certificate.
+
+Every service has internal certificates, not only ledger. This should be a
+platform job.
+
+Priya
+
+From teodor.marsh@example.com Tue Mar 18 08:15:47 2025
+From: Teodor Marsh <teodor.marsh@example.com>
+To: ops@example.com
+Subject: Re: checkout outage follow-ups
+Date: Tue, 18 Mar 2025 08:15:47 +0000
+Message-ID: <ops-3@example.com>
+In-Reply-To: <ops-2@example.com>
+
+Decision: cert-manager, not Vault. Priya Ramaswamy owns action item 1 and the
+infra team does the rollout to every cluster. Target: all internal
+certificates renewed automatically by April 30. Wren, thanks for offering;
+please review Priya's plan for ledger-svc.
+
+> I would rather not add Vault for this.
+> cert-manager issues and renews from the platform CA with no new service.
+
+Teodor

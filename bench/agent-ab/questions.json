@@ -1,0 +1,75 @@
+[
+  {
+    "id": "leave-current",
+    "wart": "near-duplicate (2024, 2025, unadopted draft); synonym",
+    "q": "How many weeks of paid maternity leave does the company give right now?",
+    "all": ["\\b16\\b|sixteen"]
+  },
+  {
+    "id": "denver-lodging",
+    "wart": "split across two documents; synonym",
+    "q": "What is the most I can spend per night on lodging for a trip to Denver?",
+    "all": ["\\$?210"]
+  },
+  {
+    "id": "expense-approver",
+    "wart": "split across two documents",
+    "q": "A sensor firmware engineer files a single $800 expense claim. Who has to approve it? Give the person's name.",
+    "all": ["Okafor"]
+  },
+  {
+    "id": "outage-cause",
+    "wart": "vocabulary mismatch",
+    "q": "Why couldn't customers pay for orders in mid-March 2025?",
+    "all": ["certificate|cert", "ledger"]
+  },
+  {
+    "id": "cert-owner",
+    "wart": "answer only in an email thread; earlier message proposes a different owner and tool",
+    "q": "After the March 2025 checkout outage, who was made responsible for automating certificate renewal, and with what tool?",
+    "all": ["Priya", "cert-manager"]
+  },
+  {
+    "id": "stipend-date",
+    "wart": "handbook gives the amount, email thread gives the date; earlier message proposes March",
+    "q": "From what date did the $60 home-office allowance apply?",
+    "all": ["Feb(ruary)?\\.? 1|2025-02-01|1 Feb"]
+  },
+  {
+    "id": "sessions-now",
+    "wart": "superseded decision record",
+    "q": "Where are web sessions stored today?",
+    "all": ["cookie"]
+  },
+  {
+    "id": "api-limit",
+    "wart": "near-duplicate (2023 and 2025 versions)",
+    "q": "What is the per-minute request limit for the v2 public API?",
+    "all": ["\\b600\\b"]
+  },
+  {
+    "id": "dep-pager",
+    "wart": "two-hop: service dependency, then that service's on-call",
+    "q": "billing-svc cannot post invoice lines because the service it depends on is down. Which pager rotation should be paged for that dependency?",
+    "all": ["ledger-primary"]
+  },
+  {
+    "id": "vesting",
+    "wart": "plain lookup",
+    "q": "What fraction of the employer 401(k) match have I earned after two years?",
+    "all": ["50 ?%|half"]
+  },
+  {
+    "id": "oncall-attachment",
+    "wart": "answer only in a base64 email attachment",
+    "q": "Who was the ledger primary on-call for the week of April 7, 2025?",
+    "all": ["Anselm Quade|Quade"]
+  },
+  {
+    "id": "no-sabbatical",
+    "wart": "not in the corpus",
+    "q": "How long is the paid sabbatical, and after how many years?",
+    "all": ["not|no "],
+    "none": ["\\b\\d+ (weeks|months) (of )?(paid )?sabbatical"]
+  }
+]
