@@ -3,73 +3,259 @@
     "id": "leave-current",
     "wart": "near-duplicate (2024, 2025, unadopted draft); synonym",
     "q": "How many weeks of paid maternity leave does the company give right now?",
-    "all": ["\\b16\\b|sixteen"]
+    "all": [
+      "\\b16\\b|sixteen"
+    ],
+    "set": "lookup"
   },
   {
     "id": "denver-lodging",
     "wart": "split across two documents; synonym",
     "q": "What is the most I can spend per night on lodging for a trip to Denver?",
-    "all": ["\\$?210"]
+    "all": [
+      "\\$?210"
+    ],
+    "set": "lookup"
   },
   {
     "id": "expense-approver",
     "wart": "split across two documents",
     "q": "A sensor firmware engineer files a single $800 expense claim. Who has to approve it? Give the person's name.",
-    "all": ["Okafor"]
+    "all": [
+      "Okafor"
+    ],
+    "set": "lookup"
   },
   {
     "id": "outage-cause",
     "wart": "vocabulary mismatch",
     "q": "Why couldn't customers pay for orders in mid-March 2025?",
-    "all": ["certificate|cert", "ledger"]
+    "all": [
+      "certificate|cert",
+      "ledger"
+    ],
+    "set": "lookup"
   },
   {
     "id": "cert-owner",
     "wart": "answer only in an email thread; earlier message proposes a different owner and tool",
     "q": "After the March 2025 checkout outage, who was made responsible for automating certificate renewal, and with what tool?",
-    "all": ["Priya", "cert-manager"]
+    "all": [
+      "Priya",
+      "cert-manager"
+    ],
+    "set": "lookup"
   },
   {
     "id": "stipend-date",
     "wart": "handbook gives the amount, email thread gives the date; earlier message proposes March",
     "q": "From what date did the $60 home-office allowance apply?",
-    "all": ["Feb(ruary)?\\.? 1|2025-02-01|1 Feb"]
+    "all": [
+      "Feb(ruary)?\\.? 1|2025-02-01|1 Feb"
+    ],
+    "set": "lookup"
   },
   {
     "id": "sessions-now",
     "wart": "superseded decision record",
     "q": "Where are web sessions stored today?",
-    "all": ["cookie"]
+    "all": [
+      "cookie"
+    ],
+    "set": "lookup"
   },
   {
     "id": "api-limit",
     "wart": "near-duplicate (2023 and 2025 versions)",
     "q": "What is the per-minute request limit for the v2 public API?",
-    "all": ["\\b600\\b"]
+    "all": [
+      "\\b600\\b"
+    ],
+    "set": "lookup"
   },
   {
     "id": "dep-pager",
     "wart": "two-hop: service dependency, then that service's on-call",
     "q": "billing-svc cannot post invoice lines because the service it depends on is down. Which pager rotation should be paged for that dependency?",
-    "all": ["ledger-primary"]
+    "all": [
+      "ledger-primary"
+    ],
+    "set": "lookup"
   },
   {
     "id": "vesting",
     "wart": "plain lookup",
     "q": "What fraction of the employer 401(k) match have I earned after two years?",
-    "all": ["50 ?%|half"]
+    "all": [
+      "50 ?%|half"
+    ],
+    "set": "lookup"
   },
   {
     "id": "oncall-attachment",
     "wart": "answer only in a base64 email attachment",
     "q": "Who was the ledger primary on-call for the week of April 7, 2025?",
-    "all": ["Anselm Quade|Quade"]
+    "all": [
+      "Anselm Quade|Quade"
+    ],
+    "set": "lookup"
   },
   {
     "id": "no-sabbatical",
     "wart": "not in the corpus",
     "q": "How long is the paid sabbatical, and after how many years?",
-    "all": ["not|no "],
-    "none": ["\\b\\d+ (weeks|months) (of )?(paid )?sabbatical"]
+    "all": [
+      "not|no "
+    ],
+    "none": [
+      "\\b\\d+ (weeks|months) (of )?(paid )?sabbatical"
+    ],
+    "set": "lookup"
+  },
+  {
+    "id": "file-travel-expense",
+    "set": "contextual",
+    "wart": "common words everywhere; procedure doc",
+    "q": "How do I file a travel expense?",
+    "all": [
+      "Brightledger"
+    ]
+  },
+  {
+    "id": "own-car",
+    "set": "contextual",
+    "wart": "no shared rare word",
+    "q": "I drove my own car to a customer site. How do I get paid back for that?",
+    "all": [
+      "0?\\.67"
+    ]
+  },
+  {
+    "id": "lost-laptop",
+    "set": "contextual",
+    "wart": "no shared rare word",
+    "q": "I left my work computer in a taxi and can't get it back. What do I need to do?",
+    "all": [
+      "4400"
+    ]
+  },
+  {
+    "id": "site-down-oncall",
+    "set": "contextual",
+    "wart": "no shared rare word",
+    "q": "I'm on call and the site just went down in the middle of the night. What's the first thing I should do?",
+    "all": [
+      "acknowledg"
+    ]
+  },
+  {
+    "id": "freelancer-github",
+    "set": "contextual",
+    "wart": "synonyms (freelancer, GitHub)",
+    "q": "We hired a freelancer for a month. How do they get into our GitHub?",
+    "all": [
+      "Gatehouse"
+    ]
+  },
+  {
+    "id": "report-anonymously",
+    "set": "contextual",
+    "wart": "no shared rare word",
+    "q": "Someone on my team keeps making comments that make people uncomfortable. Who can I tell without it being traced back to me?",
+    "all": [
+      "SpeakSafe"
+    ]
+  },
+  {
+    "id": "rust-course",
+    "set": "contextual",
+    "wart": "no shared word",
+    "q": "Will the company pay for a Rust course I want to take?",
+    "all": [
+      "1,?200"
+    ]
+  },
+  {
+    "id": "which-doc-paging",
+    "set": "contextual",
+    "wart": "find a document, not a line",
+    "q": "Which document explains how we decide whether to wake someone up at night or leave it for the morning?",
+    "all": [
+      "alerting"
+    ]
+  },
+  {
+    "id": "which-doc-leaving",
+    "set": "contextual",
+    "wart": "find a document, not a line",
+    "q": "Is there a doc about what to do when you quit the company?",
+    "all": [
+      "offboarding|Leaving Thornbury"
+    ]
+  },
+  {
+    "id": "trip-prep",
+    "set": "surfacing",
+    "wart": "travel + expense policy + claims procedure",
+    "q": "I'm flying to Chicago next month to visit a customer. Anything I should know before I book?",
+    "of": [
+      "\\b14\\b",
+      "\\$?210",
+      "\\$?75",
+      "Brightledger|30 days"
+    ],
+    "k": 3
+  },
+  {
+    "id": "friday-migration",
+    "set": "surfacing",
+    "wart": "deploy + rollback runbooks + service dependency",
+    "q": "I'm about to deploy a database migration to billing-svc on Friday afternoon. Anything I should watch out for?",
+    "of": [
+      "Friday|14:00",
+      "migration owner|old code|new schema",
+      "ledger",
+      "bake|prod-east|20 min"
+    ],
+    "k": 2
+  },
+  {
+    "id": "new-cert-alert",
+    "set": "surfacing",
+    "wart": "alerting policy + incident action items",
+    "q": "I'm adding an alert that pages on-call when the ledger-svc certificate is close to expiring. What should it include?",
+    "of": [
+      "runbook",
+      "owner",
+      "threshold|review",
+      "customer",
+      "\\b14 days"
+    ],
+    "k": 3
+  },
+  {
+    "id": "freelancer-setup",
+    "set": "surfacing",
+    "wart": "access policy, contractor rules",
+    "q": "A freelancer starts on the mobile team on Monday for six weeks. What do I need to set up?",
+    "of": [
+      "Gatehouse",
+      "sponsor",
+      "90 days|contract end",
+      "repositor(y|ies) named|named in the request|only the repositor"
+    ],
+    "k": 2
+  },
+  {
+    "id": "leave-prep",
+    "set": "surfacing",
+    "wart": "current handbook, not draft or old version",
+    "q": "I'm going on parental leave in June. What should I sort out first?",
+    "of": [
+      "\\b16\\b|sixteen",
+      "three blocks|3 blocks",
+      "first year|within (the first|one) year"
+    ],
+    "k": 2
   }
 ]

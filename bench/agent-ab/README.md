@@ -21,7 +21,19 @@ copy of the corpus plus filler, a fresh raglit home and root, and
 ## The corpus
 
 `corpus/` is fictional (Thornbury Instruments): HR policy, engineering docs and
-three mail archives. Each question targets one wart:
+three mail archives. Questions come in three sets (`--set`):
+
+- **lookup**: the question carries a rare word the answer line also has
+  (Denver, 401(k), v2). grep's home ground.
+- **contextual**: how-to and which-document questions asked the way a newcomer
+  would, sharing no rare word with the document that answers ("How do I file a
+  travel expense?", "I left my work computer in a taxi"). The filler mentions
+  expenses, laptops, access and incidents constantly.
+- **surfacing**: a task ("I'm flying to Chicago next month...") where a good
+  answer brings up several documents the asker did not know to name. Scored
+  k of n facts (`of`, `k`); the per-question table shows the mean facts found.
+
+Lookup questions by wart:
 
 | wart | question ids |
 |---|---|

@@ -18,7 +18,7 @@ raw per-run JSON. Nothing is written to the repository.
 
 Usage:
   bench/agent-ab/run.py --out DIR [--model haiku] [--reps 1] [-j 4]
-                        [--only id,id] [--arms grep,raglit] [--filler 300]
+                        [--only id,id] [--set S,S] [--arms grep,raglit] [--filler 300]
                         [--raglit PATH]
 """
 import argparse, json, os, re, shutil, statistics, subprocess, sys, time
@@ -148,10 +148,16 @@ def run_one(a, out, corpus, arm, qid, prompt, rep):
             "wall_s": round(wall, 1)}
 
 
+def facts(q, answer):
+    """How many of a surfacing question's facts the answer brought up."""
+    return sum(bool(re.search(r, answer, re.IGNORECASE)) for r in q.get("of", []))
+
+
 def score(q, answer):
     f = re.IGNORECASE
     return (all(re.search(r, answer, f) for r in q.get("all", []))
-            and not any(re.search(r, answer, f) for r in q.get("none", [])))
+            and not any(re.search(r, answer, f) for r in q.get("none", []))
+            and facts(q, answer) >= q.get("k", 0))
 
 
 def mean(xs):
@@ -163,15 +169,17 @@ def summarize(a, out, qs, rows, probes, nfiles, nbytes):
     L = [f"# agent A/B: grep vs raglit", "",
          f"model `{a.model}` · reps {a.reps} · corpus {nfiles} files, {nbytes:,} bytes "
          f"({a.filler} filler) · embed `{a.embed_model}`", ""]
-    L += ["| arm | correct | input tok (mean) | output tok | turns | tool calls | tool result chars | cost USD (sum) | wall s (mean) |",
-          "|---|---|---|---|---|---|---|---|---|"]
-    for arm in a.arms:
-        rs = [r for r in rows if r["arm"] == arm and r["ok"]]
+    L += ["| set | arm | correct | input tok (mean) | output tok | turns | tool calls | tool result chars | cost USD (sum) | wall s (mean) |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
+    sets = sorted({byid[r["id"]].get("set", "lookup") for r in rows})
+    for arm, st in [(arm, st) for st in sets + ["all"] for arm in a.arms]:
+        inset = [r for r in rows if r["arm"] == arm and st in ("all", byid[r["id"]].get("set", "lookup"))]
+        rs = [r for r in inset if r["ok"]]
         if not rs:
-            L.append(f"| {arm} | no completed runs | | | | | | | |")
+            L.append(f"| {st} | {arm} | no completed runs | | | | | | | |")
             continue
-        L.append("| {} | {}/{} | {:,.0f} | {:,.0f} | {:.1f} | {:.1f} | {:,.0f} | {:.4f} | {:.1f} |".format(
-            arm, sum(r["correct"] for r in rs), len([r for r in rows if r["arm"] == arm]),
+        L.append("| {} | {} | {}/{} | {:,.0f} | {:,.0f} | {:.1f} | {:.1f} | {:,.0f} | {:.4f} | {:.1f} |".format(
+            st, arm, sum(r["correct"] for r in rs), len(inset),
             mean([r["input_tokens"] for r in rs]),
             mean([r["output_tokens"] for r in rs]), mean([r["turns"] for r in rs]),
             mean([sum(r["tool_calls"].values()) for r in rs]), mean([r["tool_result_chars"] for r in rs]),
@@ -184,7 +192,8 @@ def summarize(a, out, qs, rows, probes, nfiles, nbytes):
         cells = []
         for arm in a.arms:
             rs = [r for r in rows if r["arm"] == arm and r["id"] == qid]
-            cells += [f"{sum(r['correct'] for r in rs)}/{len(rs)}",
+            fx = f" ({mean([facts(q, r['answer']) for r in rs]):.1f}/{len(q['of'])} facts)" if q.get("of") else ""
+            cells += [f"{sum(r['correct'] for r in rs)}/{len(rs)}{fx}",
                       f"{mean([r['input_tokens'] for r in rs if r['ok']]):,.0f}"]
         if any(r["id"] == qid for r in rows):
             L.append(f"| {qid} | {q['wart']} | " + " | ".join(cells) + " |")
@@ -200,6 +209,7 @@ def main():
     ap.add_argument("-j", "--jobs", type=int, default=4)
     ap.add_argument("--only", default="")
     ap.add_argument("--arms", default="grep,raglit")
+    ap.add_argument("--set", default="", help="lookup, contextual, surfacing (comma list); default all")
     ap.add_argument("--filler", type=int, default=300)
     ap.add_argument("--raglit", default="raglit")
     ap.add_argument("--llm-url", default=os.environ.get("RAGLIT_LLM_URL", ""))
@@ -218,8 +228,14 @@ def main():
     if a.only:
         keep = set(a.only.split(","))
         qs = [q for q in qs if q["id"] in keep]
+    if a.set:
+        keep = set(a.set.split(","))
+        qs = [q for q in qs if q.get("set", "lookup") in keep]
     if a.rescore:
         meta = json.loads((out / "meta.json").read_text())
+        for k in ("model", "reps", "filler", "embed_model"):
+            if k in meta:
+                setattr(a, k, meta[k])
         rows = [json.loads(l) for l in (out / "results.jsonl").read_text().splitlines()]
         byid = {q["id"]: q for q in qs}
         for r in rows:
@@ -244,7 +260,8 @@ def main():
             rows.append(r)
             print(f"{arm:6} {q['id']:18} rep{rep} {'ok ' if r['correct'] else 'BAD'} "
                   f"in={r['input_tokens']:>7,} turns={r['turns']} {r['wall_s']}s", flush=True)
-    (out / "meta.json").write_text(json.dumps({"probes": probes, "nfiles": nfiles, "nbytes": nbytes}))
+    (out / "meta.json").write_text(json.dumps({"probes": probes, "nfiles": nfiles, "nbytes": nbytes, "model": a.model,
+                                                 "reps": a.reps, "filler": a.filler, "embed_model": a.embed_model}))
     with open(out / "results.jsonl", "w") as fh:
         for r in rows:
             fh.write(json.dumps(r) + "\n")
