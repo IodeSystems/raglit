@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
@@ -266,6 +267,9 @@ func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n-- // never cut inside a character
 	}
 	return s[:n] + "…"
 }

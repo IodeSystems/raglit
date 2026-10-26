@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"unicode/utf8"
 
 	"github.com/iodesystems/agentkit/agent"
 )
@@ -89,6 +90,9 @@ func join(texts []string) string {
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n-- // never cut inside a character
 	}
 	return s[:n] + "…"
 }
