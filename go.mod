@@ -7,7 +7,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-jose/go-jose/v4 v4.1.4
-	github.com/iodesystems/agentkit v0.5.0
+	github.com/iodesystems/agentkit v0.13.0
 	github.com/iodesystems/gwag/v2 v2.1.0
 	github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0
 	github.com/mark3labs/mcp-go v1.0.0

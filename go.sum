@@ -55,6 +55,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/iodesystems/agentkit v0.5.0 h1:Y0Bg0w6Xa+BOTy0fdC1lsRfvyA2O6cDphcbb+fMD00E=
 github.com/iodesystems/agentkit v0.5.0/go.mod h1:3YrLqwl305SCujUXQkim8INHf7y3kaXsqjaUUipGtks=
+github.com/iodesystems/agentkit v0.13.0 h1:n8ausXrw91q/E8iLNx448DNlnBdkBrDwXj2tAG6Ziyk=
+github.com/iodesystems/agentkit v0.13.0/go.mod h1:3YrLqwl305SCujUXQkim8INHf7y3kaXsqjaUUipGtks=
 github.com/iodesystems/gwag/v2 v2.1.0 h1:Y7fBcpX9irvyo3Mb6VtxIbjEQCCua9j1MexD0SP+I9g=
 github.com/iodesystems/gwag/v2 v2.1.0/go.mod h1:rIS9cEjTNucbB1AI5UL9QNJkuXu7pJRsAJrmG4qYz+w=
 github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0 h1:Hs4F5H+x/KWuX9N0/K1rQ812xYz8f4E+luXk1KtJQ4o=
