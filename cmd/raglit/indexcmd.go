@@ -319,6 +319,7 @@ func indexUnwatch(name string, args []string) error {
 func runIndexList(args []string) error {
 	fs := flag.NewFlagSet("index --list", flag.ContinueOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
+	asJSON := fs.Bool("json", false, "every index of every project as JSON, each with the selector that reads it")
 	client := addClientFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -339,6 +340,14 @@ func runIndexList(args []string) error {
 	b, err := daemonGet(base, "/indexes", nil)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		j, err := indexListJSON(b)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(j))
+		return nil
 	}
 	var out struct {
 		Indexes []idxRow `json:"indexes"`
@@ -388,6 +397,37 @@ func runIndexList(args []string) error {
 	}
 	fmt.Println("\n✓ = a search from here with no --index reads it.  raglit index NAME scope|global")
 	return nil
+}
+
+// indexListJSON is the daemon's index list with, on each row, the index's
+// project ("" for a global index), its local name, and the selector a client
+// reads it by: "project:index", or ":index" for a global one (nsNamedIndex).
+// Every field the daemon sent is kept as sent, so a newer daemon's fields
+// reach the caller without a client release.
+func indexListJSON(daemon []byte) ([]byte, error) {
+	var in struct {
+		Indexes []map[string]json.RawMessage `json:"indexes"`
+	}
+	if err := json.Unmarshal(daemon, &in); err != nil {
+		return nil, err
+	}
+	for _, row := range in.Indexes {
+		var name string
+		if err := json.Unmarshal(row["name"], &name); err != nil {
+			return nil, fmt.Errorf("index list: a row without a name: %w", err)
+		}
+		project, local, namespaced := strings.Cut(name, nsSep)
+		if !namespaced {
+			project, local = "", name
+		}
+		for k, v := range map[string]string{"project": project, "index": local, "selector": project + ":" + local} {
+			row[k], _ = json.Marshal(v)
+		}
+	}
+	if in.Indexes == nil {
+		in.Indexes = []map[string]json.RawMessage{}
+	}
+	return json.MarshalIndent(in, "", "  ")
 }
 
 func roots(cfg raglit.Config, name, baseDir string) string {

@@ -33,9 +33,11 @@ raglit watch [start|list|stop]
               bm25) | bm25 (exact words) | vec (meaning). Each hit shows
               "sim" (cosine) and "N/M terms" (query words it contains).`},
 		{"status", "indexes and queue progress", `raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)`},
-		{"index", "--list | NAME CMD — list indexes, or work on one", `raglit index --list
+		{"index", "--list | NAME CMD — list indexes, or work on one", `raglit index --list [--json]
               every index: documents, state, scopes, and ✓ where a search from
-              here with no --index reads it.
+              here with no --index reads it. --json: the daemon's fields per
+              index plus project, index and selector ("proj:idx", or ":idx"
+              for a global index), for a tool to pick from.
 raglit index NAME scope [add|rm PATTERN...]
               the directories an index applies in. A directory covers itself
               and everything under it; a glob (*, **) matches directories.
