@@ -152,11 +152,18 @@ func nsReadSelector(ns string, shared []string, sel string) string {
 // Only a named index: "other:*" stays unreachable unless declared shared, so
 // a client cannot list a project it was not told about. Writes never come
 // here (nsWriteIndex).
+//
+// ":idx" names a GLOBAL index, one with no project ("code", "default"). A
+// client with a project reads a bare name as its own, so without this a global
+// index could not be named from one at all.
 func nsNamedIndex(token string) (string, bool) {
 	nsPart, local, addressed := strings.Cut(strings.TrimSpace(token), ":")
 	local = strings.TrimSpace(local)
-	if !addressed || strings.TrimSpace(nsPart) == "" || local == "" || strings.Contains(local, "*") {
+	if !addressed || local == "" || strings.Contains(local, "*") {
 		return "", false
+	}
+	if strings.TrimSpace(nsPart) == "" {
+		return raglit.NormalizeIndexName(local), true
 	}
 	return raglit.NormalizeIndexName(nsPart) + nsSep + raglit.NormalizeIndexName(local), true
 }

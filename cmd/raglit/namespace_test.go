@@ -60,6 +60,9 @@ func TestNSReadSelector(t *testing.T) {
 		{"acme", nil, "shared:handbook", "shared__handbook"},          // shared need not be declared to read one
 		{"acme", nil, "other:*", nsUnmatchable},                       // a whole undeclared project: no
 		{"acme", nil, "other:", nsUnmatchable},
+		{"acme", nil, ":code", "code"},                   // a global index: no project
+		{"acme", nil, "code,:notes", "acme__code,notes"}, // own and global together
+		{"acme", nil, ":*", nsUnmatchable},               // not every global at once
 		{"", []string{"shared"}, "", ""},
 	}
 	for _, c := range cases {
@@ -78,6 +81,9 @@ func TestNSWriteIndex(t *testing.T) {
 	}
 	if _, err := nsWriteIndex("acme", []string{"shared"}, "other:x"); err == nil {
 		t.Error("writing to an unreachable namespace should error")
+	}
+	if _, err := nsWriteIndex("acme", nil, ":code"); err == nil {
+		t.Error("a project client writing to a global index should error")
 	}
 }
 
@@ -267,6 +273,9 @@ func TestClientViewSelectors(t *testing.T) {
 	}
 	if got := free.read("beta:default, notes"); got != "beta__default,notes" {
 		t.Errorf("no project, named = %q", got)
+	}
+	if got := free.read(":code"); got != "code" {
+		t.Errorf("no project, global = %q", got)
 	}
 	if _, err := free.write("notes"); err == nil {
 		t.Error("a write with no project must be refused")
