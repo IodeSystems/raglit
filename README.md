@@ -18,7 +18,7 @@ no C compiler.
 
 `raglit doctor` says what this install can do and what would add more: models
 per role (embedding, vision, text, summary, audio) and external extractors
-(poppler, pandoc, tesseract, …). `--json` prints it for tools; `raglit serve`
+(poppler, pandoc, tesseract, …). `--json` prints it for tools; `raglit mcp`
 sends the same summary as an MCP log notification (logger `raglit/setup`).
 
 ```sh
@@ -119,10 +119,10 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   a **path subtree** (`--path /repo/src/api/` — a prefix match, so hierarchical
   corpora don't need a separate index per directory). Results are precise citations: document → page →
   fragment. `search_figures` does the same over described figures.
-- **Serve** — expose the index(es) to any MCP client (Claude Desktop, agentkit):
+- **MCP** — expose the index(es) to any MCP client (Claude Desktop, agentkit):
 
   ```sh
-  raglit serve
+  raglit mcp
   ```
 
   Tools: `search`, `search_figures`, `list_documents`, `get_document`, `ingest`,
@@ -148,7 +148,7 @@ raglit search "query" [--mode M] [--path P]  M = bm25 | vec | hybrid; P = path-p
 raglit status                        documents/fragments, queue progress, rate, ETAs
 raglit identify [DOC...] [--list]    what a document IS: caption, summary, kind (never renames)
 raglit prune [--index N] [--yes]     documents whose local file is gone (already out of search); --yes removes
-raglit serve                         stdio MCP server
+raglit mcp                           stdio MCP server (old name: serve)
 raglit daemon                        HTTP API + workers + review UI at /
 raglit review                        the daemon, framed as the status/job/OCR review UI
 raglit demo                          offline, self-contained tour
@@ -208,9 +208,9 @@ under the daemon root and reload on restart.
 
 ## Daemon mode
 
-**By default every client — `serve` (MCP) and the CLI (`ingest`/`search`/`status`/
+**By default every client — `mcp` and the CLI (`ingest`/`search`/`status`/
 `sync`) — talks to a single shared per-user daemon, auto-starting it if none is
-running.** That's deliberate: N Claude sessions each running `serve` *embedded*
+running.** That's deliberate: N Claude sessions each running `mcp` *embedded*
 would be N processes opening the same SQLite index, running their own workers, and
 calling the LLM independently → write contention + duplicated indexing work. One
 daemon (single writer + worker pool + LLM caller, scoped storage, shared dedup
@@ -222,7 +222,7 @@ pool) is the safe model. `--embedded` opts out (in-process, single-session);
 # storage under $RAGLIT_ROOT / ~/.raglit), and every session connects to it:
 raglit ingest ./my-project
 raglit search "rollback procedure"
-raglit serve                       # MCP over the shared daemon
+raglit mcp                         # MCP over the shared daemon
 
 # run it explicitly (foreground) if you prefer, or point at a remote one:
 raglit daemon --addr 127.0.0.1:7420    # workers + HTTP API + review UI + OpenAPI + GraphQL
@@ -234,7 +234,7 @@ Because that one daemon serves every project, each client namespaces its indexes
 by the config's **`project`** name: the daemon index is `<project>__<local>`, and a
 project's "search all" is scoped to `<project>__*` — so two repos both using
 `default` don't share storage, and neither sees the other's documents. The project
-name is **required** to start a daemon-routed client (`serve` or CLI); `--project`
+name is **required** to start a daemon-routed client (`mcp` or CLI); `--project`
 overrides it, and `--embedded`/`--db` (single-session, in-process) need none. The
 `<project>__` prefix is internal — search/status/list show plain local names.
 
@@ -265,8 +265,8 @@ spawned on 7420 — after verifying the pid is alive and it answers `/api/health
 are REST + in-process GraphQL (`/graphql`) + gRPC off one port, with **OpenAPI at
 `/openapi.json`**. Storage is **scoped per index** under `--root` (default
 `~/.raglit`, so each index lives at `~/.raglit/indexes/<name>/`); `--home DIR`
-selects a single-index layout instead. `serve` becomes a thin **client** to the
-daemon when `daemon_url`/`--daemon` is set, so many MCP `serve` instances share
+selects a single-index layout instead. `mcp` becomes a thin **client** to the
+daemon when `daemon_url`/`--daemon` is set, so many `mcp` instances share
 one daemon.
 
 **Branches** (copy-on-write, worktree-style): `POST /api/branches {name,parent}`
@@ -306,7 +306,7 @@ Control-plane routes live under `/api/*`. localhost, no auth — don't expose it
 ## For agents (agentkit)
 
 raglit's `search` output is exactly the shape agentkit's `ragnotify.ParseHits`
-consumes, so one `raglit serve` drives both a model's explicit searches **and**
+consumes, so one `raglit mcp` drives both a model's explicit searches **and**
 agentkit's proactive "live-watch" pings (the finder scopes which indexes it
 watches via `Opts.ExtraArgs {"index": ...}` — all by default). raglit's
 `agent.DocFinder` also plugs straight into a Session's `FinderPreparer`.
@@ -325,7 +325,7 @@ watches via `Opts.ExtraArgs {"index": ...}` — all by default). raglit's
   fix-loop and a safe fallback, an open fragment carried across boundaries. Figures
   the VLM sees are described inline and embedded (image or description) for
   `search_figures`.
-- **Multi-index** — one home holds several named indexes; `serve` searches all
+- **Multi-index** — one home holds several named indexes; `mcp` searches all
   (RRF-merged, tagged), a scoped subset, or a path subtree.
 
 ## Home layout

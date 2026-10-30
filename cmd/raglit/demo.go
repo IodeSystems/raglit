@@ -98,7 +98,7 @@ func runDemo(args []string) error {
 		}
 		fmt.Println()
 	}
-	fmt.Println("that's the lazy-ingest + status + search loop. `raglit serve` exposes")
+	fmt.Println("that's the lazy-ingest + status + search loop. `raglit mcp` exposes")
 	fmt.Println("the same as MCP tools: ingest, index_status, search.")
 	return nil
 }

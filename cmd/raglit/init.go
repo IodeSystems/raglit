@@ -151,7 +151,7 @@ func printPostInit(home raglit.Home) {
 		Command string   `json:"command"`
 		Args    []string `json:"args"`
 	}
-	srv := mcpServer{Command: "raglit", Args: []string{"serve", "--home", abs}}
+	srv := mcpServer{Command: "raglit", Args: []string{"mcp", "--home", abs}}
 	oneLine, _ := json.Marshal(srv)
 	full, _ := json.MarshalIndent(
 		map[string]any{"mcpServers": map[string]any{"raglit": srv}}, "  ", "  ")

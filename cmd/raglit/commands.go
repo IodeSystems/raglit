@@ -43,7 +43,7 @@ var commands = map[string]func([]string) error{
 	"resume":              func(a []string) error { return runPause("resume", a) },
 	"slice":               runSlice,
 	"slices":              runSlices,
-	"serve":               runServe,
+	"mcp":                 runServe,
 	"daemon":              runDaemon,
 	"service":             runService,
 	"review":              runReview,
@@ -64,6 +64,12 @@ var commands = map[string]func([]string) error{
 	"fields":              runFields,
 	"health":              runHealth,
 	"doctor":              runDoctor,
+}
+
+// aliases are older names a command still answers to. "serve" was the MCP
+// server's name; .mcp.json files and dun's config still launch it.
+var aliases = map[string][]string{
+	"mcp": {"serve"},
 }
 
 func rootCmd() *cobra.Command {
@@ -91,6 +97,7 @@ func rootCmd() *cobra.Command {
 			run := commands[e.name]
 			root.AddCommand(&cobra.Command{
 				Use:                e.name,
+				Aliases:            aliases[e.name],
 				Short:              e.short,
 				Long:               e.detail,
 				GroupID:            id,

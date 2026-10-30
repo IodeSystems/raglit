@@ -23,3 +23,12 @@ func TestEveryCommandHasHelp(t *testing.T) {
 		}
 	}
 }
+
+// "serve" is the MCP server's old name; configs written before "mcp" still
+// launch it.
+func TestServeStillRoutesToMCP(t *testing.T) {
+	c, _, err := rootCmd().Find([]string{"serve"})
+	if err != nil || c.Name() != "mcp" {
+		t.Fatalf("raglit serve routes to %v (err %v), want mcp", c, err)
+	}
+}

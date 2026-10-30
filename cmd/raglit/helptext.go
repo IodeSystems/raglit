@@ -53,7 +53,8 @@ raglit index NAME status|search|forget|pause|resume|purge|prune|unwatch ...
               proj:idx.
 raglit index [--home DIR] [--embed] FILE|DIR...
               legacy: index local files in-process now, with no daemon.`},
-		{"serve", "stdio MCP server for an LLM session", `raglit serve  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)`},
+		{"mcp", "stdio MCP server for an LLM session", `raglit mcp  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
+              "raglit serve" is the old name and still works.`},
 		{"daemon", "the shared daemon (REST, web UI, MCP backend)", `raglit daemon [--root DIR|--home DIR] [--addr :7420] [--embed]   multi-protocol daemon:
               REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
               per-index storage under --root (default ~/.raglit); --home for a single index;

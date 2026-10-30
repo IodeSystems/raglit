@@ -39,7 +39,7 @@ func versionFrom(bi *debug.BuildInfo) string {
 // consumes, so one server still drives both the explicit tool and the proactive
 // (live-watch) channel — an agent scopes the watch by passing `index`.
 func runServe(args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	_, homeOf := addStoreFlags(fs)
 	lf := addLLMFlags(fs)
 	client := addClientFlags(fs) // --daemon + --embedded
