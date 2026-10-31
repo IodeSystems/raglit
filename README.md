@@ -312,6 +312,20 @@ that token. With `auth.issuer` set it also accepts OIDC tokens. A client sends
 token file that daemon's `/api/health` names; so on a single-user machine
 nothing needs configuring. A browser signs in with `raglit service login-admin`.
 
+**Keys and session branches.** The admin mints an API token for a service
+(`raglit key mint --principal aw4 --out FILE`) and hands it an index
+(`raglit index code owner aw4`). A service or a person mints a session key
+for one session (`raglit key mint --session ID`) and gives it to the agent as
+`$RAGLIT_TOKEN`. A session key reads its project and the global indexes, as
+far as its issuer may, and writes only its session's branches: `code@ID`, a
+copy-on-write branch of `code` that exists from its first write, reads as
+`code` until then, and is deleted 7 days after its last write
+(`session_branch_ttl_hours`). It expires 7 days after its last use. A session
+key mints a child key for one of its branches (`--branch code@ID`); revoking
+a key revokes the keys under it. A session's notes go in with
+`raglit ingest --index sessions@ID --name N --text-file - --identity N.json`,
+the identity recorded as a supplied caption with no model call.
+
 ## For agents (agentkit)
 
 raglit's `search` output is exactly the shape agentkit's `ragnotify.ParseHits`
