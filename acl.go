@@ -168,6 +168,9 @@ func (r *Registry) CanRead(ctx context.Context, name string) bool {
 // control on or off: a read of a wrong name used to leave an empty index
 // behind, listed everywhere, which made the next choice of name harder.
 func (r *Registry) Read(ctx context.Context, name string) (*Store, error) {
+	if parent, ok := SessionBranchParent(name); ok && r.Scoped() && !r.cachedOrExists(name) {
+		name = parent // an unwritten session branch reads as its parent
+	}
 	if !r.ACLEnabled() {
 		st, err := r.Existing(name)
 		if err != nil {
@@ -195,6 +198,25 @@ func (r *Registry) Write(ctx context.Context, name string) (*Store, error) {
 	}
 	name = normalizeIndexName(name)
 	if !r.exists(name) {
+		// A session branch exists from its first write: forked from its
+		// parent, owned by the writer, private. Nothing creates it earlier.
+		if parent, ok := SessionBranchParent(name); ok {
+			// A parent nothing has written (a sessions index: sessions never
+			// write main) is created empty, admin-owned and PUBLIC — main is
+			// public, and a branch is readable only where its parent is.
+			if !r.exists(parent) {
+				if _, err := r.Get(parent); err != nil {
+					return nil, err
+				}
+				if err := writeACL(r.indexHome(parent), ACL{Owner: r.Admin(), Visibility: Public}); err != nil {
+					return nil, err
+				}
+			}
+			if err := r.ForkBranchAs(ctx, name, parent); err != nil {
+				return nil, err
+			}
+			return r.Existing(name)
+		}
 		st, err := r.Get(name)
 		if err != nil {
 			return nil, err
@@ -218,7 +240,13 @@ func (r *Registry) Readable(ctx context.Context, names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, n := range names {
 		if r.Scoped() && !r.cachedOrExists(n) {
-			continue // not an index: nothing to read, and nothing to create
+			// A session branch nobody has written yet is, by overlay, its
+			// parent: reading it reads the parent.
+			parent, ok := SessionBranchParent(n)
+			if !ok || !r.cachedOrExists(parent) {
+				continue // not an index: nothing to read, and nothing to create
+			}
+			n = parent
 		}
 		if !r.ACLEnabled() || r.CanRead(ctx, n) {
 			out = append(out, n)

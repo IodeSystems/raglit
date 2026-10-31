@@ -103,6 +103,11 @@ func missingNamed(ctx context.Context, reg *raglit.Registry, sel string) map[str
 		if n == "" || strings.HasSuffix(n, "*") || strings.HasPrefix(n, "@cwd:") {
 			continue
 		}
+		// A session branch is named before its first write and reads as its
+		// parent until then, or as nothing: never a 404.
+		if _, ok := raglit.SessionBranchParent(n); ok {
+			continue
+		}
 		resolved := uniqueLocal(names, n)
 		if len(reg.Readable(ctx, []string{resolved})) > 0 {
 			continue

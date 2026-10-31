@@ -122,18 +122,35 @@ func NormalizeIndexName(name string) string { return normalizeIndexName(name) }
 
 // normalizeIndexName lowercases and strips a name to [a-z0-9_-], so a name from
 // an MCP tool argument can't traverse the filesystem. Empty → "default".
+//
+// One '@' may separate an index from a session branch of it ("code@s-1a2b",
+// SessionBranchParent); a leading or second '@' is dropped like any other
+// character outside the set.
 func normalizeIndexName(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	var b strings.Builder
+	at := false
 	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-':
 			b.WriteRune(r)
+		case r == '@' && !at && b.Len() > 0:
+			b.WriteRune(r)
+			at = true
 		}
 	}
-	if b.Len() == 0 {
+	out := strings.TrimSuffix(b.String(), "@")
+	if out == "" {
 		return "default"
 	}
-	return b.String()
+	return out
+}
+
+// SessionBranchParent returns the index a session branch name overlays
+// ("proj__code@s1" → "proj__code"), and false for a name that is not one.
+func SessionBranchParent(name string) (string, bool) {
+	parent, branch, ok := strings.Cut(normalizeIndexName(name), "@")
+	return parent, ok && parent != "" && branch != ""
 }
 
 // ConfigPath is the model-connection config (base URL, token, model ids).

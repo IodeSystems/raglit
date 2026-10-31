@@ -130,6 +130,7 @@ func runHttpd(subcmd string, args []string) error {
 	// Vectors from another embed model are dropped and rebuilt (reembed.go).
 	go reembedIndexes(ctx, reg, *lf.embedModel)
 	go backfillSourceStats(ctx, reg)
+	go reapSessionBranches(ctx, reg, cfgHome)
 	// Stay on the current source. Rebuilds immediately, restarts as soon as no
 	// job is RUNNING — a re-exec mid-ingest aborts that job and it is not
 	// requeued, while pending rows survive and the new process picks them up.
@@ -1669,5 +1670,27 @@ func emailThreadOp(reg *raglit.Registry) func(context.Context, *emailIn) (*email
 			out.Body.Messages = []raglit.EmailMessage{}
 		}
 		return out, nil
+	}
+}
+
+// reapSessionBranches deletes session branches idle past the TTL, hourly. A
+// session's Close deletes nothing (USER 2026-10-30), and a crashed session
+// never closes, so this is the only cleanup.
+func reapSessionBranches(ctx context.Context, reg *raglit.Registry, home raglit.Home) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		cfg, _, _ := raglit.LoadConfig(home)
+		ttl := time.Duration(cfg.SessionBranchTTLHours) * time.Hour
+		if names, err := reg.ReapSessionBranches(ttl, time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "raglit: session branch reaper: %v\n", err)
+		} else if len(names) > 0 {
+			fmt.Fprintf(os.Stderr, "raglit: removed %d session branch(es) idle past the TTL: %s\n", len(names), strings.Join(names, ", "))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
 }

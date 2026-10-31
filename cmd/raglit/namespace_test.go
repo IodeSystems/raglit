@@ -307,3 +307,19 @@ func TestNsResolveToken_PrefixWildcard(t *testing.T) {
 		}
 	}
 }
+
+// A session branch selector keeps its '@': "idx@session" is this project's,
+// "proj:idx@session" another reachable one's.
+func TestNsResolveToken_SessionBranch(t *testing.T) {
+	for tok, want := range map[string]string{
+		"code@s1":          "acme__code@s1",
+		"acme:sessions@s1": "acme__sessions@s1",
+	} {
+		if got, ok := nsResolveToken("acme", nil, tok); !ok || got != want {
+			t.Errorf("nsResolveToken(%q) = %q, %v; want %q", tok, got, ok, want)
+		}
+	}
+	if got, ok := nsNamedIndex("other:sessions@s1"); !ok || got != "other__sessions@s1" {
+		t.Errorf("nsNamedIndex = %q, %v", got, ok)
+	}
+}

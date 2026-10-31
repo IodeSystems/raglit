@@ -366,3 +366,52 @@ func (r *Registry) Close() error {
 	r.stores = map[string]*Store{}
 	return firstErr
 }
+
+// DefaultSessionBranchTTL is how long a session branch outlives its last write
+// (USER 2026-10-30: kept 7 days after the session's last write, so a later
+// session can still search it, then removed).
+const DefaultSessionBranchTTL = 7 * 24 * time.Hour
+
+// ReapSessionBranches deletes every session branch ("idx@session") whose last
+// write is older than ttl, and returns their names. The last write is the
+// newest modification time of the branch's storage files: every write lands
+// in the index file or its write-ahead log.
+func (r *Registry) ReapSessionBranches(ttl time.Duration, now time.Time) ([]string, error) {
+	if ttl <= 0 {
+		ttl = DefaultSessionBranchTTL
+	}
+	branches, err := r.ListBranches()
+	if err != nil {
+		return nil, err
+	}
+	var reaped []string
+	for _, b := range branches {
+		if _, ok := SessionBranchParent(b.Name); !ok {
+			continue
+		}
+		last := lastWrite(r.indexHome(b.Name))
+		if last.IsZero() || now.Sub(last) < ttl {
+			continue
+		}
+		if err := r.DeleteBranch(b.Name); err != nil {
+			return reaped, err
+		}
+		reaped = append(reaped, b.Name)
+	}
+	return reaped, nil
+}
+
+// lastWrite is the newest modification time of the files directly in home.
+func lastWrite(home Home) time.Time {
+	var last time.Time
+	ents, err := os.ReadDir(string(home))
+	if err != nil {
+		return last
+	}
+	for _, e := range ents {
+		if fi, err := e.Info(); err == nil && !e.IsDir() && fi.ModTime().After(last) {
+			last = fi.ModTime()
+		}
+	}
+	return last
+}

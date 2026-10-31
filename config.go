@@ -101,6 +101,10 @@ type Config struct {
 	// cannot see them, cannot resume them, and cannot tell them apart from an
 	// ingest job's OCR call waiting for the same slot.
 	IdentitySlots int `json:"identity_slots,omitempty"`
+	// SessionBranchTTLHours is how long a session branch ("idx@session")
+	// outlives its last write before the daemon deletes it. 0 → 168 (7 days:
+	// USER 2026-10-30, "7 day to save thrash").
+	SessionBranchTTLHours int `json:"session_branch_ttl_hours,omitempty"`
 
 	// ModelChannelMax caps how wide any one model's admission channel may grow
 	// (modelchan.go). 0 → the built-in ceiling.
