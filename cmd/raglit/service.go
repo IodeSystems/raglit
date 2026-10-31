@@ -36,9 +36,8 @@ func serviceUsage() {
 reload re-reads config.json (models, auth) without a restart: the daemon
 re-execs itself once no job is running.
 
-login-admin opens the review UI signed in as admin (needs auth on: an
-auth.issuer in config.json). --print prints the URL instead; it contains the
-admin token.
+login-admin opens the review UI signed in as admin, with the daemon's admin
+token. --print prints the URL instead; it contains the admin token.
 
 install flags:
   --name NAME     unit name without .service (default raglit); on macOS the

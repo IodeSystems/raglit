@@ -24,7 +24,9 @@ func trustDaemon(base string) {
 	}
 }
 
-// installDaemonAuth wraps http.DefaultTransport when a token source is set.
+// installDaemonAuth wraps http.DefaultTransport. The daemon is never open, so
+// there is always a source: $RAGLIT_TOKEN, a token command, else the admin
+// token file of a daemon on this machine.
 func installDaemonAuth() {
 	cmd := ""
 	if cfg, ok, err := raglit.LoadConfig(raglit.DiscoverHome()); err == nil && ok && cfg.Auth != nil {
@@ -32,7 +34,7 @@ func installDaemonAuth() {
 	}
 	src := client.EnvTokenSource(cmd)
 	if src == nil {
-		return
+		src = client.LocalAdminTokenSource()
 	}
 	http.DefaultTransport = &client.Transport{
 		Base: http.DefaultTransport,

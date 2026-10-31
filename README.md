@@ -272,7 +272,7 @@ one daemon.
 **Branches** (copy-on-write, worktree-style): `POST /api/branches {name,parent}`
 forks a branch whose reads overlay the parent at document grain (writes/deletes
 touch the branch only); `GET /api/branches` lists them with age + last-access;
-`DELETE /api/branches?name=` drops one. Localhost, no auth — don't expose it.
+`DELETE /api/branches?name=` drops one.
 
 ## Review UI
 
@@ -301,7 +301,16 @@ raglit review --addr 127.0.0.1:7420        # then open http://127.0.0.1:7420/
 
 Ingest records per-page provenance (engine + page image) under `<home>/pages/`;
 documents indexed before this feature show no OCR pages until re-ingested.
-Control-plane routes live under `/api/*`. localhost, no auth — don't expose it.
+Control-plane routes live under `/api/*`.
+
+**Auth: never open.** Every route except `/api/health` needs a bearer token,
+on every bind, loopback included. With no OIDC issuer configured the daemon
+runs in admin-token mode: it writes `<root>/admin.token` (0600) and accepts
+that token. With `auth.issuer` set it also accepts OIDC tokens. A client sends
+`$RAGLIT_TOKEN`, else the output of `$RAGLIT_TOKEN_COMMAND` (or config
+`auth.token_command`), else, for a daemon on a loopback address, the admin
+token file that daemon's `/api/health` names; so on a single-user machine
+nothing needs configuring. A browser signs in with `raglit service login-admin`.
 
 ## For agents (agentkit)
 
@@ -345,5 +354,4 @@ removes it.
 
 ## Roadmap
 
-- ◻ Daemon auth + remote file upload (today: localhost, shared-FS or URL targets).
 - ◻ Vector reranking; opt-in summaries for oversized fragments.

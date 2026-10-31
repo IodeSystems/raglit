@@ -89,6 +89,10 @@ func (r *Registry) SetIdentifier(id *Identifier) {
 	}
 }
 
+// Scoped reports whether the registry keeps one directory per index (the
+// daemon's layout) rather than a single home.
+func (r *Registry) Scoped() bool { return r.scopedRoot != "" }
+
 // Get opens (once, then caches) the named index, creating it if absent.
 func (r *Registry) Get(name string) (*Store, error) {
 	name = normalizeIndexName(name)

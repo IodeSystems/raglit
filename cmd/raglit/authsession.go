@@ -20,10 +20,11 @@ import (
 // end at /auth/logout. Sessions live in memory: a daemon restart logs everyone
 // out, which costs one sign-in, and there is no session file to protect.
 //
-// The admin token exists so a fresh install can be administered before anyone
-// has looked up their OIDC subject (USER 2026-10-22: only with OIDC on). The
-// daemon writes it to <root>/admin.token (0600) on its first start with auth
-// on; whoever can read that file is the admin. `raglit service login-admin`
+// The admin token is the daemon's credential when no OIDC issuer is set, and
+// the way to administer a fresh OIDC install before anyone has looked up their
+// OIDC subject. It was OIDC-only (USER 2026-10-22); since USER 2026-10-30
+// ("never open") it always exists. The daemon writes it to <root>/admin.token
+// (0600) on its first start; whoever can read that file is the admin. `raglit service login-admin`
 // reads it and opens /auth/admin#token=… — a fragment, which the browser never
 // sends, so the token does not reach access logs. The page posts it to
 // /auth/token and gets the ordinary session cookie, so nothing else in the UI

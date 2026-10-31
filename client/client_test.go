@@ -16,7 +16,7 @@ import (
 // 23 candidates had been ruled out three weeks earlier, all with the same
 // recorded grounds. Nothing errored and nothing warned.
 func TestWithdrawalsCarryTheGrounds(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := daemonDouble(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/problems" {
 			t.Errorf("asked %s, want /api/problems", r.URL.Path)
 		}
@@ -34,7 +34,7 @@ func TestWithdrawalsCarryTheGrounds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"problems":[
 			{"kind":"withdrawn","subject":"documents/drafts/letter.md","detail":"a draft is argument, not record"}
 		]}`))
-	}))
+	})
 	defer srv.Close()
 
 	ws, err := New(srv.URL).Withdrawals(context.Background(), "matter")
@@ -87,7 +87,7 @@ func TestAnUnreachableDaemonIsNotAnEmptyLedger(t *testing.T) {
 //
 // The payload here is copied from what /api/find-documents emits.
 func TestDocumentsDecodesWhatTheEndpointSends(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := daemonDouble(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/find-documents" {
 			t.Errorf("asked %s", r.URL.Path)
 		}
@@ -96,7 +96,7 @@ func TestDocumentsDecodesWhatTheEndpointSends(t *testing.T) {
 			{"index":"i","path":"/c/deed.pdf","title":"Deed","fragments":12,"pages":3,"vision":0,"frag_mode":"text"},
 			{"index":"i","path":"/c/scan.pdf","title":"Scan","fragments":0,"pages":9,"vision":0,"frag_mode":""}
 		]}`))
-	}))
+	})
 	defer srv.Close()
 
 	ds, err := New(srv.URL).Documents(context.Background(), "i")

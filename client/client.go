@@ -61,14 +61,17 @@ func New(base string) *Client {
 		// Being told "unknown" quickly beats being right slowly here.
 		HTTP: &http.Client{Timeout: 5 * time.Second},
 	}
-	// A daemon with auth on needs a bearer token; see auth.go.
-	if src := EnvTokenSource(""); src != nil {
-		host := ""
-		if u, err := url.Parse(c.BaseURL); err == nil {
-			host = u.Host
-		}
-		c.HTTP.Transport = &Transport{Src: src, Allow: func(h string) bool { return h == host }}
+	// The daemon is never open: a bearer token always goes with requests to
+	// it; see auth.go.
+	src := EnvTokenSource("")
+	if src == nil {
+		src = LocalAdminTokenSource()
 	}
+	host := ""
+	if u, err := url.Parse(c.BaseURL); err == nil {
+		host = u.Host
+	}
+	c.HTTP.Transport = &Transport{Src: src, Allow: func(h string) bool { return h == host }}
 	return c
 }
 

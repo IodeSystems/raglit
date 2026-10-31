@@ -177,13 +177,15 @@ func runHttpd(subcmd string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if authMW != nil {
-		handler = authMW(handler)
+	handler = authMW(handler)
+	if cfg.Auth != nil && cfg.Auth.Issuer != "" {
 		admin := cfg.Auth.Admin
 		if admin == "" {
 			admin = localAdmin + " (admin token only)"
 		}
 		fmt.Fprintf(os.Stderr, "raglit httpd: OIDC auth on (issuer %s, admin %s)\n  admin token: %s — `raglit service login-admin` signs in with it\n", cfg.Auth.Issuer, admin, tokenPath)
+	} else {
+		fmt.Fprintf(os.Stderr, "raglit httpd: admin-token auth (no OIDC issuer)\n  admin token: %s — clients on this machine read it; `raglit service login-admin` signs a browser in\n", tokenPath)
 	}
 	// Record runtime state so clients discover this daemon (even on a non-default
 	// port) and `--stop` can signal it. Removed on clean shutdown.
@@ -429,15 +431,15 @@ type healthOut struct {
 		// were built from dirty trees, which is the ordinary state during
 		// development and the case commit metadata gets wrong.
 		ExeHash string `json:"exe_hash,omitempty"`
-		// Auth reports whether the daemon authenticates (an OIDC issuer is
-		// configured). AdminToken is where its admin token is, so
-		// `raglit service login-admin` asks rather than recomputes it.
+		// Auth is always true: the daemon is never open. AdminToken is where
+		// its admin token is, so `raglit service login-admin` and local
+		// clients ask rather than recompute it.
 		Auth       bool   `json:"auth"`
 		AdminToken string `json:"admin_token,omitempty"`
 	}
 }
 
-// adminTokenPath is the running daemon's admin token file, "" with auth off.
+// adminTokenPath is the running daemon's admin token file.
 // Set once at startup, before the listeners open.
 var adminTokenPath string
 

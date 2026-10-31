@@ -111,6 +111,7 @@ func (t *restartTransport) refollow() {
 		t.mu.Lock()
 		t.host = st.Addr
 		t.mu.Unlock()
+		trustDaemon("http://" + st.Addr) // the token goes to the daemon's new address too
 	}
 }
 

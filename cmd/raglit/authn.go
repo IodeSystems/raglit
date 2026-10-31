@@ -13,7 +13,9 @@ import (
 	"github.com/iodesystems/raglit"
 )
 
-// Daemon authentication: OIDC bearer tokens, validated in the daemon.
+// Daemon authentication: the admin token, plus OIDC bearer tokens when an
+// issuer is configured. Never open (USER 2026-10-30: "admin-token or oidc,
+// never open"): with no issuer the daemon runs in admin-token mode.
 //
 // In the daemon rather than behind a proxy because the daemon binds a LIST of
 // addresses (listenlist.go). A proxy that sets a trusted user header protects
@@ -32,8 +34,8 @@ import (
 
 // authenticator validates bearer tokens against one issuer.
 type authenticator struct {
-	verifier   *oidc.IDTokenVerifier
-	web        *webLogin // nil = no browser login (authweb.go)
+	verifier   *oidc.IDTokenVerifier // nil = no issuer: admin-token mode
+	web        *webLogin             // nil = no browser login (authweb.go)
 	sessions   *sessionStore
 	adminToken string // authsession.go
 	admin      string // the principal the admin token acts as
@@ -67,6 +69,9 @@ func newAuthenticator(ctx context.Context, cfg *raglit.AuthConfig) (*authenticat
 
 // principal validates a raw token and returns "<iss>#<sub>".
 func (a *authenticator) principal(ctx context.Context, raw string) (string, error) {
+	if a.verifier == nil {
+		return "", fmt.Errorf("unknown token")
+	}
 	t, err := a.verifier.Verify(ctx, raw)
 	if err != nil {
 		return "", err
@@ -122,25 +127,27 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 	})
 }
 
-// daemonAuth turns on auth when the config names an issuer: the ACL on the
-// registry, the admin token at <root>/admin.token, and a middleware for the
-// handler. Nil middleware = auth off. tokenPath is "" when auth is off.
+// daemonAuth turns on auth: always the admin token at <root>/admin.token, and
+// OIDC when the config names an issuer. The ACL goes on with it where the
+// storage is scoped (EnableACL refuses a single --home); a single home has one
+// principal, the admin, so it needs none.
 func daemonAuth(ctx context.Context, reg *raglit.Registry, cfg *raglit.AuthConfig, root string) (mw func(http.Handler) http.Handler, tokenPath string, err error) {
-	if cfg == nil || cfg.Issuer == "" {
-		return nil, "", nil
+	a := &authenticator{sessions: newSessionStore(false)}
+	admin := localAdmin
+	if cfg != nil && cfg.Issuer != "" {
+		if a, err = newAuthenticator(ctx, cfg); err != nil {
+			return nil, "", err
+		}
+		// No configured admin: the admin token is the admin. Saves looking up
+		// an OIDC subject before the first sign-in.
+		if cfg.Admin != "" {
+			admin = cfg.Admin
+		}
 	}
-	// No configured admin: the admin token is the admin. Saves looking up an
-	// OIDC subject before the first sign-in.
-	admin := cfg.Admin
-	if admin == "" {
-		admin = localAdmin
-	}
-	if err := reg.EnableACL(admin); err != nil {
-		return nil, "", fmt.Errorf("auth: %w", err)
-	}
-	a, err := newAuthenticator(ctx, cfg)
-	if err != nil {
-		return nil, "", err
+	if reg.Scoped() {
+		if err := reg.EnableACL(admin); err != nil {
+			return nil, "", fmt.Errorf("auth: %w", err)
+		}
 	}
 	tokenPath = filepath.Join(root, adminTokenFile)
 	if a.adminToken, err = ensureAdminToken(tokenPath); err != nil {
