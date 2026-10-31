@@ -125,7 +125,7 @@ raglit ingest --name N --text-file F|- [--identity FILE.json]
 		{"drop-index", "delete one index's storage", `raglit drop-index --index NAME
               delete one index's storage. The shared document pool stays, so the
               same files indexed again reuse the cached reads.`},
-		{"key", "mint, list or revoke API tokens and session keys", `raglit key mint --principal NAME [--out FILE]   API token for a principal (admin)
+		{"key", "mint, list or revoke API tokens and session keys", `raglit key mint --principal NAME [--out FILE] [--json]   API token for a principal (admin)
 raglit key mint --session ID [--project P]       session key: reads the project, writes its
               session branches ("idx@ID") only; expires 7 days after last use
 raglit key mint --branch [proj:]idx@ID           child key for one branch (from a session key)

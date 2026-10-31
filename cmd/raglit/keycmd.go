@@ -47,6 +47,7 @@ func keyMint(args []string) error {
 	branch := fs.String("branch", "", "mint a child key for this one session branch, [proj:]idx@session")
 	label := fs.String("label", "", "a note shown by `key list`")
 	out := fs.String("out", "", "write the token to this file (0600) instead of printing it")
+	asJSON := fs.Bool("json", false, `print {"token","key"} as JSON (with --out: {"key"} only — the token stays in the file)`)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -100,8 +101,18 @@ func keyMint(args []string) error {
 		if err := os.WriteFile(*out, []byte(resp.Token+"\n"), 0o600); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "wrote %s key %s (%s) to %s\n", resp.Key.Kind, resp.Key.ID, resp.Key.Principal, *out)
-		return nil
+		resp.Token = ""
+		if !*asJSON {
+			fmt.Fprintf(os.Stderr, "wrote %s key %s (%s) to %s\n", resp.Key.Kind, resp.Key.ID, resp.Key.Principal, *out)
+			return nil
+		}
+	}
+	if *asJSON {
+		v := map[string]any{"key": resp.Key}
+		if resp.Token != "" {
+			v["token"] = resp.Token
+		}
+		return json.NewEncoder(os.Stdout).Encode(v)
 	}
 	fmt.Println(resp.Token)
 	return nil

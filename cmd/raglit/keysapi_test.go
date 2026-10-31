@@ -134,3 +134,25 @@ func TestIngestText_SuppliedIdentityIntoASessionBranch(t *testing.T) {
 		t.Fatalf("identities = %+v, want one supplied", ids)
 	}
 }
+
+// --json gives a caller the key id without parsing prose; with --out the token
+// stays in the file and is not printed.
+func TestKeyMint_JSON(t *testing.T) {
+	_, reg, flags := testDaemon(t)
+	testIndex(t, reg)
+	file := filepath.Join(t.TempDir(), "tok")
+	out := captureStdout(t, func() {
+		if err := runKey(append([]string{"mint"}, append(flags, "--principal", "dun", "--out", file, "--json")...)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var v struct {
+		Token string `json:"token"`
+		Key   struct {
+			ID, Principal string
+		} `json:"key"`
+	}
+	if err := json.Unmarshal([]byte(out), &v); err != nil || v.Key.ID == "" || v.Key.Principal != "dun" || v.Token != "" {
+		t.Fatalf("mint --out --json = %q (%v)", out, err)
+	}
+}
