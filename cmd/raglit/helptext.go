@@ -120,6 +120,13 @@ raglit index [--home DIR] FILE|DIR...
 		{"drop-index", "delete one index's storage", `raglit drop-index --index NAME
               delete one index's storage. The shared document pool stays, so the
               same files indexed again reuse the cached reads.`},
+		{"key", "mint, list or revoke API tokens and session keys", `raglit key mint --principal NAME [--out FILE]   API token for a principal (admin)
+raglit key mint --session ID [--project P]       session key: reads the project, writes its
+              session branches ("idx@ID") only; expires 7 days after last use
+raglit key mint --branch [proj:]idx@ID           child key for one branch (from a session key)
+raglit key list [--json]                         keys you issued, and the keys under them
+raglit key revoke ID                             revoke a key and every key under it
+              The token is printed once, alone on stdout, or written to --out (0600).`},
 		{"maintain", "fold a shared project's public layers into its base", `raglit maintain [--dry-run] PROJECT        fold a shared project's public layers into its
               base (run as the base's owner, e.g. a maintainer machine user)`},
 	}},

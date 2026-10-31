@@ -27,6 +27,7 @@ type Registry struct {
 	embedder      *Embedder
 	imageEmbedder ImageEmbedder
 	identifier    *Identifier
+	keys          *KeyStore // API tokens and session keys; nil = none
 	// admin owns every index without an acl.json; "" = access control off.
 	// See acl.go.
 	admin string
@@ -87,6 +88,21 @@ func (r *Registry) SetIdentifier(id *Identifier) {
 	for _, s := range r.stores {
 		s.SetIdentifier(id)
 	}
+}
+
+// SetKeyStore gives the registry the keys whose principals its access checks
+// resolve (keys.go).
+func (r *Registry) SetKeyStore(ks *KeyStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.keys = ks
+}
+
+// Keys is the registry's key store, nil when none is set.
+func (r *Registry) Keys() *KeyStore {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.keys
 }
 
 // HasIdentifier reports whether an identity model is configured: captions,

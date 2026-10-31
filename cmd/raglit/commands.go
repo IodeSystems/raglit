@@ -24,6 +24,7 @@ var commands = map[string]func([]string) error{
 	"maintain":            runMaintain,
 	"branch":              runBranch,
 	"drop-index":          runDropIndex,
+	"key":                 runKey,
 	"watch":               runWatch,
 	"status":              runStatus,
 	"reread":              runReread,

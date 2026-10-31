@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 
@@ -39,6 +40,7 @@ type authenticator struct {
 	sessions   *sessionStore
 	adminToken string // authsession.go
 	admin      string // the principal the admin token acts as
+	keys       *raglit.KeyStore
 }
 
 // newAuthenticator discovers the issuer (/.well-known/openid-configuration) and
@@ -117,6 +119,17 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(raglit.WithPrincipal(r.Context(), a.admin)))
 			return
 		}
+		// An API token or session key (keys.go).
+		if tok := strings.TrimSpace(raw); strings.HasPrefix(tok, "rk_") && a.keys != nil {
+			k, err := a.keys.Authenticate(tok, time.Now())
+			if err != nil {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="raglit", error="invalid_token"`)
+				http.Error(w, "unknown, revoked or expired key", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(raglit.WithPrincipal(r.Context(), k.Principal)))
+			return
+		}
 		p, err := a.principal(r.Context(), strings.TrimSpace(raw))
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="raglit", error="invalid_token"`)
@@ -154,5 +167,9 @@ func daemonAuth(ctx context.Context, reg *raglit.Registry, cfg *raglit.AuthConfi
 		return nil, "", fmt.Errorf("auth: admin token: %w", err)
 	}
 	a.admin = admin
+	if a.keys, err = raglit.OpenKeyStore(filepath.Join(root, keysFile)); err != nil {
+		return nil, "", fmt.Errorf("auth: keys: %w", err)
+	}
+	reg.SetKeyStore(a.keys)
 	return a.middleware, tokenPath, nil
 }

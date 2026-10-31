@@ -147,11 +147,14 @@ func (r *Registry) CanRead(ctx context.Context, name string) bool {
 		return false
 	}
 	name = normalizeIndexName(name)
+	ks := r.Keys()
+	if k, ok := ks.ByPrincipal(p); ok && !k.AllowsRead(name) {
+		return false
+	}
 	// Depth-bounded: branch.json is a file on disk, and a cycle in it must not
 	// hang a request.
 	for range 64 {
-		a := r.ACLOf(name)
-		if a.Visibility != Public && a.Owner != p {
+		if !r.layerReadable(ks, p, name, 0) {
 			return false
 		}
 		meta, ok := readBranchMeta(r.indexHome(name))
@@ -159,6 +162,21 @@ func (r *Registry) CanRead(ctx context.Context, name string) bool {
 			return true
 		}
 		name = normalizeIndexName(meta.Parent)
+	}
+	return false
+}
+
+// layerReadable applies read to ONE layer: public, or owned by p, or owned by
+// a key under p (an ancestor reads its children's branches), or — for a
+// session key — readable by the key's issuer, which is what the key stands in
+// for.
+func (r *Registry) layerReadable(ks *KeyStore, p, name string, depth int) bool {
+	a := r.ACLOf(name)
+	if a.Visibility == Public || a.Owner == p || ks.IsAncestor(p, a.Owner) {
+		return true
+	}
+	if k, ok := ks.ByPrincipal(p); ok && depth < 8 {
+		return r.layerReadable(ks, k.Issuer, name, depth+1)
 	}
 	return false
 }
@@ -197,6 +215,13 @@ func (r *Registry) Write(ctx context.Context, name string) (*Store, error) {
 		return nil, ErrNoIndex
 	}
 	name = normalizeIndexName(name)
+	// A session key writes only names its patterns allow, whatever it owns.
+	if k, ok := r.Keys().ByPrincipal(p); ok && !k.AllowsWrite(name) {
+		if r.exists(name) && !r.CanRead(ctx, name) {
+			return nil, ErrNoIndex
+		}
+		return nil, ErrForbidden
+	}
 	if !r.exists(name) {
 		// A session branch exists from its first write: forked from its
 		// parent, owned by the writer, private. Nothing creates it earlier.

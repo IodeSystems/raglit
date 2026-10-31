@@ -45,6 +45,7 @@ func init() {
 		"unwatch": {"DIR — stop indexing DIR into this index; its documents stay", indexUnwatch},
 		"scope":   {"[add|rm PATTERN...] — directories a search with no index named reads it from", indexScope},
 		"global":  {"[ambient|opt-in] — no scopes: every search reads it (ambient) or only when named", indexGlobal},
+		"owner":   {"PRINCIPAL — hand this index to another principal (its owner or the admin)", indexOwner},
 	}
 }
 
@@ -433,4 +434,22 @@ func roots(cfg raglit.Config, name, baseDir string) string {
 		return ""
 	}
 	return "  " + strings.Join(rs, ", ")
+}
+
+// indexOwner hands an index to another principal: how aw4 (an API token's
+// principal) takes over a project's main index. The current owner or the
+// admin may do it.
+func indexOwner(name string, args []string) error {
+	base, full, rest, err := indexTarget(name, args, nil)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return fmt.Errorf("usage: raglit index %s owner PRINCIPAL", name)
+	}
+	if _, err := daemonPostJSON(base, "/api/owner", map[string]any{"index": full, "owner": rest[0]}); err != nil {
+		return err
+	}
+	fmt.Printf("%s is now owned by %s\n", full, rest[0])
+	return nil
 }
