@@ -1,14 +1,14 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 
-	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // runSync reads the project config's `indexes` (roots + include/ignore rules),
@@ -19,7 +19,7 @@ import (
 func runSync(args []string) error {
 	fs := flag.NewFlagSet("sync", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
-	client := addClientFlags(fs) // --daemon + --embedded
+	client := addClientFlags(fs) // --daemon + --project
 	only := fs.String("index", "", "sync only this configured index (default: all)")
 	dry := fs.Bool("dry-run", false, "print what would be ingested; don't enqueue")
 	fs.Parse(args)
@@ -53,7 +53,7 @@ func runSync(args []string) error {
 
 	var dURL, ns string
 	if !*dry {
-		dURL, ns, err = client(homeOf, false)
+		dURL, ns, err = client(homeOf)
 		if err != nil {
 			return err
 		}
@@ -77,34 +77,16 @@ func runSync(args []string) error {
 			}
 			continue
 		}
-		if dURL != "" {
-			if err := daemonIngest(dURL, files, nsIndex(ns, name), "", false, projectDirOf(home)); err != nil {
-				return err
-			}
-		} else {
-			st, err := raglit.OpenIndex(home, name)
-			if err != nil {
-				return err
-			}
-			for _, f := range files {
-				if _, err := st.Enqueue(f, ""); err != nil && !errors.Is(err, raglit.ErrIgnored) {
-					st.Close()
-					return err
-				}
-			}
-			st.Close()
+		if err := daemonIngest(dURL, files, nsIndex(ns, name), "", false, projectDirOf(home)); err != nil {
+			return err
 		}
 		total += len(files)
 	}
 	if !*dry {
-		hint := "drain with `raglit work`"
-		if dURL != "" {
-			hint = "the daemon drains it in the background"
-		}
-		fmt.Printf("queued %d file(s) across %d index(es) — %s.\n", total, len(names), hint)
+		fmt.Printf("queued %d file(s) across %d index(es) — the daemon drains it in the background.\n", total, len(names))
 
 		// watch:true → register with the daemon so it keeps re-ingesting on change.
-		if dURL != "" && cfg.Watch {
+		if cfg.Watch {
 			if home, aerr := filepath.Abs(string(home)); aerr == nil {
 				if _, werr := daemonPostJSON(dURL, "/api/watch", map[string]any{"home": home}); werr == nil {
 					fmt.Printf("watching %s for changes (config watch:true)\n", home)

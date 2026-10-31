@@ -52,12 +52,22 @@ func TestStatusWithNoIndexesSaysSo(t *testing.T) {
 	}
 }
 
-// An unreadable index reports "?" rather than 0: zero is a claim about the
-// index, "?" is a claim about our access to it.
-func TestUnreadableIndexReportsUnknownNotZero(t *testing.T) {
-	d, f := indexCounts(filepath.Join(t.TempDir(), "nope", "index.sqlite"))
-	if d != "?" || f != "?" {
-		t.Errorf("got %q/%q, want ?/? — 0 would assert the index is empty", d, f)
+// With no daemon to ask, an index's counts are "?" rather than 0: zero is a
+// claim about the index, "?" is a claim about our access to it. No command
+// opens an index file to count it (USER 2026-10-30: always a daemon).
+func TestIndexCountsWithNoDaemonAreUnknownNotZero(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("RAGLIT_ROOT", root)
+	if err := os.MkdirAll(filepath.Join(root, "indexes", "p__docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := printIndexDirectory(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "p__docs") || !strings.Contains(out, "?") {
+		t.Errorf("want p__docs listed with ? counts:\n%s", out)
 	}
 }
 

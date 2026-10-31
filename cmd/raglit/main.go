@@ -13,8 +13,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 func main() {
@@ -41,6 +42,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "raglit: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// addHomeFlags registers --home and --index for a command that names its
+// indexes itself (a read selector, an ingest target): homeOf finds the
+// project config, index is the raw --index value.
+func addHomeFlags(fs *flag.FlagSet) (homeOf func() raglit.Home, index *string) {
+	home := fs.String("home", "", "project home dir (default: nearest ./.raglit, else $RAGLIT_HOME)")
+	index = fs.String("index", "", "index name (default: config default_index, else 'default')")
+	homeOf = func() raglit.Home {
+		if *home != "" {
+			return raglit.Home(*home)
+		}
+		return raglit.DiscoverHome()
+	}
+	return homeOf, index
 }
 
 // addStoreFlags registers --home/--db on fs and returns an opener to call after
@@ -164,9 +180,8 @@ func runIndex(args []string) error {
 
 func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs)
-	client := addClientFlags(fs) // --daemon + --embedded
+	homeOf, index := addHomeFlags(fs)
+	client := addClientFlags(fs) // --daemon + --project
 	shared := addSharedFlag(fs)
 	limit := fs.IntP("limit", "n", 10, "max results")
 	mode := fs.String("mode", "", "bm25 | vec | hybrid (default: hybrid where the index has embeddings, else bm25)")
@@ -176,82 +191,17 @@ func runSearch(args []string) error {
 	if query == "" {
 		return fmt.Errorf("search: empty query")
 	}
-
-	// Default: query the shared daemon (auto-started if needed); --embedded/--db
-	// open the index in-process.
-	dURL, ns, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	dURL, ns, err := client(homeOf)
 	if err != nil && dURL == "" {
 		return err
 	}
-	if dURL != "" {
-		// Empty --index → the indexes scoped to this directory and the ambient
-		// globals; with an explicit --project, that project's and its shared.
-		cv, err := readView(fs, dURL, ns, err, homeOf, projectShared(homeOf, shared()...))
-		if err != nil {
-			return err
-		}
-		return daemonSearchPrint(dURL, query, cv.read(fs.Lookup("index").Value.String()), *mode, *path, *limit, ns)
-	}
-
-	store, err := openStore()
+	// Empty --index → the indexes scoped to this directory and the ambient
+	// globals; with an explicit --project, that project's and its shared.
+	cv, err := readView(fs, dURL, ns, err, homeOf, projectShared(homeOf, shared()...))
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	ctx := context.Background()
-	var hits []raglit.Hit
-	if *mode == "" {
-		*mode = "bm25"
-		if lf.resolve(homeOf()); lf.requireEmbed() == nil {
-			*mode = "hybrid"
-		}
-	}
-	switch *mode {
-	case "bm25":
-		hits, err = store.SearchPath(query, *path, *limit)
-	case "vec", "hybrid":
-		lf.resolve(homeOf())
-		if err := lf.requireEmbed(); err != nil {
-			return err
-		}
-		store.SetEmbedder(lf.embedder())
-		if *mode == "vec" {
-			hits, err = store.VecSearchPath(ctx, query, *path, *limit)
-		} else {
-			hits, err = store.HybridSearchPath(ctx, query, *path, *limit)
-		}
-	default:
-		return fmt.Errorf("search: unknown --mode %q (bm25|vec|hybrid)", *mode)
-	}
-	if err != nil {
-		return err
-	}
-	if len(hits) == 0 {
-		fmt.Println("(no matches)")
-		return nil
-	}
-	for i, h := range hits {
-		loc := h.Path
-		if h.Page > 0 {
-			loc = fmt.Sprintf("%s p%d", h.Path, h.Page)
-		}
-		// The hit is on GENERATED text — a caption of the document, or its type's
-		// schema filled out from it. Said here rather than left to the page
-		// number, because there is no page and the text reads like the document.
-		switch h.Origin {
-		case "identity":
-			loc += "  [what this document is — a description of it, not its words]"
-		case "fields":
-			loc += "  [fields READ OUT of this document — cite the document, not this]"
-		default:
-			if h.IsDescription() {
-				loc += "  [generated text, not the document's own words]"
-			}
-		}
-		fmt.Printf("%d. [%.3f] %s%s\n   %s\n", i+1, h.Score, loc, hitMeasures(h.Similarity, h.Matched, h.QueryTerms), clip(oneLine(h.Text), 160))
-	}
-	return nil
+	return daemonSearchPrint(dURL, query, cv.read(*index), *mode, *path, *limit, ns)
 }
 
 func isText(p string) bool {

@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // `raglit watch` registers this project with the daemon for auto re-ingest on
@@ -28,7 +29,7 @@ func runWatch(args []string) error {
 	}
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
-	client := addClientFlags(fs) // --daemon + --embedded + --project
+	client := addClientFlags(fs) // --daemon + --project
 	fs.Parse(args)
 
 	homeOf := func() raglit.Home {
@@ -37,12 +38,9 @@ func runWatch(args []string) error {
 		}
 		return raglit.DiscoverHome()
 	}
-	dURL, _, err := client(homeOf, false)
+	dURL, _, err := client(homeOf)
 	if err != nil {
 		return err
-	}
-	if dURL == "" {
-		return fmt.Errorf("watch: the daemon does the watching — remove --embedded/--db")
 	}
 
 	sub := fs.Arg(0)

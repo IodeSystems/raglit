@@ -1,12 +1,9 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"sort"
 
-	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
 )
 
@@ -20,71 +17,46 @@ import (
 // either alone because the difference is invisible.
 func runRefragment(args []string) error {
 	fs := flag.NewFlagSet("refragment", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs)
-	client := addClientFlags(fs)
+	resolve := addTargetFlags(fs)
 	dryRun := fs.Bool("dry-run", false, "list what would be re-ingested, change nothing")
 	limitFlag := fs.Int("limit-chars", 0, "override the embed limit instead of probing")
 	fs.Parse(args)
-
-	store, where, err := openQueueStore(openStore, homeOf, client,
-		fs.Lookup("db").Value.String() != "", fs.Lookup("index").Value.String())
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-	fmt.Printf("index: %s\n", where)
-
-	lf.resolve(homeOf())
-	cfg, _, _ := raglit.LoadConfig(homeOf())
-	limit := *limitFlag
-	if limit <= 0 {
-		if *lf.embedModel == "" {
-			return fmt.Errorf("no embed model configured — pass --limit-chars or run 'raglit init'")
-		}
-		emb := raglit.NewEmbedder(lf.embedClientForProbe(), *lf.embedModel)
-		fmt.Fprintf(os.Stderr, "probing %s for its input limit...\n", *lf.embedModel)
-		limit = store.EmbedLimitChars(context.Background(), emb, cfg.EmbedLimitChars)
+	fmt.Printf("index: %s\n", t.local())
+	if *limitFlag <= 0 {
+		fmt.Fprintln(os.Stderr, "probing the daemon's embed model for its input limit...")
 	}
-	if limit <= 0 {
-		return fmt.Errorf("could not determine an embed limit — the endpoint may truncate silently; pass --limit-chars")
+	var out struct {
+		LimitChars int `json:"limit_chars"`
+		Documents  []struct {
+			Path  string `json:"path"`
+			Chars int    `json:"chars"`
+		} `json:"documents"`
+		Queued int      `json:"queued"`
+		Failed []string `json:"failed"`
 	}
-	fmt.Printf("embed limit: %d chars\n", limit)
-
-	over, err := store.OversizedDocs(limit)
-	if err != nil {
+	if err := t.post("/api/refragment", map[string]any{"limit_chars": *limitFlag, "dry_run": *dryRun}, &out); err != nil {
 		return err
 	}
-	if len(over) == 0 {
+	fmt.Printf("embed limit: %d chars\n", out.LimitChars)
+	if len(out.Documents) == 0 {
 		fmt.Println("no document holds a fragment over the limit")
 		return nil
 	}
-	paths := make([]string, 0, len(over))
-	for p := range over {
-		paths = append(paths, p)
-	}
-	sort.Slice(paths, func(i, j int) bool { return over[paths[i]] > over[paths[j]] })
-
-	for _, p := range paths {
-		fmt.Printf("  %7d chars  %s\n", over[p], p)
+	for _, d := range out.Documents {
+		fmt.Printf("  %7d chars  %s\n", d.Chars, d.Path)
 	}
 	if *dryRun {
-		fmt.Printf("\n%d document(s) would be re-ingested.\n", len(paths))
+		fmt.Printf("\n%d document(s) would be re-ingested.\n", len(out.Documents))
 		return nil
 	}
-	n := 0
-	for _, p := range paths {
-		if err := store.MarkForReingest(p); err != nil {
-			fmt.Fprintf(os.Stderr, "  failed %s: %v\n", p, err)
-			continue
-		}
-		if _, err := store.Enqueue(p, ""); err != nil {
-			fmt.Fprintf(os.Stderr, "  queue %s: %v\n", p, err)
-			continue
-		}
-		n++
+	for _, f := range out.Failed {
+		fmt.Fprintf(os.Stderr, "  failed %s\n", f)
 	}
-	fmt.Printf("\n%d document(s) queued for re-fragmenting.\n", n)
+	fmt.Printf("\n%d document(s) queued for re-fragmenting.\n", out.Queued)
 	fmt.Println("Pages already transcribed come from the OCR cache, so this re-fragments without re-reading.")
 	return nil
 }

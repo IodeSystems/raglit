@@ -2,17 +2,20 @@ package main
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"github.com/iodesystems/raglit"
-	flag "github.com/spf13/pflag"
 )
 
 // expandIngestTargets turns ingest args into a flat list of ingestable targets:
@@ -234,129 +237,89 @@ func ingestRecipe(in recipeInputs) string {
 		raglit.FigurePromptVersion(), raglit.HashHex([]byte(in.IndexHint)))
 }
 
-// runIngest enqueues URLs for lazy ingestion. With --now it also drains the
-// queue synchronously (fetch + index) instead of leaving it for a serve worker.
+// runIngest queues targets on the daemon. With --wait it also waits until the
+// index's queue is empty, then prints its status.
 func runIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs)
-	client := addClientFlags(fs) // --daemon + --embedded
+	homeOf, index := addHomeFlags(fs)
+	client := addClientFlags(fs) // --daemon + --project
 	title := fs.String("title", "", "document title (single-URL convenience)")
-	now := fs.Bool("now", false, "also process the queue now (don't wait for a serve worker)")
-	embed := fs.Bool("embed", false, "with --now: embed ingested fragments")
+	wait := fs.Bool("wait", false, "wait until the daemon has worked the queue, then print status")
+	fs.BoolVar(wait, "now", false, "old name of --wait")
+	_ = fs.MarkHidden("now")
 	fresh := fs.Bool("fresh", false, "re-read even if unchanged: skip the unchanged-bytes check AND the cross-index pool")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("ingest: nothing given (a folder, file, file://<path>, or http(s)://...)")
 	}
-
 	targets, err := expandIngestTargets(fs.Args())
 	if err != nil {
 		return err
 	}
-
-	// Default: hand off to the shared daemon (auto-started if needed). --embedded
-	// or --db opens the index in-process instead.
-	dURL, ns, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	dURL, ns, err := client(homeOf)
 	if err != nil {
 		return err
 	}
-	if dURL != "" {
-		idx, err := nsWriteIndex(ns, projectShared(homeOf), resolveIndexName(fs.Lookup("index").Value.String(), homeOf))
-		if err != nil {
-			return err
-		}
-		return daemonIngest(dURL, targets, idx, *title, *fresh, projectDirOf(homeOf()))
-	}
-
-	store, err := openStore()
+	idx, err := nsWriteIndex(ns, projectShared(homeOf), resolveIndexName(*index, homeOf))
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	for _, u := range targets {
-		id, err := store.EnqueueFresh(u, *title, *fresh)
-		if errors.Is(err, raglit.ErrIgnored) {
-			fmt.Printf("ignored  %v\n", err)
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		fmt.Printf("queued #%d  %s\n", id, u)
+	if err := daemonIngest(dURL, targets, idx, *title, *fresh, projectDirOf(homeOf())); err != nil {
+		return err
 	}
-	fmt.Printf("queued %d item(s)\n", len(targets))
-
-	if *now {
-		lf.resolve(homeOf())
-		if *embed {
-			if err := lf.requireEmbed(); err != nil {
-				return err
-			}
-			store.SetEmbedder(lf.embedder())
-		}
-		n, err := buildWorker(store, lf, homeOf(), nil).Drain(context.Background())
-		if err != nil {
-			return err
-		}
-		fmt.Printf("processed %d job(s)\n", n)
-		printStatus(store)
+	if *wait {
+		return waitForQueue(dURL, idx)
 	}
 	return nil
 }
 
-// runWork drains the queue once (fetch + index all pending), then exits — for a
-// cron/one-shot worker without a long-running serve.
-func runWork(args []string) error {
-	fs := flag.NewFlagSet("work", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs)
-	embed := fs.Bool("embed", false, "embed ingested fragments")
-	fs.Parse(args)
-	store, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	lf.resolve(homeOf())
-	if *embed {
-		if err := lf.requireEmbed(); err != nil {
+// waitForQueue polls the daemon until index has nothing pending or running,
+// then prints its status. The daemon does the work; this only watches.
+func waitForQueue(base, index string) error {
+	for {
+		b, err := daemonGet(base, "/status", url.Values{"index": {index}})
+		if err != nil {
 			return err
 		}
-		store.SetEmbedder(lf.embedder())
+		var st raglit.Status
+		if err := json.Unmarshal(b, &st); err != nil {
+			return err
+		}
+		if st.Pending == 0 && st.Running == 0 {
+			renderStatus(st)
+			return nil
+		}
+		time.Sleep(time.Second)
 	}
-	n, err := buildWorker(store, lf, homeOf(), nil).Drain(context.Background())
+}
+
+// runWork waits until the daemon has worked the index's queue, then prints
+// its status. It used to drain the queue in-process; the daemon is the only
+// worker now (USER 2026-10-30: always a daemon).
+func runWork(args []string) error {
+	fs := flag.NewFlagSet("work", flag.ExitOnError)
+	resolve := addTargetFlags(fs)
+	fs.Parse(args)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("processed %d job(s)\n", n)
-	printStatus(store)
-	return nil
+	return waitForQueue(t.base, t.index)
 }
 
 // runStatus prints the index + queue status.
 func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	client := addClientFlags(fs) // --daemon + --embedded
+	homeOf, index := addHomeFlags(fs)
+	client := addClientFlags(fs) // --daemon + --project
 	fs.Parse(args)
-	dURL, ns, err := client(homeOf, fs.Lookup("db").Value.String() != "")
+	dURL, ns, err := client(homeOf)
 	if err != nil {
 		// No project to resolve. Show what EXISTS instead of only naming a file to
 		// edit — this is the command people run to find out where they are.
 		return printIndexDirectory(err)
 	}
-	if dURL != "" {
-		return daemonStatusPrint(dURL, nsReadSelector(ns, projectShared(homeOf), fs.Lookup("index").Value.String()))
-	}
-	store, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	printStatus(store)
-	return nil
+	return daemonStatusPrint(dURL, nsReadSelector(ns, projectShared(homeOf), *index))
 }
 
 // printStatus renders a store's Status to stdout.
@@ -410,16 +373,31 @@ func printIndexDirectory(reason error) error {
 
 	// daemon.json records where a daemon WAS; it survives a kill, so believing it
 	// would report a dead daemon as running. Probe.
+	live := "" // the recorded daemon, when it answers; never auto-started here
 	if st, recorded := readDaemonState(root); !recorded {
 		fmt.Println("daemon:       not running")
 	} else if base := "http://" + st.Addr; daemonHealthy(base) {
+		live = base
+		trustDaemon(base)
 		fmt.Printf("daemon:       %s  (pid %d, since %s)\n", base, st.PID, st.StartedAt)
 	} else {
 		fmt.Printf("daemon:       not running  (stale %s records pid %d at %s)\n",
 			filepath.Base(daemonStatePath(root)), st.PID, st.Addr)
 	}
 
-	// The indexes themselves, from disk, so this works with the daemon down.
+	// The indexes themselves, with counts from the daemon. With it down, the
+	// names from disk and "?" for the counts: no command opens an index file.
+	counts := map[string]idxRow{}
+	if live != "" {
+		var l struct {
+			Indexes []idxRow `json:"indexes"`
+		}
+		if b, err := daemonGet(live, "/indexes", nil); err == nil && json.Unmarshal(b, &l) == nil {
+			for _, r := range l.Indexes {
+				counts[r.Name] = r
+			}
+		}
+	}
 	dir := filepath.Join(root, "indexes")
 	ents, err := os.ReadDir(dir)
 	if err != nil || len(ents) == 0 {
@@ -436,30 +414,16 @@ func printIndexDirectory(reason error) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		p := filepath.Join(dir, name, "index.sqlite")
-		docs, frags := indexCounts(p)
-		fmt.Printf("%-34s %-9s %-11s %s\n", name, docs, frags, p)
+		docs, frags := "?", "?" // "?" is a claim about our access, 0 about the index
+		if r, ok := counts[name]; ok {
+			docs, frags = fmt.Sprint(r.Documents), fmt.Sprint(r.Fragments)
+		}
+		fmt.Printf("%-34s %-9s %-11s %s\n", name, docs, frags, filepath.Join(dir, name, "index.sqlite"))
 	}
 	fmt.Println("\nAn index is named <project>__<index>. To act on one:")
 	fmt.Println("  cd into the project (its .raglit/config.json names it), or")
 	fmt.Println("  raglit status --project <project> [--index <index>]")
 	return nil
-}
-
-// indexCounts reads an index's totals directly, so the directory listing works
-// whether or not the daemon is up. Unreadable is reported as "?" rather than 0 —
-// zero is a claim about the index, "?" is a claim about our access to it.
-func indexCounts(path string) (string, string) {
-	s, err := raglit.Open(path)
-	if err != nil {
-		return "?", "?"
-	}
-	defer s.Close()
-	st, err := s.IndexStatus()
-	if err != nil {
-		return "?", "?"
-	}
-	return fmt.Sprint(st.Documents), fmt.Sprint(st.Fragments)
 }
 
 func firstSentence(s string) string {
@@ -482,33 +446,28 @@ func firstSentence(s string) string {
 // sweep, "11 gone" is the answer, not an error.
 func runRetry(args []string) error {
 	fs := flag.NewFlagSet("retry", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	client := addClientFlags(fs) // --daemon + --embedded + --project
+	resolve := addTargetFlags(fs)
 	dryRun := fs.Bool("dry-run", false, "list what would be requeued, change nothing")
 	state := fs.String("state", "error", "which state to requeue: error|done")
 	limit := fs.Int("limit", 0, "cap how many are requeued (0 = all)")
 	match := fs.String("match", "", "only jobs whose error contains this substring")
 	fs.Parse(args)
-
-	store, where, err := openQueueStore(openStore, homeOf, client,
-		fs.Lookup("db").Value.String() != "", fs.Lookup("index").Value.String())
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-	// Which index is this? Printed because its absence hid the bug: `status` is
-	// daemon-routed and reported 131 failures while `retry` opened the
-	// project-local home and reported 21, and nothing on either output said they
-	// were different indexes.
-	fmt.Printf("index: %s\n", where)
+	// Which index is this? Printed because its absence once hid that status
+	// and retry were reading different indexes.
+	fmt.Printf("index: %s\n", t.local())
 
-	jobs, err := store.Jobs(*state, 100000)
-	if err != nil {
+	var jl struct {
+		Jobs []raglit.JobInfo `json:"jobs"`
+	}
+	if err := t.get("/api/jobs", url.Values{"state": {*state}, "limit": {"100000"}}, &jl); err != nil {
 		return err
 	}
-
 	var requeued, missing, filtered int
-	for _, j := range jobs {
+	for _, j := range jl.Jobs {
 		if *match != "" && !strings.Contains(j.Error, *match) {
 			filtered++
 			continue
@@ -528,7 +487,7 @@ func runRetry(args []string) error {
 			requeued++
 			continue
 		}
-		if err := store.RetryJob(j.ID); err != nil {
+		if err := t.post("/api/jobs/retry", map[string]any{"id": j.ID}, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "  failed   #%d: %v\n", j.ID, err)
 			continue
 		}
@@ -560,50 +519,6 @@ func localPath(u string) string {
 		return u
 	}
 	return ""
-}
-
-// openQueueStore opens the SAME index the daemon queues into.
-//
-// `retry` mutates the jobs table, so it opens a store directly rather than
-// calling the daemon. But "directly" used to mean `addStoreFlags`, which
-// resolves the project-LOCAL home — and when a daemon is running, ingest and
-// status use its project-NAMESPACED index instead. The two diverged silently:
-// one index had 131 failed jobs and the other, which retry was requeuing, had
-// 21 and nothing writing to it.
-//
-// So: if a daemon owns this project, open its scoped index by path. Otherwise
-// fall back to the local home, which is what --embedded and --db already mean.
-func openQueueStore(openStore func() (*raglit.Store, error), homeOf func() raglit.Home,
-	client func(func() raglit.Home, bool) (string, string, error),
-	dbSet bool, indexFlag string) (*raglit.Store, string, error) {
-
-	durl, ns, err := client(homeOf, dbSet)
-	// No daemon, no project, or an explicit --db/--embedded: the local home is
-	// the right answer and a resolution error here is not fatal.
-	if err != nil || durl == "" || ns == "" {
-		st, oerr := openStore()
-		if oerr != nil {
-			return nil, "", oerr
-		}
-		return st, string(homeOf()) + " (local)", nil
-	}
-	root := raglit.DefaultRoot()
-	if st, ok := readDaemonState(root); ok && st.Root != "" {
-		root = st.Root
-	}
-	name := ns + nsSep + raglit.NormalizeIndexName(resolveIndexName(indexFlag, homeOf))
-	home := raglit.Home(filepath.Join(root, "indexes", name))
-	// A namespaced index that does not exist yet would be CREATED by OpenHome,
-	// leaving an empty index and a retry that requeues nothing while reporting
-	// success. Say so instead.
-	if _, serr := os.Stat(home.IndexPath()); serr != nil {
-		return nil, "", fmt.Errorf("no index %q under %s — is the daemon holding this project's queue? (%v)", name, root, serr)
-	}
-	st, oerr := raglit.OpenHome(home)
-	if oerr != nil {
-		return nil, "", oerr
-	}
-	return st, string(home) + " (daemon-scoped)", nil
 }
 
 // tesseractOnlyOCR is an OCR with no vision model: the configured cheap engine,

@@ -14,10 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/iodesystems/raglit"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // version is the module version Go stamped into this binary: "0.2.1" for a
@@ -40,104 +41,39 @@ func versionFrom(bi *debug.BuildInfo) string {
 // (live-watch) channel — an agent scopes the watch by passing `index`.
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
-	_, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs)
-	client := addClientFlags(fs) // --daemon + --embedded
+	homeOf, _ := addHomeFlags(fs)
+	client := addClientFlags(fs) // --daemon + --project
 	shared := addSharedFlag(fs)
 	defLimit := fs.IntP("limit", "n", 8, "default max results")
-	embed := fs.Bool("embed", false, "embedded mode: embed ingested fragments")
 	fs.Parse(args)
 
-	// DEFAULT: proxy the MCP tools to the shared per-user daemon, auto-starting it
-	// if none is running — so N Claude sessions are N thin clients to ONE daemon
-	// (single writer + worker pool + LLM caller), not N processes fighting over the
-	// same index. --embedded opts out and runs the index in-process (single-session).
-	durl, ns, err := client(homeOf, false)
+	// The MCP tools proxy to the shared per-user daemon, auto-starting it if
+	// none is running — so N Claude sessions are N thin clients to ONE daemon
+	// (single writer + worker pool + LLM caller), not N processes fighting over
+	// the same index. There is no in-process mode (USER 2026-10-30).
+	durl, ns, err := client(homeOf)
 	if err != nil && durl == "" {
 		return err
 	}
-	if durl != "" {
-		// No project: the tools read (by scope or by name) and refuse writes.
-		cv, err := readView(fs, durl, ns, err, homeOf, projectShared(homeOf, shared()...))
-		if err != nil {
-			return err
-		}
-		rt := newRestartTransport(durl)
-		http.DefaultClient.Transport = rt
-		s := server.NewMCPServer("raglit", version, server.WithToolHandlerMiddleware(restartNotes(rt, durl)))
-		addRaglitTools(s, daemonToolHandlersFor(durl, *defLimit, cv))
-		notifySetup(s, func() setupSummary {
-			cfg, _, _ := raglit.LoadConfig(homeOf())
-			sum, _ := localOrDaemonSetup(cfg, durl)
-			return sum
-		})
-		return server.ServeStdio(s)
-	}
-
-	reg, err := raglit.OpenRegistry(homeOf())
+	// No project: the tools read (by scope or by name) and refuse writes.
+	cv, err := readView(fs, durl, ns, err, homeOf, projectShared(homeOf, shared()...))
 	if err != nil {
 		return err
 	}
-	defer reg.Close()
-	lf.resolve(homeOf())
-	if *embed {
-		if err := lf.requireEmbed(); err != nil {
-			return err
-		}
-		reg.SetEmbedder(lf.embedder())
-	}
-	if ie := buildImageEmbedder(homeOf()); ie != nil {
-		reg.SetImageEmbedder(ie)
-	}
-	reg.SetIdentifier(lf.identifier(homeOf()))
-
-	// One background loop drains every index's queue round-robin (per-index
-	// workers cached). A configured model gives PDF OCR + LLM text segmentation.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runIngestRunners(ctx, reg, lf, homeOf(), nil) // embedded serve: single index, no shared pool
-	go runIdentityWorkers(ctx, reg, homeOf())
-
-	s := server.NewMCPServer("raglit", version)
+	rt := newRestartTransport(durl)
+	http.DefaultClient.Transport = rt
+	s := server.NewMCPServer("raglit", version, server.WithToolHandlerMiddleware(restartNotes(rt, durl)))
+	addRaglitTools(s, daemonToolHandlersFor(durl, *defLimit, cv))
 	notifySetup(s, func() setupSummary {
 		cfg, _, _ := raglit.LoadConfig(homeOf())
-		sum, _ := localOrDaemonSetup(cfg, "")
+		sum, _ := localOrDaemonSetup(cfg, durl)
 		return sum
-	})
-	addRaglitTools(s, toolHandlers{
-		search:        searchHandler(reg, *defLimit),
-		searchFigures: searchFiguresHandler(reg, *defLimit),
-		ingest:        ingestHandler(reg),
-		forget: forgetHandler(func(name string) (string, error) {
-			if name == "" {
-				name = "default"
-			}
-			return name, nil
-		}, func(name string) string { return name }, func(index, path string) error {
-			st, err := reg.Get(index)
-			if err != nil {
-				return err
-			}
-			return st.RemoveDocument(path, true)
-		}),
-		status:        statusHandler(reg),
-		listIndexes:   listHandler(reg),
-		listDocuments: listDocumentsHandler(reg),
-		getDocument:   getDocumentHandler(reg),
-		getFields:     getFieldsHandler(reg),
-		ocr:           ocrHandler(buildToolOCR(lf, homeOf())),
-		manageIndex: manageIndexHandler(storeControls{reg}, func(name string) (string, error) {
-			if name == "" {
-				name = "default"
-			}
-			return name, nil
-		}, func(name string) string { return name }),
 	})
 	return server.ServeStdio(s)
 }
 
-// toolHandlers is raglit's MCP tool surface, supplied either from the local
-// registry (embedded mode) or as daemon proxies (client mode — serveclient.go).
+// toolHandlers is raglit's MCP tool surface, supplied as daemon proxies
+// (serveclient.go).
 type toolHandlers struct {
 	search        server.ToolHandlerFunc
 	searchFigures server.ToolHandlerFunc

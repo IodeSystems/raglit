@@ -20,8 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // Daemon mode.
@@ -374,20 +375,17 @@ func startDaemonUnit() (bool, error) {
 	return true, nil
 }
 
-// addClientFlags registers --daemon, --embedded, and --project, returning a
-// resolver that yields (daemonURL, projectNamespace). In daemon mode it
-// auto-starts the shared daemon if needed and REQUIRES a project name (flag or
-// config "project") — that namespaces this client's indexes so projects don't
-// collide on the shared daemon. --embedded (or a raw --db) opts out: returns
-// ("", "") to open the index in-process, no project needed.
-func addClientFlags(fs *flag.FlagSet) (resolve func(homeOf func() raglit.Home, dbSet bool) (durl, ns string, err error)) {
+// addClientFlags registers --daemon and --project, returning a resolver that
+// yields (daemonURL, projectNamespace). It auto-starts the shared daemon if
+// needed and wants a project name (flag or config "project") — that
+// namespaces this client's indexes so projects don't collide on the shared
+// daemon. With no project the URL still comes back, with errNoProject: a read
+// goes on without one (readView). There is no in-process mode (USER
+// 2026-10-30: always a daemon).
+func addClientFlags(fs *flag.FlagSet) (resolve func(homeOf func() raglit.Home) (durl, ns string, err error)) {
 	daemon := addDaemonFlag(fs)
-	embedded := fs.Bool("embedded", false, "bypass the shared daemon; open the index in-process (no project needed)")
 	project := fs.String("project", "", `project name — namespaces this client's indexes on the shared daemon (required; default: config "project")`)
-	return func(homeOf func() raglit.Home, dbSet bool) (string, string, error) {
-		if *embedded || dbSet {
-			return "", "", nil
-		}
+	return func(homeOf func() raglit.Home) (string, string, error) {
 		durl, err := ensureDaemon(*daemon, homeOf)
 		if err != nil {
 			return "", "", err
@@ -574,6 +572,8 @@ func daemonSearchPrint(base, query, index, mode, path string, limit int, ns stri
 			Sim     *float64 `json:"similarity"`
 			Matched []string `json:"matched_terms"`
 			Terms   int      `json:"query_terms"`
+			Origin  string   `json:"origin"`
+			Caveat  string   `json:"caveat"`
 		} `json:"hits"`
 	}
 	if err := json.Unmarshal(b, &resp); err != nil {
@@ -587,6 +587,18 @@ func daemonSearchPrint(base, query, index, mode, path string, limit int, ns stri
 		loc := h.DocID
 		if h.Page > 0 {
 			loc = fmt.Sprintf("%s p%d", h.DocID, h.Page)
+		}
+		// The hit is on GENERATED text — a caption of the document, or its
+		// type's schema filled out from it. Said here rather than left to the
+		// page number, because there is no page and the text reads like the
+		// document.
+		switch {
+		case h.Origin == "identity":
+			loc += "  [what this document is — a description of it, not its words]"
+		case h.Origin == "fields":
+			loc += "  [fields READ OUT of this document — cite the document, not this]"
+		case h.Caveat != "":
+			loc += "  [" + h.Caveat + "]"
 		}
 		fmt.Printf("%d. [%.3f] (%s) %s%s\n   %s\n", i+1, h.Score, nsStrip(ns, h.Index), loc, hitMeasures(h.Sim, h.Matched, h.Terms), clip(oneLine(h.Snippet), 160))
 	}

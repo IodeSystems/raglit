@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // runDropIndex removes one index's storage — used by tools that create indexes
@@ -19,7 +20,7 @@ import (
 func runDropIndex(args []string) error {
 	fs := flag.NewFlagSet("drop-index", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
-	client := addClientFlags(fs) // --daemon + --embedded + --project
+	client := addClientFlags(fs) // --daemon + --project
 	name := fs.String("index", "", "index to delete (required)")
 	fs.Parse(args)
 
@@ -36,12 +37,9 @@ func runDropIndex(args []string) error {
 		}
 		return raglit.DiscoverHome()
 	}
-	dURL, ns, err := client(homeOf, false)
+	dURL, ns, err := client(homeOf)
 	if err != nil {
 		return err
-	}
-	if dURL == "" {
-		return fmt.Errorf("drop-index: indexes live in the daemon's scoped storage — remove --embedded/--db")
 	}
 	if _, err := daemonDelete(dURL, "/indexes", url.Values{"name": {nsIndex(ns, *name)}}); err != nil {
 		return err

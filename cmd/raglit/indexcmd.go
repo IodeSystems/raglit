@@ -9,8 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // `raglit index` (USER 2026-10-23): one place for per-index work.
@@ -100,12 +101,8 @@ func indexTarget(name string, args []string, extra func(*flag.FlagSet)) (base, f
 		}
 		return raglit.DiscoverHome()
 	}
-	base, ns, err := client(homeOf, false)
+	base, ns, err := client(homeOf)
 	if err != nil && !(errors.Is(err, errNoProject) && base != "") {
-		return
-	}
-	if base == "" {
-		err = fmt.Errorf("index %s: needs the daemon — remove --embedded/--db", name)
 		return
 	}
 	full, err = indexFullName(base, ns, projectShared(homeOf), name)
@@ -330,12 +327,9 @@ func runIndexList(args []string) error {
 		}
 		return raglit.DiscoverHome()
 	}
-	base, ns, err := client(homeOf, false)
+	base, ns, err := client(homeOf)
 	if err != nil && !(errors.Is(err, errNoProject) && base != "") {
 		return err
-	}
-	if base == "" {
-		return fmt.Errorf("index --list: needs the daemon — remove --embedded/--db")
 	}
 	b, err := daemonGet(base, "/indexes", nil)
 	if err != nil {

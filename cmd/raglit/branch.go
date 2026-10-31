@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // `raglit branch` manages copy-on-write branch indexes on the shared daemon
@@ -27,7 +28,7 @@ import (
 func runBranch(args []string) error {
 	fs := flag.NewFlagSet("branch", flag.ExitOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
-	client := addClientFlags(fs) // --daemon + --embedded + --project
+	client := addClientFlags(fs) // --daemon + --project
 	parent := fs.String("parent", "", `parent index to fork from (fork only; default "default")`)
 	asJSON := fs.Bool("json", false, "diff only: print the daemon's JSON")
 	fs.Parse(args)
@@ -44,12 +45,9 @@ func runBranch(args []string) error {
 		return raglit.DiscoverHome()
 	}
 
-	dURL, ns, err := client(homeOf, false)
+	dURL, ns, err := client(homeOf)
 	if err != nil {
 		return err
-	}
-	if dURL == "" {
-		return fmt.Errorf("branch: branches live in the daemon's scoped storage — remove --embedded/--db")
 	}
 
 	switch sub {
