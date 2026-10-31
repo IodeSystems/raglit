@@ -88,8 +88,14 @@ func nsResolveToken(ownNS string, shared []string, token string) (string, bool) 
 	if tgt != ownNS && !containsStr(shared, tgt) {
 		return "", false
 	}
-	if strings.TrimSpace(local) == "*" {
+	local = strings.TrimSpace(local)
+	if local == "*" {
 		return tgt + nsSep + "*", true
+	}
+	if pre, ok := strings.CutSuffix(local, "*"); ok {
+		// A prefix wildcard ("ns:code*"). It matches nothing when nothing
+		// starts so, and never 404s, so "ns:-*" selects no index on purpose.
+		return tgt + nsSep + strings.Map(indexNameRune, strings.ToLower(pre)) + "*", true
 	}
 	return tgt + nsSep + raglit.NormalizeIndexName(local), true
 }
@@ -211,6 +217,14 @@ func (cv clientView) write(token string) (string, error) {
 		return "", fmt.Errorf("%w: writes need one — pass --project, or run in a project (raglit init)", errNoProject)
 	}
 	return nsWriteIndex(cv.ns, cv.shared, token)
+}
+
+// indexNameRune keeps the runes an index name may hold ([a-z0-9_-]).
+func indexNameRune(r rune) rune {
+	if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+		return r
+	}
+	return -1
 }
 
 func containsStr(ss []string, s string) bool {

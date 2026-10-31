@@ -292,3 +292,18 @@ func TestClientViewSelectors(t *testing.T) {
 		t.Errorf("explicit project, no index = %q", got)
 	}
 }
+
+// A trailing "*" is a prefix wildcard in any reachable namespace; "ns:-*"
+// selects nothing, which a caller uses to switch every index off without a
+// name that would 404.
+func TestNsResolveToken_PrefixWildcard(t *testing.T) {
+	for tok, want := range map[string]string{
+		"acme:code*": "acme__code*",
+		"acme:-*":    "acme__-*",
+		"acme:*":     "acme__*",
+	} {
+		if got, ok := nsResolveToken("acme", nil, tok); !ok || got != want {
+			t.Errorf("nsResolveToken(%q) = %q, %v; want %q", tok, got, ok, want)
+		}
+	}
+}
