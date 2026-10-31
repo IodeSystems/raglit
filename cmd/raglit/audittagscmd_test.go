@@ -11,10 +11,10 @@ import (
 
 // indexWithTaggedDocuments is a throwaway index whose documents carry the drift
 // an audit exists to surface: two spellings of one thing.
-func indexWithTaggedDocuments(t *testing.T) string {
+func indexWithTaggedDocuments(t *testing.T) testDB {
 	t.Helper()
-	db := filepath.Join(t.TempDir(), "idx.sqlite")
-	st, err := raglit.Open(db)
+	db := newTestDB(t)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func indexWithTaggedDocuments(t *testing.T) string {
 func TestAuditTags_ReportsTheVocabularyAndProposesDrift(t *testing.T) {
 	db := indexWithTaggedDocuments(t)
 	out := captureStdout(t, func() {
-		if err := runAuditTags([]string{"--db", db}); err != nil {
+		if err := runAuditTags(db.with()); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -73,15 +73,14 @@ func TestAuditTags_ReportsTheVocabularyAndProposesDrift(t *testing.T) {
 func TestAuditTags_MergeAppliesOnlyWhatAPersonNamed(t *testing.T) {
 	db := indexWithTaggedDocuments(t)
 	out := captureStdout(t, func() {
-		if err := runAuditTags([]string{"--db", db,
-			"--merge", "lead paint inspection=>lead paint"}); err != nil {
+		if err := runAuditTags(db.with("--merge", "lead paint inspection=>lead paint")); err != nil {
 			t.Fatal(err)
 		}
 	})
 	if !strings.Contains(out, "1 document(s)") {
 		t.Errorf("merge did not report what it did:\n%s", out)
 	}
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +115,7 @@ func hasTag(tags []raglit.TagCount, want string) bool {
 func TestAbout_ShowsTheCountedDigestWithoutAModel(t *testing.T) {
 	db := indexWithTaggedDocuments(t)
 	out := captureStdout(t, func() {
-		if err := runAbout([]string{"--db", db}); err != nil {
+		if err := runAbout(db.with()); err != nil {
 			t.Fatal(err)
 		}
 	})

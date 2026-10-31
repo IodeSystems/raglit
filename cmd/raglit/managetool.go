@@ -130,60 +130,6 @@ func manageIndexHandler(c indexControls, resolve func(string) (string, error), d
 	}
 }
 
-// storeControls backs manage_index with the local registry.
-type storeControls struct{ reg *raglit.Registry }
-
-func (c storeControls) state(idx string) (controlState, error) {
-	st, err := c.reg.Get(idx)
-	if err != nil {
-		return controlState{}, err
-	}
-	return controlState{Index: idx, Paused: st.Paused(), Ignore: st.IgnorePatterns(),
-		Allow: st.AllowPatterns(), Builtin: raglit.EnqueueBuiltinIgnore()}, nil
-}
-
-func (c storeControls) setPaused(idx string, paused bool) error {
-	st, err := c.reg.Get(idx)
-	if err != nil {
-		return err
-	}
-	return st.SetPaused(paused)
-}
-
-func (c storeControls) setLists(idx string, ignore, allow *[]string) error {
-	st, err := c.reg.Get(idx)
-	if err != nil {
-		return err
-	}
-	if ignore != nil {
-		if _, err := st.SetIgnorePatterns(*ignore); err != nil {
-			return err
-		}
-	}
-	if allow != nil {
-		if _, err := st.SetAllowPatterns(*allow); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (c storeControls) purge(idx, pattern string, dry bool) (raglit.PurgeResult, error) {
-	st, err := c.reg.Get(idx)
-	if err != nil {
-		return raglit.PurgeResult{}, err
-	}
-	return st.Purge(pattern, dry)
-}
-
-func (c storeControls) prune(idx string, dry bool) (raglit.PruneResult, error) {
-	st, err := c.reg.Get(idx)
-	if err != nil {
-		return raglit.PruneResult{}, err
-	}
-	return st.Prune(dry, false)
-}
-
 // daemonControls backs manage_index with the daemon's HTTP surface.
 type daemonControls struct{ base string }
 

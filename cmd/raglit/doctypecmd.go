@@ -1,13 +1,13 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
@@ -25,21 +25,19 @@ import (
 
 func runHint(args []string) error {
 	fs := flag.NewFlagSet("hint", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	set := fs.String("set", "", "record this hint (- reads stdin)")
 	clear := fs.Bool("clear", false, "remove the hint")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	st, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-
 	switch {
 	case *clear:
-		if err := st.SetIndexHint("", time.Now().UnixNano()); err != nil {
+		if err := t.send(http.MethodPut, "/api/index-hint", map[string]any{"hint": ""}, nil); err != nil {
 			return err
 		}
 		fmt.Println("hint cleared")
@@ -53,7 +51,7 @@ func runHint(args []string) error {
 			}
 			hint = string(b)
 		}
-		if err := st.SetIndexHint(hint, time.Now().UnixNano()); err != nil {
+		if err := t.send(http.MethodPut, "/api/index-hint", map[string]any{"hint": hint}, nil); err != nil {
 			return err
 		}
 		// Said plainly because it is not obvious and it costs money: the hint is
@@ -64,13 +62,17 @@ func runHint(args []string) error {
 		fmt.Println("so documents ALREADY read keep the reading they have. Re-ingest to apply it.")
 		return nil
 	}
-
-	h := st.IndexHint()
-	if h == "" {
+	var out struct {
+		Hint string `json:"hint"`
+	}
+	if err := t.get("/api/index-hint", nil, &out); err != nil {
+		return err
+	}
+	if out.Hint == "" {
 		fmt.Println("no hint — `raglit hint --set \"...\"` records one")
 		return nil
 	}
-	fmt.Println(h)
+	fmt.Println(out.Hint)
 	return nil
 }
 
@@ -94,20 +96,30 @@ func runDocType(args []string) error {
 	}
 }
 
+// docTypes fetches the index's registered types and their coverage.
+func docTypes(t target) ([]raglit.DocType, []raglit.FieldsCoverage, error) {
+	var out struct {
+		Types    []raglit.DocType        `json:"types"`
+		Coverage []raglit.FieldsCoverage `json:"coverage"`
+	}
+	if err := t.get("/api/doc-types", nil, &out); err != nil {
+		return nil, nil, err
+	}
+	return out.Types, out.Coverage, nil
+}
+
 func docTypeList(args []string) error {
 	fs := flag.NewFlagSet("doctype list", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	asJSON := fs.Bool("json", false, "machine-readable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	st, err := openCorpus(fs, openStore, homeOf)
+	tg, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-
-	types, err := st.DocTypes()
+	types, cov, err := docTypes(tg)
 	if err != nil {
 		return err
 	}
@@ -119,10 +131,6 @@ func docTypeList(args []string) error {
 	if len(types) == 0 {
 		fmt.Println("no document types — `raglit doctype propose <name> <DOC>...` reads examples and proposes one")
 		return nil
-	}
-	cov, err := st.FieldsCoverage()
-	if err != nil {
-		return err
 	}
 	byType := map[string]raglit.FieldsCoverage{}
 	for _, c := range cov {
@@ -147,7 +155,7 @@ func docTypeList(args []string) error {
 
 func docTypeShow(args []string) error {
 	fs := flag.NewFlagSet("doctype show", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	asJSON := fs.Bool("json", false, "machine-readable")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -155,15 +163,23 @@ func docTypeShow(args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("doctype show: name exactly one type")
 	}
-	st, err := openCorpus(fs, openStore, homeOf)
+	tg, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-
-	t, err := st.DocTypeByName(fs.Arg(0))
+	types, _, err := docTypes(tg)
 	if err != nil {
 		return err
+	}
+	want := raglit.NormalizeTypeName(fs.Arg(0))
+	var t *raglit.DocType
+	for i := range types {
+		if raglit.NormalizeTypeName(types[i].Name) == want {
+			t = &types[i]
+		}
+	}
+	if t == nil {
+		return fmt.Errorf("doctype show: no document type %q", fs.Arg(0))
 	}
 	if *asJSON {
 		return printJSON(t)
@@ -186,8 +202,7 @@ func docTypeShow(args []string) error {
 // trust afterwards.
 func docTypePropose(args []string) error {
 	fs := flag.NewFlagSet("doctype propose", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs)
+	resolve := addTargetFlags(fs)
 	save := fs.Bool("save", false, "register the proposal as-is (default: print it for review)")
 	asJSON := fs.Bool("json", false, "machine-readable")
 	if err := fs.Parse(args); err != nil {
@@ -196,37 +211,19 @@ func docTypePropose(args []string) error {
 	if fs.NArg() < 2 {
 		return fmt.Errorf("doctype propose: name the type, then one or more example documents")
 	}
-	st, err := openCorpus(fs, openStore, homeOf)
+	tg, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	lf.resolve(homeOf())
-	id := lf.identifier(homeOf())
-	if id == nil {
-		return fmt.Errorf("doctype propose: no identity model configured — run 'raglit init' or set identity_model")
+	var out struct {
+		Type  raglit.DocType `json:"type"`
+		Stale int            `json:"stale"`
 	}
-	st.SetIdentifier(id)
-
-	name := fs.Arg(0)
-	var gold []string
-	for _, ref := range fs.Args()[1:] {
-		p, err := resolveOneDoc(st, ref)
-		if err != nil {
-			return err
-		}
-		gold = append(gold, p)
-	}
-	t, err := st.ProposeDocType(context.Background(), name, gold)
-	if err != nil {
+	if err := tg.post("/api/doc-types/propose", map[string]any{
+		"name": fs.Arg(0), "docs": fs.Args()[1:], "save": *save}, &out); err != nil {
 		return err
 	}
-	if *save {
-		if err := st.SetDocType(t); err != nil {
-			return err
-		}
-		defer reportInvalidated(st, t.Name)
-	}
+	t := out.Type
 	if *asJSON {
 		return printJSON(t)
 	}
@@ -235,11 +232,13 @@ func docTypePropose(args []string) error {
 		fmt.Printf("\nHOW TO READ ONE:\n%s\n", t.Prompt)
 	}
 	fmt.Printf("\nSCHEMA:\n%s\n", indentJSON(t.Schema))
-	fmt.Printf("\nproposed from %d document(s): %s\n", len(gold), strings.Join(gold, ", "))
+	fmt.Printf("\nproposed from %d document(s): %s\n", len(t.Gold), strings.Join(t.Gold, ", "))
 	if !*save {
 		fmt.Println("\nNOT registered. Review it, then re-run with --save,")
 		fmt.Println("or edit the JSON and register it with: raglit doctype add --file <f> <name>")
+		return nil
 	}
+	reportInvalidated(out.Stale)
 	return nil
 }
 
@@ -247,7 +246,7 @@ func docTypePropose(args []string) error {
 // wrote or edited after reading a proposal.
 func docTypeAdd(args []string) error {
 	fs := flag.NewFlagSet("doctype add", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	file := fs.String("file", "", "JSON file holding {description, prompt, schema} (- reads stdin)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -270,16 +269,19 @@ func docTypeAdd(args []string) error {
 		return fmt.Errorf("doctype add: %w", err)
 	}
 	t.Name = fs.Arg(0)
-	st, err := openCorpus(fs, openStore, homeOf)
+	tg, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	if err := st.SetDocType(t); err != nil {
+	var out struct {
+		Type  raglit.DocType `json:"type"`
+		Stale int            `json:"stale"`
+	}
+	if err := tg.send(http.MethodPut, "/api/doc-types", t, &out); err != nil {
 		return err
 	}
 	fmt.Printf("registered %q with %d field(s)\n", raglit.NormalizeTypeName(t.Name), len(t.FieldNames()))
-	reportInvalidated(st, raglit.NormalizeTypeName(t.Name))
+	reportInvalidated(out.Stale)
 	return nil
 }
 
@@ -290,17 +292,7 @@ func docTypeAdd(args []string) error {
 // plausible record, and the field just added is simply absent from it — which
 // reads exactly like a document that did not state one. Nothing else in the
 // output would ever mention it.
-func reportInvalidated(st *raglit.Store, name string) {
-	stale, err := st.FieldsStaleness()
-	if err != nil {
-		return
-	}
-	n := 0
-	for _, s := range stale {
-		if raglit.NormalizeTypeName(s.Type) == name && s.Reason == raglit.FieldsSchemaMoved {
-			n++
-		}
-	}
+func reportInvalidated(n int) {
 	if n == 0 {
 		return
 	}
@@ -312,19 +304,18 @@ func reportInvalidated(st *raglit.Store, name string) {
 
 func docTypeRemove(args []string) error {
 	fs := flag.NewFlagSet("doctype rm", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("doctype rm: name exactly one type")
 	}
-	st, err := openCorpus(fs, openStore, homeOf)
+	tg, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	if err := st.DeleteDocType(fs.Arg(0)); err != nil {
+	if _, err := daemonDelete(tg.base, "/api/doc-types", url.Values{"index": {tg.index}, "name": {fs.Arg(0)}}); err != nil {
 		return err
 	}
 	// Said plainly: the extractions are what documents SAID, and removing a type

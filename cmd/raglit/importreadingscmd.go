@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // `raglit import-readings` adopts verified transcripts already in the corpus as
@@ -17,7 +19,7 @@ import (
 // stops one hop short of the recording.
 func runImportReadings(args []string) error {
 	fs := flag.NewFlagSet("import-readings", flag.ExitOnError)
-	openStore, _ := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	apply := fs.Bool("apply", false, "record the readings (default: report what would be adopted)")
 	by := fs.String("by", "", "who ruled on these transcripts")
 	fs.Usage = func() {
@@ -38,16 +40,17 @@ because a wrong match ranks a transcript above the wrong hearing.
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	store, err := openStore()
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	matches, err := store.ImportVerifiedTranscripts(!*apply, *by)
-	if err != nil {
+	var out struct {
+		Matches []raglit.TranscriptMatch `json:"matches"`
+	}
+	if err := t.post("/api/import-readings", map[string]any{"apply": *apply, "by": *by}, &out); err != nil {
 		return err
 	}
+	matches := out.Matches
 	if len(matches) == 0 {
 		fmt.Println("no verified transcripts found that are not already readings")
 		return nil

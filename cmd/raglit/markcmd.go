@@ -103,7 +103,7 @@ func runMark(args []string) error {
 
 func runMarks(args []string) error {
 	fs := flag.NewFlagSet("marks", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	todo := fs.Bool("todo", false, "overlapping pairs nobody has ruled on yet, with a proposal for each")
 	identical := fs.Bool("identical", false, "documents held more than once, BYTE for byte — needs no sketches")
 	rebuild := fs.Bool("rebuild", false, "drop the projected database and replay the audit trail into it")
@@ -130,12 +130,11 @@ func runMarks(args []string) error {
 	}
 
 	if *identical {
-		store, err := openCorpus(fs, openStore, homeOf)
+		t, err := resolve()
 		if err != nil {
 			return err
 		}
-		defer store.Close()
-		return runIdentical(store, js, *write, *asJSON)
+		return runIdentical(t, js, *write, *asJSON)
 	}
 
 	if !*todo {
@@ -162,14 +161,12 @@ func runMarks(args []string) error {
 		return nil
 	}
 
-	store, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
 	opts := raglit.SimilarOpts{Width: raglit.FoldWidth, Mod: raglit.SampleMod}
-	st, err := store.SketchStatusFor(opts.Width, opts.Mod)
+	st, err := sketchStatus(t, opts.Width, opts.Mod)
 	if err != nil {
 		return err
 	}
@@ -184,7 +181,7 @@ func runMarks(args []string) error {
 			len(st.Unsketched), st.Documents)
 	}
 
-	_, pairs, err := collectPairs(store, opts)
+	_, pairs, err := collectPairs(t, opts)
 	if err != nil {
 		return err
 	}
@@ -304,8 +301,12 @@ func firstWord(s string) string {
 // A person can still overrule it — a later ruling on the same pair supersedes
 // the earlier one, and both stay in the trail — which is what makes the
 // automatic write safe rather than final.
-func runIdentical(store *raglit.Store, js *raglit.JudgementStore, write, asJSON bool) error {
-	groups, err := store.IdenticalGroups()
+func runIdentical(t target, js *raglit.JudgementStore, write, asJSON bool) error {
+	var ig struct {
+		Groups [][]string `json:"groups"`
+	}
+	err := t.get("/api/identical", nil, &ig)
+	groups := ig.Groups
 	if err != nil {
 		return err
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -19,33 +18,22 @@ import (
 // deep, and therefore marked as generated wherever it is shown.
 func runAbout(args []string) error {
 	fs := flag.NewFlagSet("about", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs)
+	resolve := addTargetFlags(fs)
 	write := fs.Bool("write", false, "ask the model to (re)write the paragraph")
 	asJSON := fs.Bool("json", false, "machine-readable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	st, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	lf.resolve(homeOf())
-
+	var d raglit.IndexDigest
 	if *write {
-		id := lf.identifier(homeOf())
-		if id == nil {
-			return fmt.Errorf("about: no identity model configured — run 'raglit init' or set identity_model")
-		}
-		st.SetIdentifier(id)
-		if _, err := st.WriteIndexAbout(context.Background()); err != nil {
-			return err
-		}
+		err = t.post("/api/about", map[string]any{}, &d)
+	} else {
+		err = t.get("/api/about", nil, &d)
 	}
-
-	d, err := st.IndexDigest()
 	if err != nil {
 		return err
 	}

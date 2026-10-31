@@ -5,6 +5,8 @@ import (
 	"os"
 
 	flag "github.com/spf13/pflag"
+
+	"github.com/iodesystems/raglit"
 )
 
 // `raglit migrate-attachments` moves extracted mail attachments out of the
@@ -16,7 +18,7 @@ import (
 // for the same reason.
 func runMigrateAttachments(args []string) error {
 	fs := flag.NewFlagSet("migrate-attachments", flag.ExitOnError)
-	openStore, _ := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	apply := fs.Bool("apply", false, "actually move them (default: report what would move)")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `usage: raglit migrate-attachments [--index NAME] [--apply]
@@ -32,16 +34,17 @@ Reports what it would do unless --apply is given.
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	store, err := openStore()
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	moves, err := store.MigrateExtractedAttachments(!*apply)
-	if err != nil {
+	var out struct {
+		Moves []raglit.AttachmentMove `json:"moves"`
+	}
+	if err := t.post("/api/migrate-attachments", map[string]any{"apply": *apply}, &out); err != nil {
 		return err
 	}
+	moves := out.Moves
 	if len(moves) == 0 {
 		fmt.Println("nothing to migrate — no extracted attachments are in the corpus")
 		return nil

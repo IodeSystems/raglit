@@ -1,9 +1,9 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -21,29 +21,21 @@ func runHealth(args []string) error {
 	asJSON := fs.Bool("json", false, "machine-readable")
 	kind := fs.String("kind", "", "only this kind (no-fragments, no-pages, job-failed, segment-degraded, llm-retries, withdrawn)")
 	quiet := fs.Bool("quiet", false, "print nothing; exit non-zero if anything is wrong")
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	st, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-
-	ps, err := st.Problems(context.Background())
-	if err != nil {
+	var out struct {
+		Problems []raglit.Problem `json:"problems"`
+	}
+	if err := t.get("/api/problems", url.Values{"kind": {*kind}}, &out); err != nil {
 		return err
 	}
-	if *kind != "" {
-		var f []raglit.Problem
-		for _, p := range ps {
-			if string(p.Kind) == *kind {
-				f = append(f, p)
-			}
-		}
-		ps = f
-	}
+	ps := out.Problems
 	if *asJSON {
 		if err := json.NewEncoder(os.Stdout).Encode(ps); err != nil {
 			return err

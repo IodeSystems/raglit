@@ -18,10 +18,13 @@ Usage:
           [--modes grep,bm25,vec,hybrid] [-n 20] [--raglit PATH] [--index-only]
           [--repos gitaly,cli] [--frag-window N --frag-stride N --frag-floor N]
 """
-import argparse, json, os, re, statistics, subprocess, sys
+import argparse, json, os, re, shutil, statistics, subprocess, sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from raglitd import Daemon  # noqa: E402
 
 REPOS = ["gitlab", "gitaly", "cli", "handbook"]
 INCLUDE = ["*.go", "*.rb", "*.proto", "*.md", "*.yml", "*.yaml"]
@@ -42,30 +45,35 @@ def sh(cmd, env, **kw):
 
 
 def prepare(a, snap, out):
+    """A throwaway daemon on OUT/raglit-root (never the user's), and a project
+    home whose config names the index roots. The index persists in the root, so
+    a rerun reuses it unless --reindex."""
     home, root = out / "raglit-home", out / "raglit-root"
     home.mkdir(parents=True, exist_ok=True)
-    root.mkdir(parents=True, exist_ok=True)
-    cfg = {"base_url": a.llm_url, "embed_model": a.embed_model, "project": "rtbench",
-           "default_index": "org",
-           "indexes": {"org": {"roots": [str(snap / r) for r in a.repos],
-                               "include": INCLUDE, "ignore": IGNORE}}}
+    model = {"base_url": a.llm_url, "embed_model": a.embed_model}
     for k in ("frag_window", "frag_stride", "frag_floor"):
         if getattr(a, k):
-            cfg[k] = getattr(a, k)
+            model[k] = getattr(a, k)
+    cfg = {**model, "project": "rtbench", "default_index": "org",
+           "indexes": {"org": {"roots": [str(snap / r) for r in a.repos],
+                               "include": INCLUDE, "ignore": IGNORE}}}
     (home / "config.json").write_text(json.dumps(cfg, indent=1))
-    env = {**os.environ, "RAGLIT_HOME": str(home), "RAGLIT_ROOT": str(root)}
-    if not (home / "index-org.sqlite").exists() or a.reindex:
+    idx = root / "indexes" / "rtbench__org"
+    if a.reindex and idx.exists():
+        shutil.rmtree(idx)
+    fresh = not idx.exists()
+    d = Daemon(a.raglit, root, model, embed=True)
+    env = {**d.env, "RAGLIT_HOME": str(home)}
+    if fresh:
         print("sync + embed (slow: ~600 files/min) ...", file=sys.stderr, flush=True)
-        print(sh([a.raglit, "sync", "--home", str(home), "--embedded"], env).strip(), file=sys.stderr)
-        print(sh([a.raglit, "work", "--home", str(home), "--index", "org", "--embed"], env).strip(), file=sys.stderr)
-    return home, env
+        print(sh([a.raglit, "sync", "--home", str(home)], env).strip(), file=sys.stderr)
+        print(sh([a.raglit, "work", "--home", str(home), "--index", "org"], env).strip(), file=sys.stderr)
+    return home, env, d
 
 
-def indexed_files(home, snap):
-    import sqlite3
-    db = sqlite3.connect(home / "index-org.sqlite")
-    paths = [r[0] for r in db.execute("SELECT path FROM documents")]
-    return {rel(p, snap) for p in paths} - {None}
+def indexed_files(d, snap):
+    docs = d.get("/api/documents?index=rtbench__org")["documents"]
+    return {rel(x["path"], snap) for x in docs} - {None}
 
 
 def rel(p, snap):
@@ -77,7 +85,7 @@ def rel(p, snap):
 
 
 def raglit_rank(a, home, env, snap, mode, q):
-    r = subprocess.run([a.raglit, "search", "--home", str(home), "--embedded", "--index", "org",
+    r = subprocess.run([a.raglit, "search", "--home", str(home), "--index", "org",
                         "--mode", mode, "-n", str(a.limit * 3), q],
                        capture_output=True, text=True, errors="replace", env=env)
     ranked = []
@@ -147,7 +155,7 @@ def main():
     ap.add_argument("--index-only", action="store_true")
     ap.add_argument("--reindex", action="store_true")
     ap.add_argument("--repos", default=",".join(REPOS), help="subset of the snapshot to index and query")
-    ap.add_argument("--frag-window", type=int, default=0, help="fragment window in characters (raglit default 9000)")
+    ap.add_argument("--frag-window", type=int, default=0, help="fragment window in characters (raglit default 1000)")
     ap.add_argument("--frag-stride", type=int, default=0)
     ap.add_argument("--frag-floor", type=int, default=0)
     a = ap.parse_args()
@@ -155,10 +163,10 @@ def main():
     if not a.llm_url:
         sys.exit("--llm-url (or $RAGLIT_LLM_URL) is required for the embedder")
     snap, out = Path(a.snapshot).resolve(), Path(a.out).resolve()
-    home, env = prepare(a, snap, out)
+    home, env, d = prepare(a, snap, out)
     if a.index_only:
         return
-    files = indexed_files(home, snap)
+    files = indexed_files(d, snap)
     qs = [json.loads(l) for l in open(a.queries)]
     modes = a.modes.split(",")
     dropped = 0

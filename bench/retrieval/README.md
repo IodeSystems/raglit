@@ -12,8 +12,8 @@ query: a person describing a need before the code existed. The relevant files
 are those changed by every merged MR related to that issue, in any indexed
 project, minus tests, specs, changelogs and generated code.
 
-`eval.py` indexes the snapshot with raglit (in-process, a fresh home; never the
-user's daemon), runs every query through `raglit search` per mode, and scores
+`eval.py` indexes the snapshot with raglit (a throwaway daemon on its own root
+and port, `bench/raglitd.py`; never the user's daemon), runs every query through `raglit search` per mode, and scores
 success@k, recall@k and MRR. `grep` is the baseline an agent builds by hand:
 files ranked by how many distinct query words they contain.
 

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/iodesystems/raglit"
@@ -27,7 +29,7 @@ import (
 // near-duplicates into one score cannot say either.
 func runSimilar(args []string) error {
 	fs := flag.NewFlagSet("similar", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	build := fs.Bool("build", false, "build missing page sketches, then exit")
 	rebuild := fs.Bool("rebuild", false, "rebuild every page sketch (after a recipe change)")
 	status := fs.Bool("status", false, "report sketch coverage, then exit")
@@ -43,30 +45,10 @@ func runSimilar(args []string) error {
 	noMask := fs.Bool("no-mask", false, "do not mask corpus-generic text (diagnostic: shows what masking suppressed)")
 	fs.Parse(args)
 
-	// --build/--rebuild WRITE sketches. On a daemon-routed project that write
-	// belongs to the daemon, and must land in the same index the report reads —
-	// sketching locally then reporting over the daemon's index finds nothing
-	// sketched, having just said it sketched everything.
-	if (*build || *rebuild) && !explicitStoreFlag(fs) {
-		if ns, perr := resolveProject("", homeOf); perr == nil && ns != "" {
-			n, recipe, skipped, derr := daemonSketch(*rebuild, *width, *mod)
-			if derr != nil {
-				return derr
-			}
-			fmt.Printf("sketched %d document(s) under %s\n", n, recipe)
-			for _, s := range skipped {
-				fmt.Fprintf(os.Stderr, "  skipped: %s\n", s)
-			}
-			return nil
-		}
-	}
-
-	store, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
 	w, m := *width, *mod
 	if w <= 0 {
 		w = raglit.FoldWidth
@@ -74,9 +56,21 @@ func runSimilar(args []string) error {
 	if m <= 0 {
 		m = raglit.SampleMod
 	}
+	// --build/--rebuild WRITE sketches, in the daemon, the index's single writer.
+	if *build || *rebuild {
+		n, recipe, skipped, derr := daemonSketch(t, *rebuild, *width, *mod)
+		if derr != nil {
+			return derr
+		}
+		fmt.Printf("sketched %d document(s) under %s\n", n, recipe)
+		for _, s := range skipped {
+			fmt.Fprintf(os.Stderr, "  skipped: %s\n", s)
+		}
+		return nil
+	}
 
 	if *status {
-		st, err := store.SketchStatusFor(w, m)
+		st, err := sketchStatus(t, w, m)
 		if err != nil {
 			return err
 		}
@@ -102,31 +96,13 @@ func runSimilar(args []string) error {
 		return nil
 	}
 
-	if *rebuild {
-		// A recipe change invalidates every stored row, and the recipe column is
-		// what makes that detectable. Clearing first rather than relying on the
-		// per-document replace: a document deleted since the last build would
-		// otherwise keep its rows forever and go on generating candidates.
-		if err := store.ClearSketches(); err != nil {
-			return err
-		}
-	}
-	if *build || *rebuild {
-		n, errs := store.SketchAll(w, m)
-		fmt.Printf("sketched %d document(s) under %s\n", n, raglit.Recipe(w, m))
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "  skipped: %v\n", e)
-		}
-		return nil
-	}
-
 	opts := raglit.SimilarOpts{
 		Width: w, Mod: m, MinChars: *minChars, MinCoverage: *minCov, Limit: *limit, Self: *self,
 		GenericDF: *genericDF, NoMask: *noMask,
 	}
 
 	if *all {
-		return auditAll(store, opts, *asJSON)
+		return auditAll(t, opts, *asJSON)
 	}
 
 	if fs.NArg() == 0 {
@@ -135,7 +111,7 @@ func runSimilar(args []string) error {
 
 	var reports []raglit.SimilarReport
 	for _, target := range fs.Args() {
-		rep, err := probeOne(store, target, opts)
+		rep, err := probeOne(t, target, opts)
 		if err != nil {
 			return err
 		}
@@ -171,53 +147,58 @@ func runSimilar(args []string) error {
 // upload as novel. Silently returning "nothing similar" for a document nothing
 // could read is the one answer this must not give: it tells the triage flow to
 // accept a duplicate.
-func probeOne(store *raglit.Store, target string, opts raglit.SimilarOpts) (raglit.SimilarReport, error) {
-	if pages, err := store.TruePages(target); err == nil && len(pages) > 0 {
-		return store.SimilarIndexed(target, opts)
+func probeOne(t target, probe string, opts raglit.SimilarOpts) (raglit.SimilarReport, error) {
+	ask := func(body map[string]any) (raglit.SimilarReport, error) {
+		body["probe"], body["opts"] = probe, opts
+		var rep raglit.SimilarReport
+		err := t.post("/api/similar", body, &rep)
+		return rep, err
+	}
+	if pages, err := t.truePages(probe); err == nil && len(pages) > 0 {
+		return ask(map[string]any{})
 	}
 	// Exact bytes first, and BEFORE any read. A scanned PDF this index cannot OCR
 	// still has a sha256, so the strongest answer is also the one available for the
 	// input the shingle path has to refuse. It is also immune to the generic-text
 	// masking that makes an identical pair score 0.93.
-	var exact map[string]string
-	if b, err := os.ReadFile(target); err == nil {
-		if exact, err = store.SameBytesHash(raglit.HashHex(b)); err != nil {
-			return raglit.SimilarReport{}, err
-		}
+	sum := ""
+	if b, err := os.ReadFile(probe); err == nil {
+		sum = raglit.HashHex(b)
 	}
-	withExact := func(rep raglit.SimilarReport, err error) (raglit.SimilarReport, error) {
-		rep.Exact = exact
-		return rep, err
-	}
-	sidecar := raglit.TranscriptionPath(target)
+	sidecar := raglit.TranscriptionPath(probe)
 	if b, err := os.ReadFile(sidecar); err == nil {
-		pages := raglit.ParseTranscription(string(b))
-		if len(pages) > 0 {
-			rep, err := store.SimilarTo(target, raglit.FoldPages(pages), opts)
-			rep.Source = "transcription:" + filepath.Base(sidecar)
-			return withExact(rep, err)
+		if pages := raglit.ParseTranscription(string(b)); len(pages) > 0 {
+			return ask(map[string]any{"pages": pages, "sha256": sum,
+				"source": "transcription:" + filepath.Base(sidecar)})
 		}
 	}
-	if _, err := os.Stat(target); err != nil {
+	if _, err := os.Stat(probe); err != nil {
 		return raglit.SimilarReport{}, fmt.Errorf(
-			"similar: %q is neither an indexed document path nor a readable file", target)
+			"similar: %q is neither an indexed document path nor a readable file", probe)
 	}
-	pages, err := raglit.ExtractPaged(context.Background(), target, nil)
+	pages, err := raglit.ExtractPaged(context.Background(), probe, nil)
 	if err != nil {
 		// An exact-bytes hit still answers the question, so report it rather than
 		// failing: "we already hold these exact bytes" needs no text at all, and
 		// refusing here would send an upload for OCR that did not need reading.
-		if len(exact) > 0 {
-			return withExact(raglit.SimilarReport{Probe: target, Source: "bytes-only"}, nil)
+		if sum != "" {
+			if same, serr := t.sameBytesHash(sum); serr == nil && len(same) > 0 {
+				return raglit.SimilarReport{Probe: probe, Source: "bytes-only", Exact: same}, nil
+			}
 		}
 		return raglit.SimilarReport{}, fmt.Errorf(
 			"similar: cannot read %s without OCR (%w)\n"+
 				"  index it first (raglit index %s), or run raglit transcribe --write %s",
-			target, err, target, target)
+			probe, err, probe, probe)
 	}
-	rep, err := store.SimilarTo(target, raglit.FoldPages(pages), opts)
-	rep.Source = "extracted"
-	return withExact(rep, err)
+	return ask(map[string]any{"pages": pages, "sha256": sum, "source": "extracted"})
+}
+
+// sketchStatus is the index's sketch coverage under a recipe.
+func sketchStatus(t target, w, m int) (raglit.SketchStatus, error) {
+	var st raglit.SketchStatus
+	err := t.get("/api/similar/status", url.Values{"width": {strconv.Itoa(w)}, "mod": {strconv.Itoa(m)}}, &st)
+	return st, err
 }
 
 // auditAll compares every sketched document against every other.
@@ -229,10 +210,7 @@ func probeOne(store *raglit.Store, target string, opts raglit.SimilarOpts) (ragl
 // pair is one overlapping pair of indexed documents, counted once. Every
 // comparison is symmetric, so A→B and B→A are the same finding; reporting both
 // would double every count a person reads.
-type pair struct {
-	A, B string
-	M    raglit.DocMatch
-}
+type pair = docPair
 
 // collectPairs compares every sketched document against the corpus and returns
 // the deduplicated pairs, plus the documents compared.
@@ -241,34 +219,24 @@ type pair struct {
 // with different endings — what overlaps, versus what overlaps and has not been
 // ruled on. Two enumerations would drift, and a pair missing from one of them is
 // invisible rather than wrong.
-func collectPairs(store *raglit.Store, opts raglit.SimilarOpts) ([]string, []pair, error) {
-	docs, err := store.SketchedPaths(opts.Width, opts.Mod)
-	if err != nil {
+func collectPairs(t target, opts raglit.SimilarOpts) ([]string, []pair, error) {
+	var out struct {
+		Documents []string `json:"documents"`
+		Pairs     []pair   `json:"pairs"`
+		Skipped   []string `json:"skipped"`
+	}
+	q := url.Values{"width": {strconv.Itoa(opts.Width)}, "mod": {strconv.Itoa(opts.Mod)}}
+	if err := t.get("/api/similar/pairs", q, &out); err != nil {
 		return nil, nil, err
 	}
-	var pairs []pair
-	seen := map[string]bool{}
-	for _, p := range docs {
-		rep, err := store.SimilarIndexed(p, opts)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  skipped %s: %v\n", p, err)
-			continue
-		}
-		for _, m := range rep.Matches {
-			key := p + "\x00" + m.Path
-			rev := m.Path + "\x00" + p
-			if seen[key] || seen[rev] {
-				continue
-			}
-			seen[key] = true
-			pairs = append(pairs, pair{A: p, B: m.Path, M: m})
-		}
+	for _, s := range out.Skipped {
+		fmt.Fprintf(os.Stderr, "  skipped %s\n", s)
 	}
-	return docs, pairs, nil
+	return out.Documents, out.Pairs, nil
 }
 
-func auditAll(store *raglit.Store, opts raglit.SimilarOpts, asJSON bool) error {
-	st, err := store.SketchStatusFor(opts.Width, opts.Mod)
+func auditAll(t target, opts raglit.SimilarOpts, asJSON bool) error {
+	st, err := sketchStatus(t, opts.Width, opts.Mod)
 	if err != nil {
 		return err
 	}
@@ -280,7 +248,7 @@ func auditAll(store *raglit.Store, opts raglit.SimilarOpts, asJSON bool) error {
 			"warning: %d of %d documents are UNSKETCHED and were not compared — run --build\n",
 			len(st.Unsketched), st.Documents)
 	}
-	docs, pairs, err := collectPairs(store, opts)
+	docs, pairs, err := collectPairs(t, opts)
 	if err != nil {
 		return err
 	}

@@ -16,8 +16,8 @@ import (
 // (worktree-style overlays). Branch names ARE index names, so they're namespaced
 // by project exactly like every other index: the daemon sees "<project>__<name>",
 // and `list` shows only THIS project's branches (foreign ones are filtered out).
-// Branches only exist in the daemon's scoped storage, so this always routes to
-// the daemon — --embedded is refused.
+// Branches only exist in the daemon's scoped storage, and every command routes
+// to the daemon.
 //
 // Flags precede the subcommand (standard flag parsing):
 //

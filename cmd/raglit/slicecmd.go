@@ -373,16 +373,8 @@ func urlValues(kv ...string) url.Values {
 }
 
 // daemonReread asks the daemon to purge a document's page cache and re-read it.
-func daemonReread(path string) (purged int, jobID int64, err error) {
-	base, err := ensureDaemon("", raglit.DiscoverHome)
-	if err != nil {
-		return 0, 0, err
-	}
-	idx, err := daemonIndexName()
-	if err != nil {
-		return 0, 0, err
-	}
-	b, err := daemonPostJSON(base, "/api/reread?"+urlValues("path", path, "index", idx).Encode(), map[string]any{})
+func daemonReread(t target, path string) (purged int, jobID int64, err error) {
+	b, err := daemonPostJSON(t.base, "/api/reread?"+urlValues("path", path, "index", t.index).Encode(), map[string]any{})
 	if err != nil {
 		return 0, 0, err
 	}
@@ -397,15 +389,8 @@ func daemonReread(path string) (purged int, jobID int64, err error) {
 }
 
 // daemonSketch asks the daemon to build page sketches in its own index.
-func daemonSketch(rebuild bool, width, mod int) (n int, recipe string, skipped []string, err error) {
-	base, err := ensureDaemon("", raglit.DiscoverHome)
-	if err != nil {
-		return 0, "", nil, err
-	}
-	idx, err := daemonIndexName()
-	if err != nil {
-		return 0, "", nil, err
-	}
+func daemonSketch(t target, rebuild bool, width, mod int) (n int, recipe string, skipped []string, err error) {
+	base, idx := t.base, t.index
 	q := urlValues("index", idx)
 	if rebuild {
 		q.Set("rebuild", "true")
@@ -436,15 +421,11 @@ func daemonSketch(rebuild bool, width, mod int) (n int, recipe string, skipped [
 // what a document IS, which is a ruling — and the counters lie often enough that
 // a queue somebody skims is the right output.
 func runProposeSlices(fs *flag.FlagSet, target string, write bool, asJSON bool) error {
-	store, err := openCorpus(fs, func() (*raglit.Store, error) {
-		return nil, fmt.Errorf("no local store")
-	}, raglit.DiscoverHome)
+	t, err := defaultTarget()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	pages, err := store.TruePages(target)
+	pages, err := t.truePages(target)
 	if err != nil {
 		return fmt.Errorf("slices --propose: %w", err)
 	}
@@ -551,21 +532,9 @@ func daemonCorrectPage(doc string, page int, note, by string, text []byte) (read
 // daemonWithdraw asks the daemon to rule a document out of the corpus. Both
 // halves — the trail event and the index rows — happen there, for the reason
 // storeroute.go gives: the daemon is the single writer.
-func daemonWithdraw(path, reason, by string) (refs []raglit.Reference, err error) {
-	dir, ok := raglit.ProjectDir()
-	if !ok {
-		return nil, fmt.Errorf("no .raglit/ found from here")
-	}
-	base, err := ensureDaemon("", raglit.DiscoverHome)
-	if err != nil {
-		return nil, err
-	}
-	idx, err := daemonIndexName()
-	if err != nil {
-		return nil, err
-	}
-	q := urlValues("project", dir, "index", idx, "path", path, "reason", reason, "by", by)
-	b, err := daemonPostJSON(base, "/api/withdraw?"+q.Encode(), map[string]any{})
+func daemonWithdraw(t target, path, reason, by string) (refs []raglit.Reference, err error) {
+	q := urlValues("project", projectDirOf(t.home), "index", t.index, "path", path, "reason", reason, "by", by)
+	b, err := daemonPostJSON(t.base, "/api/withdraw?"+q.Encode(), map[string]any{})
 	if err != nil {
 		return nil, err
 	}

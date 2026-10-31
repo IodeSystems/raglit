@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"strings"
 
-	"github.com/iodesystems/raglit"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -105,22 +103,4 @@ func forgetHandler(resolve func(string) (string, error), display func(string) st
 		b, _ := json.Marshal(map[string]any{"index": display(idx), "forgotten": len(done), "paths": done})
 		return mcp.NewToolResultText(string(b)), nil
 	}
-}
-
-// storeIngestBatch enqueues targets into one local index (embedded serve).
-func storeIngestBatch(st *raglit.Store, name string, targets []string, title string) (batchResult, error) {
-	r := batchResult{Index: name, JobIDs: []int64{}}
-	for _, t := range targets {
-		id, err := st.Enqueue(t, title)
-		if errors.Is(err, raglit.ErrIgnored) {
-			r.Ignored++
-			continue
-		}
-		if err != nil {
-			return r, err
-		}
-		r.Queued++
-		r.JobIDs = append(r.JobIDs, id)
-	}
-	return r, nil
 }

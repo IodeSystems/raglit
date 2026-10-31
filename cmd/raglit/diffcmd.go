@@ -17,7 +17,7 @@ import (
 // second scan and with a re-recorded instrument whose page 3 changed.
 func runDiff(args []string) error {
 	fs := flag.NewFlagSet("diff", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	asJSON := fs.Bool("json", false, "emit the diff as JSON")
 	width := fs.Int("width", 0, "shingle width in folded chars (0 = default)")
 	fs.Parse(args)
@@ -26,11 +26,10 @@ func runDiff(args []string) error {
 	}
 	aPath, bPath := fs.Arg(0), fs.Arg(1)
 
-	store, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
 
 	w := *width
 	if w <= 0 {
@@ -41,17 +40,17 @@ func runDiff(args []string) error {
 	// decide whether two files are the same document, when their hashes already
 	// say so, is work done to reach an answer already in hand.
 	var d raglit.DocDiff
-	if same, err := store.SameBytesAs(aPath); err == nil {
+	if same, err := t.sameBytes(aPath); err == nil {
 		if _, ok := same[bPath]; ok {
 			d.SameBytes = true
 		}
 	}
 
-	aPages, err := store.TruePages(aPath)
+	aPages, err := t.truePages(aPath)
 	if err != nil {
 		return fmt.Errorf("diff: %s: %w", aPath, err)
 	}
-	bPages, err := store.TruePages(bPath)
+	bPages, err := t.truePages(bPath)
 	if err != nil {
 		return fmt.Errorf("diff: %s: %w", bPath, err)
 	}

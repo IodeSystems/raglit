@@ -4,10 +4,7 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,28 +56,6 @@ func addHomeFlags(fs *flag.FlagSet) (homeOf func() raglit.Home, index *string) {
 	return homeOf, index
 }
 
-// addStoreFlags registers --home/--db on fs and returns an opener to call after
-// fs.Parse. --db (raw path) wins if set; otherwise --home (or the default home)
-// is used, which also stores ingested originals.
-func addStoreFlags(fs *flag.FlagSet) (open func() (*raglit.Store, error), homeOf func() raglit.Home) {
-	home := fs.String("home", "", "index home dir (default $RAGLIT_HOME or ~/local/raglit)")
-	db := fs.String("db", "", "raw index file path (overrides --home)")
-	index := fs.String("index", "", "index name (default: config default_index, else 'default')")
-	homeOf = func() raglit.Home {
-		if *home != "" {
-			return raglit.Home(*home)
-		}
-		return raglit.DiscoverHome()
-	}
-	open = func() (*raglit.Store, error) {
-		if *db != "" {
-			return raglit.Open(*db)
-		}
-		return raglit.OpenIndex(homeOf(), resolveIndexName(*index, homeOf))
-	}
-	return open, homeOf
-}
-
 // resolveIndexName picks the effective index: an explicit --index wins, else the
 // home's config default_index, else "default".
 func resolveIndexName(flagVal string, homeOf func() raglit.Home) string {
@@ -110,34 +85,16 @@ func resolveDaemon(flagVal string, homeOf func() raglit.Home) string {
 	return ""
 }
 
+// runIndex queues local files and directories (text and PDF) on the daemon
+// and waits for it to work them. It used to index them in-process; the daemon
+// is the only worker now (USER 2026-10-30: always a daemon).
 func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs) // vision model for PDFs; embed model when --embed
-	embed := fs.Bool("embed", false, "also embed fragments for vector/hybrid search")
+	resolve := addTargetFlags(fs)
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		return fmt.Errorf("index: no files/dirs given")
 	}
-	store, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	lf.resolve(homeOf())
-	if *embed {
-		if err := lf.requireEmbed(); err != nil {
-			return err
-		}
-		store.SetEmbedder(lf.embedder())
-		if ie := buildImageEmbedder(homeOf()); ie != nil {
-			store.SetImageEmbedder(ie)
-		}
-	}
-
-	// Local index goes through the SAME pipeline as URL ingest: enqueue each
-	// file, then drain now. That gives local files the LLM segmentation (text +
-	// code) and PDF OCR + concurrent embed — one code path, no duplicate splitter.
 	var files []string
 	for _, root := range fs.Args() {
 		fi, err := os.Stat(root)
@@ -161,21 +118,21 @@ func runIndex(args []string) error {
 			files = append(files, root)
 		}
 	}
-	for _, p := range files {
+	for i, p := range files {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return err
 		}
-		if _, err := store.Enqueue(abs, ""); err != nil && !errors.Is(err, raglit.ErrIgnored) {
-			return err
-		}
+		files[i] = abs
 	}
-	n, err := buildWorker(store, lf, homeOf(), nil).Drain(context.Background())
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("indexed %d file(s) → %s\n", n, store.Path())
-	return nil
+	if err := daemonIngest(t.base, files, t.index, "", false, projectDirOf(t.home)); err != nil {
+		return err
+	}
+	return waitForQueue(t.base, t.index)
 }
 
 func runSearch(args []string) error {
@@ -241,36 +198,16 @@ func clip(s string, n int) string {
 // of making somebody name them, which is the pairing that makes the check worth
 // having.
 func runReread(args []string) error {
-	// Split our own flags out and pass everything else through to index, so
-	// --home, --index, --model and friends keep working without being restated.
-	var passthrough, targets []string
-	suspectRoot, dry := "", false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--dry-run":
-			dry = true
-		case strings.HasPrefix(a, "--suspect="):
-			suspectRoot = a[strings.Index(a, "=")+1:]
-		case a == "--suspect":
-			if i+1 < len(args) {
-				i++
-				suspectRoot = args[i]
-			}
-		case strings.HasPrefix(a, "-"):
-			passthrough = append(passthrough, a)
-			// A flag that takes a value: keep the value with it.
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && strings.Contains(a, "=") == false {
-				i++
-				passthrough = append(passthrough, args[i])
-			}
-		default:
-			targets = append(targets, a)
-		}
+	fs := flag.NewFlagSet("reread", flag.ContinueOnError)
+	resolve := addTargetFlags(fs)
+	dry := fs.Bool("dry-run", false, "name what would be re-read")
+	suspectRoot := fs.String("suspect", "", "take the targets from the transcription plausibility check under DIR")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-
-	if suspectRoot != "" {
-		found, err := raglit.SuspectDocs(suspectRoot)
+	targets := fs.Args()
+	if *suspectRoot != "" {
+		found, err := raglit.SuspectDocs(*suspectRoot)
 		if err != nil {
 			return err
 		}
@@ -279,7 +216,7 @@ func runReread(args []string) error {
 			targets = append(targets, doc)
 		}
 		if len(targets) == 0 {
-			fmt.Println("no suspect transcriptions under", suspectRoot)
+			fmt.Println("no suspect transcriptions under", *suspectRoot)
 			return nil
 		}
 	}
@@ -300,62 +237,29 @@ func runReread(args []string) error {
 		}
 		targets[i] = abs
 	}
-	if dry {
+	if *dry {
 		fmt.Printf("would re-read %d document(s)\n", len(targets))
 		return nil
 	}
-
-	purge := flag.NewFlagSet("reread-purge", flag.ContinueOnError)
-	purge.SetOutput(io.Discard)
-	openStore, homeOf := addStoreFlags(purge)
-	_ = purge.Parse(passthrough)
-
+	t, err := resolve()
+	if err != nil {
+		return err
+	}
 	// Rulings, for the copy announcement below. A project without any is the
 	// normal state and must not stop a reread, so a failure here is not fatal.
 	js, _ := openJudgements()
 	if js != nil {
 		defer js.Close()
 	}
-
-	// A reread WRITES: it purges cached pages and re-reads. On a daemon-routed
-	// project both halves belong to the daemon — doing them locally would purge a
-	// different index from the one in service and leave the bad read in place.
-	if ns, err := resolveProject("", homeOf); err == nil && ns != "" && !explicitStoreFlag(purge) {
-		read, rerr := openCorpus(purge, openStore, homeOf)
-		if rerr != nil {
-			return rerr
-		}
-		defer read.Close()
-		for _, t := range targets {
-			n, id, err := daemonReread(t)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  %v\n", err)
-				continue
-			}
-			fmt.Printf("  purged %d cached page(s), queued job %d: %s\n", n, id, t)
-			announceOtherCopies(read, js, t)
-		}
-		return nil
-	}
-
-	// Embedded/local: purge with a store opened only for that, then close it
-	// before index opens its own — two writers on one sqlite file is a lock
-	// fight for no gain.
-	store, err := openStore()
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	for _, t := range targets {
-		n, err := store.PurgeDocPageCache(ctx, t)
+	// Both halves — purging the cached pages and re-reading — are the daemon's.
+	for _, p := range targets {
+		n, id, err := daemonReread(t, p)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %v\n", err)
 			continue
 		}
-		fmt.Printf("  purged %d cached page(s): %s\n", n, t)
-		announceOtherCopies(store, js, t)
+		fmt.Printf("  purged %d cached page(s), queued job %d: %s\n", n, id, p)
+		announceOtherCopies(t, js, p)
 	}
-	store.Close()
-
-	return runIndex(append(passthrough, targets...))
+	return nil
 }

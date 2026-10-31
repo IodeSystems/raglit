@@ -13,8 +13,8 @@ tokens are that arm's fixed overhead (system prompt + tool definitions), which
 every model call re-sends; the summary prints it beside the totals.
 
 Everything runs under OUT: a copy of the corpus plus filler documents, a fresh
-raglit home and root (never the user's daemon: `serve --embedded`), and the
-raw per-run JSON. Nothing is written to the repository.
+raglit home, a throwaway daemon on its own root and port (never the user's
+daemon: bench/raglitd.py), and the raw per-run JSON. Nothing is written to the repository.
 
 Usage:
   bench/agent-ab/run.py --out DIR [--model haiku] [--reps 1] [-j 4]
@@ -26,6 +26,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from raglitd import Daemon  # noqa: E402
 
 PROMPTS = {
     "grep": "The company's documents are the files under the current directory "
@@ -70,24 +72,27 @@ def prepare(a, out):
             d.mkdir(parents=True)
         # Attachment extraction is off by default; without it the answer that
         # lives only in an attachment is not in the index at all.
-        cfg = {"base_url": a.llm_url, "embed_model": a.embed_model,
-               "project": "agentab", "default_index": "default",
-               "extract_email_attachments": True}
+        model = {"base_url": a.llm_url, "embed_model": a.embed_model,
+                 "extract_email_attachments": True}
+        cfg = {**model, "project": "agentab", "default_index": "default"}
         (home / "config.json").write_text(json.dumps(cfg))
-        env = {**os.environ, "RAGLIT_HOME": str(home), "RAGLIT_ROOT": str(root)}
+        d = Daemon(a.raglit, root, model, embed=True)
+        env = {**d.env, "RAGLIT_HOME": str(home)}
         print(f"indexing {nfiles} files with {a.embed_model} ...", flush=True)
-        idx = [a.raglit, "index", "--home", str(home), "--embed"]
+        idx = [a.raglit, "index", "--home", str(home)]
         sh(idx + [str(corpus)], env=env)
         # `raglit index DIR` walks text and PDF only, so mail archives are
-        # named one by one; their attachments land under the home and are
-        # indexed by a second pass.
+        # named one by one; their extracted attachments land in raglit's own
+        # storage and are indexed by a second pass.
         sh(idx + [str(p) for p in sorted(corpus.rglob("*.mbox"))], env=env)
-        if (home / "attachments").exists() and any((home / "attachments").rglob("*.*")):
-            sh(idx + [str(home / "attachments")], env=env)
+        att = [str(p) for p in root.rglob("attachments") if p.is_dir() and any(p.rglob("*.*"))]
+        if att:
+            sh(idx + att, env=env)
         mcp = {"mcpServers": {"raglit": {
             "command": a.raglit,
-            "args": ["serve", "--home", str(home), "--embedded", "--embed"],
-            "env": {"RAGLIT_HOME": str(home), "RAGLIT_ROOT": str(root)}}}}
+            "args": ["mcp", "--home", str(home)],
+            "env": {"RAGLIT_HOME": str(home), "RAGLIT_ROOT": str(root), "RAGLIT_DAEMON": d.base,
+                    "RAGLIT_CHILD": "1", "RAGLIT_NO_AUTOBUILD": "1"}}}}
         (out / "mcp-raglit.json").write_text(json.dumps(mcp))
     (out / "mcp-none.json").write_text(json.dumps({"mcpServers": {}}))
     (out / "empty").mkdir(exist_ok=True)

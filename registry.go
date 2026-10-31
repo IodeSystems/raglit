@@ -89,6 +89,14 @@ func (r *Registry) SetIdentifier(id *Identifier) {
 	}
 }
 
+// HasIdentifier reports whether an identity model is configured: captions,
+// tags and field extraction need one.
+func (r *Registry) HasIdentifier() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.identifier != nil
+}
+
 // Scoped reports whether the registry keeps one directory per index (the
 // daemon's layout) rather than a single home.
 func (r *Registry) Scoped() bool { return r.scopedRoot != "" }

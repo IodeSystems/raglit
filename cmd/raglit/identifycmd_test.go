@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,10 +9,10 @@ import (
 )
 
 // indexWithADocument is a throwaway index holding one badly-named document.
-func indexWithADocument(t *testing.T) string {
+func indexWithADocument(t *testing.T) testDB {
 	t.Helper()
-	db := filepath.Join(t.TempDir(), "idx.sqlite")
-	st, err := raglit.Open(db)
+	db := newTestDB(t)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +31,7 @@ func indexWithADocument(t *testing.T) string {
 func TestIdentifyList_NamesWhatIsNotNamed(t *testing.T) {
 	db := indexWithADocument(t)
 	out := captureStdout(t, func() {
-		if err := runIdentify([]string{"--db", db, "--list"}); err != nil {
+		if err := runIdentify(db.with("--list")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -48,14 +47,13 @@ func TestIdentifyList_NamesWhatIsNotNamed(t *testing.T) {
 // filename is untouched, and the ruling is attributed.
 func TestIdentifyByAPerson(t *testing.T) {
 	db := indexWithADocument(t)
-	err := runIdentify([]string{"--db", db,
-		"--name", "2021-05-25 purchase and sale agreement (Ardley/Brannock)",
+	err := runIdentify(db.with("--name", "2021-05-25 purchase and sale agreement (Ardley/Brannock)",
 		"--summary", "The executed counterpart of the buyer's offer for 1440 North Northlea Road.",
-		"--kind", "agreement", "--by", "carl", "/corpus/0428_001.pdf"})
+		"--kind", "agreement", "--by", "carl", "/corpus/0428_001.pdf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +78,7 @@ func TestIdentifyByAPerson(t *testing.T) {
 // a fortieth spelling of "letter" is a kind nobody can filter on.
 func TestIdentifyByAPerson_RefusesAnUnknownKind(t *testing.T) {
 	db := indexWithADocument(t)
-	err := runIdentify([]string{"--db", db, "--name", "Something", "--kind", "thingamajig", "/corpus/0428_001.pdf"})
+	err := runIdentify(db.with("--name", "Something", "--kind", "thingamajig", "/corpus/0428_001.pdf"))
 	if err == nil || !strings.Contains(err.Error(), "kind") {
 		t.Fatalf("err = %v, want a complaint about the kind", err)
 	}
@@ -93,7 +91,7 @@ func TestIdentify_WithoutAModelSaysSo(t *testing.T) {
 	t.Setenv("RAGLIT_LLM_KEY", "")
 	// An empty home, so the answer comes from the flags rather than from
 	// whatever this machine happens to have configured.
-	err := runIdentify([]string{"--db", db, "--home", t.TempDir()})
+	err := runIdentify(db.with("--home", t.TempDir()))
 	if err == nil || !strings.Contains(err.Error(), "no identity model") {
 		t.Fatalf("err = %v, want 'no identity model configured'", err)
 	}

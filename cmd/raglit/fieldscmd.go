@@ -1,11 +1,10 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
+	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/iodesystems/raglit"
@@ -20,8 +19,7 @@ import (
 // the same rows — a fields job is an identity job with a different ask.
 func runFields(args []string) error {
 	fs := flag.NewFlagSet("fields", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
-	lf := addLLMFlags(fs)
+	resolve := addTargetFlags(fs)
 	list := fs.Bool("list", false, "coverage per document type (no model calls)")
 	force := fs.Bool("force", false, "re-extract documents that already have fields (a person's is never replaced)")
 	dry := fs.Bool("dry-run", false, "name the documents that would be extracted")
@@ -33,26 +31,18 @@ func runFields(args []string) error {
 		return err
 	}
 	targets := fs.Args()
-
-	st, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	lf.resolve(homeOf())
-
 	if *list {
-		return printFieldsCoverage(st, *asJSON)
+		return printFieldsCoverage(t, *asJSON)
 	}
 
 	// A person's ruling: one document, recorded, done.
 	if strings.TrimSpace(*set) != "" {
 		if len(targets) != 1 {
 			return fmt.Errorf("fields: name exactly one document to record fields for")
-		}
-		path, err := resolveOneDoc(st, targets[0])
-		if err != nil {
-			return err
 		}
 		body := *set
 		if body == "-" {
@@ -62,25 +52,32 @@ func runFields(args []string) error {
 			}
 			body = string(b)
 		}
-		got, err := st.RecordFields(context.Background(), path,
-			raglit.DocFields{Fields: json.RawMessage(body)}, *by)
-		if err != nil {
+		if !json.Valid([]byte(body)) {
+			return fmt.Errorf("fields: --set is not valid JSON")
+		}
+		var got struct {
+			Path string `json:"path"`
+			raglit.DocFields
+		}
+		if err := t.send(http.MethodPut, "/api/fields", map[string]any{
+			"path": targets[0], "fields": json.RawMessage(body), "by": *by}, &got); err != nil {
 			return err
 		}
-		return printFields(path, got, *asJSON)
+		return printFields(got.Path, got.DocFields, *asJSON)
 	}
 
 	// Reading one document's fields back.
 	if len(targets) == 1 && !*dry {
-		path, err := resolveOneDoc(st, targets[0])
-		if err == nil {
-			if f, ferr := st.DocumentFields(path); ferr == nil && !f.Empty() {
-				return printFields(path, f, *asJSON)
-			}
+		var f struct {
+			Path string `json:"path"`
+			raglit.DocFields
+		}
+		if err := t.get("/api/fields", url.Values{"path": {targets[0]}}, &f); err == nil && !f.Empty() {
+			return printFields(f.Path, f.DocFields, *asJSON)
 		}
 	}
 
-	paths, err := fieldsTargets(st, targets, *force)
+	paths, err := fieldsTargets(t, targets, *force)
 	if err != nil {
 		return err
 	}
@@ -92,8 +89,8 @@ func runFields(args []string) error {
 		// extraction whose type was removed is not current and cannot be
 		// re-run, and saying everything is current would bury that.
 		blocked := 0
-		if stale, serr := st.FieldsStaleness(); serr == nil {
-			for _, s := range stale {
+		if fst, serr := fieldsStatus(t); serr == nil {
+			for _, s := range fst.Stale {
 				if s.Reason == raglit.FieldsTypeGone {
 					blocked++
 				}
@@ -116,13 +113,15 @@ func runFields(args []string) error {
 		return nil
 	}
 
-	ns, _ := resolveProject("", homeOf)
-	routed := ns != "" && !explicitStoreFlag(fs)
-	queued, err := enqueueFieldsWork(st, paths, *force, routed)
-	if err != nil {
-		return err
+	queued := 0
+	for _, p := range paths {
+		n, err := daemonEnqueueAsk(t, p, *force, raglit.IdentityAskFields)
+		if err != nil {
+			return err
+		}
+		queued += n
 	}
-	q := identityQueueNow(st, routed)
+	q, _ := daemonIdentityQueue(t)
 	fmt.Printf("queued %d document(s) — %d pending, %d running, %d done, %d skipped, %d failed\n",
 		queued, q.Pending, q.Running, q.Done, q.Skipped, q.Failed)
 	// The queue holds one row per document, so a document already in flight for
@@ -135,33 +134,15 @@ func runFields(args []string) error {
 		fmt.Printf("%d deferred behind a caption already in flight — the worker queues those\n", deferred)
 		fmt.Println("as each caption closes, because a caption is what establishes the type.")
 	}
-	if !routed {
-		return drainFieldsLocally(context.Background(), st, lf, homeOf())
-	}
 	fmt.Println("the daemon is working them; `raglit fields --list` shows coverage")
 	return nil
 }
 
-func enqueueFieldsWork(st *raglit.Store, paths []string, force, routed bool) (int, error) {
-	if !routed {
-		return st.EnqueueFieldsFor(paths, force)
-	}
-	n := 0
-	for _, p := range paths {
-		queued, err := daemonEnqueueFields(p, force)
-		if err != nil {
-			return n, err
-		}
-		n += queued
-	}
-	return n, nil
-}
-
 // fieldsTargets is the work list: the named documents, or every document that
-// resolved as a registered type and has no extraction yet.
-func fieldsTargets(st *raglit.Store, targets []string, force bool) ([]string, error) {
+// resolved as a registered type and is owed an extraction.
+func fieldsTargets(t target, targets []string, force bool) ([]string, error) {
 	if len(targets) > 0 {
-		docs, err := st.Documents()
+		docs, err := t.documents()
 		if err != nil {
 			return nil, err
 		}
@@ -171,68 +152,36 @@ func fieldsTargets(st *raglit.Store, targets []string, force bool) ([]string, er
 		}
 		return paths, nil
 	}
+	q := url.Values{}
 	if force {
-		ids, err := st.Identities()
-		if err != nil {
-			return nil, err
-		}
-		var out []string
-		for _, id := range ids {
-			if strings.TrimSpace(id.DocType) != "" {
-				out = append(out, id.Path)
-			}
-		}
-		return out, nil
+		q.Set("force", "true")
 	}
-	// Owed, not merely absent: an extraction written under a schema that has
-	// since been edited answers questions nobody is asking any more.
-	return st.ExtractableMissing()
+	var out struct {
+		Paths []string `json:"paths"`
+	}
+	if err := t.get("/api/fields/targets", q, &out); err != nil {
+		return nil, err
+	}
+	return out.Paths, nil
 }
 
-// drainFieldsLocally works the queue in-process, for an embedded index with no
-// daemon behind it.
-func drainFieldsLocally(ctx context.Context, st *raglit.Store, lf *llmFlags, home raglit.Home) error {
-	id := lf.identifier(home)
-	if id == nil {
-		return fmt.Errorf("fields: no identity model configured — run 'raglit init' or set identity_model")
-	}
-	st.SetIdentifier(id)
-	cfg, _, _ := raglit.LoadConfig(home)
-	w := &raglit.IdentityWorker{Store: st, Slots: cfg.IdentitySlots}
-	w.OnReclaim = func(n int) {
-		fmt.Printf("requeued %d job(s) left running by a process that is gone\n", n)
-	}
-	done, failed := 0, 0
-	w.OnDone = func(job raglit.IdentityJob, _ raglit.DocIdentity, err error) {
-		switch {
-		case errors.Is(err, raglit.ErrNoDocType):
-			// Not a failure: most documents are not forms.
-		case err != nil:
-			failed++
-			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", job.Path, err)
-		default:
-			done++
-			if f, ferr := st.DocumentFields(job.Path); ferr == nil {
-				_ = printFields(job.Path, f, false)
-			}
-		}
-	}
-	if _, err := w.Drain(ctx); err != nil {
-		return err
-	}
-	fmt.Printf("extracted %d document(s)", done)
-	if failed > 0 {
-		fmt.Printf(", %d failed", failed)
-	}
-	fmt.Println()
-	return nil
+type fieldsStatusBody struct {
+	Coverage []raglit.FieldsCoverage `json:"coverage"`
+	Stale    []raglit.StaleFields    `json:"stale"`
 }
 
-func printFieldsCoverage(st *raglit.Store, asJSON bool) error {
-	cov, err := st.FieldsCoverage()
+func fieldsStatus(t target) (fieldsStatusBody, error) {
+	var out fieldsStatusBody
+	err := t.get("/api/fields/status", nil, &out)
+	return out, err
+}
+
+func printFieldsCoverage(t target, asJSON bool) error {
+	fst, err := fieldsStatus(t)
 	if err != nil {
 		return err
 	}
+	cov := fst.Coverage
 	if asJSON {
 		return printJSON(struct {
 			Coverage []raglit.FieldsCoverage `json:"coverage"`
@@ -252,10 +201,7 @@ func printFieldsCoverage(st *raglit.Store, asJSON bool) error {
 	}
 	// Named, not just counted: a stale extraction looks right, so the reason is
 	// the only thing that says why it is being re-run.
-	stale, err := st.FieldsStaleness()
-	if err != nil {
-		return err
-	}
+	stale := fst.Stale
 	if len(stale) == 0 {
 		return nil
 	}

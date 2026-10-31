@@ -15,8 +15,9 @@ is not a saving, so read the `correct` column first.
 
 `--llm-url` is the OpenAI-compatible endpoint for the raglit arm's embedder
 (`--embed-model`, default `nomic-embed-text`). Everything runs under `--out`: a
-copy of the corpus plus filler, a fresh raglit home and root, and
-`serve --embedded`, so the user's daemon and indexes are never touched.
+copy of the corpus plus filler, a fresh raglit home, and a throwaway daemon on
+its own root and port (`bench/raglitd.py`), so the user's daemon and indexes
+are never touched.
 
 ## The corpus
 

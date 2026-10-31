@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -22,7 +21,7 @@ import (
 // mean the same thing. Nothing here decides that on its own — see tagmerge.go.
 func runAuditTags(args []string) error {
 	fs := flag.NewFlagSet("audit-tags", flag.ContinueOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	minCount := fs.Int("min-count", 1, "only show tags carried by at least this many documents")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	var merges stringList
@@ -31,28 +30,24 @@ func runAuditTags(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	st, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-
 	if len(merges) > 0 {
-		return applyTagMerges(st, merges, *asJSON)
+		return applyTagMerges(t, merges, *asJSON)
 	}
-
-	d, err := st.IndexDigestFor("", 0)
-	if err != nil {
+	var audit struct {
+		Digest raglit.IndexDigest  `json:"digest"`
+		Near   map[string][]string `json:"near"`
+	}
+	if err := t.get("/api/tags", nil, &audit); err != nil {
 		return err
 	}
-	near, err := st.TagNeighbours()
-	if err != nil {
-		return err
-	}
+	d, near := audit.Digest, audit.Near
 	byTag := map[string][]string{}
 	if *docs {
-		if byTag, err = documentsByTag(st); err != nil {
+		if byTag, err = documentsByTag(t); err != nil {
 			return err
 		}
 	}
@@ -130,20 +125,19 @@ func runAuditTags(args []string) error {
 }
 
 // applyTagMerges runs the merges a person named, in the order they named them.
-func applyTagMerges(st *raglit.Store, specs []string, asJSON bool) error {
-	ctx := context.Background()
-	var results []raglit.TagMergeResult
+func applyTagMerges(t target, specs []string, asJSON bool) error {
 	for _, spec := range specs {
-		m, err := raglit.ParseTagMerge(spec)
-		if err != nil {
+		if _, err := raglit.ParseTagMerge(spec); err != nil {
 			return err
 		}
-		res, err := st.MergeTags(ctx, m)
-		if err != nil {
-			return fmt.Errorf("merge %s: %w", m, err)
-		}
-		results = append(results, res)
 	}
+	var out struct {
+		Merges []raglit.TagMergeResult `json:"merges"`
+	}
+	if err := t.post("/api/tags/merge", map[string]any{"merges": specs}, &out); err != nil {
+		return err
+	}
+	results := out.Merges
 	if asJSON {
 		b, err := json.MarshalIndent(struct {
 			Merges []raglit.TagMergeResult `json:"merges"`
@@ -164,8 +158,8 @@ func applyTagMerges(st *raglit.Store, specs []string, asJSON bool) error {
 }
 
 // documentsByTag inverts the index: every content tag to the paths carrying it.
-func documentsByTag(st *raglit.Store) (map[string][]string, error) {
-	docs, err := st.Documents()
+func documentsByTag(t target) (map[string][]string, error) {
+	docs, err := t.documents()
 	if err != nil {
 		return nil, err
 	}

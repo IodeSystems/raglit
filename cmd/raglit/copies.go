@@ -31,7 +31,7 @@ import (
 // announceOtherCopies reports documents holding the same content as path, and
 // what to do about them. Best-effort throughout: a failure to look is never a
 // reason to fail the reread that already happened.
-func announceOtherCopies(store *raglit.Store, js *raglit.JudgementStore, path string) {
+func announceOtherCopies(t target, js *raglit.JudgementStore, path string) {
 	type other struct {
 		path string
 		why  string
@@ -40,7 +40,7 @@ func announceOtherCopies(store *raglit.Store, js *raglit.JudgementStore, path st
 
 	// Byte-identical holdings. The strongest statement available and independent
 	// of any ruling: these are not similar to the purged document, they ARE it.
-	if same, err := store.SameBytesAs(path); err == nil {
+	if same, err := t.sameBytes(path); err == nil {
 		for p := range same {
 			seen[p] = other{p, "identical bytes"}
 		}

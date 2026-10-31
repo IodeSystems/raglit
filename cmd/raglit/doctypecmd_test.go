@@ -17,10 +17,10 @@ const testWOSchema = `{"type":"object","properties":{` +
 
 // indexWithAWorkOrder is a throwaway index holding one document that has
 // resolved as a registered type, and one that has not.
-func indexWithAWorkOrder(t *testing.T) string {
+func indexWithAWorkOrder(t *testing.T) testDB {
 	t.Helper()
-	db := filepath.Join(t.TempDir(), "idx.sqlite")
-	st, err := raglit.Open(db)
+	db := newTestDB(t)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,15 +55,15 @@ func indexWithAWorkOrder(t *testing.T) string {
 }
 
 func TestHint_RoundTripsAndSaysWhatItCosts(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "idx.sqlite")
-	st, err := raglit.Open(db)
+	db := newTestDB(t)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
 
 	out := captureStdout(t, func() {
-		if err := runHint([]string{"--db", db}); err != nil {
+		if err := runHint(db.with()); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -72,7 +72,7 @@ func TestHint_RoundTripsAndSaysWhatItCosts(t *testing.T) {
 	}
 
 	out = captureStdout(t, func() {
-		if err := runHint([]string{"--db", db, "--set", "RO means repair order."}); err != nil {
+		if err := runHint(db.with("--set", "RO means repair order.")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -83,18 +83,18 @@ func TestHint_RoundTripsAndSaysWhatItCosts(t *testing.T) {
 		t.Errorf("setting a hint did not say what it does and does not do:\n%s", out)
 	}
 	out = captureStdout(t, func() {
-		if err := runHint([]string{"--db", db}); err != nil {
+		if err := runHint(db.with()); err != nil {
 			t.Fatal(err)
 		}
 	})
 	if !strings.Contains(out, "RO means repair order.") {
 		t.Errorf("hint did not round trip:\n%s", out)
 	}
-	if err := runHint([]string{"--db", db, "--clear"}); err != nil {
+	if err := runHint(db.with("--clear")); err != nil {
 		t.Fatal(err)
 	}
 	out = captureStdout(t, func() {
-		if err := runHint([]string{"--db", db}); err != nil {
+		if err := runHint(db.with()); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -106,7 +106,7 @@ func TestHint_RoundTripsAndSaysWhatItCosts(t *testing.T) {
 func TestDocTypeList_ReportsCoverageAndFields(t *testing.T) {
 	db := indexWithAWorkOrder(t)
 	out := captureStdout(t, func() {
-		if err := runDocType([]string{"list", "--db", db}); err != nil {
+		if err := runDocType(append([]string{"list"}, db.flags...)); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -126,14 +126,14 @@ func TestDocTypeAdd_RegistersFromAFileAndRefusesTheWrongArgOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := captureStdout(t, func() {
-		if err := runDocType([]string{"add", "--db", db, "--file", f, "invoice"}); err != nil {
+		if err := runDocType(append([]string{"add"}, db.with("--file", f, "invoice")...)); err != nil {
 			t.Fatal(err)
 		}
 	})
 	if !strings.Contains(out, "registered \"invoice\"") {
 		t.Errorf("not registered:\n%s", out)
 	}
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,12 +144,12 @@ func TestDocTypeAdd_RegistersFromAFileAndRefusesTheWrongArgOrder(t *testing.T) {
 
 	// A flag after the name is parsed (pflag), not dropped: the type gets its
 	// schema.
-	if err := runDocType([]string{"add", "--db", db, "invoice2", "--file", f}); err != nil {
+	if err := runDocType(append([]string{"add"}, db.with("invoice2", "--file", f)...)); err != nil {
 		t.Errorf("flag-after-name: %v", err)
 	}
 	// No --file at all is refused with the usage, rather than registering a
 	// type with no schema.
-	err = runDocType([]string{"add", "--db", db, "invoice3"})
+	err = runDocType(append([]string{"add"}, db.with("invoice3")...))
 	if err == nil || !strings.Contains(err.Error(), "--file <F> <NAME>") {
 		t.Errorf("no --file = %v, want the usage", err)
 	}
@@ -160,7 +160,7 @@ func TestDocTypeAdd_RegistersFromAFileAndRefusesTheWrongArgOrder(t *testing.T) {
 // output would ever mention it.
 func TestDocTypeAdd_SaysWhatItJustInvalidated(t *testing.T) {
 	db := indexWithAWorkOrder(t)
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestDocTypeAdd_SaysWhatItJustInvalidated(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := captureStdout(t, func() {
-		if err := runDocType([]string{"add", "--db", db, "--file", f, "work order"}); err != nil {
+		if err := runDocType(append([]string{"add"}, db.with("--file", f, "work order")...)); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -203,7 +203,7 @@ func TestDocTypeAdd_SaysWhatItJustInvalidated(t *testing.T) {
 func TestDocTypeRm_KeepsTheRecordsMadeUnderIt(t *testing.T) {
 	db := indexWithAWorkOrder(t)
 	out := captureStdout(t, func() {
-		if err := runDocType([]string{"rm", "--db", db, "work order"}); err != nil {
+		if err := runDocType(append([]string{"rm"}, db.with("work order")...)); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -212,7 +212,7 @@ func TestDocTypeRm_KeepsTheRecordsMadeUnderIt(t *testing.T) {
 	if !strings.Contains(out, "are kept") {
 		t.Errorf("removal did not say the extractions survive:\n%s", out)
 	}
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}

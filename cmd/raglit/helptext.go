@@ -51,9 +51,9 @@ raglit index NAME status|search|forget|pause|resume|purge|prune|unwatch ...
               resume its work, purge a glob, or stop watching a directory.
               raglit index NAME -h lists the subcommands. NAME may be
               proj:idx.
-raglit index [--home DIR] [--embed] FILE|DIR...
-              legacy: index local files in-process now, with no daemon.`},
-		{"mcp", "stdio MCP server for an LLM session", `raglit mcp  [--home DIR] [-n N] [--embed]   stdio MCP server (search + ingest + index_status)
+raglit index [--home DIR] FILE|DIR...
+              queue local text and PDF files on the daemon and wait for it.`},
+		{"mcp", "stdio MCP server for an LLM session", `raglit mcp  [--home DIR] [-n N]   stdio MCP server (search + ingest + index_status)
               "raglit serve" is the old name and still works.`},
 		{"daemon", "the shared daemon (REST, web UI, MCP backend)", `raglit daemon [--root DIR|--home DIR] [--addr :7420] [--embed]   multi-protocol daemon:
               REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
@@ -71,7 +71,8 @@ raglit index [--home DIR] [--embed] FILE|DIR...
                       such as dun; update is poly-lsp's shape (24 h cache)`},
 	}},
 	{"ingest", "queueing, re-reading and removing documents", []helpEntry{
-		{"ingest", "queue folders, files or URLs", `raglit ingest [--home DIR] [--now] TARGET...  queue folders/files/URLs (file://, http(s)://)
+		{"ingest", "queue folders, files or URLs", `raglit ingest [--home DIR] [--wait] TARGET...  queue folders/files/URLs (file://, http(s)://)
+              --wait follows the daemon until the index's queue is empty.
               --fresh re-reads a document even if nothing changed: skips the
               unchanged-bytes check AND the cross-index pool. Use it when a cached
               result is wrong for a reason the cache key cannot see.`},
@@ -111,7 +112,7 @@ raglit index [--home DIR] [--embed] FILE|DIR...
                                                      (a re-index alone CANNOT fix a bad read —
                                                       the page cache returns the same answer)
               (skips jobs whose file is gone — a rename outlives the row)`},
-		{"work", "drain the ingest queue once, then exit", `raglit work   [--home DIR] [--embed]       drain the ingest queue once, then exit`},
+		{"work", "wait until the daemon has worked the queue", `raglit work   [--home DIR] [--index N]     wait until the daemon has worked the index's queue, then print status`},
 		{"refragment", "re-ingest documents with oversized fragments", `raglit refragment [--dry-run]              re-ingest documents whose fragments are
               larger than the embed model accepts (probes the limit, stores it)`},
 		{"branch", "copy-on-write branch indexes", `raglit branch list|fork NAME|delete NAME   manage copy-on-write branch indexes

@@ -191,8 +191,7 @@ func buildWorker(store *raglit.Store, lf *llmFlags, home raglit.Home, pool *ragl
 	// What each ingested document IS, asked once per document (identity.go). Set
 	// on the STORE rather than the worker because the identity call happens in
 	// the commit path, which is the store's — and setting it here covers every
-	// route into that path: `work`, `ingest --now`, and each of the daemon's
-	// per-index workers.
+	// route into that path: each of the daemon's per-index workers.
 	store.SetIdentifier(lf.identifier(home))
 	// Cross-index pool (daemon only): key ingest work by (recipe, file). The
 	// recipe is the models + config that shape the output — including the
@@ -320,16 +319,6 @@ func runStatus(args []string) error {
 		return printIndexDirectory(err)
 	}
 	return daemonStatusPrint(dURL, nsReadSelector(ns, projectShared(homeOf), *index))
-}
-
-// printStatus renders a store's Status to stdout.
-func printStatus(store *raglit.Store) {
-	st, err := store.IndexStatus()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "status: %v\n", err)
-		return
-	}
-	renderStatus(st)
 }
 
 // renderStatus prints a Status value (shared by the local + daemon paths).

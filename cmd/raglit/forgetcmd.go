@@ -64,17 +64,6 @@ func runForget(args []string) error {
 	return nil
 }
 
-// flagSet reports whether a flag was given on the command line.
-func flagSet(fs *flag.FlagSet, name string) bool {
-	set := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			set = true
-		}
-	})
-	return set
-}
-
 // daemonForgetIn drops one document from a named daemon index.
 func daemonForgetIn(base, idx, path string) error {
 	b, err := daemonPostJSON(base, "/api/forget?"+urlValues("index", idx, "path", path).Encode(), map[string]any{})

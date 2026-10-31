@@ -37,7 +37,7 @@ func isDirArg(a string) bool {
 func runWatchDir(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	homeFlag := fs.String("home", "", "index home dir (default: nearest ./.raglit)")
-	addClientFlags(fs) // --daemon + --embedded + --project, forwarded to sync
+	addClientFlags(fs) // --daemon + --project, forwarded to sync
 	index := fs.String("index", "", "index to watch DIR into (required)")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
@@ -51,9 +51,6 @@ func runWatchDir(args []string) error {
 	}
 	if strings.Contains(*index, ":") {
 		return fmt.Errorf("watch: %q names another project's index; watch into one of this project's", *index)
-	}
-	if fs.Lookup("embedded").Value.String() == "true" {
-		return fmt.Errorf("watch: the daemon does the watching — remove --embedded")
 	}
 	dir, err := filepath.Abs(pos[0])
 	if err != nil {

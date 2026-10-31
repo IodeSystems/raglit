@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/iodesystems/raglit"
 	flag "github.com/spf13/pflag"
@@ -29,7 +27,7 @@ func runWithdraw(args []string) error {
 	reason := fs.String("reason", "", "grounds for the withdrawal (required)")
 	by := fs.String("by", defaultWithdrawBy(), "who decided")
 	dry := fs.Bool("dry-run", false, "show what would be withdrawn and what cites it")
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -43,17 +41,14 @@ func runWithdraw(args []string) error {
 		// reads like a decision.
 		return fmt.Errorf("withdraw: --reason is required — a withdrawal without grounds is a delete")
 	}
-
-	st, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-
 	// Expand directories against what is INDEXED, not against the filesystem: the
 	// question is which documents leave the corpus, and a file on disk that was
 	// never indexed is not one of them.
-	docs, err := st.Documents()
+	docs, err := t.documents()
 	if err != nil {
 		return err
 	}
@@ -61,29 +56,15 @@ func runWithdraw(args []string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("withdraw: nothing indexed under %s", strings.Join(targets, ", "))
 	}
-
-	// A withdrawal WRITES — an event to the trail and rows out of the index — so
-	// on a daemon-routed project both halves go through the daemon. Doing them
-	// locally would be the second writer, and on this layout it would write a
-	// different index from the one search reads.
-	ns, _ := resolveProject("", homeOf)
-	routed := ns != "" && !explicitStoreFlag(fs)
-
-	ctx := context.Background()
+	// Both halves of a withdrawal — the trail event and the index rows — happen
+	// in the daemon, the single writer.
 	for _, p := range paths {
 		fmt.Printf("%s\n", p)
-		if *dry {
-			// References read locally: a dry run must not write, and reading the
-			// corpus read-only is exactly what openCorpus is for.
-			refs, _ := st.ReferencesTo(ctx, p)
-			printReferences(refs)
-			continue
-		}
 		var refs []raglit.Reference
-		if routed {
-			refs, err = daemonWithdraw(p, *reason, *by)
+		if *dry {
+			refs, err = t.references(p)
 		} else {
-			refs, err = withdrawLocally(ctx, st, p, *reason, *by)
+			refs, err = daemonWithdraw(t, p, *reason, *by)
 		}
 		if err != nil {
 			return err
@@ -126,19 +107,21 @@ func matchIndexed(docs []raglit.DocSummary, targets []string) []string {
 func runWithdrawn(args []string) error {
 	fs := flag.NewFlagSet("withdrawn", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "machine-readable")
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	st, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	ws, err := st.Withdrawals()
-	if err != nil {
+	var out struct {
+		Withdrawals []raglit.Withdrawal `json:"withdrawals"`
+	}
+	if err := t.get("/api/withdrawals", nil, &out); err != nil {
 		return err
 	}
+	ws := out.Withdrawals
 	if *asJSON {
 		return json.NewEncoder(os.Stdout).Encode(ws)
 	}
@@ -169,23 +152,6 @@ func printReferences(refs []raglit.Reference) {
 	for _, r := range refs {
 		fmt.Printf("    ⚠ cited by %s: %s\n", r.From, clip(r.Excerpt, 120))
 	}
-}
-
-// withdrawLocally is the embedded path: no daemon, so this process is the only
-// writer and may do both halves itself.
-func withdrawLocally(ctx context.Context, st *raglit.Store, path, reason, by string) ([]raglit.Reference, error) {
-	js, err := openJudgements()
-	if err != nil {
-		return nil, fmt.Errorf("the trail is where the grounds live: %w", err)
-	}
-	defer js.Close()
-	refs, _ := st.ReferencesTo(ctx, path)
-	w := raglit.Withdrawal{Path: path, Reason: reason, By: by,
-		At: time.Now().UTC().Format("2006-01-02")}
-	if err := js.Withdraw(w); err != nil {
-		return refs, err
-	}
-	return refs, st.Withdraw(w)
 }
 
 func defaultWithdrawBy() string {

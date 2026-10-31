@@ -3,15 +3,12 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/iodesystems/raglit"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 )
 
 // ocrPage is one page's transcription plus which engine produced it (the cheap
@@ -96,24 +93,4 @@ func buildToolOCR(lf *llmFlags, home raglit.Home) *raglit.OCR {
 	}
 	attachCheapOCR(ocr, home, "")
 	return ocr
-}
-
-// ocrHandler is the MCP tool: image/PDF bytes → paged text.
-func ocrHandler(ocr *raglit.OCR) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		filePath, cleanup, err := resolveDoc(req.GetString("path", ""), req.GetString("data", ""), req.GetString("mime", ""))
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		defer cleanup()
-		res, err := ocrDocument(ctx, ocr, filePath)
-		if err != nil {
-			return mcp.NewToolResultErrorFromErr("ocr", err), nil
-		}
-		b, err := json.Marshal(res)
-		if err != nil {
-			return mcp.NewToolResultErrorFromErr("encode", err), nil
-		}
-		return mcp.NewToolResultText(string(b)), nil
-	}
 }

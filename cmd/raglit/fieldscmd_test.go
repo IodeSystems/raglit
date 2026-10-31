@@ -11,9 +11,9 @@ import (
 
 // currentExtraction writes a machine extraction stamped as current under the
 // type and text as they stand.
-func currentExtraction(t *testing.T, db, path, fields string) {
+func currentExtraction(t *testing.T, db testDB, path, fields string) {
 	t.Helper()
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestFieldsList_ReportsCoverageAndNamesWhatIsNotCurrent(t *testing.T) {
 	currentExtraction(t, db, "/c/ro-4471.pdf", `{"order_number":"RO-04471"}`)
 
 	out := captureStdout(t, func() {
-		if err := runFields([]string{"--list", "--db", db}); err != nil {
+		if err := runFields(db.with("--list")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -53,7 +53,7 @@ func TestFieldsList_ReportsCoverageAndNamesWhatIsNotCurrent(t *testing.T) {
 	}
 
 	// Edit the schema; the same extraction now answers the previous questions.
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestFieldsList_ReportsCoverageAndNamesWhatIsNotCurrent(t *testing.T) {
 	st.Close()
 
 	out = captureStdout(t, func() {
-		if err := runFields([]string{"--list", "--db", db}); err != nil {
+		if err := runFields(db.with("--list")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -84,7 +84,7 @@ func TestFieldsDryRun_NamesWhatIsOwedAndNothingElse(t *testing.T) {
 	db := indexWithAWorkOrder(t)
 	// Nothing extracted yet: the one document that resolved as a type is owed.
 	out := captureStdout(t, func() {
-		if err := runFields([]string{"--dry-run", "--db", db}); err != nil {
+		if err := runFields(db.with("--dry-run")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -99,7 +99,7 @@ func TestFieldsDryRun_NamesWhatIsOwedAndNothingElse(t *testing.T) {
 
 	currentExtraction(t, db, "/c/ro-4471.pdf", `{"order_number":"RO-04471"}`)
 	out = captureStdout(t, func() {
-		if err := runFields([]string{"--dry-run", "--db", db}); err != nil {
+		if err := runFields(db.with("--dry-run")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -114,7 +114,7 @@ func TestFieldsDryRun_NamesWhatIsOwedAndNothingElse(t *testing.T) {
 func TestFieldsDryRun_SaysWhenSomethingIsStuckRatherThanCurrent(t *testing.T) {
 	db := indexWithAWorkOrder(t)
 	currentExtraction(t, db, "/c/ro-4471.pdf", `{"order_number":"RO-04471"}`)
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestFieldsDryRun_SaysWhenSomethingIsStuckRatherThanCurrent(t *testing.T) {
 	st.Close()
 
 	out := captureStdout(t, func() {
-		if err := runFields([]string{"--dry-run", "--db", db}); err != nil {
+		if err := runFields(db.with("--dry-run")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -136,8 +136,8 @@ func TestFieldsDryRun_SaysWhenSomethingIsStuckRatherThanCurrent(t *testing.T) {
 func TestFieldsSetAndRead_APersonsRulingRoundTrips(t *testing.T) {
 	db := indexWithAWorkOrder(t)
 	out := captureStdout(t, func() {
-		if err := runFields([]string{"--db", db, "--set",
-			`{"order_number":"RO-4471-A","customer":"Ardley"}`, "--by", "carl", "ro-4471"}); err != nil {
+		if err := runFields(db.with("--set",
+			`{"order_number":"RO-4471-A","customer":"Ardley"}`, "--by", "carl", "ro-4471")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -152,7 +152,7 @@ func TestFieldsSetAndRead_APersonsRulingRoundTrips(t *testing.T) {
 
 	// Reading it back.
 	out = captureStdout(t, func() {
-		if err := runFields([]string{"--db", db, "ro-4471"}); err != nil {
+		if err := runFields(db.with("ro-4471")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -161,7 +161,7 @@ func TestFieldsSetAndRead_APersonsRulingRoundTrips(t *testing.T) {
 	}
 
 	// And a person's is never owed a machine re-run, whatever the schema does.
-	st, err := raglit.Open(db)
+	st, err := raglit.Open(db.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestFieldsSetAndRead_APersonsRulingRoundTrips(t *testing.T) {
 	}
 	st.Close()
 	out = captureStdout(t, func() {
-		if err := runFields([]string{"--dry-run", "--db", db}); err != nil {
+		if err := runFields(db.with("--dry-run")); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -184,7 +184,7 @@ func TestFieldsSetAndRead_APersonsRulingRoundTrips(t *testing.T) {
 func TestFieldsList_SaysSoWhenNoDocumentResolvedAsAType(t *testing.T) {
 	db := indexWithADocument(t)
 	out := captureStdout(t, func() {
-		if err := runFields([]string{"--list", "--db", db}); err != nil {
+		if err := runFields(db.with("--list")); err != nil {
 			t.Fatal(err)
 		}
 	})

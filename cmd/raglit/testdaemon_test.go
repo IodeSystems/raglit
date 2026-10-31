@@ -70,3 +70,21 @@ func testIndex(t *testing.T, reg *raglit.Registry) *raglit.Store {
 	}
 	return st
 }
+
+// testDB is an index behind a test daemon: path opens it for arranging and
+// asserting, flags point a command at it.
+type testDB struct {
+	path  string
+	flags []string
+}
+
+func newTestDB(t *testing.T) testDB {
+	t.Helper()
+	_, reg, flags := testDaemon(t)
+	return testDB{path: testIndex(t, reg).Path(), flags: flags}
+}
+
+// with is the command line: the target flags, then args.
+func (d testDB) with(args ...string) []string {
+	return append(append([]string{}, d.flags...), args...)
+}

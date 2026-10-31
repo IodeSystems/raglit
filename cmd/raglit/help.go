@@ -83,10 +83,8 @@ const helpFlags = `flags shared by most commands:
                   and the ambient globals (raglit help index)
   --daemon URL    the daemon to use (or $RAGLIT_DAEMON; default: daemon.json,
                   else http://127.0.0.1:7420, auto-started)
-  --embedded      no daemon: open the index in this process (no project needed)
   --home DIR      index home; default: nearest ./.raglit walking up from cwd,
                   else $RAGLIT_HOME or ~/local/raglit
-  --db FILE       raw index file (overrides --home; implies --embedded)
   -n, --limit N   search/serve: max results
   --mode M        search: bm25 | vec | hybrid (default: hybrid where embedded, else bm25)
   --llm-url, --llm-model, --embed-model, --llm-key ($RAGLIT_LLM_KEY)

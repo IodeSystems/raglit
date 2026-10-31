@@ -30,7 +30,7 @@ cd my-project
 raglit init                # writes ./.raglit/ here
 
 # 2. ingest a folder (code, markdown, text; PDFs get OCR'd)
-raglit ingest ./src --now
+raglit ingest ./src --wait
 
 # 3. ask (works from any subdirectory — raglit finds ./.raglit)
 raglit search "how does the auth token refresh work?"
@@ -65,7 +65,7 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
 ## What it does
 
 - **Ingest** folders, files, or URLs (`file://`, `http(s)://`) — lazily (queued)
-  or with `--now`. Each item runs a staged pipeline: a scanned page goes
+  and followed with `--wait`. Each item runs a staged pipeline: a scanned page goes
   img→paged-text (OCR cascade: cheap `tesseract`→gibberish-gate→vision VLM); a
   born-digital PDF page uses its text layer, no OCR. Then **one per-document
   fragmenter choice**: text, code, and cheap-OCR'd pages are split by a
@@ -143,7 +143,7 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
 
 ```
 raglit init                          configure endpoint + models (wizard)
-raglit ingest TARGET... [--now]      queue folders / files / URLs (lazy; --now drains)
+raglit ingest TARGET... [--wait]     queue folders / files / URLs (lazy; --wait follows the daemon)
 raglit search "query" [--mode M] [--path P]  M = bm25 | vec | hybrid; P = path-prefix scope
 raglit status                        documents/fragments, queue progress, rate, ETAs
 raglit identify [DOC...] [--list]    what a document IS: caption, summary, kind (never renames)
@@ -210,12 +210,12 @@ under the daemon root and reload on restart.
 
 **By default every client — `mcp` and the CLI (`ingest`/`search`/`status`/
 `sync`) — talks to a single shared per-user daemon, auto-starting it if none is
-running.** That's deliberate: N Claude sessions each running `mcp` *embedded*
-would be N processes opening the same SQLite index, running their own workers, and
-calling the LLM independently → write contention + duplicated indexing work. One
-daemon (single writer + worker pool + LLM caller, scoped storage, shared dedup
-pool) is the safe model. `--embedded` opts out (in-process, single-session);
-`--db` and `demo` are inherently in-process.
+running.** There is no in-process mode: N sessions each opening the index would
+be N processes on one SQLite file, running their own workers and calling the LLM
+independently → write contention + duplicated indexing work, and every one of
+them skipping auth. One daemon (single writer + worker pool + LLM caller, scoped
+storage, shared dedup pool) is the only path. `raglit demo` and the tests start a
+throwaway daemon of their own.
 
 ```sh
 # nothing to start — the first client brings the daemon up (at 127.0.0.1:7420,
@@ -235,8 +235,8 @@ by the config's **`project`** name: the daemon index is `<project>__<local>`, an
 project's "search all" is scoped to `<project>__*` — so two repos both using
 `default` don't share storage, and neither sees the other's documents. The project
 name is **required** to start a daemon-routed client (`mcp` or CLI); `--project`
-overrides it, and `--embedded`/`--db` (single-session, in-process) need none. The
-`<project>__` prefix is internal — search/status/list show plain local names.
+overrides it. A client with no project still reads (by directory scope or by
+name) but does not write. The `<project>__` prefix is internal — search/status/list show plain local names.
 
 **Shared docs** (`shared`): common material — a home `~/doc`, a team handbook — is
 indexed **once** under its own project (say `shared`), and other projects opt into

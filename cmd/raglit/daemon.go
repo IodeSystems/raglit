@@ -430,7 +430,7 @@ func resolveProject(flagVal string, homeOf func() raglit.Home) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("%w — set \"project\" in %s (run `raglit init`) or pass --project. "+
 			"The shared daemon namespaces every project's indexes by name so they don't collide; a client without one is refused. "+
-			"(Use --embedded for a single-session, in-process index with no project.)", errNoProject, homeOf().ConfigPath())
+			"Without one a client still reads (by directory or by name) but does not write.", errNoProject, homeOf().ConfigPath())
 	}
 	return raglit.NormalizeIndexName(raw), nil
 }

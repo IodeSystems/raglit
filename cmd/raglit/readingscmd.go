@@ -1,9 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/iodesystems/raglit"
@@ -23,7 +24,7 @@ import (
 // verbatim from text nothing holds any more.
 func runReadings(args []string) error {
 	fs := flag.NewFlagSet("readings", flag.ExitOnError)
-	openStore, homeOf := addStoreFlags(fs)
+	resolve := addTargetFlags(fs)
 	asJSON := fs.Bool("json", false, "emit as JSON")
 	full := fs.Bool("text", false, "print the full text of each reading, not a preview")
 	pos, err := parseInterleaved(fs, args)
@@ -44,38 +45,17 @@ func runReadings(args []string) error {
 		}
 	}
 
-	store, err := openCorpus(fs, openStore, homeOf)
+	t, err := resolve()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-	ctx := context.Background()
-
-	var all []raglit.PageReading
-	if page > 0 {
-		if all, err = store.PageReadings(ctx, doc, page); err != nil {
-			return err
-		}
-	} else {
-		// Every page of the document that has more than the reading it was born
-		// with. Pages nobody touched are not interesting here and would bury the
-		// ones that were.
-		sup, err := store.SupersededPages(ctx)
-		if err != nil {
-			return err
-		}
-		seen := map[int]bool{}
-		for _, r := range sup {
-			if r.Doc == doc && !seen[r.Page] {
-				seen[r.Page] = true
-				rs, err := store.PageReadings(ctx, doc, r.Page)
-				if err != nil {
-					return err
-				}
-				all = append(all, rs...)
-			}
-		}
+	var out struct {
+		Readings []raglit.PageReading `json:"readings"`
 	}
+	if err := t.get("/api/readings", url.Values{"path": {doc}, "page": {strconv.Itoa(page)}}, &out); err != nil {
+		return err
+	}
+	all := out.Readings
 
 	if *asJSON {
 		return emitJSON(all)

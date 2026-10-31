@@ -25,7 +25,7 @@ import (
 func runRegions(args []string) error {
 	fs := flag.NewFlagSet("regions", flag.ExitOnError)
 	lf := addLLMFlags(fs)
-	_, homeOf := addStoreFlags(fs)
+	homeOf, _ := addHomeFlags(fs)
 	page := fs.Int("page", 1, "page number")
 	dpi := fs.Int("dpi", 0,
 		"render resolution; 0 derives it from the sheet's area, its native scan and the "+

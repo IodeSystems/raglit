@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	flag "github.com/spf13/pflag"
 
@@ -113,6 +114,96 @@ func (t target) documents() ([]raglit.DocSummary, error) {
 		Documents []raglit.DocSummary `json:"documents"`
 	}
 	if err := t.get("/api/documents", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Documents, nil
+}
+
+// references lists what in the index cites path.
+func (t target) references(path string) ([]raglit.Reference, error) {
+	var out struct {
+		References []raglit.Reference `json:"references"`
+	}
+	if err := t.get("/api/references", url.Values{"path": {path}}, &out); err != nil {
+		return nil, err
+	}
+	return out.References, nil
+}
+
+// sameBytes lists the other documents of the index with path's exact bytes,
+// path → title.
+func (t target) sameBytes(path string) (map[string]string, error) {
+	var out struct {
+		Documents map[string]string `json:"documents"`
+	}
+	if err := t.get("/api/same-bytes", url.Values{"path": {path}}, &out); err != nil {
+		return nil, err
+	}
+	return out.Documents, nil
+}
+
+// oneDoc turns a filename or substring into the one indexed path it names,
+// refusing an ambiguous reference rather than picking.
+func (t target) oneDoc(ref string) (string, error) {
+	var out struct {
+		Paths []string `json:"paths"`
+	}
+	if err := t.get("/api/match", url.Values{"ref": {ref}}, &out); err != nil {
+		return "", err
+	}
+	switch len(out.Paths) {
+	case 0:
+		return "", fmt.Errorf("no indexed document matches %q", ref)
+	case 1:
+		return out.Paths[0], nil
+	}
+	return "", fmt.Errorf("%q matches %d documents:\n  %s", ref, len(out.Paths), strings.Join(out.Paths, "\n  "))
+}
+
+// identities is what each document of the index is.
+func (t target) identities() ([]raglit.IdentityStatus, error) {
+	var out struct {
+		Identities []raglit.IdentityStatus `json:"identities"`
+	}
+	if err := t.get("/api/identities", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Identities, nil
+}
+
+// truePages is a document's pages as read (exact path).
+func (t target) truePages(path string) ([]raglit.PageText, error) {
+	var out struct {
+		Pages []raglit.PageText `json:"pages"`
+	}
+	if err := t.get("/api/true-pages", url.Values{"path": {path}}, &out); err != nil {
+		return nil, err
+	}
+	return out.Pages, nil
+}
+
+// defaultTarget is the target of a command with no target flags: the project
+// found from the working directory, its default index.
+func defaultTarget() (target, error) {
+	base, err := ensureDaemon("", raglit.DiscoverHome)
+	if err != nil {
+		return target{}, err
+	}
+	ns, err := resolveProject("", raglit.DiscoverHome)
+	if err != nil {
+		return target{}, err
+	}
+	home := raglit.DiscoverHome()
+	return target{base: base, index: nsIndex(ns, resolveIndexName("", raglit.DiscoverHome)), ns: ns, home: home}, nil
+}
+
+// sameBytesHash lists the documents of the index whose bytes hash to sum,
+// path → title.
+func (t target) sameBytesHash(sum string) (map[string]string, error) {
+	var out struct {
+		Documents map[string]string `json:"documents"`
+	}
+	if err := t.get("/api/same-hash", url.Values{"sha256": {sum}}, &out); err != nil {
 		return nil, err
 	}
 	return out.Documents, nil

@@ -710,6 +710,11 @@ func enqueueIdentityOp(reg *raglit.Registry) func(context.Context, *enqueueIdent
 		if err != nil {
 			return nil, err
 		}
+		// Queued work nothing can do reads as progress. Refused instead, so the
+		// caller hears it now rather than finding every job failed later.
+		if !reg.HasIdentifier() {
+			return nil, huma.Error422UnprocessableEntity("no identity model configured on the daemon — set identity_model in its config (raglit init)")
+		}
 		one := strings.TrimSpace(in.Path) != ""
 		var n int
 		var queued bool
