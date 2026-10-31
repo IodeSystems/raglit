@@ -123,3 +123,44 @@ func TestReapSessionBranches_RemovesOnlyIdleSessionBranches(t *testing.T) {
 		t.Fatal("reaper removed the wrong branches")
 	}
 }
+
+// A session's default read (the indexes scoped to its directory) includes its
+// own branch of each, and not another session's.
+func TestScopedFor_IncludesTheCallersOwnSessionBranches(t *testing.T) {
+	reg := aclRegistry(t)
+	main, err := reg.Write(as("aw4"), "p__code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, reg.SetVisibility(as("aw4"), "p__code", Public))
+	if _, err := main.SetScopes([]string{"/work/p"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{"s1", "s2"} {
+		if _, err := reg.Write(as("key#"+s), "p__code@"+s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := reg.ScopedFor(as("key#s1"), "/work/p/src")
+	if len(got) != 2 || got[0] != "p__code" || got[1] != "p__code@s1" {
+		t.Fatalf("ScopedFor = %v, want [p__code p__code@s1]", got)
+	}
+}
+
+// A session's folded history sits in a branch of an unscoped sessions index;
+// its default read includes it because the session's key owns it.
+func TestScopedFor_IncludesTheCallersSessionsBranch(t *testing.T) {
+	reg := aclRegistry(t)
+	if _, err := reg.Write(as("key#s1"), "p__sessions@s1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Write(as("key#s2"), "p__sessions@s2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.ScopedFor(as("key#s1"), "/anywhere"); len(got) != 1 || got[0] != "p__sessions@s1" {
+		t.Fatalf("ScopedFor = %v, want [p__sessions@s1]", got)
+	}
+	if got := reg.ScopedFor(as("admin"), "/anywhere"); len(got) != 0 {
+		t.Fatalf("admin's default read = %v, want none of the sessions' branches", got)
+	}
+}

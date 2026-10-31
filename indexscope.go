@@ -111,5 +111,24 @@ func (r *Registry) ScopedFor(ctx context.Context, dir string) []string {
 			out = append(out, name)
 		}
 	}
+	// A session branch has no scopes of its own. It is read wherever its
+	// parent is, by whoever may read it, and always by the key that owns it
+	// (or an ancestor of that key) — so a session's default search sees its
+	// own branches and its folded history ("sessions@<id>") over main.
+	in := map[string]bool{}
+	for _, n := range out {
+		in[n] = true
+	}
+	p, ks := PrincipalFrom(ctx), r.Keys()
+	for _, name := range r.Readable(ctx, r.Names()) {
+		parent, ok := SessionBranchParent(name)
+		if !ok || in[name] || !r.exists(name) {
+			continue
+		}
+		owner := r.ACLOf(name).Owner
+		if in[parent] || owner == p || ks.IsAncestor(p, owner) {
+			out = append(out, name)
+		}
+	}
 	return out
 }
