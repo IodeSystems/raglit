@@ -100,7 +100,7 @@ func searchByMode(st *raglit.Store, q, mode, pathPrefix string, limit int) ([]ra
 func aggregateStatus(reg *raglit.Registry, names []string) raglit.Status {
 	agg := raglit.NewStatus()
 	for _, name := range names {
-		st, err := reg.Get(name)
+		st, err := reg.Existing(name) // status is a read: never create
 		if err != nil {
 			continue
 		}

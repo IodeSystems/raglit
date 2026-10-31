@@ -122,6 +122,15 @@ func (r *Registry) ACLOf(name string) ACL {
 	return ACL{Owner: r.admin, Visibility: Private}
 }
 
+// cachedOrExists reports whether name is an open store or has storage.
+func (r *Registry) cachedOrExists(name string) bool {
+	name = normalizeIndexName(name)
+	r.mu.Lock()
+	_, ok := r.stores[name]
+	r.mu.Unlock()
+	return ok || r.exists(name)
+}
+
 func (r *Registry) exists(name string) bool {
 	_, err := os.Stat(string(r.indexHome(name)))
 	return err == nil
@@ -155,10 +164,16 @@ func (r *Registry) CanRead(ctx context.Context, name string) bool {
 }
 
 // Read opens an index the caller may read. An index the caller may not read,
-// or that does not exist, is ErrNoIndex — and is never created.
+// or that does not exist, is ErrNoIndex — and is never created, with access
+// control on or off: a read of a wrong name used to leave an empty index
+// behind, listed everywhere, which made the next choice of name harder.
 func (r *Registry) Read(ctx context.Context, name string) (*Store, error) {
 	if !r.ACLEnabled() {
-		return r.Get(name)
+		st, err := r.Existing(name)
+		if err != nil {
+			return nil, ErrNoIndex
+		}
+		return st, nil
 	}
 	name = normalizeIndexName(name)
 	if !r.exists(name) || !r.CanRead(ctx, name) {
@@ -200,12 +215,12 @@ func (r *Registry) Write(ctx context.Context, name string) (*Store, error) {
 
 // Readable filters names to the ones the caller may read, keeping order.
 func (r *Registry) Readable(ctx context.Context, names []string) []string {
-	if !r.ACLEnabled() {
-		return names
-	}
 	out := make([]string, 0, len(names))
 	for _, n := range names {
-		if r.CanRead(ctx, n) {
+		if r.Scoped() && !r.cachedOrExists(n) {
+			continue // not an index: nothing to read, and nothing to create
+		}
+		if !r.ACLEnabled() || r.CanRead(ctx, n) {
 			out = append(out, n)
 		}
 	}

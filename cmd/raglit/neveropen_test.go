@@ -81,3 +81,20 @@ func TestNeverOpen_NoIssuerMeansAdminToken(t *testing.T) {
 		t.Fatalf("admin token search: %d %s", code, clip(body, 200))
 	}
 }
+
+// With the ACL on, a read of a name that is not an index answers 404 and
+// creates nothing: the empty shim indexes a wrong selector used to leave.
+func TestNeverOpen_ReadingAMissingIndexCreatesNothing(t *testing.T) {
+	srv, reg, tok := adminOnlyTestServer(t)
+	before := strings.Join(reg.Names(), ",")
+	if code, body := doAs(t, "GET", srv.URL+"/search?q=walrus&index=no-such", tok, ""); code != http.StatusNotFound || !strings.Contains(body, `no index \"no-such\"`) {
+		t.Fatalf("search of a missing index: %d %s, want 404 naming it", code, clip(body, 300))
+	}
+	// A near name is offered in selector form.
+	if code, body := doAs(t, "GET", srv.URL+"/search?q=walrus&index=note", tok, ""); code != http.StatusNotFound || !strings.Contains(body, ":notes") {
+		t.Fatalf("search of a near name: %d %s, want 404 suggesting :notes", code, clip(body, 300))
+	}
+	if after := strings.Join(reg.Names(), ","); after != before {
+		t.Fatalf("indexes %q became %q after reading a missing one", before, after)
+	}
+}

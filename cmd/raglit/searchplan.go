@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/iodesystems/raglit"
 )
@@ -79,4 +84,83 @@ func siblingsOn(v string) bool {
 		return false
 	}
 	return true
+}
+
+// missingNamed returns the members of a selector that name one index (no
+// wildcard, no "@cwd:") which does not exist, each with the indexes the caller
+// may read whose local name matches, as "did you mean" candidates. A search
+// that names an index which is not there is a mistake to report, not an empty
+// result: zero hits read exactly like "nothing about that".
+func missingNamed(ctx context.Context, reg *raglit.Registry, sel string) map[string][]string {
+	sel = strings.TrimSpace(sel)
+	if sel == "" || sel == "all" {
+		return nil
+	}
+	var out map[string][]string
+	names := reg.Names()
+	for _, n := range strings.Split(sel, ",") {
+		n = strings.TrimSpace(n)
+		if n == "" || strings.HasSuffix(n, "*") || strings.HasPrefix(n, "@cwd:") {
+			continue
+		}
+		resolved := uniqueLocal(names, n)
+		if len(reg.Readable(ctx, []string{resolved})) > 0 {
+			continue
+		}
+		local := resolved
+		if i := strings.LastIndex(local, nsSep); i >= 0 {
+			local = local[i+len(nsSep):]
+		}
+		var like []string
+		for _, c := range reg.Readable(ctx, names) {
+			if c == "default" {
+				continue
+			}
+			cl := c
+			if i := strings.LastIndex(cl, nsSep); i >= 0 {
+				cl = cl[i+len(nsSep):]
+			}
+			if cl == local || strings.Contains(cl, local) || strings.Contains(local, cl) {
+				like = append(like, c)
+			}
+		}
+		if out == nil {
+			out = map[string][]string{}
+		}
+		out[n] = like
+	}
+	return out
+}
+
+// missingIndexError is the 404 for missingNamed's result.
+func missingIndexError(missing map[string][]string) error {
+	keys := make([]string, 0, len(missing))
+	for k := range missing {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "no index %q", k)
+		if like := missing[k]; len(like) > 0 {
+			sels := make([]string, len(like))
+			for i, c := range like {
+				sels[i] = selectorOf(c)
+			}
+			fmt.Fprintf(&b, " (did you mean %s?)", strings.Join(sels, ", "))
+		}
+	}
+	return huma.Error404NotFound(b.String())
+}
+
+// selectorOf spells a daemon index name the way a client selects it:
+// "proj__idx" is "proj:idx", a global "idx" is ":idx".
+func selectorOf(name string) string {
+	if p, l, ok := strings.Cut(name, nsSep); ok {
+		return p + ":" + l
+	}
+	return ":" + name
 }

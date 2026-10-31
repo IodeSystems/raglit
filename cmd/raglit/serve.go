@@ -604,7 +604,7 @@ const coversTopTags = 10
 func coversFor(reg *raglit.Registry, names []string, path string) []raglit.IndexDigest {
 	var covers []raglit.IndexDigest
 	for _, name := range names {
-		st, err := reg.Get(name)
+		st, err := reg.Existing(name) // a digest is a read: never create
 		if err != nil {
 			continue
 		}

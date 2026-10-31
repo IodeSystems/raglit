@@ -718,6 +718,9 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		if limit <= 0 {
 			limit = defLimit
 		}
+		if missing := missingNamed(ctx, reg, in.Index); len(missing) > 0 {
+			return nil, missingIndexError(missing)
+		}
 		lists := map[string][]raglit.Hit{}
 		plan := planSearch(ctx, reg, in.Index, siblingsOn(in.Siblings))
 		byMeaning := in.Mode == "vec" || in.Mode == "hybrid"
