@@ -253,7 +253,8 @@ func (ks *KeyStore) IsAncestor(anc, p string) bool {
 }
 
 // Revoke revokes key id and, through Authenticate's ancestor check, every
-// key under it. by must be the admin, the key's issuer, or an ancestor key.
+// key under it. by must be the admin, the issuer of the key or of a key above
+// it, or an ancestor key.
 func (ks *KeyStore) Revoke(by, admin, id string) error {
 	ks.mu.Lock()
 	k := ks.keys[id]
@@ -261,9 +262,8 @@ func (ks *KeyStore) Revoke(by, admin, id string) error {
 		ks.mu.Unlock()
 		return ErrBadKey
 	}
-	issuer, principal := k.Issuer, k.Principal
 	ks.mu.Unlock()
-	if by == "" || (by != admin && by != issuer && !ks.IsAncestor(by, principal)) {
+	if by == "" || (by != admin && !ks.issuedUnder(by, id) && !ks.IsAncestor(by, KeyPrincipalPrefix+id)) {
 		return ErrForbidden
 	}
 	ks.mu.Lock()
@@ -285,12 +285,27 @@ func (ks *KeyStore) List(by, admin string) []Key {
 	ks.mu.Unlock()
 	var out []Key
 	for _, k := range all {
-		if by == admin || k.Issuer == by || ks.IsAncestor(by, k.Principal) {
+		if by == admin || ks.issuedUnder(by, k.ID) {
 			out = append(out, k)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out
+}
+
+// issuedUnder reports whether by issued key id or any key above it: aw4 sees
+// the child keys its session keys minted.
+func (ks *KeyStore) issuedUnder(by, id string) bool {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	k := ks.keys[id]
+	for depth := 0; k != nil && depth < 32; depth++ {
+		if k.Issuer == by {
+			return true
+		}
+		k = ks.keys[k.Parent]
+	}
+	return false
 }
 
 // Flush writes any pending last-use times.

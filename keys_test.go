@@ -139,3 +139,20 @@ func TestKeys_SessionKeyRightsThroughTheACL(t *testing.T) {
 		t.Fatal("a child key cannot read what its parent may")
 	}
 }
+
+// The principal that minted a session key sees, and may revoke, the child
+// keys that session minted; a stranger sees none of them.
+func TestKeyStore_IssuerSeesAndRevokesItsSessionsChildren(t *testing.T) {
+	_, ks := keyRegistry(t)
+	_, s1, _ := ks.Mint(Key{Kind: KeySession, Issuer: "aw4"})
+	_, child, _ := ks.Mint(Key{Kind: KeySession, Issuer: s1.Principal, Parent: s1.ID})
+	if got := ks.List("aw4", "admin"); len(got) != 2 {
+		t.Fatalf("aw4 sees %d keys, want its session key and that key's child", len(got))
+	}
+	if got := ks.List("bob", "admin"); len(got) != 0 {
+		t.Fatalf("a stranger sees %d keys", len(got))
+	}
+	if err := ks.Revoke("aw4", "admin", child.ID); err != nil {
+		t.Fatalf("aw4 revoking its session's child: %v", err)
+	}
+}
