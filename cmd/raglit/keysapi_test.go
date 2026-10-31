@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/iodesystems/raglit"
 )
 
 // The session-key flow end to end, over the daemon's HTTP surface: the host
@@ -97,5 +100,37 @@ func TestKeys_APITokenBootstrapFromTheCLI(t *testing.T) {
 	})
 	if !strings.Contains(out, "now owned by aw4") || reg.ACLOf("t__default").Owner != "aw4" {
 		t.Fatalf("owner: %s / %+v", out, reg.ACLOf("t__default"))
+	}
+}
+
+// A session's fold goes into its branch with ordinary ingest: text from a
+// file, the caption the session already wrote, no model call.
+func TestIngestText_SuppliedIdentityIntoASessionBranch(t *testing.T) {
+	_, reg, flags := testDaemon(t)
+	dir := t.TempDir()
+	body, ident := filepath.Join(dir, "fold.txt"), filepath.Join(dir, "fold.json")
+	must(t, os.WriteFile(body, []byte("walrus: the folded turns, verbatim"), 0o644))
+	must(t, os.WriteFile(ident, []byte(`{"name":"Fix the login redirect","summary":"Moved the redirect.","kind":"fold"}`), 0o644))
+	captureStdout(t, func() {
+		if err := runIngest(append(flags, "--index", "sessions@s1", "--name", "sessions/fold-1",
+			"--text-file", body, "--identity", ident)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	st, err := reg.Existing(nsIndex(testProject, "sessions@s1"))
+	if err != nil {
+		t.Fatalf("the branch was not created by the write: %v", err)
+	}
+	w := &raglit.Worker{Store: st}
+	for range 5 {
+		if did, err := w.ProcessOne(context.Background()); err != nil {
+			t.Fatal(err)
+		} else if !did {
+			break
+		}
+	}
+	ids, _ := st.Identities()
+	if len(ids) != 1 || ids[0].Source != raglit.IdentitySupplied || ids[0].Name != "Fix the login redirect" {
+		t.Fatalf("identities = %+v, want one supplied", ids)
 	}
 }

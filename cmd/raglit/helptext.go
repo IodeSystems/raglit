@@ -73,6 +73,11 @@ raglit index [--home DIR] FILE|DIR...
 	{"ingest", "queueing, re-reading and removing documents", []helpEntry{
 		{"ingest", "queue folders, files or URLs", `raglit ingest [--home DIR] [--wait] TARGET...  queue folders/files/URLs (file://, http(s)://)
               --wait follows the daemon until the index's queue is empty.
+raglit ingest --name N --text-file F|- [--identity FILE.json]
+              send text as document N (no file on the daemon's disk needed);
+              --identity {"name","summary","kind"} is recorded as its caption
+              (gen_source "supplied", summary cut to 2500 chars, no model call).
+              A session writes its branch: --index sessions@<session-id>.
               --fresh re-reads a document even if nothing changed: skips the
               unchanged-bytes check AND the cross-index pool. Use it when a cached
               result is wrong for a reason the cache key cannot see.`},

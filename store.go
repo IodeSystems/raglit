@@ -408,6 +408,14 @@ func migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS ingest_jobs_lane ON ingest_jobs(state, lane, id)`); err != nil {
 		return err
 	}
+	// Captions handed in with a document, held until its ingest commits
+	// (Store.SupplyIdentity). Raw SQL, like the column ALTERs above.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS supplied_identities (
+		path     TEXT PRIMARY KEY,
+		identity TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
 	// Kinds gained families (captionprofile.go): a kind stored before that is a
 	// bare legal term, "court filing" → "legal:court-filing". Idempotent — a
 	// kind with a family is left alone.

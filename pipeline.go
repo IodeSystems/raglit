@@ -1000,6 +1000,15 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		docID).Scan(&id.Name, &id.Summary, &id.Kind, &id.Source, &id.Model, &id.At, &id.TextHash); err != nil {
 		return fmt.Errorf("raglit: read identity: %w", err)
 	}
+	// A caption supplied with this document (SupplyIdentity) is the caller's
+	// own and answers this text, so nothing is owed to the model for it. It
+	// wins over a pooled copy's caption, which another index's model wrote.
+	if sup, ok, err := takeSuppliedIdentity(ctx, tx, docPath); err != nil {
+		return fmt.Errorf("raglit: supplied identity: %w", err)
+	} else if ok {
+		sup.TextHash = textHashOf(frags)
+		ident = &sup
+	}
 	// A person's caption outranks anything an ingest brings — including a pooled
 	// document's, which carries the caption of whichever index cached it first.
 	// Enforced here rather than only at the call site because this is the one

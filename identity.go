@@ -96,6 +96,11 @@ const (
 	// IdentityByMachine / IdentityByPerson are gen_source's two values.
 	IdentityByMachine = "machine"
 	IdentityByPerson  = "person"
+	// IdentitySupplied is a caption the caller handed in with the document
+	// (SupplyIdentity): the fold summary a session already wrote. Not a
+	// ruling — a re-ingest that supplies another replaces it — and not owed
+	// to the model, so no identity or tags job is queued for it.
+	IdentitySupplied = "supplied"
 
 	// fragOriginIdentity marks the one fragment per document that holds the
 	// generated caption + summary. See the schema note on fragments.origin.
@@ -1427,4 +1432,48 @@ func identityFragmentText(d DocIdentity) string {
 		b.WriteString("\n" + d.Summary + "\n")
 	}
 	return b.String()
+}
+
+// SupplyIdentity records the caption a document will carry when its next
+// ingest commits: name required, summary cut to identityMaxSummaryChars (no
+// minimum: a supplied summary is what the caller had), recorded as
+// IdentitySupplied by `by`. It is consumed by that commit.
+func (s *Store) SupplyIdentity(path string, d DocIdentity, by string) error {
+	d.Name = strings.TrimSpace(d.Name)
+	if d.Name == "" {
+		return fmt.Errorf("raglit: a supplied identity needs a name")
+	}
+	if r := []rune(strings.TrimSpace(d.Summary)); len(r) > identityMaxSummaryChars {
+		d.Summary = string(r[:identityMaxSummaryChars])
+	} else {
+		d.Summary = string(r)
+	}
+	d.Source, d.Model, d.At = IdentitySupplied, by, time.Now().Unix()
+	b, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO supplied_identities(path, identity) VALUES(?, ?)
+		ON CONFLICT(path) DO UPDATE SET identity = excluded.identity`, path, string(b))
+	return err
+}
+
+// takeSuppliedIdentity returns and removes the identity supplied for path.
+func takeSuppliedIdentity(ctx context.Context, tx *sql.Tx, path string) (DocIdentity, bool, error) {
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT identity FROM supplied_identities WHERE path = ?`, path).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DocIdentity{}, false, nil
+	}
+	if err != nil {
+		return DocIdentity{}, false, err
+	}
+	var d DocIdentity
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		return DocIdentity{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM supplied_identities WHERE path = ?`, path); err != nil {
+		return DocIdentity{}, false, err
+	}
+	return d, true, nil
 }

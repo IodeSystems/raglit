@@ -25,7 +25,17 @@ type uploadIn struct {
 		Text  string `json:"text,omitempty" doc:"document content as text"`
 		Data  string `json:"data,omitempty" doc:"document content, base64"`
 		Title string `json:"title,omitempty"`
+		// Identity is the caption the caller already has — a session's fold
+		// summary — recorded as gen_source "supplied" when the ingest commits,
+		// so no model is asked for one and no tags job is queued.
+		Identity *suppliedIdentity `json:"identity,omitempty"`
 	}
+}
+
+type suppliedIdentity struct {
+	Name    string `json:"name" doc:"required"`
+	Summary string `json:"summary,omitempty" doc:"cut to 2500 characters"`
+	Kind    string `json:"kind,omitempty"`
 }
 
 type uploadOut struct {
@@ -60,6 +70,12 @@ func uploadOp(reg *raglit.Registry) func(context.Context, *uploadIn) (*uploadOut
 		path, err := st.SaveUpload(in.Body.Name, data)
 		if err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
+		}
+		if sup := in.Body.Identity; sup != nil {
+			d := raglit.DocIdentity{Name: sup.Name, Summary: sup.Summary, Kind: sup.Kind}
+			if err := st.SupplyIdentity(raglit.UploadURL(path), d, raglit.PrincipalFrom(ctx)); err != nil {
+				return nil, huma.Error400BadRequest(err.Error())
+			}
 		}
 		id, err := st.EnqueueFresh(raglit.UploadURL(path), in.Body.Title, false)
 		if err != nil {

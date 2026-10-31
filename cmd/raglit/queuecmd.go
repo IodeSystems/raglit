@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -247,14 +248,10 @@ func runIngest(args []string) error {
 	fs.BoolVar(wait, "now", false, "old name of --wait")
 	_ = fs.MarkHidden("now")
 	fresh := fs.Bool("fresh", false, "re-read even if unchanged: skip the unchanged-bytes check AND the cross-index pool")
+	name := fs.String("name", "", "with --text-file: the document's name in the index (slash-separated)")
+	textFile := fs.String("text-file", "", "ingest this file's text as document --name, sent to the daemon (- reads stdin)")
+	identityFile := fs.String("identity", "", `with --text-file: a JSON file {"name","summary","kind"} recorded as the document's caption (gen_source "supplied"; no model call)`)
 	fs.Parse(args)
-	if fs.NArg() == 0 {
-		return fmt.Errorf("ingest: nothing given (a folder, file, file://<path>, or http(s)://...)")
-	}
-	targets, err := expandIngestTargets(fs.Args())
-	if err != nil {
-		return err
-	}
 	dURL, ns, err := client(homeOf)
 	if err != nil {
 		return err
@@ -263,12 +260,70 @@ func runIngest(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := daemonIngest(dURL, targets, idx, *title, *fresh, projectDirOf(homeOf())); err != nil {
-		return err
+	if *textFile != "" {
+		if err := ingestText(dURL, idx, *name, *title, *textFile, *identityFile); err != nil {
+			return err
+		}
+	} else {
+		if *identityFile != "" || *name != "" {
+			return fmt.Errorf("ingest: --name and --identity go with --text-file")
+		}
+		if fs.NArg() == 0 {
+			return fmt.Errorf("ingest: nothing given (a folder, file, file://<path>, or http(s)://..., or --text-file)")
+		}
+		targets, err := expandIngestTargets(fs.Args())
+		if err != nil {
+			return err
+		}
+		if err := daemonIngest(dURL, targets, idx, *title, *fresh, projectDirOf(homeOf())); err != nil {
+			return err
+		}
 	}
 	if *wait {
 		return waitForQueue(dURL, idx)
 	}
+	return nil
+}
+
+// ingestText sends text as document name through the upload route, with the
+// caption in identityFile when given. How a session's fold or recap goes into
+// its branch: `raglit ingest --index sessions@<id> --name fold-3 --text-file -
+// --identity fold-3.json`.
+func ingestText(base, index, name, title, textFile, identityFile string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("ingest --text-file: --name is required")
+	}
+	var text []byte
+	var err error
+	if textFile == "-" {
+		text, err = io.ReadAll(os.Stdin)
+	} else {
+		text, err = os.ReadFile(textFile)
+	}
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"name": name, "text": string(text), "title": title}
+	if identityFile != "" {
+		b, err := os.ReadFile(identityFile)
+		if err != nil {
+			return err
+		}
+		var id struct {
+			Name    string `json:"name"`
+			Summary string `json:"summary"`
+			Kind    string `json:"kind"`
+		}
+		if err := json.Unmarshal(b, &id); err != nil {
+			return fmt.Errorf("ingest --identity %s: %w", identityFile, err)
+		}
+		body["identity"] = id
+	}
+	b, err := daemonPostJSON(base, "/api/upload?index="+url.QueryEscape(index), body)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s\n", b)
 	return nil
 }
 
