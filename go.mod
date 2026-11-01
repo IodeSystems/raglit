@@ -14,7 +14,7 @@ require (
 	github.com/pdfcpu/pdfcpu v0.15.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	golang.org/x/image v0.45.0
+	golang.org/x/image v0.47.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.59.0
