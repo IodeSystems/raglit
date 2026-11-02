@@ -179,7 +179,7 @@ func runHttpd(subcmd string, args []string) error {
 	if err != nil {
 		return err
 	}
-	handler = authMW(handler)
+	handler = withMCP(reg, *defLimit, handler, authMW)
 	if cfg.Auth != nil && cfg.Auth.Issuer != "" {
 		admin := cfg.Auth.Admin
 		if admin == "" {

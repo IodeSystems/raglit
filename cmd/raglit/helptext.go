@@ -125,6 +125,15 @@ raglit ingest --name N --text-file F|- [--identity FILE.json]
 		{"drop-index", "delete one index's storage", `raglit drop-index --index NAME
               delete one index's storage. The shared document pool stays, so the
               same files indexed again reuse the cached reads.`},
+		{"project", "create a project: a key and an MCP URL", `raglit project create NAME [--label L] [--json]   a new project: prints its MCP URL and key
+raglit project key NAME [--label L] [--json]      another key for a project
+              the MCP URL is <daemon>/mcp/NAME. A client needs that URL and the
+              key, as Authorization: Bearer, and runs nothing itself. The key
+              reaches NAME's indexes and nothing else, and is printed once;
+              'raglit key revoke' ends it. NAME is one namespace, and a project
+              with indexes already cannot be created: its indexes are not the
+              new key's. The indexes with no project are /mcp/root, for the
+              admin key. "root" cannot be a project name.`},
 		{"key", "mint, list or revoke API tokens and session keys", `raglit key mint --principal NAME [--out FILE] [--json]   API token for a principal (admin)
 raglit key mint --session ID [--project P]       session key: reads the project, writes its
               session branches ("idx@ID") only; expires 7 days after last use

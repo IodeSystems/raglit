@@ -182,14 +182,49 @@ func nsNamedIndex(token string) (string, bool) {
 // that project's indexes and its shared ones, which dun relies on. claim is
 // the client's project directory, sent with an ingest so a new index takes it
 // as its scope.
+//
+// root is /mcp/root: the indexes with no project, and none of a project's, so
+// "all" cannot widen to every index on the daemon. rootNames lists them.
 type clientView struct {
-	ns     string
-	shared []string
-	cwd    string
-	claim  string
+	ns        string
+	shared    []string
+	cwd       string
+	claim     string
+	root      bool
+	rootNames func() []string
+}
+
+// rootIndex reports whether name is one index of the root project.
+func rootIndex(name string) bool {
+	return name != "" && !strings.ContainsAny(name, ":*@") && !strings.Contains(name, nsSep)
+}
+
+func (cv clientView) rootRead(sel string) string {
+	sel = strings.TrimSpace(sel)
+	var parts []string
+	if sel == "" || sel == "all" {
+		for _, n := range cv.rootNames() {
+			if rootIndex(n) {
+				parts = append(parts, n)
+			}
+		}
+	} else {
+		for _, tok := range strings.Split(sel, ",") {
+			if tok = strings.TrimSpace(tok); rootIndex(tok) {
+				parts = append(parts, tok)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return nsUnmatchable
+	}
+	return strings.Join(parts, ",")
 }
 
 func (cv clientView) read(sel string) string {
+	if cv.root {
+		return cv.rootRead(sel)
+	}
 	if strings.TrimSpace(sel) == "" && cv.cwd != "" {
 		return "@cwd:" + cv.cwd
 	}
@@ -213,6 +248,13 @@ func (cv clientView) read(sel string) string {
 // reads but does not write: an unnamespaced write would land in another
 // project's index, or create one nobody owns.
 func (cv clientView) write(token string) (string, error) {
+	if cv.root {
+		name := nsIndex("", token)
+		if !rootIndex(name) {
+			return "", fmt.Errorf("index %q: not addressable from the root project", token)
+		}
+		return name, nil
+	}
 	if cv.ns == "" && cv.cwd != "" {
 		return "", fmt.Errorf("%w: writes need one — pass --project, or run in a project (raglit init)", errNoProject)
 	}
@@ -322,6 +364,31 @@ func filterIndexList(b []byte, ns string, shared []string) []byte {
 			kept = append(kept, m)
 		case hasAnyPrefix(name, shared, nsSep):
 			kept = append(kept, m) // shared: keep the "<shared>__name" for provenance
+		}
+	}
+	doc["indexes"] = kept
+	if out, err := json.Marshal(doc); err == nil {
+		return out
+	}
+	return b
+}
+
+// filterRootIndexList keeps the indexes of the root project.
+func filterRootIndexList(b []byte) []byte {
+	var doc map[string]any
+	if json.Unmarshal(b, &doc) != nil {
+		return b
+	}
+	rows, ok := doc["indexes"].([]any)
+	if !ok {
+		return b
+	}
+	kept := make([]any, 0, len(rows))
+	for _, r := range rows {
+		if m, ok := r.(map[string]any); ok {
+			if name, _ := m["name"].(string); rootIndex(name) {
+				kept = append(kept, m)
+			}
 		}
 	}
 	doc["indexes"] = kept

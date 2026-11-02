@@ -32,6 +32,9 @@ func registerKeyRoutes(api huma.API, g *gat.Gateway, reg *raglit.Registry) {
 	gat.Register(api, g, op("mintKey", http.MethodPost, "/api/keys",
 		"Mint an API token (admin, for a principal), a session key (for a project and session) or a child key (from a session key, for one branch). The token is returned once."),
 		mintKeyOp(reg))
+	gat.Register(api, g, op("mintProjectKey", http.MethodPost, "/api/projects/keys",
+		"Mint a key scoped to one project, creating the project if asked."),
+		mintProjectKeyOp(reg))
 	gat.Register(api, g, op("listKeys", http.MethodGet, "/api/keys",
 		"The keys the caller issued and the keys under them (all of them for the admin); never a token."), listKeysOp(reg))
 	gat.Register(api, g, op("revokeKey", http.MethodPost, "/api/keys/revoke",
@@ -72,7 +75,7 @@ func mintKeyOp(reg *raglit.Registry) func(context.Context, *mintKeyIn) (*mintKey
 				return nil, err
 			}
 			pr := strings.TrimSpace(b.Principal)
-			if strings.HasPrefix(pr, raglit.KeyPrincipalPrefix) || pr == reg.Admin() {
+			if strings.HasPrefix(pr, raglit.KeyPrincipalPrefix) || strings.HasPrefix(pr, raglit.ProjectPrincipalPrefix) || pr == reg.Admin() {
 				return nil, huma.Error400BadRequest("an API token's principal must be a new name, not a key's or the admin's")
 			}
 			k.Kind, k.Principal = raglit.KeyAPI, pr
@@ -101,6 +104,60 @@ func mintKeyOp(reg *raglit.Registry) func(context.Context, *mintKeyIn) (*mintKey
 			k.Write = []string{ns + nsSep + "*@" + sess}
 		}
 		token, stored, err := ks.Mint(k)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("mint", err)
+		}
+		out := &mintKeyOut{}
+		out.Body.Token, out.Body.Key = token, stored
+		return out, nil
+	}
+}
+
+type mintProjectKeyIn struct {
+	Body struct {
+		Project string `json:"project" doc:"the project namespace"`
+		Create  bool   `json:"create,omitempty" doc:"a new project: refused when it already has indexes or a key"`
+		Label   string `json:"label,omitempty"`
+	}
+}
+
+// mintProjectKeyOp mints a key scoped to one project. A project is its
+// index-name prefix, so nothing else is stored: the key is what makes a project
+// with no indexes yet exist.
+func mintProjectKeyOp(reg *raglit.Registry) func(context.Context, *mintProjectKeyIn) (*mintKeyOut, error) {
+	return func(ctx context.Context, in *mintProjectKeyIn) (*mintKeyOut, error) {
+		if err := requireAdmin(ctx, reg); err != nil {
+			return nil, err
+		}
+		ks := reg.Keys()
+		if ks == nil {
+			return nil, huma.Error403Forbidden("keys need the daemon's auth")
+		}
+		ns := raglit.NormalizeIndexName(in.Body.Project)
+		switch {
+		case strings.TrimSpace(in.Body.Project) == "" || strings.Contains(ns, nsSep) || strings.Contains(ns, "@"):
+			return nil, huma.Error400BadRequest("a project name is one name, with no __ or @")
+		case ns == raglit.RootProject:
+			return nil, huma.Error400BadRequest("project name \"root\" is reserved: it means the indexes with no project")
+		}
+		if in.Body.Create {
+			if ks.HasProject(ns) {
+				return nil, huma.Error409Conflict("project " + ns + " already has a key; `raglit project key` mints another")
+			}
+			for _, n := range reg.Names() {
+				if strings.HasPrefix(n, ns+nsSep) {
+					return nil, huma.Error409Conflict("project " + ns + " already has indexes, which a new key could not reach")
+				}
+			}
+		} else if !ks.HasProject(ns) {
+			return nil, huma.Error404NotFound("no such project: `raglit project create` makes one")
+		}
+		pattern := ns + nsSep + "*"
+		token, stored, err := ks.Mint(raglit.Key{
+			Kind: raglit.KeyProject, Principal: raglit.ProjectPrincipalPrefix + ns,
+			Issuer: raglit.PrincipalFrom(ctx), Label: in.Body.Label,
+			Read: []string{pattern}, Write: []string{pattern},
+		})
 		if err != nil {
 			return nil, huma.Error500InternalServerError("mint", err)
 		}

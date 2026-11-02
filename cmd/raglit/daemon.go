@@ -432,7 +432,11 @@ func resolveProject(flagVal string, homeOf func() raglit.Home) (string, error) {
 			"The shared daemon namespaces every project's indexes by name so they don't collide; a client without one is refused. "+
 			"Without one a client still reads (by directory or by name) but does not write.", errNoProject, homeOf().ConfigPath())
 	}
-	return raglit.NormalizeIndexName(raw), nil
+	ns := raglit.NormalizeIndexName(raw)
+	if ns == raglit.RootProject {
+		return "", fmt.Errorf("project name %q is reserved: it means the indexes with no project", ns)
+	}
+	return ns, nil
 }
 
 // projectShared returns the home config's `shared` namespaces (normalized) — the

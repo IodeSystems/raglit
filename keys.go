@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -48,9 +49,19 @@ const KeyPrincipalPrefix = "key#"
 // namespace ("code", not "proj__code").
 const GlobalPattern = ":global"
 
+// ProjectPrincipalPrefix marks a project key's principal, "project:<ns>". Every
+// key of a project shares it, so the indexes one key creates stay reachable
+// after that key is revoked and another minted.
+const ProjectPrincipalPrefix = "project:"
+
+// RootProject is the name /mcp/root gives the indexes with no project namespace.
+// It is reserved: no project can be called it.
+const RootProject = "root"
+
 const (
 	KeyAPI     = "api"
 	KeySession = "session"
+	KeyProject = "project"
 )
 
 // Key is one stored credential. Hash is never returned to a caller.
@@ -63,6 +74,7 @@ type Key struct {
 	Parent    string   `json:"parent,omitempty"`
 	Read      []string `json:"read,omitempty"`
 	Write     []string `json:"write,omitempty"`
+	Roots     []string `json:"roots,omitempty"`
 	Label     string   `json:"label,omitempty"`
 	CreatedAt int64    `json:"created_at"`
 	LastUsed  int64    `json:"last_used,omitempty"`
@@ -217,17 +229,56 @@ func (ks *KeyStore) liveLocked(k *Key, now time.Time) bool {
 
 // ByPrincipal returns the live session key acting as p ("key#<id>").
 func (ks *KeyStore) ByPrincipal(p string) (Key, bool) {
-	id, ok := strings.CutPrefix(p, KeyPrincipalPrefix)
-	if !ok || ks == nil {
+	if ks == nil {
 		return Key{}, false
 	}
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
+	if strings.HasPrefix(p, ProjectPrincipalPrefix) {
+		return ks.projectLocked(p)
+	}
+	id, ok := strings.CutPrefix(p, KeyPrincipalPrefix)
+	if !ok {
+		return Key{}, false
+	}
 	k := ks.keys[id]
 	if k == nil || !ks.liveLocked(k, time.Now()) {
 		return Key{}, false
 	}
 	return *k, true
+}
+
+// projectLocked is a project's live key. Roots are the union across its keys,
+// because the gate sees the principal and not which key presented it.
+func (ks *KeyStore) projectLocked(p string) (Key, bool) {
+	var out Key
+	found := false
+	now := time.Now()
+	for _, k := range ks.keys {
+		if k.Kind != KeyProject || k.Principal != p || !ks.liveLocked(k, now) {
+			continue
+		}
+		if !found {
+			out, found = *k, true
+			out.Roots = slices.Clone(k.Roots)
+			continue
+		}
+		for _, r := range k.Roots {
+			if !slices.Contains(out.Roots, r) {
+				out.Roots = append(out.Roots, r)
+			}
+		}
+	}
+	return out, found
+}
+
+// HasProject reports whether a project has a live key.
+func (ks *KeyStore) HasProject(ns string) bool {
+	if ks == nil {
+		return false
+	}
+	_, ok := ks.ByPrincipal(ProjectPrincipalPrefix + ns)
+	return ok
 }
 
 // IsAncestor reports whether principal anc is a session key above key
@@ -344,3 +395,6 @@ func keyPatternsMatch(patterns []string, name string) bool {
 	}
 	return false
 }
+
+// RandomHex is n random bytes, hex encoded.
+func RandomHex(n int) string { return randomHex(n) }

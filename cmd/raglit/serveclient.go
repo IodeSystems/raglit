@@ -132,6 +132,9 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("daemon", err), nil
 			}
+			if cv.root {
+				return mcp.NewToolResultText(string(filterRootIndexList(stripSchema(b)))), nil
+			}
 			if cv.cwd != "" {
 				// Scope mode: every index, with its scopes, so a caller can name
 				// one it is not in the scope of.
