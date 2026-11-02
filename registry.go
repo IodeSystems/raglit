@@ -2,8 +2,10 @@ package raglit
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -336,6 +338,57 @@ func (r *Registry) DeleteBranch(name string) error {
 	}
 	r.mu.Unlock()
 	return os.RemoveAll(string(home))
+}
+
+// ExclusiveHashes is the source-file hashes held by the indexes in names and by
+// no other index on this daemon: what can leave the shared pool without costing
+// another index its reuse, and without one project learning about another's
+// files.
+func (r *Registry) ExclusiveHashes(names []string) ([]string, error) {
+	mine := map[string]bool{}
+	for _, n := range names {
+		hs, err := r.indexHashes(n)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range hs {
+			mine[h] = true
+		}
+	}
+	for _, n := range r.Names() {
+		if slices.Contains(names, n) {
+			continue
+		}
+		hs, err := r.indexHashes(n)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range hs {
+			delete(mine, h)
+		}
+	}
+	return slices.Sorted(maps.Keys(mine)), nil
+}
+
+func (r *Registry) indexHashes(name string) ([]string, error) {
+	st, err := r.Existing(name)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := st.db.Query(`SELECT content_hash FROM documents WHERE content_hash <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 // ListBranches enumerates the scoped registry's branches with lineage + age +

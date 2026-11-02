@@ -396,5 +396,18 @@ func keyPatternsMatch(patterns []string, name string) bool {
 	return false
 }
 
+// RevokeProject revokes every key of a project, and through the ancestor check
+// every key under them.
+func (ks *KeyStore) RevokeProject(ns string) error {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	for _, k := range ks.keys {
+		if k.Kind == KeyProject && k.Principal == ProjectPrincipalPrefix+ns {
+			k.Revoked = true
+		}
+	}
+	return ks.saveLocked()
+}
+
 // RandomHex is n random bytes, hex encoded.
 func RandomHex(n int) string { return randomHex(n) }

@@ -127,6 +127,7 @@ raglit ingest --name N --text-file F|- [--identity FILE.json]
               same files indexed again reuse the cached reads.`},
 		{"project", "create a project: a key and an MCP URL", `raglit project create NAME [--root DIR]... [--label L] [--json]   a new project: prints its MCP URL and key
 raglit project key NAME [--root DIR]... [--label L] [--json]      another key for a project
+raglit project delete NAME --yes                                  its indexes, watches, keys and cached work
               the MCP URL is <daemon>/mcp/NAME. A client needs that URL and the
               key, as Authorization: Bearer, and runs nothing itself. The key
               reaches NAME's indexes and nothing else, and is printed once;

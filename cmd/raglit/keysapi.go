@@ -151,7 +151,7 @@ func mintProjectKeyOp(reg *raglit.Registry) func(context.Context, *mintProjectKe
 					return nil, huma.Error409Conflict("project " + ns + " already has indexes, which a new key could not reach")
 				}
 			}
-		} else if !ks.HasProject(ns) {
+		} else if !ks.HasProject(ns) && !projectOwnsAnIndex(reg, ns) {
 			return nil, huma.Error404NotFound("no such project: `raglit project create` makes one")
 		}
 		for i, r := range in.Body.Roots {
@@ -173,6 +173,17 @@ func mintProjectKeyOp(reg *raglit.Registry) func(context.Context, *mintProjectKe
 		out.Body.Token, out.Body.Key = token, stored
 		return out, nil
 	}
+}
+
+// projectOwnsAnIndex recovers a project whose keys were all revoked: its indexes
+// are still its own, so another key can be minted for them.
+func projectOwnsAnIndex(reg *raglit.Registry, ns string) bool {
+	for _, n := range reg.Names() {
+		if strings.HasPrefix(n, ns+nsSep) && reg.ACLOf(n).Owner == raglit.ProjectPrincipalPrefix+ns {
+			return true
+		}
+	}
+	return false
 }
 
 type listKeysOut struct {

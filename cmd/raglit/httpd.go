@@ -345,8 +345,8 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("forkBranch", http.MethodPost, "/api/branches", "Fork a branch off a parent index (copy-on-write overlay)."), forkBranchOp(reg))
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
 	gat.Register(api, g, op("branchDiff", http.MethodGet, "/api/branches/diff", "What a branch changed against its parent: added, changed, same-bytes copies, deleted."), branchDiffOp(reg))
-	gat.Register(api, g, op("deleteIndex", http.MethodDelete, "/indexes", "Delete an index (its storage); the shared pool is untouched."), deleteIndexOp(reg))
-	registerLifecycleOps(api, g, reg, watch)
+	gat.Register(api, g, op("deleteIndex", http.MethodDelete, "/indexes", "Delete an index (its storage); the shared pool is untouched."), deleteIndexOp(reg, pool, watch))
+	registerLifecycleOps(api, g, reg, pool, watch)
 	if watch != nil {
 		gat.Register(api, g, op("listWatches", http.MethodGet, "/api/watch", "List project homes watched for auto re-ingest."), listWatchesOp(reg, watch))
 		gat.Register(api, g, op("addWatch", http.MethodPost, "/api/watch", "Register a project home for auto re-ingest on change."), addWatchOp(reg, watch))
@@ -1423,20 +1423,39 @@ func branchDiffOp(reg *raglit.Registry) func(context.Context, *deleteBranchIn) (
 }
 
 type deleteIndexIn struct {
-	Name string `query:"name" required:"true" doc:"index to delete"`
+	Name      string `query:"name" required:"true" doc:"index to delete"`
+	PurgePool bool   `query:"purge_pool" doc:"also remove this index's documents from the shared pool, where no other index holds them"`
 }
 
 // deleteIndexOp drops an index's storage. The POOL survives: it holds the
 // expensive half (extract/OCR/segment/embed, keyed by recipe+file and shared by
 // every index) and this index is rebuildable from it with no model calls. What
 // governs pool lifetime is Pool.GC, not this.
-func deleteIndexOp(reg *raglit.Registry) func(context.Context, *deleteIndexIn) (*okOut, error) {
+func deleteIndexOp(reg *raglit.Registry, pool *raglit.Pool, watch *watcher) func(context.Context, *deleteIndexIn) (*okOut, error) {
 	return func(ctx context.Context, in *deleteIndexIn) (*okOut, error) {
+		name := raglit.NormalizeIndexName(in.Name)
+		var hashes []string
+		if in.PurgePool && pool != nil && reg.CanRead(ctx, name) {
+			var err error
+			if hashes, err = reg.ExclusiveHashes([]string{name}); err != nil {
+				return nil, huma.Error500InternalServerError("purge", err)
+			}
+		}
 		if err := reg.DeleteAs(ctx, in.Name, false); err != nil {
 			if e := idxErr(err); errors.Is(err, raglit.ErrNoIndex) || errors.Is(err, raglit.ErrForbidden) {
 				return nil, e
 			}
 			return nil, huma.Error400BadRequest(err.Error())
+		}
+		if watch != nil {
+			if err := watch.RemoveIndex(name); err != nil {
+				return nil, huma.Error500InternalServerError("unwatch", err)
+			}
+		}
+		if len(hashes) > 0 {
+			if _, err := pool.PurgeFiles(hashes); err != nil {
+				return nil, huma.Error500InternalServerError("purge", err)
+			}
 		}
 		out := &okOut{}
 		out.Body.OK = true

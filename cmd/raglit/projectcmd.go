@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -20,8 +21,45 @@ func runProject(args []string) error {
 		return projectMint(args[1:], true)
 	case "key":
 		return projectMint(args[1:], false)
+	case "delete":
+		return projectDelete(args[1:])
 	}
-	return fmt.Errorf("project: unknown command %q (create, key)", args[0])
+	return fmt.Errorf("project: unknown command %q (create, key, delete)", args[0])
+}
+
+func projectDelete(args []string) error {
+	fs := flag.NewFlagSet("project delete", flag.ContinueOnError)
+	homeOf, _ := addHomeFlags(fs)
+	client := addClientFlags(fs)
+	yes := fs.Bool("yes", false, "delete; without it, nothing happens")
+	pos, err := parseInterleaved(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("project delete: give one NAME")
+	}
+	if !*yes {
+		return fmt.Errorf("project delete %s removes its indexes, watches, keys and cached work and cannot be undone: pass --yes", pos[0])
+	}
+	base, _, err := client(homeOf)
+	if base == "" {
+		return err
+	}
+	b, err := daemonDelete(base, "/api/projects", url.Values{"project": {pos[0]}})
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Project     string   `json:"project"`
+		Indexes     []string `json:"indexes"`
+		PoolEntries int      `json:"pool_entries"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return err
+	}
+	fmt.Printf("deleted project %s: %d index(es), %d cached document(s); its keys are revoked\n", out.Project, len(out.Indexes), out.PoolEntries)
+	return nil
 }
 
 func projectMint(args []string, create bool) error {

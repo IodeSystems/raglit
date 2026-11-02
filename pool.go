@@ -203,6 +203,24 @@ type PoolStats struct {
 	Bytes   int64 `json:"bytes"`   // total cached-payload bytes (the GC budget basis)
 }
 
+// PurgeFiles removes every recipe's cached work for these files, page images
+// included. Returns the number of entries removed.
+func (p *Pool) PurgeFiles(fileHashes []string) (int, error) {
+	n := 0
+	for _, h := range fileHashes {
+		res, err := p.db.Exec(`DELETE FROM pool WHERE file_hash=?`, h)
+		if err != nil {
+			return n, err
+		}
+		c, _ := res.RowsAffected()
+		n += int(c)
+		if err := os.RemoveAll(p.FileDir(h)); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
 // Stats reports the pool's size. Bytes counts both the cached payloads (fragments
 // + vectors) and the pool-pages images on disk.
 func (p *Pool) Stats() (PoolStats, error) {

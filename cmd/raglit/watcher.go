@@ -160,6 +160,26 @@ func (w *watcher) RemoveDir(index, dir string) error {
 	return w.persistDirsLocked()
 }
 
+// RemoveIndex stops every watch into index. Left in place, the next scan would
+// recreate an index that was just deleted.
+func (w *watcher) RemoveIndex(index string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	kept := w.dirs[:0:0]
+	for _, d := range w.dirs {
+		if d.Index == index {
+			delete(w.seen, d.key())
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if len(kept) == len(w.dirs) {
+		return nil
+	}
+	w.dirs = kept
+	return w.persistDirsLocked()
+}
+
 // Dirs is the directories watched into any index.
 func (w *watcher) Dirs() []dirWatch {
 	w.mu.Lock()
@@ -170,6 +190,12 @@ func (w *watcher) Dirs() []dirWatch {
 // scanDir plans one watched directory with the same include, ignore and
 // .gitignore rules as a project root.
 func (w *watcher) scanDir(d dirWatch) (int, int) {
+	// A project whose keys are all revoked stops reading the host: the grant
+	// that allowed this watch is gone. It resumes if a key is minted again.
+	owner := w.reg.ACLOf(d.Index).Owner
+	if ns, ok := strings.CutPrefix(owner, raglit.ProjectPrincipalPrefix); ok && !w.reg.Keys().HasProject(ns) {
+		return 0, 0
+	}
 	cfg := raglit.Config{Indexes: map[string]raglit.IndexConfig{d.Index: {Roots: []raglit.Root{{Path: d.Dir}}}}}
 	plan, err := raglit.PlanSources(cfg, d.Dir)
 	if err != nil {

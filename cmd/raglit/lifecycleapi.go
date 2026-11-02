@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -21,12 +22,15 @@ import (
 	"github.com/iodesystems/raglit"
 )
 
-func registerLifecycleOps(api huma.API, g *gat.Gateway, reg *raglit.Registry, watch *watcher) {
+func registerLifecycleOps(api huma.API, g *gat.Gateway, reg *raglit.Registry, pool *raglit.Pool, watch *watcher) {
 	op := func(id, method, path, summary string) huma.Operation {
 		return huma.Operation{OperationID: id, Method: method, Path: path, Summary: summary}
 	}
 	gat.Register(api, g, op("createIndex", http.MethodPost, "/api/index/create",
 		"Make an index the caller owns, with its hint and caption profile."), createIndexOp(reg))
+	gat.Register(api, g, op("destroyProject", http.MethodDelete, "/api/projects",
+		"Destroy a project: its indexes, watches and keys, and its pool entries no other index holds."),
+		destroyProjectOp(reg, pool, watch))
 	if watch == nil {
 		return
 	}
@@ -65,6 +69,88 @@ func createIndexOp(reg *raglit.Registry) func(context.Context, *createIndexIn) (
 		}
 		out := &okOut{}
 		out.Body.OK = true
+		return out, nil
+	}
+}
+
+type destroyProjectIn struct {
+	Project string `query:"project" required:"true"`
+}
+
+type destroyProjectOut struct {
+	Body struct {
+		Project     string   `json:"project"`
+		Indexes     []string `json:"indexes"`
+		PoolEntries int      `json:"pool_entries"`
+	}
+}
+
+// destroyProjectOp removes everything the daemon holds for a project. Indexes
+// go first and keys last, so a failure part way leaves a key to finish with.
+// Repeated passes because an index refuses to go before its branches, and a
+// branch of it held by another project stops the whole thing.
+func destroyProjectOp(reg *raglit.Registry, pool *raglit.Pool, watch *watcher) func(context.Context, *destroyProjectIn) (*destroyProjectOut, error) {
+	return func(ctx context.Context, in *destroyProjectIn) (*destroyProjectOut, error) {
+		ns := raglit.NormalizeIndexName(in.Project)
+		if ns == raglit.RootProject || ns == "" {
+			return nil, huma.Error400BadRequest("that is not a project")
+		}
+		if raglit.PrincipalFrom(ctx) != raglit.ProjectPrincipalPrefix+ns {
+			if err := requireAdmin(ctx, reg); err != nil {
+				return nil, err
+			}
+		}
+		var names []string
+		for _, n := range reg.Names() {
+			if strings.HasPrefix(n, ns+nsSep) {
+				names = append(names, n)
+			}
+		}
+		if len(names) == 0 && !reg.Keys().HasProject(ns) {
+			return nil, huma.Error404NotFound("no such project")
+		}
+		var hashes []string
+		if pool != nil {
+			var err error
+			if hashes, err = reg.ExclusiveHashes(names); err != nil {
+				return nil, huma.Error500InternalServerError("purge", err)
+			}
+		}
+		left := names
+		for len(left) > 0 {
+			var next []string
+			var lastErr error
+			for _, n := range left {
+				if err := reg.DeleteIndex(n); err != nil {
+					next, lastErr = append(next, n), err
+				}
+			}
+			if len(next) == len(left) {
+				return nil, huma.Error409Conflict("project " + ns + " not destroyed: " + lastErr.Error())
+			}
+			left = next
+		}
+		out := &destroyProjectOut{}
+		out.Body.Project, out.Body.Indexes = ns, names
+		if watch != nil {
+			for _, n := range names {
+				if err := watch.RemoveIndex(n); err != nil {
+					return nil, huma.Error500InternalServerError("unwatch", err)
+				}
+			}
+		}
+		if pool != nil {
+			n, err := pool.PurgeFiles(hashes)
+			if err != nil {
+				return nil, huma.Error500InternalServerError("purge", err)
+			}
+			out.Body.PoolEntries = n
+		}
+		if ks := reg.Keys(); ks != nil {
+			if err := ks.RevokeProject(ns); err != nil {
+				return nil, huma.Error500InternalServerError("revoke", err)
+			}
+		}
 		return out, nil
 	}
 }
@@ -180,23 +266,24 @@ func uploadHandler(base string, cv clientView) server.ToolHandlerFunc {
 	}
 }
 
-const manageProjectHelp = "Manage this project's indexes. action: create | drop | watch | unwatch | watches. " +
+const manageProjectHelp = "Manage this project's indexes. action: create | drop | watch | unwatch | watches | destroy. " +
 	"`create` makes an index, with an optional hint (what the models should know about this corpus) and " +
 	"caption_profile (legal or docs; omit to go by the corpus's shape). An index also appears on first " +
-	"upload or ingest. `drop` deletes an index; pass confirm=true (cannot be undone; a shared cache of " +
-	"processed documents is kept). `watch` keeps an index fresh from `dir`, an absolute directory on the " +
+	"upload or ingest. `drop` deletes an index and its watches; pass confirm=true (cannot be undone). " +
+	"`destroy` removes the whole project: every index, watch and key, this one included; pass confirm=true. " +
+	"Both also clear the daemon's shared cache of these documents, except a document another index holds. `watch` keeps an index fresh from `dir`, an absolute directory on the " +
 	"daemon's host that this key was granted: new and changed files are ingested, removed files leave the " +
 	"index. `unwatch` stops; what was indexed stays. `watches` lists them."
 
 func manageProjectTool() mcp.Tool {
 	return mcp.NewTool("manage_project",
 		mcp.WithDescription(manageProjectHelp),
-		mcp.WithString("action", mcp.Required(), mcp.Enum("create", "drop", "watch", "unwatch", "watches")),
+		mcp.WithString("action", mcp.Required(), mcp.Enum("create", "drop", "watch", "unwatch", "watches", "destroy")),
 		mcp.WithString("index", mcp.Description("index name (default \"default\")")),
 		mcp.WithString("dir", mcp.Description("watch and unwatch: absolute directory on the daemon's host")),
 		mcp.WithString("hint", mcp.Description("create: what the models should know about this corpus")),
 		mcp.WithString("caption_profile", mcp.Enum("legal", "docs"), mcp.Description("create: caption rules for prose")),
-		mcp.WithBoolean("confirm", mcp.Description("drop: true deletes")),
+		mcp.WithBoolean("confirm", mcp.Description("drop and destroy: true deletes")),
 	)
 }
 
@@ -222,7 +309,15 @@ func manageProjectHandler(base string, cv clientView) server.ToolHandlerFunc {
 			if !req.GetBool("confirm", false) {
 				return mcp.NewToolResultError("drop deletes the index and cannot be undone; pass confirm=true"), nil
 			}
-			b, err = daemonDelete(base, "/indexes", url.Values{"name": {idx}})
+			b, err = daemonDelete(base, "/indexes", url.Values{"name": {idx}, "purge_pool": {"true"}})
+		case "destroy":
+			if !req.GetBool("confirm", false) {
+				return mcp.NewToolResultError("destroy deletes the project and its keys and cannot be undone; pass confirm=true"), nil
+			}
+			if cv.ns == "" {
+				return mcp.NewToolResultError("destroy needs a project"), nil
+			}
+			b, err = daemonDelete(base, "/api/projects", url.Values{"project": {cv.ns}})
 		case "watch":
 			b, err = daemonPostJSON(base, "/api/index/watches?"+q.Encode(), map[string]any{"dir": dir})
 		case "unwatch":
