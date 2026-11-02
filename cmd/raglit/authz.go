@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -37,6 +38,49 @@ func idxErr(err error) error {
 		return huma.Error403Forbidden(err.Error())
 	}
 	return huma.Error500InternalServerError("open index", err)
+}
+
+// hostPathAllowed reports whether the caller may have this daemon-host path
+// read: the admin may, and a project key may under a root it was granted.
+// Symlinks are resolved first, so a link inside a root does not reach out of it.
+// A path that does not exist is refused like one outside, so asking says nothing
+// about which files exist.
+func hostPathAllowed(ctx context.Context, reg *raglit.Registry, path string) bool {
+	if requireAdmin(ctx, reg) == nil {
+		return true
+	}
+	k, ok := reg.Keys().ByPrincipal(raglit.PrincipalFrom(ctx))
+	if !ok {
+		return false
+	}
+	path = strings.TrimPrefix(path, "file://")
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	for _, root := range k.Roots {
+		r, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		if real == r || strings.HasPrefix(real, strings.TrimRight(r, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// requireHostPaths is requireAdmin narrowed to these paths.
+func requireHostPaths(ctx context.Context, reg *raglit.Registry, paths []string) error {
+	for _, p := range paths {
+		if !hostPathAllowed(ctx, reg, p) {
+			return requireAdmin(ctx, reg)
+		}
+	}
+	return nil
 }
 
 // requireAdmin guards operations that reach the daemon HOST rather than an

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,8 +41,19 @@ type watcher struct {
 
 	mu    sync.Mutex
 	homes map[string]bool                 // registered project homes (abs .raglit paths)
-	seen  map[string]map[string]fileState // home → (abs file → last state)
+	dirs  []dirWatch                      // directories watched into an index
+	seen  map[string]map[string]fileState // home or dirWatch.key → (abs file → last state)
 }
+
+// dirWatch is a directory the daemon keeps one index fresh from. Unlike a home
+// it needs no project config, so a client with only a URL and a key can make
+// one. Persisted to <root>/watch-dirs.json.
+type dirWatch struct {
+	Index string `json:"index"`
+	Dir   string `json:"dir"`
+}
+
+func (d dirWatch) key() string { return "dir:" + d.Index + ":" + d.Dir }
 
 func newWatcher(reg *raglit.Registry, root string, interval time.Duration) *watcher {
 	return &watcher{
@@ -54,6 +67,11 @@ func newWatcher(reg *raglit.Registry, root string, interval time.Duration) *watc
 
 // load reads persisted registrations (a JSON array of home paths).
 func (w *watcher) load() {
+	if b, err := os.ReadFile(w.dirsPath()); err == nil {
+		w.mu.Lock()
+		_ = json.Unmarshal(b, &w.dirs)
+		w.mu.Unlock()
+	}
 	b, err := os.ReadFile(w.statePath)
 	if err != nil {
 		return
@@ -98,6 +116,79 @@ func (w *watcher) Add(home string) error {
 	w.persist()
 	w.scanHome(abs)
 	return nil
+}
+
+func (w *watcher) dirsPath() string {
+	return filepath.Join(filepath.Dir(w.statePath), "watch-dirs.json")
+}
+
+func (w *watcher) persistDirsLocked() error {
+	b, err := json.MarshalIndent(w.dirs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(w.dirsPath(), b, 0o600)
+}
+
+// AddDir watches dir into index and scans it now. Adding one again is a no-op.
+func (w *watcher) AddDir(index, dir string) error {
+	d := dirWatch{Index: index, Dir: dir}
+	w.mu.Lock()
+	if !slices.Contains(w.dirs, d) {
+		w.dirs = append(w.dirs, d)
+		if err := w.persistDirsLocked(); err != nil {
+			w.mu.Unlock()
+			return err
+		}
+	}
+	w.mu.Unlock()
+	w.scanDir(d)
+	return nil
+}
+
+// RemoveDir stops watching. What was indexed stays.
+func (w *watcher) RemoveDir(index, dir string) error {
+	d := dirWatch{Index: index, Dir: dir}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	i := slices.Index(w.dirs, d)
+	if i < 0 {
+		return fmt.Errorf("%s is not watched into %s", dir, index)
+	}
+	w.dirs = slices.Delete(w.dirs, i, i+1)
+	delete(w.seen, d.key())
+	return w.persistDirsLocked()
+}
+
+// Dirs is the directories watched into any index.
+func (w *watcher) Dirs() []dirWatch {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.dirs)
+}
+
+// scanDir plans one watched directory with the same include, ignore and
+// .gitignore rules as a project root.
+func (w *watcher) scanDir(d dirWatch) (int, int) {
+	cfg := raglit.Config{Indexes: map[string]raglit.IndexConfig{d.Index: {Roots: []raglit.Root{{Path: d.Dir}}}}}
+	plan, err := raglit.PlanSources(cfg, d.Dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "raglit watch %s: plan: %v\n", d.Dir, err)
+		return 0, 0
+	}
+	real, err := filepath.EvalSymlinks(d.Dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "raglit watch %s: %v\n", d.Dir, err)
+		return 0, 0
+	}
+	current := map[string]string{}
+	for _, f := range plan[d.Index] {
+		// A key is granted a directory, so a link out of it is not watched.
+		if r, err := filepath.EvalSymlinks(f); err == nil && strings.HasPrefix(r, real+string(filepath.Separator)) {
+			current[f] = d.Index
+		}
+	}
+	return w.reconcile(d.key(), d.Dir, current)
 }
 
 // Remove unregisters a project home.
@@ -181,9 +272,13 @@ func (w *watcher) scanAll() {
 	for h := range w.homes {
 		homes = append(homes, h)
 	}
+	dirs := slices.Clone(w.dirs)
 	w.mu.Unlock()
 	for _, h := range homes {
 		w.scanHome(h)
+	}
+	for _, d := range dirs {
+		w.scanDir(d)
 	}
 }
 
@@ -208,10 +303,15 @@ func (w *watcher) scanHome(home string) (int, int) {
 			current[f] = di
 		}
 	}
+	return w.reconcile(home, ns, current)
+}
 
+// reconcile enqueues what is new or changed in current (abs file → daemon
+// index) and removes the documents of files that are gone.
+func (w *watcher) reconcile(key, label string, current map[string]string) (int, int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	prev := w.seen[home]
+	prev := w.seen[key]
 	if prev == nil {
 		prev = map[string]fileState{}
 	}
@@ -245,9 +345,9 @@ func (w *watcher) scanHome(home string) (int, int) {
 		delete(prev, f)
 		rm++
 	}
-	w.seen[home] = prev
+	w.seen[key] = prev
 	if enq > 0 || rm > 0 {
-		fmt.Fprintf(os.Stderr, "raglit watch %s: +%d changed, -%d removed\n", ns, enq, rm)
+		fmt.Fprintf(os.Stderr, "raglit watch %s: +%d changed, -%d removed\n", label, enq, rm)
 	}
 	return enq, rm
 }

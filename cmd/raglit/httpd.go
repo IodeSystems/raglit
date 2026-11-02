@@ -346,6 +346,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("deleteBranch", http.MethodDelete, "/api/branches", "Delete a branch (its storage); parent untouched."), deleteBranchOp(reg))
 	gat.Register(api, g, op("branchDiff", http.MethodGet, "/api/branches/diff", "What a branch changed against its parent: added, changed, same-bytes copies, deleted."), branchDiffOp(reg))
 	gat.Register(api, g, op("deleteIndex", http.MethodDelete, "/indexes", "Delete an index (its storage); the shared pool is untouched."), deleteIndexOp(reg))
+	registerLifecycleOps(api, g, reg, watch)
 	if watch != nil {
 		gat.Register(api, g, op("listWatches", http.MethodGet, "/api/watch", "List project homes watched for auto re-ingest."), listWatchesOp(reg, watch))
 		gat.Register(api, g, op("addWatch", http.MethodPost, "/api/watch", "Register a project home for auto re-ingest on change."), addWatchOp(reg, watch))
@@ -909,7 +910,7 @@ type ingestOut struct {
 
 func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut, error) {
 	return func(ctx context.Context, in *ingestIn) (*ingestOut, error) {
-		if err := requireAdmin(ctx, reg); err != nil {
+		if err := requireHostPaths(ctx, reg, in.Body.Targets); err != nil {
 			return nil, err
 		}
 		// The body still wins when both are given, so existing callers are
@@ -1167,6 +1168,9 @@ type findDocRow struct {
 	Pages     int    `json:"pages"`
 	Vision    int    `json:"vision"`
 	FragMode  string `json:"frag_mode"`
+	// ContentHash is the sha256 of the source bytes, so a client that pushes
+	// documents can tell which changed.
+	ContentHash string `json:"content_hash,omitempty"`
 }
 type findDocumentsIn struct {
 	Name  string `query:"name"`
@@ -1199,6 +1203,7 @@ func findDocumentsOp(reg *raglit.Registry) func(context.Context, *findDocumentsI
 				out.Body.Documents = append(out.Body.Documents, findDocRow{
 					Index: idx, Path: d.Path, Title: d.Title,
 					Fragments: d.Fragments, Pages: d.Pages, Vision: d.Vision, FragMode: d.FragMode,
+					ContentHash: d.ContentHash,
 				})
 			}
 		}

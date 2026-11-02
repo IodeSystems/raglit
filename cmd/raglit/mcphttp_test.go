@@ -13,6 +13,7 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/iodesystems/raglit"
 )
@@ -45,7 +46,7 @@ func mcpTestDaemon(t *testing.T) (*httptest.Server, string) {
 	lf := addLLMFlags(fs)
 	_ = fs.Parse(nil)
 	lf.resolve(raglit.Home(root))
-	h, err := buildGatHandler(reg, lf, raglit.Home(root), 8, nil, raglit.GCPolicy{}, nil)
+	h, err := buildGatHandler(reg, lf, raglit.Home(root), 8, nil, raglit.GCPolicy{}, newWatcher(reg, root, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,9 +99,9 @@ func mcpCall(t *testing.T, c *mcpclient.Client, tool string, args map[string]any
 	return b.String(), res.IsError
 }
 
-func mintProject(t *testing.T, srv *httptest.Server, admin, name string, create bool) (int, string) {
+func mintProject(t *testing.T, srv *httptest.Server, admin, name string, create bool, roots ...string) (int, string) {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"project": name, "create": create})
+	body, _ := json.Marshal(map[string]any{"project": name, "create": create, "roots": roots})
 	code, out := doAs(t, "POST", srv.URL+"/api/projects/keys", admin, string(body))
 	var r struct {
 		Token string `json:"token"`
@@ -223,5 +224,139 @@ func TestProjectKeys_Rules(t *testing.T) {
 func TestResolveProject_RootIsReserved(t *testing.T) {
 	if _, err := resolveProject("root", func() raglit.Home { return raglit.Home(t.TempDir()) }); err == nil {
 		t.Error("--project root was accepted")
+	}
+}
+
+func TestMCPHTTP_CreateUploadForgetDrop(t *testing.T) {
+	srv, admin := mcpTestDaemon(t)
+	_, key := mintProject(t, srv, admin, "acme", true)
+	c, err := mcpSession(t, srv.URL+"/mcp/acme", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, isErr := mcpCall(t, c, "manage_project", map[string]any{"action": "create", "index": "notes", "hint": "RO means repair order.", "caption_profile": "docs"}); isErr {
+		t.Fatalf("create: %s", out)
+	}
+	out, _ := mcpCall(t, c, "list_indexes", nil)
+	if !strings.Contains(out, `"notes"`) {
+		t.Errorf("created index not listed: %s", out)
+	}
+	if out, isErr := mcpCall(t, c, "upload", map[string]any{"index": "notes", "name": "a/b.md", "text": "# B\nwalrus"}); isErr || !strings.Contains(out, "job_id") || !strings.Contains(out, `"index":"notes"`) {
+		t.Errorf("upload: err=%v %s", isErr, out)
+	}
+	if out, isErr := mcpCall(t, c, "upload", map[string]any{"index": "../x", "name": "a.md", "text": "x"}); !isErr && strings.Contains(out, "other") {
+		t.Errorf("upload escaped: %s", out)
+	}
+	if out, isErr := mcpCall(t, c, "upload", map[string]any{"index": "other:secret", "name": "a.md", "text": "x"}); !isErr {
+		t.Errorf("uploaded into another project: %s", out)
+	}
+	if out, isErr := mcpCall(t, c, "manage_project", map[string]any{"action": "drop", "index": "notes"}); !isErr {
+		t.Errorf("drop without confirm: %s", out)
+	}
+	if out, isErr := mcpCall(t, c, "manage_project", map[string]any{"action": "drop", "index": "notes", "confirm": true}); isErr {
+		t.Errorf("drop: %s", out)
+	}
+	if out, _ := mcpCall(t, c, "list_indexes", nil); strings.Contains(out, `"notes"`) {
+		t.Errorf("dropped index still listed: %s", out)
+	}
+}
+
+// A key watches and ingests where it was granted and nowhere else, however the
+// path is spelled.
+func TestMCPHTTP_WatchNeedsARoot(t *testing.T) {
+	srv, admin := mcpTestDaemon(t)
+	granted, outside := t.TempDir(), t.TempDir()
+	must(t, os.WriteFile(granted+"/a.md", []byte("# A\nwalrus"), 0o600))
+	must(t, os.WriteFile(outside+"/x.md", []byte("# X\nsecret"), 0o600))
+	must(t, os.Symlink(outside, granted+"/link"))
+	_, key := mintProject(t, srv, admin, "acme", true, granted)
+	c, err := mcpSession(t, srv.URL+"/mcp/acme", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{outside, granted + "/link", granted + "/../" + strings.TrimPrefix(outside, "/")} {
+		if out, isErr := mcpCall(t, c, "manage_project", map[string]any{"action": "watch", "dir": dir}); !isErr {
+			t.Errorf("watched %s: %s", dir, out)
+		}
+	}
+	if out, isErr := mcpCall(t, c, "ingest", map[string]any{"paths": []string{granted + "/link/x.md"}}); !isErr {
+		t.Errorf("ingested through a link: %s", out)
+	}
+	if out, isErr := mcpCall(t, c, "ingest", map[string]any{"url": "http://169.254.169.254/"}); !isErr {
+		t.Errorf("a key made the daemon fetch a URL: %s", out)
+	}
+	if out, isErr := mcpCall(t, c, "ingest", map[string]any{"paths": []string{granted + "/a.md"}}); isErr {
+		t.Errorf("ingest under a root: %s", out)
+	}
+	if out, isErr := mcpCall(t, c, "manage_project", map[string]any{"action": "watch", "dir": granted}); isErr {
+		t.Fatalf("watch: %s", out)
+	}
+	out, _ := mcpCall(t, c, "manage_project", map[string]any{"action": "watches"})
+	if !strings.Contains(out, granted) || !strings.Contains(out, `"index":"default"`) {
+		t.Errorf("watches: %s", out)
+	}
+	if out, isErr := mcpCall(t, c, "manage_project", map[string]any{"action": "unwatch", "dir": granted}); isErr {
+		t.Errorf("unwatch: %s", out)
+	}
+	if out, _ := mcpCall(t, c, "manage_project", map[string]any{"action": "watches"}); strings.Contains(out, granted) {
+		t.Errorf("still watched: %s", out)
+	}
+}
+
+// A rotated key reaches what the old key made, and the old key stops.
+// The scan runs with no key to check, so the directory itself is the limit.
+func TestWatchDir_DoesNotFollowALinkOut(t *testing.T) {
+	root := t.TempDir()
+	reg, err := raglit.OpenScopedRegistry(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	dir, outside := t.TempDir(), t.TempDir()
+	must(t, os.WriteFile(dir+"/a.md", []byte("# A"), 0o600))
+	must(t, os.WriteFile(outside+"/x.md", []byte("# X"), 0o600))
+	must(t, os.Symlink(outside, dir+"/link"))
+	must(t, os.Symlink(outside+"/x.md", dir+"/file-link.md"))
+	if enq, _ := newWatcher(reg, root, 0).scanDir(dirWatch{Index: "notes", Dir: dir}); enq != 1 {
+		t.Errorf("enqueued %d, want only a.md", enq)
+	}
+}
+
+func TestProjectKey_RotationKeepsTheIndexes(t *testing.T) {
+	srv, admin := mcpTestDaemon(t)
+	_, first := mintProject(t, srv, admin, "acme", true)
+	c, err := mcpSession(t, srv.URL+"/mcp/acme", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, isErr := mcpCall(t, c, "manage_project", map[string]any{"action": "create", "index": "notes"}); isErr {
+		t.Fatal(out)
+	}
+	_, second := mintProject(t, srv, admin, "acme", false)
+	id := strings.Split(strings.TrimPrefix(first, "rk_"), "_")[0]
+	if code, body := doAs(t, "POST", srv.URL+"/api/keys/revoke", admin, `{"id":"`+id+`"}`); code != http.StatusOK {
+		t.Fatalf("revoke: %d %s", code, body)
+	}
+	if _, err := mcpSession(t, srv.URL+"/mcp/acme", first); err == nil {
+		t.Error("a revoked key still opens the project")
+	}
+	c2, err := mcpSession(t, srv.URL+"/mcp/acme", second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := mcpCall(t, c2, "list_indexes", nil); !strings.Contains(out, `"notes"`) {
+		t.Errorf("the new key lost the index: %s", out)
+	}
+}
+
+// `raglit mcp` hands its tools to a model; a lifecycle tool there reaches dun's
+// model past the names dun disables.
+func TestStdioTools_HaveNoLifecycleTools(t *testing.T) {
+	s := server.NewMCPServer("t", "0")
+	addRaglitTools(s, daemonToolHandlers("http://x", 8, "p", nil))
+	for _, name := range []string{"upload", "manage_project"} {
+		if s.GetTool(name) != nil {
+			t.Errorf("stdio serves %s", name)
+		}
 	}
 }

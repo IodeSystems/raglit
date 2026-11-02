@@ -65,6 +65,8 @@ type DocSummary struct {
 	// seconds); 0 when unknown (srcstat.go).
 	SrcSize  int64 `json:"src_size,omitempty"`
 	SrcMtime int64 `json:"src_mtime,omitempty"`
+	// ContentHash is the sha256 of the source bytes.
+	ContentHash string `json:"content_hash,omitempty"`
 	// GenName / GenKind / GenSource are what the document IS (identity.go), for a
 	// list a person can navigate. Both names travel: the caption is what a reader
 	// needs, and the filename is what everything else joins on — and where they
@@ -101,7 +103,7 @@ type DocSummary struct {
 func (s *Store) documentsLocal() ([]DocSummary, error) {
 	ctx := context.Background()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT d.id, d.path, d.title, d.added_at, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
+		`SELECT d.id, d.path, d.title, d.added_at, d.content_hash, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
 		        d.gen_content_tags, d.gen_role_tags, d.gen_summary, d.gen_model, d.src_size, d.src_mtime,
 		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND `+SQLOwnWordsF+`) AS fragments
 		   FROM documents d ORDER BY d.added_at DESC`)
@@ -116,13 +118,13 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	var ids []int64
 	for rows.Next() {
 		var id, addedAt, frags, srcSize, srcMtime int64
-		var path, title, fragMode, genName, genKind, genSource, ctStr, rtStr, genSummary, genModel string
-		if err := rows.Scan(&id, &path, &title, &addedAt, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &genSummary, &genModel, &srcSize, &srcMtime, &frags); err != nil {
+		var path, title, contentHash, fragMode, genName, genKind, genSource, ctStr, rtStr, genSummary, genModel string
+		if err := rows.Scan(&id, &path, &title, &addedAt, &contentHash, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &genSummary, &genModel, &srcSize, &srcMtime, &frags); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		out = append(out, DocSummary{Path: path, Title: title, Fragments: int(frags), FragMode: fragMode,
-			AddedAt: addedAt, SrcSize: srcSize, SrcMtime: srcMtime, Engines: map[string]int{},
+			AddedAt: addedAt, ContentHash: contentHash, SrcSize: srcSize, SrcMtime: srcMtime, Engines: map[string]int{},
 			GenName: genName, GenKind: genKind, GenSource: genSource, GenSummary: genSummary, GenModel: genModel,
 			GenContentTags: splitTagList(ctStr), GenRoleTags: splitTagList(rtStr)})
 		ids = append(ids, id)

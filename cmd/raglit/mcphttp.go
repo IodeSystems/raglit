@@ -142,12 +142,14 @@ func mcpHandler(reg *raglit.Registry, defLimit int, loop *mcpLoop) http.Handler 
 		base, closeLoop := loop.open(strings.TrimSpace(token))
 		defer closeLoop()
 		h := daemonToolHandlersFor(base, defLimit, cv)
-		if requireAdmin(r.Context(), reg) != nil {
-			h.ingest = hostPathRefused("ingest")
-			h.ocr = guardHostPath(h.ocr)
-		}
+		h.ingest = guardIngestPaths(reg, h.ingest)
+		h.ocr = guardOCRPath(reg, h.ocr)
 		s := server.NewMCPServer("raglit", version)
 		addRaglitTools(s, h)
+		// Here and not in addRaglitTools: `raglit mcp` hands its tools to a
+		// model, and dun disables by name, so a new tool there would reach it.
+		s.AddTool(uploadTool(), uploadHandler(base, cv))
+		s.AddTool(manageProjectTool(), manageProjectHandler(base, cv))
 		server.NewStreamableHTTPServer(s, server.WithStateLess(true)).ServeHTTP(w, r)
 	})
 }
@@ -166,19 +168,30 @@ func mcpProjectAllowed(ctx context.Context, reg *raglit.Registry, project string
 	return k.AllowsRead(name)
 }
 
-// hostPathRefused answers a tool that reads the daemon host's files, before its
-// handler runs: the handler stats paths here, which would tell a caller without
-// the right which files exist.
-func hostPathRefused(tool string) server.ToolHandlerFunc {
-	return func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return mcp.NewToolResultError(tool + ": this reads the daemon host's files, which this key may not do; send the document with upload"), nil
+const hostPathRefusal = ": this reads a file on the daemon's host that this key may not read; send the document with upload"
+
+// guardIngestPaths answers before the handler runs: the handler stats paths
+// here, which would tell a caller without the right which files exist. A URL
+// is refused the same way, so a key cannot make the daemon fetch for it.
+func guardIngestPaths(reg *raglit.Registry, next server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		paths := req.GetStringSlice("paths", nil)
+		if u := req.GetString("url", ""); u != "" {
+			paths = append(paths, u)
+		}
+		for _, p := range paths {
+			if !hostPathAllowed(ctx, reg, p) {
+				return mcp.NewToolResultError("ingest" + hostPathRefusal), nil
+			}
+		}
+		return next(ctx, req)
 	}
 }
 
-func guardHostPath(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+func guardOCRPath(reg *raglit.Registry, next server.ToolHandlerFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if req.GetString("path", "") != "" {
-			return hostPathRefused("ocr")(ctx, req)
+		if p := req.GetString("path", ""); p != "" && requireAdmin(ctx, reg) != nil {
+			return mcp.NewToolResultError("ocr" + hostPathRefusal), nil
 		}
 		return next(ctx, req)
 	}

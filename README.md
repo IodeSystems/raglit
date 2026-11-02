@@ -119,6 +119,22 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   a **path subtree** (`--path /repo/src/api/` — a prefix match, so hierarchical
   corpora don't need a separate index per directory). Results are precise citations: document → page →
   fragment. `search_figures` does the same over described figures.
+- **MCP over HTTP** — a client needs a URL and a key and runs nothing:
+
+  ```bash
+  raglit project create acme --root /srv/acme   # prints the MCP URL and the key, once
+  ```
+
+  The client connects to `<daemon>/mcp/acme` with `Authorization: Bearer <key>`.
+  The key reaches that project's indexes and nothing else. On top of the tools
+  below it gets `upload` (send a document; `list_documents` reports each
+  `content_hash`, so send only what changed) and `manage_project` (`create`,
+  `drop`, `watch`, `unwatch`, `watches`). Reading or watching a directory on the
+  daemon's host needs a `--root` grant. `raglit project key acme` mints another
+  key; `raglit key revoke` ends one. The indexes with no project are `/mcp/root`,
+  for the admin key. One daemon is one trust domain: its models and its shared
+  pool serve every project on it, so a vault with other rules uses another daemon.
+
 - **MCP** — expose the index(es) to any MCP client (Claude Desktop, agentkit):
 
   ```sh

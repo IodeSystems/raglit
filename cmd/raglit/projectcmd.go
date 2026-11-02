@@ -29,6 +29,7 @@ func projectMint(args []string, create bool) error {
 	homeOf, _ := addHomeFlags(fs)
 	client := addClientFlags(fs)
 	label := fs.String("label", "", "a note shown by `key list`")
+	roots := fs.StringArray("root", nil, "a directory on the daemon's host this key may read and watch; repeat for more")
 	asJSON := fs.Bool("json", false, `print {"project","url","token","key"} as JSON`)
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
@@ -42,7 +43,7 @@ func projectMint(args []string, create bool) error {
 		return err
 	}
 	b, err := daemonPostJSON(base, "/api/projects/keys", map[string]any{
-		"project": pos[0], "create": create, "label": *label,
+		"project": pos[0], "create": create, "label": *label, "roots": *roots,
 	})
 	if err != nil {
 		return err

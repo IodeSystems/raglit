@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -115,9 +116,10 @@ func mintKeyOp(reg *raglit.Registry) func(context.Context, *mintKeyIn) (*mintKey
 
 type mintProjectKeyIn struct {
 	Body struct {
-		Project string `json:"project" doc:"the project namespace"`
-		Create  bool   `json:"create,omitempty" doc:"a new project: refused when it already has indexes or a key"`
-		Label   string `json:"label,omitempty"`
+		Project string   `json:"project" doc:"the project namespace"`
+		Create  bool     `json:"create,omitempty" doc:"a new project: refused when it already has indexes or a key"`
+		Label   string   `json:"label,omitempty"`
+		Roots   []string `json:"roots,omitempty" doc:"daemon-host directories this key may read and watch"`
 	}
 }
 
@@ -152,11 +154,17 @@ func mintProjectKeyOp(reg *raglit.Registry) func(context.Context, *mintProjectKe
 		} else if !ks.HasProject(ns) {
 			return nil, huma.Error404NotFound("no such project: `raglit project create` makes one")
 		}
+		for i, r := range in.Body.Roots {
+			if !filepath.IsAbs(r) {
+				return nil, huma.Error400BadRequest("a root is an absolute path on the daemon's host: " + r)
+			}
+			in.Body.Roots[i] = filepath.Clean(r)
+		}
 		pattern := ns + nsSep + "*"
 		token, stored, err := ks.Mint(raglit.Key{
 			Kind: raglit.KeyProject, Principal: raglit.ProjectPrincipalPrefix + ns,
 			Issuer: raglit.PrincipalFrom(ctx), Label: in.Body.Label,
-			Read: []string{pattern}, Write: []string{pattern},
+			Read: []string{pattern}, Write: []string{pattern}, Roots: in.Body.Roots,
 		})
 		if err != nil {
 			return nil, huma.Error500InternalServerError("mint", err)
