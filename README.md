@@ -146,6 +146,9 @@ On success `init` prints the MCP server setup (a `claude mcp add-json` line and 
   optional `path` prefix. `raglit init` prints a ready-to-paste MCP config (Claude
   Code + generic `.mcp.json`) pinned to this project's `.raglit/`.
 
+  `raglit mcp --manage` adds `upload` and `manage_project`, the tools below for a
+  client with a project. They are off by default because they change indexes.
+
   An agent that needs a whole document's text: `search` to find a hit (or
   `list_documents` with a `name` filter to find it by filename), then
   `get_document` with that path (or a unique filename substring) to read the full

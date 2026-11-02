@@ -360,3 +360,27 @@ func TestStdioTools_HaveNoLifecycleTools(t *testing.T) {
 		}
 	}
 }
+
+// With no project a stdio client reads and refuses writes, --manage or not.
+func TestManageTools_NoProjectWritesNothing(t *testing.T) {
+	s := server.NewMCPServer("t", "0")
+	cv := clientView{cwd: "/somewhere"}
+	addManageTools(s, "http://127.0.0.1:1", cv)
+	if s.GetTool("upload") == nil || s.GetTool("manage_project") == nil {
+		t.Fatal("tools missing")
+	}
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"name": "a.md", "text": "x", "action": "create"}
+	for name, h := range map[string]server.ToolHandlerFunc{
+		"upload": uploadHandler("http://127.0.0.1:1", cv), "manage_project": manageProjectHandler("http://127.0.0.1:1", cv),
+	} {
+		res, err := h(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := res.Content[0].(mcp.TextContent).Text
+		if !res.IsError || !strings.Contains(text, "no project") {
+			t.Errorf("%s with no project: %s", name, text)
+		}
+	}
+}

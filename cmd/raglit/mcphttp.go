@@ -147,10 +147,7 @@ func mcpHandler(reg *raglit.Registry, defLimit int, loop *mcpLoop) http.Handler 
 		h.ocr = guardOCRPath(reg, h.ocr)
 		s := server.NewMCPServer("raglit", version)
 		addRaglitTools(s, h)
-		// Here and not in addRaglitTools: `raglit mcp` hands its tools to a
-		// model, and dun disables by name, so a new tool there would reach it.
-		s.AddTool(uploadTool(), uploadHandler(base, cv))
-		s.AddTool(manageProjectTool(), manageProjectHandler(base, cv))
+		addManageTools(s, base, cv)
 		server.NewStreamableHTTPServer(s, server.WithStateLess(true)).ServeHTTP(w, r)
 	})
 }

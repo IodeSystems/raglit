@@ -44,6 +44,7 @@ func runServe(args []string) error {
 	client := addClientFlags(fs) // --daemon + --project
 	shared := addSharedFlag(fs)
 	defLimit := fs.IntP("limit", "n", 8, "default max results")
+	manage := fs.Bool("manage", false, "also serve upload and manage_project, which change a project's indexes")
 	fs.Parse(args)
 
 	// The MCP tools proxy to the shared per-user daemon, auto-starting it if
@@ -63,6 +64,9 @@ func runServe(args []string) error {
 	http.DefaultClient.Transport = rt
 	s := server.NewMCPServer("raglit", version, server.WithToolHandlerMiddleware(restartNotes(rt, durl)))
 	addRaglitTools(s, daemonToolHandlersFor(durl, *defLimit, cv))
+	if *manage {
+		addManageTools(s, durl, cv)
+	}
 	notifySetup(s, func() setupSummary {
 		cfg, _, _ := raglit.LoadConfig(homeOf())
 		sum, _ := localOrDaemonSetup(cfg, durl)

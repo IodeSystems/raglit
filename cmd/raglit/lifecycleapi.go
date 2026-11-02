@@ -134,6 +134,15 @@ func removeDirWatchOp(reg *raglit.Registry, w *watcher) func(context.Context, *r
 	}
 }
 
+// addManageTools adds the tools that change a project's indexes. Apart from
+// addRaglitTools, and behind --manage on `raglit mcp`: that server hands its
+// tools to a model, and dun disables by name, so a tool added there by default
+// would reach dun's model.
+func addManageTools(s *server.MCPServer, base string, cv clientView) {
+	s.AddTool(uploadTool(), uploadHandler(base, cv))
+	s.AddTool(manageProjectTool(), manageProjectHandler(base, cv))
+}
+
 func uploadTool() mcp.Tool {
 	return mcp.NewTool("upload",
 		mcp.WithDescription(
