@@ -737,6 +737,9 @@ func (h Hit) Caveat() string {
 	if h.Origin == FragOriginDescribed {
 		return "this passage is a model's DESCRIPTION of an image — nobody wrote these words"
 	}
+	if h.Origin == FragOriginFrontmatter {
+		return "this passage is the document's YAML frontmatter (metadata), not its body"
+	}
 	// Otherwise, whether THIS text is a figure marker rather than transcription.
 	// Only when the marker is most of it: a marker inside a page of real
 	// transcription is a figure in a document, not a description of one.
@@ -776,7 +779,7 @@ func (t *HitTrust) Caveat() string {
 // caption and summary — rather than text from the document itself. True for a
 // machine's and for a person's alike: neither is the instrument, and neither can
 // be quoted as if it were.
-func (h Hit) IsDescription() bool { return h.Origin != "" }
+func (h Hit) IsDescription() bool { return h.Origin != "" && h.Origin != FragOriginFrontmatter }
 
 // pathPredicate returns a bare SQL predicate + its arg constraining d.path to
 // documents whose path STARTS WITH pathPrefix (a subtree scope), or ("", nil) for

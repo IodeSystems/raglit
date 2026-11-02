@@ -72,11 +72,11 @@ func fetchFile(path string) (Fetched, error) {
 // the file system needed. Without it a corpus with no identity model listed
 // every Markdown document by file name. Other formats keep fallback.
 func markdownTitle(path string, data []byte, fallback string) string {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".md", ".markdown":
-	default:
+	if !isMarkdownPath(path) {
 		return fallback
 	}
+	// YAML frontmatter is metadata, not the first line of the document.
+	data = data[frontmatterLen(string(data[:min(len(data), maxFrontmatterBytes+4096)])):]
 	head := data
 	if len(head) > 4096 {
 		head = head[:4096]

@@ -8,5 +8,10 @@ import "context"
 // overlapping windower handles arbitrary length.
 func (s *Store) ingestText(ctx context.Context, docPath, title, text string, fc FragConfig, sl *StageLog) (int, string, error) {
 	units := []ingestUnit{{page: 0, text: text}}
+	if isMarkdownPath(docPath) {
+		// Not windowed as body text; indexed as one marked fragment. See
+		// FragOriginFrontmatter.
+		units[0].frontmatter = frontmatterLen(text)
+	}
 	return s.ingestUnits(ctx, nil, nil, docPath, title, units, fc, sl)
 }

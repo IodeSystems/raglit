@@ -312,6 +312,18 @@ figure placement (inline + anchored crop, §3), re-fragmentation (full
 reprocess, §4a), media lifecycle (§3b), degenerate inputs (§2), migrations
 (§4a).
 
+## 6a. Markdown frontmatter
+
+For `.md`/`.markdown`, a leading YAML block (`---` first line, first non-blank
+line a `key:`, closing `---` or `...` within 32 KiB; BOM and CRLF allowed; not
+parsed) is not windowed as body. It is stored as ONE fragment with
+`origin='frontmatter'`, text = the file's own bytes `[0,N)`, offsets `[0,N)`.
+Body windows run over the rest with offsets shifted by N, so spans index the
+original file. Unlike `identity`/`fields`, `frontmatter` stays inside
+`SQLOwnWords`: it is the document's own text, and `get_document` needs it to
+reassemble the file exactly. `Hit.Caveat` marks it as metadata. `markdownTitle`
+skips the block. No schema change. (`frontmatter.go`)
+
 ## 7. Not doing yet (→ icebox)
 
 - Specialized fragmenters: markdown headings with breadcrumb prefixes; code via

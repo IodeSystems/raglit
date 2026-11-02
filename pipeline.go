@@ -38,6 +38,9 @@ type ingestUnit struct {
 	mime string
 	data []byte // set → image unit
 	text string // set → text unit
+	// frontmatter is the byte length of a leading YAML block in text (0 = none).
+	// It is kept verbatim and fragmented separately; see FragOriginFrontmatter.
+	frontmatter int
 	// dpi is the resolution this page was rendered at, carried through to the
 	// page's provenance: it decides what any reader could possibly see, and
 	// without it "why is this page wrong" cannot be answered afterwards.
@@ -158,6 +161,9 @@ type resolvedPage struct {
 	text   string
 	engine string
 	model  string
+	// frontmatter is the length of the leading block fragmentOverlap emits as its
+	// own FragOriginFrontmatter fragment (see ingestUnit.frontmatter).
+	frontmatter int
 }
 
 // pageFailure is one page that could not be read, kept so the document can be
@@ -279,7 +285,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		} else if u.page >= 1 {
 			provenance = append(provenance, stagedPage{page: u.page, engine: engine})
 		}
-		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model})
+		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model, frontmatter: u.frontmatter})
 	}
 	// Every page a hole is a failed document; some holes among readable pages is a
 	// partial one, which is worth keeping. Reported either way, because an ingest
@@ -366,7 +372,10 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		// see DescribableRead. Anything that is not a model read (a text layer, a
 		// glyph recogniser) cannot describe at all, so 0 there is true.
 		scorable := !isVisionEngine(pages[i].engine) || DescribableRead(pages[i].text)
-		flat := FlattenForIndex(pages[i].text)
+		// A frontmatter block is kept verbatim: its fragment's offsets are the
+		// file's own, and flattening must not shift them.
+		fm := pages[i].frontmatter
+		flat := pages[i].text[:fm] + FlattenForIndex(pages[i].text[fm:])
 		if n := len(flat); n > 0 && scorable {
 			d := measured[pages[i].page]
 			measured[pages[i].page] = [2]int{
@@ -862,6 +871,11 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 		b.WriteString(p.text)
 	}
 	src := b.String()
+	// Frontmatter: a single-page text document only, and it starts the source.
+	fm := 0
+	if len(pages) == 1 && pages[0].frontmatter > 0 && pages[0].frontmatter <= len(src) {
+		fm = pages[0].frontmatter
+	}
 	pageForOffset := func(off int) int {
 		page := 0
 		for _, sp := range spans {
@@ -893,7 +907,14 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 		return out
 	}
 	ordByPage := map[int]int{}
-	for _, of := range OverlapFragments(src, window, stride, floor) {
+	if fm > 0 {
+		sink(stagedFrag{page: pages[0].page, ord: 0, startOff: 0, endOff: fm,
+			text: src[:fm], origin: FragOriginFrontmatter})
+		ordByPage[pages[0].page] = 1
+	}
+	for _, of := range OverlapFragments(src[fm:], window, stride, floor) {
+		of.Start += fm
+		of.End += fm
 		page := pageForOffset(of.Start)
 		ord := ordByPage[page]
 		ordByPage[page] = ord + 1
