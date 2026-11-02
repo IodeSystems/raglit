@@ -69,6 +69,7 @@ func (l *mcpLoop) RoundTrip(req *http.Request) (*http.Response, error) {
 	in.Header.Set("Authorization", "Bearer "+token)
 	in.RequestURI = req.URL.RequestURI()
 	in.RemoteAddr = "127.0.0.1:0"
+	in.Host = "raglit" // the handle is not for error bodies, which echo the host
 	if in.Body == nil {
 		in.Body = http.NoBody
 	}
