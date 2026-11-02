@@ -23,6 +23,44 @@ import (
 // form of the same knowledge: these documents are forms, here are their fields,
 // here is how to read them.
 
+// runCaptionProfile shows or chooses the caption rules for an index's prose.
+func runCaptionProfile(args []string) error {
+	fs := flag.NewFlagSet("caption-profile", flag.ContinueOnError)
+	resolve := addTargetFlags(fs)
+	set := fs.String("set", "", "legal, docs, or auto (go by the corpus's shape)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	t, err := resolve()
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Profile string `json:"profile"`
+	}
+	if *set != "" {
+		profile := *set
+		if profile == "auto" {
+			profile = ""
+		}
+		if err := t.send(http.MethodPut, "/api/caption-profile", map[string]any{"profile": profile}, &out); err != nil {
+			return err
+		}
+		fmt.Println("caption profile recorded. It applies to captions written from now on;")
+		fmt.Println("`raglit identify --force` re-captions what is already there.")
+		return nil
+	}
+	if err := t.get("/api/caption-profile", nil, &out); err != nil {
+		return err
+	}
+	if out.Profile == "" {
+		fmt.Println("auto")
+		return nil
+	}
+	fmt.Println(out.Profile)
+	return nil
+}
+
 func runHint(args []string) error {
 	fs := flag.NewFlagSet("hint", flag.ContinueOnError)
 	resolve := addTargetFlags(fs)

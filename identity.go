@@ -980,13 +980,17 @@ func (s *Store) identityAsk(path, text string) (IdentityAsk, error) {
 	if err != nil {
 		return IdentityAsk{}, err
 	}
+	corpus, err := s.captionCorpus()
+	if err != nil {
+		return IdentityAsk{}, err
+	}
 	return IdentityAsk{
 		Text:       text,
 		TagContext: s.TagContext(),
 		IndexHint:  s.IndexHint(),
 		DocTypes:   types,
 		Path:       path,
-		Profile:    profileFor(path, s.isCodeCorpus()),
+		Profile:    profileFor(path, corpus),
 	}, nil
 }
 

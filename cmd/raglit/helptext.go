@@ -196,6 +196,15 @@ raglit doctype add --file <F> <NAME>
               extraction, and it is part of the READING RECIPE: change it and
               documents read under the old one keep that reading until they
               are ingested again.`},
+		{"caption-profile", "choose this corpus's caption rules", `raglit caption-profile [--set legal|docs|auto]
+              which rules and kinds prose in this index is captioned under.
+              auto, the default, goes by the corpus's shape: 25% source files
+              is a software project, 25% PDF, office and mail files is a
+              records corpus and gets legal:* kinds, anything else gets docs:*.
+              Source files and images keep their own rules under every choice.
+              Choose legal for a case folder of prose, docs for a shelf of
+              PDFs that are not records. Takes effect on the next caption;
+              existing captions change only by 'raglit identify --force'.`},
 		{"about", "what this index holds, counted", `raglit about [--write] [--json]
               what this INDEX is: how many documents, which kinds, which tags
               — counted, so never stale — and, with --write, a paragraph the

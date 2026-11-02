@@ -35,6 +35,10 @@ func registerCorpusRoutes(api huma.API, g *gat.Gateway, reg *raglit.Registry, lf
 		"The index's hint: what a person tells the models about this corpus."), getIndexHintOp(reg))
 	gat.Register(api, g, op("putIndexHint", http.MethodPut, "/api/index-hint",
 		"Record (or, empty, clear) the index's hint."), putIndexHintOp(reg))
+	gat.Register(api, g, op("getCaptionProfile", http.MethodGet, "/api/caption-profile",
+		"The owner's choice of caption rules for this index; empty goes by its shape."), getCaptionProfileOp(reg))
+	gat.Register(api, g, op("putCaptionProfile", http.MethodPut, "/api/caption-profile",
+		"Choose the index's caption rules: legal, docs, or empty for its shape."), putCaptionProfileOp(reg))
 	gat.Register(api, g, op("putDocType", http.MethodPut, "/api/doc-types",
 		"Register a document type; reports extractions it made stale."), putDocTypeOp(reg))
 	gat.Register(api, g, op("deleteDocType", http.MethodDelete, "/api/doc-types",
@@ -770,6 +774,46 @@ func putIndexHintOp(reg *raglit.Registry) func(context.Context, *putHintIn) (*hi
 		}
 		out := &hintOut{}
 		out.Body.Hint = st.IndexHint()
+		return out, nil
+	}
+}
+
+type captionProfileOut struct {
+	Body struct {
+		Profile string `json:"profile"`
+	}
+}
+
+func getCaptionProfileOp(reg *raglit.Registry) func(context.Context, *indexOnlyIn) (*captionProfileOut, error) {
+	return func(ctx context.Context, in *indexOnlyIn) (*captionProfileOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		out := &captionProfileOut{}
+		out.Body.Profile = st.CaptionProfile()
+		return out, nil
+	}
+}
+
+type putCaptionProfileIn struct {
+	Index string `query:"index"`
+	Body  struct {
+		Profile string `json:"profile"`
+	}
+}
+
+func putCaptionProfileOp(reg *raglit.Registry) func(context.Context, *putCaptionProfileIn) (*captionProfileOut, error) {
+	return func(ctx context.Context, in *putCaptionProfileIn) (*captionProfileOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		if err := st.SetCaptionProfile(in.Body.Profile, time.Now().UnixNano()); err != nil {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
+		out := &captionProfileOut{}
+		out.Body.Profile = st.CaptionProfile()
 		return out, nil
 	}
 }

@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -19,6 +20,11 @@ import (
 // Kinds are "family:kind" — legal:deed, code:entrypoint, docs:plan — so a
 // list can group by family and no two profiles' vocabularies collide. Each
 // profile's list is CLOSED, for the reason identityKinds gives.
+//
+// Legal is CHOSEN, never reached. It used to be the fallback for anything that
+// was not a software project, so a notebook, a wiki and a directory of skills
+// were all offered deed-or-survey, and a right answer ("code:test") was refused
+// by the enum. docs is the default; see captionCorpus for what picks legal.
 
 // kindDef is one term of a profile's vocabulary and the line the prompt shows
 // for it.
@@ -187,11 +193,11 @@ var codeProfile = &captionProfile{
 
 var docsProfile = &captionProfile{
 	Family:  "docs",
-	Framing: "You are cataloguing a document in a software project: prose written about the project, not code. Its path is given above the document.",
+	Framing: "You are cataloguing a document: prose people wrote to read, such as project documentation, a wiki page, a procedure or a note. Its path is given above the document.",
 	NameRule: `what the document is and the component or subject it covers. A caption
   for a list, not a sentence and not the file name restated.`,
-	SummaryRule: `a few sentences — what the document covers, which part of the
-  project it concerns, and what a reader gets from it (a decision, a status, a
+	SummaryRule: `a few sentences — what the document covers, which subject or
+  part of a project it concerns, and what a reader gets from it (a decision, a status, a
   procedure, a reference). Enough that someone reading only this knows whether to
   open it.`,
 	NameExample:    "Tidewater billing — webhook retry design and open questions",
@@ -287,11 +293,16 @@ var captionImageExts = map[string]bool{
 	".tif": true, ".tiff": true, ".bmp": true, ".svg": true,
 }
 
-// projectOnlyExts are code in a software project and records elsewhere: an
+// projectOnlyExts are code in a software project and prose elsewhere: an
 // HTML file in a case folder is a saved page or an email body, not a UI.
 var projectOnlyExts = map[string]bool{".html": true, ".htm": true, ".xml": true}
 
-var proseExts = map[string]bool{".md": true, ".markdown": true, ".rst": true, ".txt": true, ".adoc": true, ".org": true}
+// recordExts are the shape of a records corpus: filed instruments and mail.
+// Images are not counted, because a photo library is not a case folder.
+var recordExts = map[string]bool{
+	".pdf": true, ".doc": true, ".docx": true, ".odt": true, ".rtf": true,
+	".eml": true, ".msg": true, ".mbox": true,
+}
 
 // isCodePath reports whether path names a source/build file.
 func isCodePath(path string) bool {
@@ -299,49 +310,110 @@ func isCodePath(path string) bool {
 	return codeExts[filepath.Ext(base)] || codeNames[base]
 }
 
-// profileFor picks the caption rules for one file. codeCorpus says the index
-// is a software project (codeCorpusShare), which is what makes a .md file
-// project documentation rather than a case note.
-func profileFor(path string, codeCorpus bool) *captionProfile {
+// captionCorpus is what an index is, as far as the caption rules care.
+type captionCorpus int
+
+const (
+	corpusDocs    captionCorpus = iota // anything not recognised as the others
+	corpusCode                         // a software project
+	corpusRecords                      // a documents/evidence tree, or chosen by the owner
+)
+
+// profileFor picks the caption rules for one file. A source file is code and an
+// image is an image anywhere; everything else takes the corpus's prose rules.
+func profileFor(path string, corpus captionCorpus) *captionProfile {
 	base := strings.ToLower(filepath.Base(strings.TrimPrefix(path, "file://")))
 	ext := filepath.Ext(base)
 	switch {
-	case isCodePath(path), codeCorpus && projectOnlyExts[ext]:
+	case isCodePath(path), corpus == corpusCode && projectOnlyExts[ext]:
 		return codeProfile
 	case captionImageExts[ext]:
 		return imageProfile
-	case codeCorpus && (proseExts[ext] || ext == "" || strings.HasPrefix(base, "license")):
-		return docsProfile
+	case corpus == corpusRecords:
+		return legalProfile
 	}
-	return legalProfile
+	return docsProfile
 }
 
-// codeCorpusShare is the share of an index's documents that must be source
-// files for the index to count as a software project. A quarter, not a
-// majority: a repository carries docs, images and data beside its code.
-// ASSUMPTION (2026-10-20): no case folder holds that many source files.
-const codeCorpusShare = 0.25
+const (
+	// codeCorpusShare is the share of an index's documents that must be source
+	// files for the index to count as a software project. A quarter, not a
+	// majority: a repository carries docs, images and data beside its code.
+	// ASSUMPTION (2026-10-20): no case folder holds that many source files.
+	codeCorpusShare = 0.25
+	// recordCorpusShare is the same test for a records corpus. Measured
+	// 2026-11-01 over 18 indexes: the two case folders were 61% and 100% record
+	// files, every other index 0%, so the value is not finely placed.
+	// ASSUMPTION: a corpus of papers or manuals in PDF reads as records until
+	// its owner says otherwise (SetCaptionProfile).
+	recordCorpusShare = 0.25
+)
 
-// isCodeCorpus reports whether this index is a software project, by the share
-// of its documents that are source files.
-func (s *Store) isCodeCorpus() bool {
+// metaCaptionProfile is the owner's choice for an index: CaptionProfileLegal,
+// CaptionProfileDocs, or unset to go by the corpus's shape.
+const metaCaptionProfile = "caption_profile"
+
+const (
+	CaptionProfileLegal = "legal"
+	CaptionProfileDocs  = "docs"
+)
+
+// CaptionProfile is the owner's choice for this index, "" when they made none.
+func (s *Store) CaptionProfile() string {
+	p, _ := s.Meta(metaCaptionProfile)
+	return p
+}
+
+// SetCaptionProfile records the owner's choice; "" returns to the corpus's
+// shape. It applies to captions written from now on. Existing captions change
+// only by `raglit identify --force`.
+func (s *Store) SetCaptionProfile(profile string, now int64) error {
+	switch profile {
+	case "", CaptionProfileLegal, CaptionProfileDocs:
+		return s.SetMeta(metaCaptionProfile, profile, now)
+	}
+	return fmt.Errorf("caption profile %q: want %q, %q or empty", profile, CaptionProfileLegal, CaptionProfileDocs)
+}
+
+// captionCorpus classifies this index by the owner's choice, then by the share
+// of its documents that are source files, then record files. A failed read is
+// an error: the caller keeps no caption rather than a wrong one.
+func (s *Store) captionCorpus() (captionCorpus, error) {
+	chosen := s.CaptionProfile()
+	if chosen == CaptionProfileLegal {
+		return corpusRecords, nil
+	}
 	rows, err := s.db.Query(`SELECT path FROM documents`)
 	if err != nil {
-		return false
+		return corpusDocs, err
 	}
 	defer rows.Close()
-	var n, code int
+	var n, code, records int
 	for rows.Next() {
 		var p string
-		if rows.Scan(&p) != nil {
-			return false
+		if err := rows.Scan(&p); err != nil {
+			return corpusDocs, err
 		}
 		n++
 		if isCodePath(p) {
 			code++
 		}
+		if recordExts[filepath.Ext(strings.ToLower(filepath.Base(p)))] {
+			records++
+		}
 	}
-	return n > 0 && float64(code) >= codeCorpusShare*float64(n)
+	if err := rows.Err(); err != nil {
+		return corpusDocs, err
+	}
+	switch {
+	case n == 0:
+		return corpusDocs, nil
+	case float64(code) >= codeCorpusShare*float64(n):
+		return corpusCode, nil
+	case chosen == "" && float64(records) >= recordCorpusShare*float64(n):
+		return corpusRecords, nil
+	}
+	return corpusDocs, nil
 }
 
 // pathForPrompt is the tail of a path, enough to say where a file sits in its

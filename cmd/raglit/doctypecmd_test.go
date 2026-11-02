@@ -54,6 +54,47 @@ func indexWithAWorkOrder(t *testing.T) testDB {
 	return db
 }
 
+func TestCaptionProfile_RoundTrips(t *testing.T) {
+	db := newTestDB(t)
+	st, err := raglit.Open(db.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	show := func() string {
+		return strings.TrimSpace(captureStdout(t, func() {
+			if err := runCaptionProfile(db.with()); err != nil {
+				t.Fatal(err)
+			}
+		}))
+	}
+	if got := show(); got != "auto" {
+		t.Errorf("unset index shows %q, want auto", got)
+	}
+	// Existing captions do not move, and the command says so.
+	out := captureStdout(t, func() {
+		if err := runCaptionProfile(db.with("--set", "legal")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "identify --force") {
+		t.Errorf("setting a profile did not say what it leaves alone:\n%s", out)
+	}
+	if got := show(); got != "legal" {
+		t.Errorf("shows %q, want legal", got)
+	}
+	if err := runCaptionProfile(db.with("--set", "code")); err == nil {
+		t.Error("an unknown profile was accepted")
+	}
+	if err := runCaptionProfile(db.with("--set", "auto")); err != nil {
+		t.Fatal(err)
+	}
+	if got := show(); got != "auto" {
+		t.Errorf("after auto shows %q", got)
+	}
+}
+
 func TestHint_RoundTripsAndSaysWhatItCosts(t *testing.T) {
 	db := newTestDB(t)
 	st, err := raglit.Open(db.path)
