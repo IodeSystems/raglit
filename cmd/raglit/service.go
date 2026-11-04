@@ -131,8 +131,9 @@ OOMPolicy=continue
 # would kill helper processes out from under an in-flight job instead.
 KillMode=mixed
 
-# An ingest job can be mid-document. Give it room to finish rather than
-# SIGKILLing a half-written index.
+# An ingest job can be mid-document. On SIGTERM the daemon stops claiming and
+# gives running jobs 90s, then stops them and puts them back on the queue.
+# This limit must stay above that, or systemd SIGKILLs a half-written index.
 TimeoutStopSec=120
 
 Restart=on-failure

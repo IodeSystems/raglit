@@ -122,21 +122,29 @@ func runHttpd(subcmd string, args []string) error {
 	}
 	defer pool.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Two contexts so a stop can drain (drain.go): ctx ends the claiming and the
+	// background loops, work ends the ingest jobs already running.
+	work, cutOff := context.WithCancel(context.Background())
+	defer cutOff()
+	ctx, cancel := context.WithCancel(work)
 	defer cancel()
-	go runIngestRunners(ctx, reg, lf, cfgHome, pool)
+	ingestDone := make(chan struct{})
+	go func() {
+		defer close(ingestDone)
+		runIngestRunners(ctx, work, reg, lf, cfgHome, pool)
+	}()
+	drain := &jobDrain{stopClaims: cancel, cutOff: cutOff, done: ingestDone}
 	// Captions, on their own queue and their own slot budget. See runIdentityWorkers.
 	go runIdentityWorkers(ctx, reg, cfgHome)
 	// Vectors from another embed model are dropped and rebuilt (reembed.go).
 	go reembedIndexes(ctx, reg, *lf.embedModel)
 	go backfillSourceStats(ctx, reg)
 	go reapSessionBranches(ctx, reg, cfgHome)
-	// Stay on the current source. Rebuilds immediately, restarts as soon as no
-	// job is RUNNING — a re-exec mid-ingest aborts that job and it is not
-	// requeued, while pending rows survive and the new process picks them up.
-	go daemonSelfUpdate(func() bool { return noJobRunning(reg) })
+	// Stay on the current source. Rebuilds immediately, then drains the queue
+	// and re-execs into the new build.
+	go daemonSelfUpdate(func() { drain.drain(reexecGrace) })
 	// `raglit service reload`: SIGHUP re-execs the daemon, under the same rule.
-	go reloadOnHUP(func() bool { return noJobRunning(reg) })
+	go reloadOnHUP(func() { drain.drain(reexecGrace) })
 
 	// Directory watching: keep opt-in projects (config watch:true) re-ingested on
 	// change. Registrations persist under the daemon root and reload here.
@@ -170,7 +178,8 @@ func runHttpd(subcmd string, args []string) error {
 	if err != nil {
 		return err
 	}
-	authMW, tokenPath, err := daemonAuth(ctx, reg, cfg.Auth, string(cfgHome))
+	// work, not ctx: HTTP goes on serving while the queue drains, and auth with it.
+	authMW, tokenPath, err := daemonAuth(work, reg, cfg.Auth, string(cfgHome))
 	if err != nil {
 		return err
 	}
@@ -208,11 +217,18 @@ func runHttpd(subcmd string, args []string) error {
 	// being reachable from everything else — see parseListenList.
 	srv := &http.Server{Handler: handler}
 	// Graceful shutdown on SIGINT/SIGTERM (what `--stop` sends) so the deferred
-	// state removal + pool/registry closes run.
+	// state removal + pool/registry closes run. The queue drains first while
+	// HTTP still serves; a second signal cuts the running jobs off at once.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sig
+		fmt.Fprintf(os.Stderr, "raglit daemon: stopping — no new jobs; running jobs get %s (signal again to stop them now)\n", stopGrace)
+		go func() {
+			<-sig
+			cutOff()
+		}()
+		drain.drain(stopGrace)
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
 		srv.Shutdown(sctx)

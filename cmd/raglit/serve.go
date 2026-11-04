@@ -353,7 +353,10 @@ func effectiveSlots(n int) int {
 // What survives from the lanes is the shape, not the limit: a claimer per pass
 // walking indexes in turn, resuming where it stopped so one busy index cannot
 // take every turn.
-func runIngestRunners(ctx context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home, pool *raglit.Pool) {
+//
+// claim ends the claiming; work cancels the jobs already running. They are two
+// contexts so a stop can let running jobs finish (drain.go).
+func runIngestRunners(claim, work context.Context, reg *raglit.Registry, lf *llmFlags, home raglit.Home, pool *raglit.Pool) {
 	// Strand nothing on upgrade: rows queued before lanes existed carry an empty
 	// lane, which nothing now reads — but the backfill also proves the column is
 	// present, and costs one query per index at startup.
@@ -362,7 +365,7 @@ func runIngestRunners(ctx context.Context, reg *raglit.Registry, lf *llmFlags, h
 			_, _ = st.BackfillLanes()
 		}
 	}
-	runQueue(ctx, reg, ingestRunners, func(st *raglit.Store) *raglit.Worker {
+	runQueue(claim, work, reg, ingestRunners, func(st *raglit.Store) *raglit.Worker {
 		return buildWorker(st, lf, home, pool)
 	})
 }
@@ -371,8 +374,13 @@ func runIngestRunners(ctx context.Context, reg *raglit.Registry, lf *llmFlags, h
 // can supply one whose fetch and model calls it controls — and so assert the
 // property this exists for: that a document waiting on one model does not hold
 // up a document that needs a different one.
-func runQueue(ctx context.Context, reg *raglit.Registry, runners int,
+//
+// When claim ends, no new job is claimed and runQueue returns once the running
+// jobs are done. When work ends, the running jobs are cancelled and requeue
+// themselves (Worker.ProcessJob).
+func runQueue(claim, work context.Context, reg *raglit.Registry, runners int,
 	newWorker func(*raglit.Store) *raglit.Worker) {
+	ctx := claim
 	if runners < 1 {
 		runners = 1
 	}
@@ -399,7 +407,7 @@ func runQueue(ctx context.Context, reg *raglit.Registry, runners int,
 						w = newWorker(st)
 						workers[c.index] = w
 					}
-					if err := w.ProcessJob(ctx, c.job); err != nil {
+					if err := w.ProcessJob(work, c.job); err != nil {
 						log.Printf("raglit: queue %s: job %d: %v", c.index, c.job.ID, err)
 					}
 				}

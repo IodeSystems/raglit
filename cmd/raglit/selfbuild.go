@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/iodesystems/raglit"
 )
 
 // Dev self-update — a source-stamped raglit rebuilds itself when the tree
@@ -179,10 +178,11 @@ func buildInput(name string) bool {
 // failed", which is the worse of the two.
 //
 // It therefore rebuilds as soon as the source changes — the build is the slow
-// part and it costs the queue nothing — and re-execs only once the queue is
-// idle. In practice that is seconds after a batch finishes, and never in the
-// middle of one.
-func daemonSelfUpdate(idle func() bool) {
+// part and it costs the queue nothing — and then drains the queue (drain.go)
+// before the re-exec: no new claims, running jobs finish or go back on the
+// queue. It used to wait for an idle queue while the queue went on claiming,
+// so a busy queue held the re-exec back without end.
+func daemonSelfUpdate(drain func()) {
 	if !daemonSelfUpdateEnabled() {
 		return
 	}
@@ -216,43 +216,46 @@ func daemonSelfUpdate(idle func() bool) {
 			// has one answer for all three.
 			if h := hashFile(exe); h != "" && running != "" && h != running {
 				pending = true
-				fmt.Fprintln(os.Stderr, "raglit daemon: a newer binary is on disk — restarting when the queue is idle")
+				fmt.Fprintln(os.Stderr, "raglit daemon: a newer binary is on disk — draining the queue, then restarting")
 			}
 		}
-		if !pending || !idle() {
+		if !pending {
 			continue
 		}
-		fmt.Fprintln(os.Stderr, "raglit daemon: no job in flight — restarting into the new build")
+		drain()
+		fmt.Fprintln(os.Stderr, "raglit daemon: queue drained — restarting into the new build")
 		// Deliberately NOT setting RAGLIT_AUTOBUILD_DONE. That guard bounds the
 		// CLI to one re-exec per invocation; on a process that lives for days it
 		// would mean the daemon tracks its source exactly once and then never
 		// again. Nothing loops here without it: after the exec the running image
 		// and the file agree, and the file is newer than the source.
-		if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
-			fmt.Fprintf(os.Stderr, "raglit daemon: re-exec failed (%v) — staying up\n", err)
-			pending = false
-		}
+		reexecFailed(syscall.Exec(exe, os.Args, os.Environ()))
 	}
 }
 
-// reloadOnHUP re-execs the daemon on SIGHUP, once no job is running: config,
+// reloadOnHUP re-execs the daemon on SIGHUP, after draining the queue: config,
 // models and auth are read again from scratch, with the same PID, so systemd
-// and launchd see no restart. Waiting for idle is the self-update rule above —
-// a re-exec aborts the running job and it is not requeued.
-func reloadOnHUP(idle func() bool) {
+// and launchd see no restart.
+func reloadOnHUP(drain func()) {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
-	for range hup {
-		fmt.Fprintln(os.Stderr, "raglit daemon: reload requested — re-reading config when no job is in flight")
-		for !idle() {
-			time.Sleep(time.Second)
-		}
-		exe, err := selfPath()
-		if err == nil {
-			err = syscall.Exec(exe, os.Args, os.Environ())
-		}
-		fmt.Fprintf(os.Stderr, "raglit daemon: reload failed (%v) — staying up\n", err)
+	<-hup
+	fmt.Fprintln(os.Stderr, "raglit daemon: reload requested — draining the queue, then re-reading config")
+	drain()
+	exe, err := selfPath()
+	if err == nil {
+		err = syscall.Exec(exe, os.Args, os.Environ())
 	}
+	reexecFailed(err)
+}
+
+// reexecFailed exits after a re-exec that did not happen. Staying up is no
+// longer an option: the drain has stopped the queue, and a daemon that serves
+// but never ingests looks healthy while it does nothing. Exit non-zero so the
+// unit restarts it (Restart=on-failure), or the next client starts a new one.
+func reexecFailed(err error) {
+	fmt.Fprintf(os.Stderr, "raglit daemon: re-exec failed (%v) after the queue drained — exiting\n", err)
+	os.Exit(1)
 }
 
 // daemonSelfUpdateEnabled is deliberately laxer than the CLI's guard.
@@ -285,38 +288,3 @@ func hashFile(path string) string {
 // two seconds for a TUI a person is watching; this walks a source tree on a box
 // also running ingest, and nobody is waiting on the poll.
 const daemonWatchInterval = 5 * time.Second
-
-// noJobRunning reports whether any index has a job IN FLIGHT.
-//
-// Running only — pending is deliberately not part of it. A restart costs
-// exactly one thing: the job the worker is executing, which reclaimOrphanedJobs
-// then marks errored and does not requeue. Pending rows survive untouched and
-// the new process picks them straight up, so waiting for an empty QUEUE buys
-// nothing and can wait forever.
-//
-// That is not hypothetical. This daemon watches a source tree and re-ingests it
-// on change; while that tree was being edited the queue never reached zero, a
-// restart sat pending indefinitely, and the daemon went on serving a build two
-// commits old with its own watch reporting everything current.
-//
-// Every index, not just one: the daemon serves them all from one process, and
-// restarting because THIS project is quiet would abort another project's job. An
-// index that cannot be opened counts as busy — restarting on the strength of a
-// state that could not be read is the wrong way to be wrong.
-//
-// A job claimed between this check and the exec is still lost. The window is
-// milliseconds, the loss is one job, and it now lands in the health report with
-// a retry button rather than in silence.
-func noJobRunning(reg *raglit.Registry) bool {
-	for _, name := range reg.Names() {
-		st, err := reg.Get(name)
-		if err != nil {
-			return false
-		}
-		s, err := st.IndexStatus()
-		if err != nil || s.Running > 0 {
-			return false
-		}
-	}
-	return true
-}

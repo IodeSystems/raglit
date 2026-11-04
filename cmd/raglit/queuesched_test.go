@@ -71,7 +71,7 @@ func TestRunQueue_OneStuckDocumentDoesNotStallTheRest(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runQueue(ctx, reg, 4, newWorker)
+	go runQueue(ctx, ctx, reg, 4, newWorker)
 
 	// Establish the premise before testing the conclusion: the slow document must
 	// really be in flight, or "the others finished" says nothing.
@@ -147,7 +147,7 @@ func TestRunQueue_NeverClaimsMoreThanItCanRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	const runners = 2
-	go runQueue(ctx, reg, runners, newWorker)
+	go runQueue(ctx, ctx, reg, runners, newWorker)
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -167,4 +167,115 @@ func TestRunQueue_NeverClaimsMoreThanItCanRun(t *testing.T) {
 	}
 	close(release)
 	cancel()
+}
+
+// drainQueue starts runQueue on one index with the two contexts the daemon
+// wires, and returns the jobDrain over it.
+func drainQueue(t *testing.T, reg *raglit.Registry, newWorker func(*raglit.Store) *raglit.Worker) *jobDrain {
+	t.Helper()
+	work, cutOff := context.WithCancel(context.Background())
+	claim, stopClaims := context.WithCancel(work)
+	t.Cleanup(cutOff)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runQueue(claim, work, reg, 1, newWorker)
+	}()
+	return &jobDrain{stopClaims: stopClaims, cutOff: cutOff, done: done}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for start := time.Now(); !cond(); time.Sleep(10 * time.Millisecond) {
+		if time.Since(start) > 10*time.Second {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
+func jobCount(t *testing.T, st *raglit.Store, state string) int {
+	t.Helper()
+	js, err := st.Jobs(state, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(js)
+}
+
+// A stop lets the running job finish and claims nothing after it: the job ends
+// 'done', and the job behind it stays 'pending' for the next process.
+func TestJobDrain_RunningJobFinishesAndNothingNewIsClaimed(t *testing.T) {
+	reg, err := raglit.OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	st, err := reg.Get("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := st.Enqueue(fmt.Sprintf("file:///notes-%d.md", i), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := make(chan struct{})
+	var started atomic.Int32
+	d := drainQueue(t, reg, func(s *raglit.Store) *raglit.Worker {
+		return &raglit.Worker{Store: s, Fetcher: func(ctx context.Context, _ string) (raglit.Fetched, error) {
+			started.Add(1)
+			<-release
+			return raglit.Fetched{Data: []byte("a short note")}, nil
+		}}
+	})
+	waitFor(t, "the first job to start", func() bool { return started.Load() == 1 })
+
+	drained := make(chan bool)
+	go func() { drained <- d.drain(10 * time.Second) }()
+	// Give the claimer a chance to take the second job if it still could.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	if !<-drained {
+		t.Fatal("drain reported runners still running")
+	}
+	if n := started.Load(); n != 1 {
+		t.Fatalf("%d jobs started; the drain must claim nothing after the stop", n)
+	}
+	if done, pending := jobCount(t, st, "done"), jobCount(t, st, "pending"); done != 1 || pending != 1 {
+		t.Fatalf("done=%d pending=%d, want 1 and 1", done, pending)
+	}
+}
+
+// A job still running when the grace ends is cancelled and goes back on the
+// queue. Before the drain it was cut off by the exit and marked 'error' at the
+// next start.
+func TestJobDrain_JobCutOffAtGraceIsRequeued(t *testing.T) {
+	reg, err := raglit.OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	st, err := reg.Get("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Enqueue("file:///scan.pdf", ""); err != nil {
+		t.Fatal(err)
+	}
+	var started atomic.Int32
+	d := drainQueue(t, reg, func(s *raglit.Store) *raglit.Worker {
+		return &raglit.Worker{Store: s, Fetcher: func(ctx context.Context, _ string) (raglit.Fetched, error) {
+			started.Add(1)
+			<-ctx.Done()
+			return raglit.Fetched{}, ctx.Err()
+		}}
+	})
+	waitFor(t, "the job to start", func() bool { return started.Load() == 1 })
+
+	if !d.drain(50 * time.Millisecond) {
+		t.Fatal("drain reported runners still running after the cut-off")
+	}
+	if pending, failed := jobCount(t, st, "pending"), jobCount(t, st, "error"); pending != 1 || failed != 0 {
+		t.Fatalf("pending=%d error=%d, want the cut-off job back as pending", pending, failed)
+	}
 }
