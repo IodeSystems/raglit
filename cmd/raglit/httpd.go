@@ -145,6 +145,8 @@ func runHttpd(subcmd string, args []string) error {
 	go daemonSelfUpdate(func() { drain.drain(reexecGrace) })
 	// `raglit service reload`: SIGHUP re-execs the daemon, under the same rule.
 	go reloadOnHUP(func() { drain.drain(reexecGrace) })
+	// A release build: the daily signed-release check, under the same rule.
+	go daemonReleaseUpdate(string(cfgHome), func() { drain.drain(reexecGrace) })
 
 	// Directory watching: keep opt-in projects (config watch:true) re-ingested on
 	// change. Registrations persist under the daemon root and reload here.

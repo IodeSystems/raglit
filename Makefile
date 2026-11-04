@@ -18,7 +18,7 @@ ifeq ($(GOBIN),)
 GOBIN   := $(shell go env GOPATH)/bin
 endif
 
-.PHONY: build install stamped release test lint clean web web-dev generate notices
+.PHONY: build install stamped release release-manifest test lint clean web web-dev generate notices
 
 # Codegen runs OUR sqlc, never the one on PATH.
 #
@@ -112,6 +112,24 @@ notices: web/node_modules/.package-lock.json ## check dependency licenses; write
 
 release: web ## install WITHOUT the source stamp — never self-updates (builds the UI first)
 	go install ./cmd/raglit
+
+# The signed manifest release builds update from (cmd/raglit/releaseupdate.go).
+# Run by the owner AFTER the release workflow has published VERSION: it
+# downloads that release's archives, checks them against its SHA256SUMS, writes
+# raglit-manifest.json, signs it with the release key (dun's, the same one
+# cmd/raglit/minisign.pub holds) and uploads both files to the release. A
+# release without them is never offered to a running daemon.
+RELEASE_DIR := dist/$(VERSION)
+release-manifest: ## sign and upload raglit-manifest.json for a published release (VERSION=vX.Y.Z MINISIGN_KEY=<secret key file>)
+	@test -n "$(VERSION)" || { echo "make release-manifest: VERSION=vX.Y.Z"; exit 1; }
+	@test -n "$(MINISIGN_KEY)" || { echo "make release-manifest: MINISIGN_KEY names the release key's secret file"; exit 1; }
+	rm -rf $(RELEASE_DIR) && mkdir -p $(RELEASE_DIR)
+	gh release download $(VERSION) --repo IodeSystems/raglit --pattern 'raglit_*.tar.gz' --pattern SHA256SUMS --dir $(RELEASE_DIR)
+	cd $(RELEASE_DIR) && sha256sum -c SHA256SUMS
+	go run ./tools/mkmanifest -version $(VERSION) -dist $(RELEASE_DIR) -url https://github.com/IodeSystems/raglit/releases/download/$(VERSION) -o $(RELEASE_DIR)/raglit-manifest.json
+	minisign -S -s $(MINISIGN_KEY) -m $(RELEASE_DIR)/raglit-manifest.json
+	minisign -V -p cmd/raglit/minisign.pub -m $(RELEASE_DIR)/raglit-manifest.json
+	gh release upload $(VERSION) --repo IodeSystems/raglit --clobber $(RELEASE_DIR)/raglit-manifest.json $(RELEASE_DIR)/raglit-manifest.json.minisig
 
 test:
 	go test ./... -count=1

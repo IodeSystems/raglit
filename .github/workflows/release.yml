@@ -7,7 +7,10 @@ name: release
 #
 # Asset names carry no version, so
 #   https://github.com/IodeSystems/raglit/releases/latest/download/<asset>
-# is stable. Signing is not done here. The `release` build tag is the one
+# is stable. Signing is not done here: after this publishes, the owner runs
+# `make release-manifest VERSION=<tag> MINISIGN_KEY=…`, which uploads the
+# signed raglit-manifest.json that release-build daemons update from
+# (cmd/raglit/releaseupdate.go). The `release` build tag is the one
 # marker (cmd/raglit/release_on.go): `doctor --json` then checks GitHub for
 # updates instead of the Go proxy. No -X srcDir stamp, so a release binary
 # never rebuilds itself.
