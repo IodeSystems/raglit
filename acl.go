@@ -137,8 +137,35 @@ func (r *Registry) exists(name string) bool {
 }
 
 // CanRead applies read(i) to the caller on ctx. Always true with access control
-// off.
+// off, and always true for the admin.
+//
+// The admin used to read only what it owned or what was public, like anyone
+// else. Indexes a project key creates (over /mcp/{project}, as para does) are
+// owned by "project:<ns>" and private, so no browser identity — the admin's
+// included — could see them: they were missing from the web UI with no error,
+// and nothing could recover them but TransferOwnership. The admin runs the
+// daemon and can read its files anyway; the ACL hiding them from it protected
+// nothing (Carl 2026-11-04: "admin gets full access").
+//
+// Implicit search scopes do not take this override (OwnReadable): the admin's
+// own sessions search what they own, not every project's corpus.
 func (r *Registry) CanRead(ctx context.Context, name string) bool {
+	if !r.ACLEnabled() || r.IsAdmin(ctx) {
+		return true
+	}
+	return r.canReadAsOwner(ctx, name)
+}
+
+// IsAdmin reports whether the caller on ctx is the daemon's admin. False with
+// access control off: there is no admin then.
+func (r *Registry) IsAdmin(ctx context.Context) bool {
+	p := PrincipalFrom(ctx)
+	return p != "" && p == r.Admin()
+}
+
+// canReadAsOwner is read(i) without the admin's override: public, owned by
+// the caller, or owned by a key under it — through every branch layer.
+func (r *Registry) canReadAsOwner(ctx context.Context, name string) bool {
 	if !r.ACLEnabled() {
 		return true
 	}
@@ -254,7 +281,7 @@ func (r *Registry) Write(ctx context.Context, name string) (*Store, error) {
 	if !r.CanRead(ctx, name) {
 		return nil, ErrNoIndex
 	}
-	if r.ACLOf(name).Owner != p {
+	if r.ACLOf(name).Owner != p && !r.IsAdmin(ctx) {
 		return nil, ErrForbidden
 	}
 	return r.Existing(name)
@@ -262,6 +289,18 @@ func (r *Registry) Write(ctx context.Context, name string) (*Store, error) {
 
 // Readable filters names to the ones the caller may read, keeping order.
 func (r *Registry) Readable(ctx context.Context, names []string) []string {
+	return r.readable(names, func(n string) bool { return r.CanRead(ctx, n) })
+}
+
+// OwnReadable is Readable without the admin's override: what an implicit
+// search scope (no index named, "all", @cwd) reads. The admin token is what
+// clients on the daemon's own machine use, and an override there would make
+// every local session search every project's corpus.
+func (r *Registry) OwnReadable(ctx context.Context, names []string) []string {
+	return r.readable(names, func(n string) bool { return r.canReadAsOwner(ctx, n) })
+}
+
+func (r *Registry) readable(names []string, can func(string) bool) []string {
 	out := make([]string, 0, len(names))
 	for _, n := range names {
 		if r.Scoped() && !r.cachedOrExists(n) {
@@ -273,7 +312,7 @@ func (r *Registry) Readable(ctx context.Context, names []string) []string {
 			}
 			n = parent
 		}
-		if !r.ACLEnabled() || r.CanRead(ctx, n) {
+		if !r.ACLEnabled() || can(n) {
 			out = append(out, n)
 		}
 	}

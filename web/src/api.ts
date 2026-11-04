@@ -292,6 +292,12 @@ export type ProjectIndex = {
   running?: number;
   failed?: number;
   parent?: string; // set when this index is a branch of another
+  bytes?: number; // the index on disk
+  owner?: string; // set with access control on
+  visibility?: "private" | "public";
+  // false: listed as metadata only. The caller may not open it (another
+  // owner's private index), so nothing links into it.
+  readable?: boolean;
 };
 
 export type Project = {

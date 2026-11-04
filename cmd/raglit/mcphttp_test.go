@@ -594,3 +594,53 @@ func TestContract(t *testing.T) {
 	}
 	has("document row", docs[0].(map[string]any), "index", "path", "title")
 }
+
+// An index a project key created is in everyone's project list: the admin's
+// as a readable index, another key's as metadata only, with counts and queue
+// but no way in.
+func TestListProjects_ProjectIndexIsListedAsMetadataToOthers(t *testing.T) {
+	d := newMCPDaemon(t)
+	mintProject(t, d.srv, d.admin, "acme", true)
+	_, other := mintProject(t, d.srv, d.admin, "bbb", true)
+	st, err := d.reg.Write(raglit.WithPrincipal(context.Background(), "project:acme"), "acme__notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Enqueue("file:///a.md", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	row := func(tok string) projectIndexRow {
+		t.Helper()
+		code, out := doAs(t, "GET", d.srv.URL+"/api/projects", tok, "")
+		if code != http.StatusOK {
+			t.Fatalf("GET /api/projects: %d %s", code, out)
+		}
+		var got struct{ Projects []projectRow }
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range got.Projects {
+			for _, i := range p.Indexes {
+				if i.Name == "acme__notes" {
+					return i
+				}
+			}
+		}
+		t.Fatalf("acme__notes is not listed: %s", out)
+		return projectIndexRow{}
+	}
+	if r := row(d.admin); !r.Readable || r.Owner != "project:acme" || r.Pending != 1 || r.Bytes <= 0 {
+		t.Errorf("admin's row: %+v", r)
+	}
+	if r := row(other); r.Readable || r.Owner != "project:acme" || r.Pending != 1 {
+		t.Errorf("another key's row: %+v", r)
+	}
+	// The admin opens it; the same request from the other key does not.
+	if code, out := doAs(t, "GET", d.srv.URL+"/api/documents?index=acme__notes", d.admin, ""); code != http.StatusOK {
+		t.Errorf("admin listing the index's documents: %d %s", code, out)
+	}
+	if code, _ := doAs(t, "GET", d.srv.URL+"/api/documents?index=acme__notes", other, ""); code == http.StatusOK {
+		t.Error("another key opened the index it may only see as metadata")
+	}
+}

@@ -97,6 +97,18 @@ export const scannedPages = (n: number) => plural(n, "scanned page", "scanned pa
 export const pages = (n: number) => plural(n, "page", "pages");
 export const documents = (n: number) => plural(n, "document", "documents");
 
+// Disk size, in the largest unit that keeps it above 1: "740 KB", "3.2 GB".
+export function diskSize(bytes: number): string {
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  let n = bytes;
+  let u = 0;
+  while (n >= 1000 && u < units.length - 1) {
+    n /= 1000;
+    u++;
+  }
+  return `${u === 0 || n >= 10 ? Math.round(n) : n.toFixed(1)} ${units[u]}`;
+}
+
 // Search modes, in the order the picker shows them. The value is what the
 // daemon takes (cmd/raglit/main.go: bm25 | vec | hybrid). An empty mode is the
 // daemon's default: hybrid where the index has embeddings, else bm25.

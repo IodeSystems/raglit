@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 
 import { listIndexes, type IndexInfo, type ProjectIndex } from "../api";
-import { documents, isOtherKind, kindLabel, passages } from "../ui/display";
+import { diskSize, documents, isOtherKind, kindLabel, passages } from "../ui/display";
 import "./scope.css";
 import { useOperator } from "../ui/operator";
 
@@ -59,14 +59,16 @@ function IndexRow({
     <>
       <div className="idxrow">
         <div className="idxrow-main">
-          <Link className="idxrow-name" to="/i/$index" params={{ index: i.name }}>
+          <IndexName i={i}>
             {orphan && i.parent ? "⑂ " : ""}
             {i.local}
-          </Link>
+          </IndexName>
           <div className="idxrow-facts">
             {documents(i.documents ?? 0)}
             {operator && <> · {passages(i.fragments ?? 0)}</>}
+            {i.bytes != null && <> · {diskSize(i.bytes)}</>}
             {orphan && i.parent && <> · branch of {i.parent}</>}
+            <Ownership i={i} />
           </div>
           {!!kinds.length && (
             <div className="idxrow-kinds">
@@ -83,20 +85,51 @@ function IndexRow({
       {branches.map((b) => (
         <div className="idxrow branch" key={b.name}>
           <div className="idxrow-main">
-            <Link className="idxrow-name" to="/i/$index" params={{ index: b.name }}>
-              ⑂ {b.local}
-            </Link>
+            <IndexName i={b}>⑂ {b.local}</IndexName>
             {/* A branch's count is its OWN rows — what it changed — not what
                 it can see. Labelled, because "3 documents" beside a parent's
                 "481" reads as a nearly empty index rather than three edits. */}
             <div className="idxrow-facts">
               Branch of {i.local} · {(b.documents ?? 0).toLocaleString()} changed{" "}
               {b.documents === 1 ? "document" : "documents"}
+              <Ownership i={b} />
             </div>
           </div>
           <IndexState i={b} />
         </div>
       ))}
+    </>
+  );
+}
+
+// An index the caller may open is a link. One it may see only as metadata
+// (another owner's private index) is plain text: a link would lead to "no such
+// index".
+function IndexName({ i, children }: { i: ProjectIndex; children: React.ReactNode }) {
+  if (i.readable === false) {
+    return (
+      <span className="idxrow-name" title="Private to its owner: listed here, not open to you">
+        {children}
+      </span>
+    );
+  }
+  return (
+    <Link className="idxrow-name" to="/i/$index" params={{ index: i.name }}>
+      {children}
+    </Link>
+  );
+}
+
+// Who owns an index and who may read it, when access control is on. Shown for
+// every index the caller does not own outright, so a project key's index
+// reads as "owned by project:para" rather than as one of the caller's own.
+function Ownership({ i }: { i: ProjectIndex }) {
+  if (!i.owner) return null;
+  return (
+    <>
+      {" · "}
+      {i.visibility === "public" ? "public" : "private"}, owned by {i.owner}
+      {i.readable === false && " · metadata only"}
     </>
   );
 }
@@ -112,11 +145,16 @@ function IndexState({ i }: { i: ProjectIndex }) {
           {busy.toLocaleString()} importing
         </span>
       )}
-      {!!i.failed && (
-        <Link className="badge error" to="/i/$index/health" params={{ index: i.name }}>
-          {i.failed.toLocaleString()} failed {i.failed === 1 ? "import" : "imports"}
-        </Link>
-      )}
+      {!!i.failed &&
+        (i.readable === false ? (
+          <span className="badge error">
+            {i.failed.toLocaleString()} failed {i.failed === 1 ? "import" : "imports"}
+          </span>
+        ) : (
+          <Link className="badge error" to="/i/$index/health" params={{ index: i.name }}>
+            {i.failed.toLocaleString()} failed {i.failed === 1 ? "import" : "imports"}
+          </Link>
+        ))}
     </div>
   );
 }

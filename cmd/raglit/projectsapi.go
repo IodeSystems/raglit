@@ -48,6 +48,13 @@ type projectIndexRow struct {
 	Pending   int    `json:"pending"`
 	Running   int    `json:"running"`
 	Failed    int    `json:"failed"`
+	// Bytes is the index on disk. Owner and Visibility are set with access
+	// control on. Readable is false for an index the caller may see only as
+	// metadata: listed, with its counts and queue, but no link opens it.
+	Bytes      int64  `json:"bytes"`
+	Owner      string `json:"owner,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
+	Readable   bool   `json:"readable"`
 	// Parent is set when this index is a BRANCH of another, and empty otherwise.
 	// A branch is a real index in its own right — it appears in reg.Names() and
 	// answers every endpoint — so without this the UI would list a branch beside
@@ -102,21 +109,28 @@ func listProjectsOp(reg *raglit.Registry, w *watcher) func(context.Context, *str
 			}
 		}
 
+		// EVERY index, not only the readable ones. An index the caller may not
+		// read is listed as metadata (raglit.IndexMeta): it used to be left
+		// out, so the indexes a project key creates were missing from the UI
+		// with nothing to say they existed.
 		byNS := map[string]*projectRow{}
-		for _, name := range reg.Readable(ctx, reg.Names()) {
+		for _, name := range reg.Names() {
+			meta, ok := reg.Meta(name)
+			if !ok {
+				continue // "default" is always named; it may not exist
+			}
 			ns, local := splitNS(name)
 			p := byNS[ns]
 			if p == nil {
 				p = &projectRow{Name: ns, Indexes: []projectIndexRow{}}
 				byNS[ns] = p
 			}
-			row := projectIndexRow{Name: name, Local: local, Parent: parentOf[name]}
-			if st, err := reg.Read(ctx, name); err == nil {
-				if s, err := st.IndexStatus(); err == nil {
-					row.Documents, row.Fragments = s.Documents, s.Fragments
-					row.Pending, row.Running, row.Failed = s.Pending, s.Running, s.Failed
-				}
-			}
+			s := meta.Status
+			row := projectIndexRow{Name: name, Local: local, Parent: parentOf[name],
+				Documents: s.Documents, Fragments: s.Fragments,
+				Pending: s.Pending, Running: s.Running, Failed: s.Failed,
+				Bytes: meta.Bytes, Owner: meta.Owner, Visibility: string(meta.Visibility),
+				Readable: reg.CanRead(ctx, name)}
 			// A branch stores only its diffs, so its counts are the branch's OWN
 			// rows and adding them to the project would double-count what it
 			// overlays. Rolled up from root indexes only.

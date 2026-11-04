@@ -95,10 +95,11 @@ func ScopeMatches(scopes []string, dir string) bool {
 
 // ScopedFor is the indexes a search from dir reads when it names none: those
 // whose scopes match dir, and the ambient global ones. Only indexes the caller
-// may read.
+// may read as an owner (OwnReadable): the admin's override is for indexes it
+// names.
 func (r *Registry) ScopedFor(ctx context.Context, dir string) []string {
 	var out []string
-	for _, name := range r.Readable(ctx, r.Names()) {
+	for _, name := range r.OwnReadable(ctx, r.Names()) {
 		if r.scopedRoot != "" && !r.exists(name) {
 			continue // "default" is always listed, and opening it would create it
 		}
@@ -120,7 +121,7 @@ func (r *Registry) ScopedFor(ctx context.Context, dir string) []string {
 		in[n] = true
 	}
 	p, ks := PrincipalFrom(ctx), r.Keys()
-	for _, name := range r.Readable(ctx, r.Names()) {
+	for _, name := range r.OwnReadable(ctx, r.Names()) {
 		parent, ok := SessionBranchParent(name)
 		if !ok || in[name] || !r.exists(name) {
 			continue

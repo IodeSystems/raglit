@@ -56,7 +56,9 @@ export function projectSections(project: string, p?: Project): NavSection[] {
     },
     {
       heading: "Indexes",
-      items: indexes.map((i) => ({
+      // Metadata-only indexes are on the project page, not in the nav: a nav
+      // link to one leads to "no such index".
+      items: indexes.filter((i) => i.readable !== false).map((i) => ({
         label: i.local,
         to: `/i/${i.name}`,
         mark: i.parent ? "⑂" : undefined,

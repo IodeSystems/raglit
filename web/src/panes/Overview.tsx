@@ -132,7 +132,9 @@ export function rootSections(projects: Project[], operator = true): NavSection[]
     },
     {
       heading: "Other indexes",
-      items: loose.map((i) => ({ label: i.local, to: `/i/${i.name}`, count: i.failed })),
+      items: loose
+        .filter((i) => i.readable !== false)
+        .map((i) => ({ label: i.local, to: `/i/${i.name}`, count: i.failed })),
     },
     ...(operator ? [settingsSection] : []),
   ];

@@ -40,7 +40,13 @@ func planSearch(ctx context.Context, reg *raglit.Registry, sel string, siblings 
 		p.names = append(p.names, n)
 		return true
 	}
-	selected := reg.Readable(ctx, selectIndexes(ctx, reg, sel))
+	// No index named, or "all", is an implicit scope: it reads what the caller
+	// may read as an owner, without the admin's override (Registry.OwnReadable).
+	readable := reg.Readable
+	if s := strings.TrimSpace(sel); s == "" || s == "all" {
+		readable = reg.OwnReadable
+	}
+	selected := readable(ctx, selectIndexes(ctx, reg, sel))
 	for _, n := range selected {
 		add(n)
 	}

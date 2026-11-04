@@ -169,3 +169,50 @@ func TestACL_TransferOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An index a project key creates is owned by "project:<ns>" and private. The
+// admin reads and writes it; another user does not; an implicit scope (no
+// index named) leaves it out even for the admin.
+func TestACL_AdminHasFullAccessButImplicitScopesDoNot(t *testing.T) {
+	reg := aclRegistry(t)
+	if _, err := reg.Write(as("project:para"), "para__notes"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Read(as("admin"), "para__notes"); err != nil {
+		t.Fatalf("admin reading a project's private index: %v", err)
+	}
+	if _, err := reg.Write(as("admin"), "para__notes"); err != nil {
+		t.Fatalf("admin writing a project's private index: %v", err)
+	}
+	if _, err := reg.Read(as("bob"), "para__notes"); !errors.Is(err, ErrNoIndex) {
+		t.Fatalf("bob reading a project's private index: err=%v", err)
+	}
+	if got := reg.Readable(as("admin"), reg.Names()); !contains(got, "para__notes") {
+		t.Fatalf("Readable for admin = %v, want para__notes in it", got)
+	}
+	if got := reg.OwnReadable(as("admin"), reg.Names()); contains(got, "para__notes") {
+		t.Fatalf("OwnReadable for admin = %v, want para__notes left out", got)
+	}
+	if a := reg.ACLOf("para__notes"); a.Owner != "project:para" {
+		t.Fatalf("the admin's write changed the owner to %q", a.Owner)
+	}
+}
+
+// Meta reads an index nobody else may open, and creates nothing.
+func TestRegistry_MetaWithoutRead(t *testing.T) {
+	reg := aclRegistry(t)
+	st, err := reg.Write(as("project:para"), "para__notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Enqueue("file:///a.md", ""); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := reg.Meta("para__notes")
+	if !ok || m.Owner != "project:para" || m.Visibility != Private || m.Bytes <= 0 || m.Status.Pending != 1 {
+		t.Fatalf("Meta = %+v, %v", m, ok)
+	}
+	if _, ok := reg.Meta("ghost"); ok || reg.exists("ghost") {
+		t.Fatal("Meta of a missing index answered or created it")
+	}
+}
