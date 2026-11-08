@@ -793,11 +793,11 @@ func pathPredicate(pathPrefix string) (string, []any) {
 }
 
 // searchLocal runs a BM25 query and returns up to limit fragments, best first,
-// optionally constrained to a path subtree (pathPrefix). The query is tokenized
+// constrained to the documents filter f admits (before the limit). The query is tokenized
 // and OR-combined for recall — BM25 still floats the strongest matches to the top,
 // and the ambient/notify use case wants recall over precision. Returns no error on
 // zero matches (empty slice).
-func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) {
+func (s *Store) searchLocal(query string, f SearchFilter, limit int) ([]Hit, error) {
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil
@@ -805,7 +805,10 @@ func (s *Store) searchLocal(query, pathPrefix string, limit int) ([]Hit, error) 
 	if limit <= 0 {
 		limit = 10
 	}
-	pred, pargs := pathPredicate(pathPrefix)
+	pred, pargs, err := filterPredicate(f)
+	if err != nil {
+		return nil, err
+	}
 	if pred != "" {
 		pred = " AND " + pred
 	}
@@ -856,6 +859,12 @@ func (s *Store) VecSearch(ctx context.Context, query string, limit int) ([]Hit, 
 // Requires SetEmbedder. Score is cosine in [-1,1] (higher = better). Fragments
 // without a vector (indexed before embeddings were enabled) are invisible.
 func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, limit int) ([]Hit, error) {
+	return s.VecSearchFiltered(ctx, query, SearchFilter{PathPrefix: pathPrefix}, limit)
+}
+
+// VecSearchFiltered is VecSearchPath constrained by a SearchFilter, applied in
+// each layer's scan before the ranking and the limit.
+func (s *Store) VecSearchFiltered(ctx context.Context, query string, f SearchFilter, limit int) ([]Hit, error) {
 	if s.embedder == nil {
 		return nil, fmt.Errorf("raglit: VecSearch needs an embedder (SetEmbedder)")
 	}
@@ -869,15 +878,15 @@ func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, lim
 	if err != nil {
 		return nil, err
 	}
-	return s.vecSearchOverlay(qv, query, pathPrefix, limit)
+	return s.vecSearchOverlay(qv, query, f, limit)
 }
 
 // vecSearchOverlay is the branch overlay for vectors, the same shape as
 // SearchPath's: this layer's hits, then the parent's for documents this layer
 // does not shadow. The query is embedded once, by the top layer, and handed
 // down — every layer shares the registry's embedder.
-func (s *Store) vecSearchOverlay(qv []float32, query, pathPrefix string, limit int) ([]Hit, error) {
-	hits, err := s.vecSearchLocal(qv, query, pathPrefix, limit)
+func (s *Store) vecSearchOverlay(qv []float32, query string, f SearchFilter, limit int) ([]Hit, error) {
+	hits, err := s.vecSearchLocal(qv, query, f, limit)
 	if err != nil || s.parent == nil {
 		return hits, err
 	}
@@ -886,7 +895,7 @@ func (s *Store) vecSearchOverlay(qv []float32, query, pathPrefix string, limit i
 	if err != nil {
 		return nil, err
 	}
-	phits, err := s.parent.vecSearchOverlay(qv, query, pathPrefix, limit)
+	phits, err := s.parent.vecSearchOverlay(qv, query, f, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -903,8 +912,11 @@ func (s *Store) vecSearchOverlay(qv []float32, query, pathPrefix string, limit i
 }
 
 // vecSearchLocal ranks this layer's own vectors only.
-func (s *Store) vecSearchLocal(qv []float32, query, pathPrefix string, limit int) ([]Hit, error) {
-	pred, pargs := pathPredicate(pathPrefix)
+func (s *Store) vecSearchLocal(qv []float32, query string, f SearchFilter, limit int) ([]Hit, error) {
+	pred, pargs, err := filterPredicate(f)
+	if err != nil {
+		return nil, err
+	}
 	where := ""
 	if pred != "" {
 		where = " WHERE " + pred
@@ -969,6 +981,13 @@ func (s *Store) HybridSearch(ctx context.Context, query string, limit int) ([]Hi
 // optional path subtree scope. Requires an embedder. Returns up to limit
 // fragments, best fused first.
 func (s *Store) HybridSearchPath(ctx context.Context, query, pathPrefix string, limit int) ([]Hit, error) {
+	return s.HybridSearchFiltered(ctx, query, SearchFilter{PathPrefix: pathPrefix}, limit)
+}
+
+// HybridSearchFiltered is HybridSearchPath constrained by a SearchFilter. Both
+// sides filter before they rank, so the fusion only ever sees qualifying
+// fragments; RRF itself is unchanged.
+func (s *Store) HybridSearchFiltered(ctx context.Context, query string, f SearchFilter, limit int) ([]Hit, error) {
 	if s.embedder == nil {
 		return nil, fmt.Errorf("raglit: HybridSearch needs an embedder (SetEmbedder)")
 	}
@@ -976,11 +995,11 @@ func (s *Store) HybridSearchPath(ctx context.Context, query, pathPrefix string, 
 		limit = 10
 	}
 	pool := limit * 4
-	lex, err := s.SearchPath(query, pathPrefix, pool)
+	lex, err := s.SearchFiltered(query, f, pool)
 	if err != nil {
 		return nil, err
 	}
-	vec, err := s.VecSearchPath(ctx, query, pathPrefix, pool)
+	vec, err := s.VecSearchFiltered(ctx, query, f, pool)
 	if err != nil {
 		return nil, err
 	}

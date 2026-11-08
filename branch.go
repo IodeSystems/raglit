@@ -53,6 +53,14 @@ func (s *Store) Search(query string, limit int) ([]Hit, error) {
 // constrained to a path subtree (pathPrefix). A non-branch store (parent == nil)
 // is just its local FTS.
 func (s *Store) SearchPath(query, pathPrefix string, limit int) ([]Hit, error) {
+	return s.SearchFiltered(query, SearchFilter{PathPrefix: pathPrefix}, limit)
+}
+
+// SearchFiltered is SearchPath constrained by a SearchFilter. Each layer applies
+// the filter in its own WHERE, before its limit. A branch's own copy of a
+// document shadows the parent's whether or not the copy qualifies, so a parent
+// row whose tags or fields the branch has since changed cannot answer for it.
+func (s *Store) SearchFiltered(query string, f SearchFilter, limit int) ([]Hit, error) {
 	// Over-fetch, because collapsing readings of one source removes rows: asking
 	// for exactly `limit` and then dropping the duplicate account of a hearing
 	// returns fewer answers than were asked for, which reads as a thinner corpus
@@ -61,7 +69,7 @@ func (s *Store) SearchPath(query, pathPrefix string, limit int) ([]Hit, error) {
 	if fetch > 0 {
 		fetch *= 2
 	}
-	hits, err := s.searchLocal(query, pathPrefix, fetch)
+	hits, err := s.searchLocal(query, f, fetch)
 	if err != nil {
 		return hits, err
 	}
@@ -73,7 +81,7 @@ func (s *Store) SearchPath(query, pathPrefix string, limit int) ([]Hit, error) {
 	if err != nil {
 		return nil, err
 	}
-	phits, err := s.parent.SearchPath(query, pathPrefix, fetch)
+	phits, err := s.parent.SearchFiltered(query, f, fetch)
 	if err != nil {
 		return nil, err
 	}

@@ -248,7 +248,7 @@ func (r *Registry) ensureLayer(ctx context.Context, name, base string, v Visibil
 // mode is "" / "bm25", "vec" or "hybrid".
 func (s *Store) SearchOwnLayer(ctx context.Context, query, mode, pathPrefix string, limit int) ([]Hit, error) {
 	lex := func(n int) ([]Hit, error) {
-		hits, err := s.searchLocal(query, pathPrefix, n*2)
+		hits, err := s.searchLocal(query, SearchFilter{PathPrefix: pathPrefix}, n*2)
 		if err != nil {
 			return nil, err
 		}
@@ -262,7 +262,7 @@ func (s *Store) SearchOwnLayer(ctx context.Context, query, mode, pathPrefix stri
 		if err != nil {
 			return nil, err
 		}
-		return s.vecSearchLocal(qv, query, pathPrefix, n)
+		return s.vecSearchLocal(qv, query, SearchFilter{PathPrefix: pathPrefix}, n)
 	}
 	switch mode {
 	case "vec":

@@ -905,7 +905,24 @@ func normalizeContentTag(tag string) string {
 		return r
 	}, tag)
 	tag = strings.ToLower(strings.Join(strings.Fields(tag), " "))
-	return strings.Trim(tag, ".-·")
+	// The space is in the cutset so "v1 ." trims to "v1", not "v1 ": a second
+	// pass must give the same tag, because writeIdentity and the search filter
+	// each normalize what the other may already have normalized.
+	return strings.Trim(tag, ".-· ")
+}
+
+// normalizeTagsForStorage normalizes each tag (normalizeContentTag), drops the
+// ones that normalize to nothing, and drops repeats. It is what writeIdentity
+// stores, so every write path stores the form the search filter compares
+// against — not only the model's, which validateTags already normalized.
+func normalizeTagsForStorage(tags []string) []string {
+	var out []string
+	for _, t := range tags {
+		if t = normalizeContentTag(t); t != "" && !tagContains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // expandTagLists splits an entry that is a whole list in one string — the
@@ -1055,6 +1072,11 @@ func (s *Store) SetDocumentIdentity(ctx context.Context, path string, d DocIdent
 // existing query, so new columns pay for themselves in raw SQL rather than in
 // sixty broken ones.
 func writeIdentity(ctx context.Context, tx dbExecer, docID int64, d DocIdentity) error {
+	// Normalized HERE, the one point every write passes through: a person's
+	// correction and an embedder's tags arrive raw, and a tag stored as
+	// "Lead  Paint" would never match a filter for "lead paint".
+	d.ContentTags = normalizeTagsForStorage(d.ContentTags)
+	d.RoleTags = normalizeTagsForStorage(d.RoleTags)
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE documents SET gen_name=?, gen_summary=?, gen_kind=?, gen_source=?, gen_model=?, gen_at=?, gen_text_hash=?,
 		   gen_content_tags=?, gen_role_tags=?, gen_doc_type=?
@@ -1239,8 +1261,10 @@ func (s *Store) RecordIdentity(ctx context.Context, path string, d DocIdentity, 
 		Kind:     firstNonBlank(d.Kind, cur.Kind),
 		// Tags are the machine's until a person supplies their own; a correction
 		// to the name does not silently blank the tags.
-		ContentTags: firstNonEmpty(d.ContentTags, cur.ContentTags),
-		RoleTags:    firstNonEmpty(d.RoleTags, cur.RoleTags),
+		// Normalized here as well as in writeIdentity, so what this returns is
+		// what was stored.
+		ContentTags: normalizeTagsForStorage(firstNonEmpty(d.ContentTags, cur.ContentTags)),
+		RoleTags:    normalizeTagsForStorage(firstNonEmpty(d.RoleTags, cur.RoleTags)),
 		DocType:     firstNonBlank(d.DocType, cur.DocType),
 		Source:      IdentityByPerson,
 		Model:       strings.TrimSpace(by),
