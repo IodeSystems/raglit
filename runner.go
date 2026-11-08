@@ -286,8 +286,10 @@ func (r *Runner) runQueue(claim, work context.Context) {
 			case ch <- claimed{index: name, job: job}:
 				got = true
 			case <-ctx.Done():
+				// The slot token goes back below, with got false. Returning it
+				// here as well put one token too many in free; with every runner
+				// idle that send blocked, and the claim loop never returned.
 				_ = st.RequeueJob(job.ID)
-				free <- struct{}{}
 			}
 			break
 		}
