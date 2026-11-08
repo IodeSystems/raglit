@@ -1,6 +1,7 @@
 package raglit
 
 import (
+	"context"
 	"image"
 	"image/color"
 	"image/png"
@@ -40,7 +41,7 @@ func TestPagify_ExtractsEmbeddedPageImages(t *testing.T) {
 	// Build a one-page image-PDF from the PNG (an image/scanned PDF, which is
 	// exactly what pagify targets).
 	pdfPath := filepath.Join(dir, "doc.pdf")
-	if err := api.ImportImagesFile([]string{pngPath}, pdfPath, pdfcpu.DefaultImportConfig(), model.NewDefaultConfiguration()); err != nil {
+	if err := api.ImportImagesFile(context.Background(), []string{pngPath}, pdfPath, pdfcpu.DefaultImportConfig(), model.NewDefaultConfiguration()); err != nil {
 		t.Fatalf("build fixture pdf: %v", err)
 	}
 

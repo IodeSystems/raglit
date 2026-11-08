@@ -27,7 +27,7 @@ func TestPDFUnits_ReadsThePageRatherThanItsTextLayer(t *testing.T) {
 	scan := renderTextPDF(t, dir, "LEAD-BASED PAINT DISCLOSURE")
 	stamped := filepath.Join(dir, "stamped.pdf")
 	const stamp = "Authentisign ID: 2311E4FA-9A15-4ECE-ADBB-E5C15A33BDE7"
-	if err := api.AddTextWatermarksFile(scan, stamped, nil, true, stamp,
+	if err := api.AddTextWatermarksFile(context.Background(), scan, stamped, nil, true, stamp,
 		"points:8, scale:1 abs, pos:tl, rot:0, op:1", model.NewDefaultConfiguration()); err != nil {
 		t.Skipf("cannot stamp a text layer with this pdfcpu: %v", err)
 	}

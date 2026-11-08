@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -82,7 +83,7 @@ func pagify(rs io.ReadSeeker, outDir string) ([]PageImage, error) {
 		return nil
 	}
 
-	if err := api.ExtractImages(rs, nil, digest, model.NewDefaultConfiguration()); err != nil {
+	if err := api.ExtractImages(context.Background(), rs, nil, digest, model.NewDefaultConfiguration()); err != nil {
 		return nil, fmt.Errorf("raglit: pagify: %w", err)
 	}
 	if len(pages) == 0 {
@@ -108,7 +109,7 @@ func pagesWithImages(pdfPath string) (map[int]bool, error) {
 		}
 		return nil
 	}
-	if err := api.ExtractImages(f, nil, collect, model.NewDefaultConfiguration()); err != nil {
+	if err := api.ExtractImages(context.Background(), f, nil, collect, model.NewDefaultConfiguration()); err != nil {
 		return nil, fmt.Errorf("raglit: pagesWithImages: %w", err)
 	}
 	return pages, nil

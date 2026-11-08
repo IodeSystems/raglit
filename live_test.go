@@ -150,7 +150,7 @@ func renderTextPDF(t *testing.T, dir, phrase string) string {
 	f.Close()
 
 	pdfPath := filepath.Join(dir, "doc.pdf")
-	if err := api.ImportImagesFile([]string{pngPath}, pdfPath, pdfcpu.DefaultImportConfig(), model.NewDefaultConfiguration()); err != nil {
+	if err := api.ImportImagesFile(context.Background(), []string{pngPath}, pdfPath, pdfcpu.DefaultImportConfig(), model.NewDefaultConfiguration()); err != nil {
 		t.Fatal(err)
 	}
 	return pdfPath
