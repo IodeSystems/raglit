@@ -16,7 +16,7 @@ var noTesseract = OCRConfig{TesseractBin: filepath.Join("no", "such", "tesseract
 // unreadable, no audio, no captions.
 func TestNewWorker_NoModelsIsOffline(t *testing.T) {
 	s := testStore(t)
-	w := NewWorker(s, Models{OCR: noTesseract}, nil)
+	w := NewWorker(s, Models{OCR: noTesseract, Channels: NewChannels()}, nil)
 	if w.Store != s {
 		t.Fatal("worker is not on the store it was built for")
 	}
@@ -125,6 +125,7 @@ func TestNewWorker_SegmentDefaultsToVision(t *testing.T) {
 		Vision:                  ModelRole{BaseURL: srv.URL + "/v1", Model: "vis"},
 		SegmentInputLimitTokens: 1000,
 		OCR:                     noTesseract,
+		Channels:                NewChannels(),
 	}, nil)
 	if w.Segmenter == nil {
 		t.Fatal("no segmenter")
@@ -136,4 +137,15 @@ func TestNewWorker_SegmentDefaultsToVision(t *testing.T) {
 	if w.Frag.SegmentInputLimit != 1000 {
 		t.Errorf("segment input limit %d, want the configured 1000", w.Frag.SegmentInputLimit)
 	}
+}
+
+// A nil registry is refused, not replaced: a fresh one per worker would split
+// one server's capacity between indexes and drop the caller's ceiling.
+func TestNewWorker_NilChannelsPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("NewWorker with nil Channels did not panic")
+		}
+	}()
+	NewWorker(testStore(t), Models{OCR: noTesseract}, nil)
 }

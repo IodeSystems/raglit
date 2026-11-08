@@ -48,10 +48,12 @@ type Models struct {
 	// Configured input limits. Zero → probed from the endpoint and cached on
 	// the index.
 	EmbedLimitChars, EmbedLimitTokens, SegmentInputLimitTokens int
-	// Channels is the per-model admission registry (modelchan.go). Model
-	// capacity is a property of the SERVER, so pass one registry for the
-	// process, shared by every index's worker. nil → a fresh registry per
-	// NewWorker call.
+	// Channels is the per-model admission registry (modelchan.go). Required:
+	// NewWorker and Identifier panic on nil. Model capacity is a property of the
+	// SERVER, so build one registry for the process with NewChannels, set its
+	// Max (the per-model channel ceiling, config model_channel_max), and pass it
+	// to every index's worker. A registry per worker would split one server's
+	// capacity between controllers that each learn it alone.
 	Channels *Channels
 }
 
@@ -95,11 +97,14 @@ func gate(chans *Channels, c *llm.Client, model string) Chatter {
 	return chans.Gate(c, model)
 }
 
+// channels is the shared registry. No default: a fresh one here would be the
+// split capacity the Channels field warns about, and it would also drop the
+// caller's Max without a word.
 func (m Models) channels() *Channels {
-	if m.Channels != nil {
-		return m.Channels
+	if m.Channels == nil {
+		panic("raglit: Models.Channels is nil; pass the process's shared registry (NewChannels)")
 	}
-	return NewChannels()
+	return m.Channels
 }
 
 // segmentRole is the segmenter's role with its fallbacks filled.
@@ -115,12 +120,13 @@ func (m Models) segmentRole() ModelRole {
 }
 
 // Identifier builds the document-identity model client, or returns nil when
-// identity is off (no Identity model).
+// identity is off (no Identity model). m.Channels must be set.
 //
 // Same batch retry policy as the rest of ingest: this call happens at the end of
 // a document that may have cost thirty OCR requests, and losing the caption to a
 // transient 502 wastes the one moment the whole transcript is in hand.
 func (m Models) Identifier() *Identifier {
+	chans := m.channels()
 	r := m.Identity
 	if r.Model == "" {
 		return nil
@@ -129,7 +135,7 @@ func (m Models) Identifier() *Identifier {
 		seg := m.segmentRole()
 		r.BaseURL, r.APIKey = seg.BaseURL, seg.APIKey
 	}
-	return NewIdentifier(gate(m.channels(), ingestClient(r), r.Model), r.Model)
+	return NewIdentifier(gate(chans, ingestClient(r), r.Model), r.Model)
 }
 
 // AttachCheapOCR enables the cascade's cheap first-pass engine on an OCR, with
@@ -192,11 +198,9 @@ func TesseractOnlyOCR(oc OCRConfig) *OCR {
 // blank-line text + PDF-fails-gracefully.
 //
 // It also sets the store's identifier. pool, when non-nil, enables the
-// cross-index pool (daemon only).
+// cross-index pool (daemon only). m.Channels must be set (Models.Channels).
 func NewWorker(store *Store, m Models, pool *Pool) *Worker {
-	if m.Channels == nil {
-		m.Channels = NewChannels()
-	}
+	m.Channels = m.channels()
 	w := &Worker{Store: store}
 	// Audio ingest turns on with the MODEL alone.
 	if m.Audio.Model != "" {
