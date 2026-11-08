@@ -1,4 +1,4 @@
-package attest
+package service
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/iodesystems/raglit/attest"
 )
 
 // The review surface, as operations a host mounts rather than a server attest
@@ -36,13 +38,13 @@ type Service struct {
 
 	// Ident is the host's answer to who is calling and what they may do. See
 	// identity.go — attest authenticates nobody.
-	Ident Identity
+	Ident attest.Identity
 
 	// Ev renders the artifact a claim was read from. Optional: without it the
 	// API still serves readings and records verdicts, and the evidence endpoint
 	// says plainly that this mount cannot show the artifact rather than showing
 	// a substitute.
-	Ev Evidence
+	Ev attest.Evidence
 
 	// Now is injectable so a test can assert on a timestamp.
 	Now func() string
@@ -86,7 +88,7 @@ func (s *Service) path(asset string) (string, error) {
 	if asset == "" {
 		return "", huma.Error400BadRequest("asset is required — it is the root-relative path of the thing being reviewed")
 	}
-	if IsReading(asset) || IsLog(asset) {
+	if attest.IsReading(asset) || attest.IsLog(asset) {
 		return "", huma.Error400BadRequest("that is attest's own sidecar, not an asset")
 	}
 	full := filepath.Join(s.Root, filepath.Clean("/"+asset))
@@ -106,7 +108,7 @@ func (s *Service) path(asset string) (string, error) {
 
 // authorize resolves the path and the permission together, because every
 // operation needs both and splitting them is how one of them gets forgotten.
-func (s *Service) authorize(ctx context.Context, asset string, p Permission) (string, error) {
+func (s *Service) authorize(ctx context.Context, asset string, p attest.Permission) (string, error) {
 	full, err := s.path(asset)
 	if err != nil {
 		return "", err
@@ -120,7 +122,7 @@ func (s *Service) authorize(ctx context.Context, asset string, p Permission) (st
 		// unauthorized caller that an asset exists is itself a disclosure. For
 		// the write permissions the caller can already see the asset, so saying
 		// "you may not do this" costs nothing and is more useful.
-		if p == PermRead {
+		if p == attest.PermRead {
 			return "", huma.Error404NotFound("no such asset")
 		}
 		return "", huma.Error403Forbidden(fmt.Sprintf("not permitted to %s this asset", p))
@@ -131,8 +133,8 @@ func (s *Service) authorize(ctx context.Context, asset string, p Permission) (st
 // write records entries, stamping the pair of names on each. The author comes
 // from the request and the principal from the host; see identity.go for why
 // both.
-func (s *Service) write(ctx context.Context, full, by string, p Permission, entries ...Entry) error {
-	principal, author, err := signature(ctx, s.Ident, strings.TrimSpace(by))
+func (s *Service) write(ctx context.Context, full, by string, p attest.Permission, entries ...attest.Entry) error {
+	principal, author, err := attest.Signature(ctx, s.Ident, strings.TrimSpace(by))
 	if err != nil {
 		return huma.Error400BadRequest(err.Error())
 	}
@@ -140,7 +142,7 @@ func (s *Service) write(ctx context.Context, full, by string, p Permission, entr
 	for i := range entries {
 		entries[i].By, entries[i].Auth, entries[i].At = author, principal, at
 	}
-	if err := Append(full, entries...); err != nil {
+	if err := attest.Append(full, entries...); err != nil {
 		return huma.Error400BadRequest(err.Error())
 	}
 	// Tell the host a ruling landed, so a projection it keeps stays current.
@@ -158,8 +160,8 @@ func (s *Service) write(ctx context.Context, full, by string, p Permission, entr
 	return nil
 }
 
-func (s *Service) state(full string) (*State, error) {
-	st, err := Load(full)
+func (s *Service) state(full string) (*attest.State, error) {
+	st, err := attest.Load(full)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, huma.Error404NotFound("no such asset")
@@ -171,10 +173,10 @@ func (s *Service) state(full string) (*State, error) {
 
 // AssetRef is one reviewable asset and how far its review has got.
 type AssetRef struct {
-	Asset    string `json:"asset" doc:"root-relative path, and the handle every other operation takes"`
-	Kind     string `json:"kind,omitempty"`
-	Producer string `json:"producer,omitempty"`
-	Stats    Stats  `json:"stats"`
+	Asset    string       `json:"asset" doc:"root-relative path, and the handle every other operation takes"`
+	Kind     string       `json:"kind,omitempty"`
+	Producer string       `json:"producer,omitempty"`
+	Stats    attest.Stats `json:"stats"`
 }
 
 // Assets lists every asset under the root with a machine reading, skipping the
@@ -194,10 +196,10 @@ func (s *Service) Assets(ctx context.Context) ([]AssetRef, error) {
 		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			return
 		}
-		if ok, cerr := s.Ident.Can(ctx, rel, PermRead); cerr != nil || !ok {
+		if ok, cerr := s.Ident.Can(ctx, rel, attest.PermRead); cerr != nil || !ok {
 			return
 		}
-		st, lerr := Load(asset)
+		st, lerr := attest.Load(asset)
 		if lerr != nil {
 			return
 		}
@@ -214,11 +216,11 @@ func (s *Service) Assets(ctx context.Context) ([]AssetRef, error) {
 		sort.Strings(paths)
 		seen := map[string]bool{}
 		for _, p := range paths {
-			if !filepath.IsAbs(p) || seen[p] || IsReading(p) || IsLog(p) {
+			if !filepath.IsAbs(p) || seen[p] || attest.IsReading(p) || attest.IsLog(p) {
 				continue
 			}
 			seen[p] = true
-			if _, err := os.Stat(ReadingPath(p)); err != nil {
+			if _, err := os.Stat(attest.ReadingPath(p)); err != nil {
 				continue
 			}
 			add(p)
@@ -226,10 +228,10 @@ func (s *Service) Assets(ctx context.Context) ([]AssetRef, error) {
 		return out, nil
 	}
 	err := filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !IsReading(p) {
+		if err != nil || d.IsDir() || !attest.IsReading(p) {
 			return nil
 		}
-		add(strings.TrimSuffix(p, readingSuffix))
+		add(strings.TrimSuffix(p, attest.ReadingPath("")))
 		return nil
 	})
 	return out, err
@@ -245,18 +247,18 @@ type assetQuery struct {
 // part of the contract: a consumer that reads the units and not the sentence is
 // the consumer that publishes a half-reviewed transcript as a verified one.
 type StateView struct {
-	Asset    Asset        `json:"asset"`
-	Producer string       `json:"producer,omitempty"`
-	Units    []UnitStatus `json:"units"`
-	Stats    Stats        `json:"stats"`
-	Orphaned []Entry      `json:"orphaned,omitempty"`
+	Asset    attest.Asset        `json:"asset"`
+	Producer string              `json:"producer,omitempty"`
+	Units    []attest.UnitStatus `json:"units"`
+	Stats    attest.Stats        `json:"stats"`
+	Orphaned []attest.Entry      `json:"orphaned,omitempty"`
 
 	// Provenance is generated from the counts and must accompany anything
 	// derived from this asset.
 	Provenance string `json:"provenance"`
 }
 
-func view(st *State) StateView {
+func view(st *attest.State) StateView {
 	return StateView{
 		Asset: st.Asset, Producer: st.Producer, Units: st.Units,
 		Stats: st.Stats, Orphaned: st.Orphaned, Provenance: st.Provenance(),
@@ -280,14 +282,14 @@ func view(st *State) StateView {
 // A re-cut unit therefore has no artifact, and the reviewer is told so rather
 // than shown a substitute.
 type UnitDraft struct {
-	Locator Locator `json:"locator"`
-	Text    string  `json:"text,omitempty"`
-	Label   string  `json:"label,omitempty"`
-	Parent  string  `json:"parent,omitempty" doc:"id of the unit this nests under, for a hierarchical read"`
+	Locator attest.Locator `json:"locator"`
+	Text    string         `json:"text,omitempty"`
+	Label   string         `json:"label,omitempty"`
+	Parent  string         `json:"parent,omitempty" doc:"id of the unit this nests under, for a hierarchical read"`
 }
 
-func (d UnitDraft) unit() Unit {
-	return Unit{Locator: d.Locator, Text: d.Text, Label: d.Label, Parent: d.Parent}
+func (d UnitDraft) unit() attest.Unit {
+	return attest.Unit{Locator: d.Locator, Text: d.Text, Label: d.Label, Parent: d.Parent}
 }
 
 // Register mounts the review operations on a host's huma API under prefix.
@@ -338,7 +340,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 			"anything derived from this asset. A partly-reviewed transcript presented as a verified one " +
 			"launders an unchecked machine guess into the record.",
 	}, func(ctx context.Context, in *assetQuery) (*struct{ Body StateView }, error) {
-		full, err := s.authorize(ctx, in.Asset, PermRead)
+		full, err := s.authorize(ctx, in.Asset, attest.PermRead)
 		if err != nil {
 			return nil, err
 		}
@@ -358,28 +360,28 @@ func (s *Service) Register(api huma.API, prefix string) error {
 			"so. The authenticated account is recorded separately and cannot be set by the caller.",
 	}, func(ctx context.Context, in *struct {
 		Body struct {
-			Asset string `json:"asset" required:"true"`
-			Unit  string `json:"unit" required:"true"`
-			Kind  Kind   `json:"kind" required:"true" enum:"confirmed,corrected,affirmed,unclear,unsupported,retract"`
-			Text  string `json:"text,omitempty" doc:"corrected text; omit if the words were not disputed"`
-			Label string `json:"label,omitempty" doc:"corrected speaker or region kind"`
-			Note  string `json:"note,omitempty"`
-			By    string `json:"by" required:"true" doc:"the person making this ruling"`
+			Asset string      `json:"asset" required:"true"`
+			Unit  string      `json:"unit" required:"true"`
+			Kind  attest.Kind `json:"kind" required:"true" enum:"confirmed,corrected,affirmed,unclear,unsupported,retract"`
+			Text  string      `json:"text,omitempty" doc:"corrected text; omit if the words were not disputed"`
+			Label string      `json:"label,omitempty" doc:"corrected speaker or region kind"`
+			Note  string      `json:"note,omitempty"`
+			By    string      `json:"by" required:"true" doc:"the person making this ruling"`
 		}
 	}) (*struct {
 		Body struct {
-			Stats Stats `json:"stats"`
+			Stats attest.Stats `json:"stats"`
 		}
 	}, error) {
 		b := in.Body
-		if b.Kind == Resegment {
+		if b.Kind == attest.Resegment {
 			return nil, huma.Error400BadRequest("re-cutting the units is a separate operation")
 		}
-		full, err := s.authorize(ctx, b.Asset, PermAttest)
+		full, err := s.authorize(ctx, b.Asset, attest.PermAttest)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.write(ctx, full, b.By, PermAttest, Entry{
+		if err := s.write(ctx, full, b.By, attest.PermAttest, attest.Entry{
 			Kind: b.Kind, Unit: b.Unit, Text: b.Text, Label: b.Label, Note: b.Note,
 		}); err != nil {
 			return nil, err
@@ -404,19 +406,19 @@ func (s *Service) Register(api huma.API, prefix string) error {
 		}
 	}) (*struct {
 		Body struct {
-			Stats Stats `json:"stats"`
+			Stats attest.Stats `json:"stats"`
 		}
 	}, error) {
-		full, err := s.authorize(ctx, in.Body.Asset, PermAttest)
+		full, err := s.authorize(ctx, in.Body.Asset, attest.PermAttest)
 		if err != nil {
 			return nil, err
 		}
-		kind := Affirmed
+		kind := attest.Affirmed
 		if in.Body.Undo {
-			kind = Retract
+			kind = attest.Retract
 		}
-		if err := s.write(ctx, full, in.Body.By, PermAttest,
-			Entry{Kind: kind, Blanket: true, Statement: in.Body.Statement}); err != nil {
+		if err := s.write(ctx, full, in.Body.By, attest.PermAttest,
+			attest.Entry{Kind: kind, Blanket: true, Statement: in.Body.Statement}); err != nil {
 			return nil, err
 		}
 		return s.statsOut(full)
@@ -438,19 +440,19 @@ func (s *Service) Register(api huma.API, prefix string) error {
 		}
 	}) (*struct {
 		Body struct {
-			Stats Stats `json:"stats"`
+			Stats attest.Stats `json:"stats"`
 		}
 	}, error) {
-		full, err := s.authorize(ctx, in.Body.Asset, PermResegment)
+		full, err := s.authorize(ctx, in.Body.Asset, attest.PermResegment)
 		if err != nil {
 			return nil, err
 		}
-		units := make([]Unit, 0, len(in.Body.Units))
+		units := make([]attest.Unit, 0, len(in.Body.Units))
 		for _, d := range in.Body.Units {
 			units = append(units, d.unit())
 		}
-		if err := s.write(ctx, full, in.Body.By, PermResegment, Entry{
-			Kind: Resegment, Supersedes: in.Body.Supersedes, Units: units,
+		if err := s.write(ctx, full, in.Body.By, attest.PermResegment, attest.Entry{
+			Kind: attest.Resegment, Supersedes: in.Body.Supersedes, Units: units,
 		}); err != nil {
 			return nil, err
 		}
@@ -466,9 +468,9 @@ func (s *Service) Register(api huma.API, prefix string) error {
 			"than fidelity. The response says which it gave you and whether it matches the recorded " +
 			"digest; a UI that does not surface that is showing a reviewer an unlabelled substitute.",
 	}, func(ctx context.Context, in *struct {
-		Asset string    `query:"asset" required:"true" doc:"root-relative path of the asset"`
-		Unit  string    `query:"unit" required:"true"`
-		As    Rendering `query:"as" enum:"crop,seen,humane" default:"crop"`
+		Asset string           `query:"asset" required:"true" doc:"root-relative path of the asset"`
+		Unit  string           `query:"unit" required:"true"`
+		As    attest.Rendering `query:"as" enum:"crop,seen,humane" default:"crop"`
 	}) (*struct {
 		ContentType string `header:"Content-Type"`
 		Digest      string `header:"X-Attest-Digest"`
@@ -480,7 +482,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 		Verified string `header:"X-Attest-Verified"`
 		Body     []byte
 	}, error) {
-		full, err := s.authorize(ctx, in.Asset, PermRead)
+		full, err := s.authorize(ctx, in.Asset, attest.PermRead)
 		if err != nil {
 			return nil, err
 		}
@@ -492,7 +494,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 		if err != nil {
 			return nil, err
 		}
-		var u *Unit
+		var u *attest.Unit
 		for i := range st.Units {
 			if st.Units[i].Unit.ID == in.Unit {
 				u = &st.Units[i].Unit
@@ -504,7 +506,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 		}
 		as := in.As
 		if as == "" {
-			as = AsCrop
+			as = attest.AsCrop
 		}
 		// Render against the id the CALLER addressed, not the one stored in the
 		// reading.
@@ -521,7 +523,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 		// root, and reports "no such file" for a document that is plainly there.
 		addressed := st.Asset
 		addressed.ID = in.Asset
-		art, err := Render(ctx, s.Ev, addressed, *u, as)
+		art, err := attest.Render(ctx, s.Ev, addressed, *u, as)
 		if err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
 		}
@@ -547,7 +549,7 @@ func (s *Service) Register(api huma.API, prefix string) error {
 
 func (s *Service) statsOut(full string) (*struct {
 	Body struct {
-		Stats Stats `json:"stats"`
+		Stats attest.Stats `json:"stats"`
 	}
 }, error) {
 	st, err := s.state(full)
@@ -556,7 +558,7 @@ func (s *Service) statsOut(full string) (*struct {
 	}
 	out := &struct {
 		Body struct {
-			Stats Stats `json:"stats"`
+			Stats attest.Stats `json:"stats"`
 		}
 	}{}
 	out.Body.Stats = st.Stats

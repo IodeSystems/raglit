@@ -1,4 +1,4 @@
-package attest
+package service
 
 import (
 	_ "embed"
@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+
+	"github.com/iodesystems/raglit/attest"
 )
 
 // The review page, and the one route the JSON API cannot carry.
@@ -59,7 +61,7 @@ func (s *Service) UI(apiBase, assetBase string) http.Handler {
 func (s *Service) AssetBytes() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		asset := r.URL.Query().Get("asset")
-		full, err := s.authorize(r.Context(), asset, PermRead)
+		full, err := s.authorize(r.Context(), asset, attest.PermRead)
 		if err != nil {
 			// The permission layer speaks huma errors; out here the status is
 			// all that survives, and a 404 is the right answer for both cases

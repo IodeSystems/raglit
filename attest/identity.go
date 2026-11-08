@@ -115,7 +115,7 @@ func (r ReadOnly) Can(ctx context.Context, asset string, p Permission) (bool, er
 // the account name, the hostname, "unattributed" — reads afterwards exactly
 // like a real one, and the first time it matters is the first time someone asks
 // who performed a review and gets an answer that was never true.
-func signature(ctx context.Context, id Identity, author string) (principal, by string, err error) {
+func Signature(ctx context.Context, id Identity, author string) (principal, by string, err error) {
 	principal, err = id.Principal(ctx)
 	if err != nil {
 		return "", "", err

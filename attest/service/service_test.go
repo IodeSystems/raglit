@@ -1,4 +1,4 @@
-package attest
+package service
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
+
+	. "github.com/iodesystems/raglit/attest"
 )
 
 // account is a host identity: a fixed principal and a permission set, standing
@@ -227,7 +229,7 @@ func TestGuestMayDoAnythingButMustSayWhoItIs(t *testing.T) {
 
 func TestPermissionsAreEnforcedPerOperation(t *testing.T) {
 	// The public-serving case: read the unattested transcript, rule on nothing.
-	f := newFixture(t, ReadOnly{account{principal: "public", perms: full(PermRead)}}, nil)
+	f := newFixture(t, ReadOnly{Identity: account{principal: "public", perms: full(PermRead)}}, nil)
 
 	if code, _ := f.get("/api/state?asset=hearing.wav"); code != 200 {
 		t.Fatalf("a read-only caller must still be able to read: %d", code)
@@ -520,5 +522,15 @@ func TestAssetsFromCandidatesSkipsTheWalk(t *testing.T) {
 	}
 	if len(refs) != 1 || refs[0].Asset != "hearing.wav" || refs[0].Stats.Total != 3 {
 		t.Fatalf("candidates: %+v", refs)
+	}
+}
+
+// turn is a speech unit; attest's own tests carry the same helper.
+func turn(start, end float64, label, text string) Unit {
+	return Unit{
+		Locator:  Locator{Time: &TimeSpan{Start: start, End: end}},
+		Label:    label,
+		Text:     text,
+		Evidence: "pcm-" + label,
 	}
 }
