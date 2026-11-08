@@ -79,19 +79,6 @@ func (f *llmFlags) resolve(home raglit.Home) {
 	}
 }
 
-// gate wraps a chat client in its model's admission channel and routes the
-// client's backpressure into the controller.
-//
-// Both halves in one call on purpose. A client gated without the 429 hook can
-// only ever grow — it would widen until the server rejected it and never learn
-// why — and a hook without the gate has nothing to act on. Any tally already on
-// the client is chained, not replaced: what a job had to survive is what the
-// health report reads.
-func (f *llmFlags) gate(c *llm.Client, model string) raglit.Chatter {
-	c.OnRetry = f.chans.Observe(model, c.OnRetry)
-	return f.chans.Gate(c, model)
-}
-
 // or is e, or the flat url/key when e was never resolved (a caller that set
 // the flags directly).
 func (f *llmFlags) or(e endpoint) endpoint {
@@ -145,24 +132,9 @@ func (f *llmFlags) visionClient() *llm.Client {
 	return c
 }
 
-// segmentClient is the model that turns transcribed text into fragments. Same
-// endpoint and key, possibly a different model — and the SAME retry policy,
-// because a segmentation that gives up mid-document costs the same re-read a
-// failed page does.
-func (f *llmFlags) segmentClient() *llm.Client {
-	m := *f.segmentModel
-	if m == "" {
-		m = *f.visionModel
-	}
-	c := llm.NewClient(f.or(f.segment).url, f.or(f.segment).key, m)
-	c.Retry5xxAttempts = visionRetry5xxAttempts
-	return c
-}
-
-// visionRetry5xxAttempts rides out an upstream episode of roughly two minutes.
-// With exponential backoff capped at 30s the schedule is about
-// 1+2+4+8+16+30+30+30s; RetryBudget still stops it after that.
-const visionRetry5xxAttempts = 9
+// visionRetry5xxAttempts is the batch retry policy every ingest client uses
+// (raglit.IngestRetry5xxAttempts says why).
+const visionRetry5xxAttempts = raglit.IngestRetry5xxAttempts
 
 // attachCheapOCR enables the cascade's cheap first-pass engine on an OCR from the
 // home's config (config.OCR). A misconfigured engine degrades to VLM-only with a
@@ -179,11 +151,7 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home, strategy string) {
 	if err != nil {
 		return
 	}
-	ocr.DescribeFigures = cfg.OCR.DescribeFigures
-	// The project's default strategy supplies the resolution policy. Set before
-	// the engine build and outside the eng != nil guard, because BaseDPI governs
-	// even when nothing can measure glyph height — that is the branch
-	// renderDPIFor takes with a nil engine.
+	// The project's default strategy supplies the resolution policy.
 	//
 	// PROJECT default, not per-index: this is built once per command, and the
 	// index a document belongs to is not known here. Threading it is what the
@@ -197,47 +165,65 @@ func attachCheapOCR(ocr *raglit.OCR, home raglit.Home, strategy string) {
 			st = named
 		}
 	}
-	ocr.Render = st.Render
-	eng, err := raglit.BuildPageEngine(cfg.OCR)
-	if err != nil {
+	if err := raglit.AttachCheapOCR(ocr, cfg.OCR, st.Render); err != nil {
 		fmt.Fprintf(os.Stderr, "raglit: %v — OCR falling back to vision-only\n", err)
-		return
-	}
-	if eng != nil {
-		ocr.Cheap = eng
-		ocr.Gate = cfg.OCR.Gibberish
-		ocr.Assist = strings.EqualFold(strings.TrimSpace(cfg.OCR.Mode), "assist")
 	}
 }
 
-// identifier builds the document-identity model client from config, or returns
-// nil when identity is off or no model is configured.
-//
-// It defaults to the SEGMENT model, then the vision model. The identity call
-// is text in, JSON out, which is the segmenter's job too; the vision model is
-// often an OCR model, and one captioning a live daemon copied first lines and
-// failed the kind list (USER 2026-10-20: default to the segment model).
-// config.identity_model overrides.
-//
-// Same batch retry policy as the rest of ingest: this call happens at the end of
-// a document that may have cost thirty OCR requests, and losing the caption to a
-// transient 502 wastes the one moment the whole transcript is in hand.
-func (f *llmFlags) identifier(home raglit.Home) *raglit.Identifier {
+// models fills raglit.Models from the home's config and the resolved flags.
+// The worker (raglit.NewWorker) is built from it; nothing in it reads the home
+// again.
+func (f *llmFlags) models(home raglit.Home) raglit.Models {
 	cfg, _, _ := raglit.LoadConfig(home)
-	if cfg.NoIdentity {
-		return nil
+	role := func(e endpoint, model string) raglit.ModelRole {
+		return raglit.ModelRole{BaseURL: e.url, APIKey: e.key, Model: model}
 	}
-	model := firstNonEmpty(cfg.IdentityModel, *f.segmentModel, cfg.SegmentModel, *f.visionModel)
-	if model == "" {
-		return nil
+	m := raglit.Models{
+		Vision: role(f.or(f.vision), *f.visionModel),
+		// Empty → the vision model, which is what it always was — see
+		// Config.SegmentModel for why they are separable.
+		Segment:                 role(f.or(f.segment), firstNonEmpty(*f.segmentModel, *f.visionModel)),
+		Embed:                   role(f.or(f.embed), *f.embedModel),
+		OCR:                     cfg.OCR,
+		FragWindow:              cfg.FragWindow,
+		FragStride:              cfg.FragStride,
+		FragFloor:               cfg.FragFloor,
+		EmbedLimitChars:         cfg.EmbedLimitChars,
+		EmbedLimitTokens:        cfg.EmbedLimitTokens,
+		SegmentInputLimitTokens: cfg.SegmentInputLimitTokens,
+		Channels:                f.chans,
 	}
-	ep := f.or(f.segment)
-	if cfg.IdentityModel != "" {
-		ep = f.endpointFor(cfg, cfg.IdentityProvider)
+	// Audio ingest turns on with the MODEL alone. oidio is normally behind the
+	// same broker as the vision and embed models, so the endpoint is already
+	// known; AudioBaseURL is only for the case where it is not.
+	if cfg.AudioModel != "" {
+		base, key, _ := cfg.Endpoint(cfg.AudioProvider)
+		if cfg.AudioBaseURL != "" {
+			base = cfg.AudioBaseURL
+		}
+		m.Audio = raglit.ModelRole{BaseURL: base, APIKey: key, Model: cfg.AudioModel}
 	}
-	c := llm.NewClient(ep.url, ep.key, model)
-	c.Retry5xxAttempts = visionRetry5xxAttempts
-	return raglit.NewIdentifier(f.gate(c, model), model)
+	// The identity model defaults to the SEGMENT model, then the vision model.
+	// The identity call is text in, JSON out, which is the segmenter's job too;
+	// the vision model is often an OCR model, and one captioning a live daemon
+	// copied first lines and failed the kind list (USER 2026-10-20: default to
+	// the segment model). config.identity_model overrides.
+	if !cfg.NoIdentity {
+		if model := firstNonEmpty(cfg.IdentityModel, *f.segmentModel, cfg.SegmentModel, *f.visionModel); model != "" {
+			ep := f.or(f.segment)
+			if cfg.IdentityModel != "" {
+				ep = f.endpointFor(cfg, cfg.IdentityProvider)
+			}
+			m.Identity = role(ep, model)
+		}
+	}
+	return m
+}
+
+// identifier builds the document-identity model client from config, or returns
+// nil when identity is off or no model is configured (raglit.Models.Identifier).
+func (f *llmFlags) identifier(home raglit.Home) *raglit.Identifier {
+	return f.models(home).Identifier()
 }
 
 // embedClientForProbe is the embed client with the same batch retry policy as

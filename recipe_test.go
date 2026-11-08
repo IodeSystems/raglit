@@ -1,4 +1,4 @@
-package main
+package raglit
 
 import (
 	"strings"
