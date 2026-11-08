@@ -308,7 +308,8 @@ in the description and keep the schema to the few fields that are structured.`
 // The proposal is returned, not stored — a schema nobody read before it started
 // filling in records is a schema nobody will trust afterwards.
 func (s *Store) ProposeDocType(ctx context.Context, name string, goldPaths []string) (DocType, error) {
-	if s.identifier == nil {
+	idf := s.identity()
+	if idf == nil {
 		return DocType{}, ErrNoIdentifier
 	}
 	name = NormalizeTypeName(name)
@@ -335,8 +336,8 @@ func (s *Store) ProposeDocType(ctx context.Context, name string, goldPaths []str
 
 	var out DocType
 	id := &Identifier{
-		Client: s.identifier.Client, Model: s.identifier.Model,
-		MaxRetries: s.identifier.MaxRetries,
+		Client: idf.Client, Model: idf.Model,
+		MaxRetries: idf.MaxRetries,
 		validator:  newValidator(proposeTypeToolDef()),
 		maxTokens:  proposeMaxTokens,
 	}

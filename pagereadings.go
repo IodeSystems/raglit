@@ -57,7 +57,7 @@ func (s *Store) AddPageReading(ctx context.Context, r PageReading) error {
 	// other direction. The document's own caption is left alone when a person
 	// wrote it; IdentifyDocument refuses those anyway, and queueing work that is
 	// certain to be declined is just noise in the queue.
-	if active == 1 && r.Source == "corrected" && s.identifier != nil {
+	if active == 1 && r.Source == "corrected" && s.identity() != nil {
 		if cur, err := s.DocumentIdentity(r.Doc); err == nil && !cur.ByPerson() && !cur.Empty() {
 			_, _ = s.EnqueueIdentity(r.Doc, true)
 		}

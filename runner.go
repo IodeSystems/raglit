@@ -27,6 +27,14 @@ type StoreSet interface {
 // both down before a stop or a re-exec.
 //
 // Fill the fields, call Start once, and call Drain (or CutOff) to stop.
+//
+// The identity queue drains only on a store whose identifier is set
+// (Store.SetIdentifier); on any other it is skipped without a log line, because
+// no identity model is a normal configuration. NewWorker sets it, but Runner
+// calls NewWorker only when an ingest runner takes a job from that index. So
+// set each store's identifier before Start (raglitd does, through
+// Registry.SetIdentifier), or captions queued on an index with no ingest since
+// Start wait until that index's next ingest.
 type Runner struct {
 	// Stores is the set of indexes whose queues are worked. Required.
 	Stores StoreSet

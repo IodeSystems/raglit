@@ -29,7 +29,7 @@ func TestNewWorker_NoModelsIsOffline(t *testing.T) {
 	if w.Pool != nil || w.RecipeHash != "" {
 		t.Errorf("pool wired with no pool given: %v %q", w.Pool, w.RecipeHash)
 	}
-	if s.identifier != nil {
+	if s.identity() != nil {
 		t.Error("identifier set with no identity model")
 	}
 	if w.Frag.SegmentInputLimit != 0 || w.Frag.EmbedLimitTokens != 0 {
@@ -108,8 +108,8 @@ func TestNewWorker_VisionSetsOCRAndSegmenter(t *testing.T) {
 	if w.Frag.TokenCounter != nil || w.Frag.EmbedTokenCounter != nil {
 		t.Error("token counters set against an endpoint with no tokenizer")
 	}
-	if s.identifier == nil || s.identifier.Model != "seg" {
-		t.Errorf("identifier = %+v, want model seg", s.identifier)
+	if s.identity() == nil || s.identity().Model != "seg" {
+		t.Errorf("identifier = %+v, want model seg", s.identity())
 	}
 	if w.Pool != pool || w.RecipeHash == "" {
 		t.Errorf("pool %v recipe %q, want the pool and a recipe", w.Pool, w.RecipeHash)

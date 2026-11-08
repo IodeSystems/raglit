@@ -1049,7 +1049,7 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 	// be queued for a document that had none — so a re-read that replaced a
 	// document's text wholesale left the old summary in place, describing a
 	// transcript that no longer existed.
-	if s.identifier != nil && !id.ByPerson() && id.TextHash != textHashOf(frags) {
+	if s.identity() != nil && !id.ByPerson() && id.TextHash != textHashOf(frags) {
 		// The DAG edge: a caption is downstream of the transcript, so it is owed
 		// whenever the transcript it was written from is not the transcript the
 		// document now has. That covers both directions — a document with no

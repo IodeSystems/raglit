@@ -291,7 +291,8 @@ const indexAboutMaxCaptions = 120
 // Uses the identity model, because it is the one already configured to read
 // this corpus and the task is the same task one level up.
 func (s *Store) WriteIndexAbout(ctx context.Context) (string, error) {
-	if s.identifier == nil {
+	idf := s.identity()
+	if idf == nil {
 		return "", ErrNoIdentifier
 	}
 	d, err := s.IndexDigestFor("", 0)
@@ -336,7 +337,7 @@ func (s *Store) WriteIndexAbout(ctx context.Context) (string, error) {
 	}
 
 	msgs := []llm.Message{{Role: "user", Parts: []llm.ContentPart{llm.TextPart(b.String())}}}
-	out, _, err := collectStream(ctx, s.identifier.Client, msgs, &llm.ChatOpts{MaxTokens: identityMaxTokens})
+	out, _, err := collectStream(ctx, idf.Client, msgs, &llm.ChatOpts{MaxTokens: identityMaxTokens})
 	if err != nil {
 		return "", err
 	}
@@ -351,7 +352,7 @@ func (s *Store) WriteIndexAbout(ctx context.Context) (string, error) {
 	if err := s.SetMeta(metaIndexAboutDocs, fmt.Sprint(d.Documents), now); err != nil {
 		return "", err
 	}
-	if err := s.SetMeta(metaIndexAboutModel, s.identifier.Model, now); err != nil {
+	if err := s.SetMeta(metaIndexAboutModel, idf.Model, now); err != nil {
 		return "", err
 	}
 	return about, nil

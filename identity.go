@@ -1210,7 +1210,8 @@ func (s *Store) IdentifyDocument(ctx context.Context, path string, force bool) (
 	if cur.ByPerson() || (!cur.Empty() && !force) {
 		return cur, ErrIdentityKept
 	}
-	if s.identifier == nil {
+	idf := s.identity()
+	if idf == nil {
 		return DocIdentity{}, ErrNoIdentifier
 	}
 	// The document's own words — origin='' excludes the last caption of it — and
@@ -1223,7 +1224,7 @@ func (s *Store) IdentifyDocument(ctx context.Context, path string, force bool) (
 	if err != nil {
 		return DocIdentity{}, err
 	}
-	id, err := s.identifier.Identify(ctx, ask)
+	id, err := idf.Identify(ctx, ask)
 	if err != nil {
 		return DocIdentity{}, err
 	}
@@ -1354,7 +1355,8 @@ func (s *Store) TagDocument(ctx context.Context, path string, force bool) (DocId
 	if len(cur.ContentTags) > 0 && !force {
 		return cur, ErrIdentityKept
 	}
-	if s.identifier == nil {
+	idf := s.identity()
+	if idf == nil {
 		return DocIdentity{}, ErrNoIdentifier
 	}
 	text, err := s.IdentityText(ctx, path)
@@ -1365,7 +1367,7 @@ func (s *Store) TagDocument(ctx context.Context, path string, force bool) (DocId
 	if err != nil {
 		return DocIdentity{}, err
 	}
-	content, roles, err := s.identifier.IdentifyTags(ctx, ask)
+	content, roles, err := idf.IdentifyTags(ctx, ask)
 	if err != nil {
 		return DocIdentity{}, err
 	}

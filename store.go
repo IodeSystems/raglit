@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -54,7 +55,9 @@ type Store struct {
 	// identifier, when set, asks a model what each ingested document IS — a
 	// caption, a summary and a kind (identity.go). nil → documents keep only the
 	// filename they arrived with.
-	identifier *Identifier
+	// Atomic because NewWorker sets it on an ingest runner while the identity
+	// queue reads it on another goroutine.
+	identifier atomic.Pointer[Identifier]
 	// extractEmailAttachments writes a mail archive's attachments into
 	// <archive>.raglit-attachments/ beside it. Off for the same reason, and with
 	// more force — one archive can carry 69 files.
@@ -136,7 +139,10 @@ func (s *Store) SetEmbedder(e *Embedder) { s.embedder = e }
 // summarised and typed by the model (identity.go), and the summary is indexed.
 // nil disables it — an ingest then leaves whatever identity the document already
 // had, because a caption is not invalidated by re-reading the same file.
-func (s *Store) SetIdentifier(id *Identifier) { s.identifier = id }
+func (s *Store) SetIdentifier(id *Identifier) { s.identifier.Store(id) }
+
+// identity returns the identifier SetIdentifier set, or nil.
+func (s *Store) identity() *Identifier { return s.identifier.Load() }
 
 // SetImageEmbedder enables IMAGE embeddings for figures (a CLIP-style tower):
 // each figure is embedded from its image rather than its description. nil (the

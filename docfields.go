@@ -263,14 +263,15 @@ func (s *Store) ExtractFields(ctx context.Context, path string, force bool) (Doc
 			return cur, ErrIdentityKept
 		}
 	}
-	if s.identifier == nil {
+	idf := s.identity()
+	if idf == nil {
 		return DocFields{}, ErrNoIdentifier
 	}
 	text, err := s.IdentityText(ctx, path)
 	if err != nil {
 		return DocFields{}, err
 	}
-	got, err := s.identifier.ExtractFields(ctx, text, t, s.IndexHint())
+	got, err := idf.ExtractFields(ctx, text, t, s.IndexHint())
 	if err != nil {
 		return DocFields{}, err
 	}

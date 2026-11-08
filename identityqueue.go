@@ -706,7 +706,8 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 	if w.Store == nil {
 		return 0, fmt.Errorf("raglit: identity worker has no store")
 	}
-	if w.Store.identifier == nil {
+	idf := w.Store.identity()
+	if idf == nil {
 		return 0, ErrNoIdentifier
 	}
 	slots := w.Slots
@@ -801,12 +802,12 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 					case IdentityAskTags:
 						t.id = t.cur
 						t.id.ContentTags, t.id.RoleTags, t.err =
-							w.Store.identifier.IdentifyTags(ctx, t.ask)
+							idf.IdentifyTags(ctx, t.ask)
 					case IdentityAskFields:
-						t.fields, t.err = w.Store.identifier.ExtractFields(
+						t.fields, t.err = idf.ExtractFields(
 							ctx, t.text, t.docType, t.ask.IndexHint)
 					default:
-						t.id, t.err = w.Store.identifier.Identify(ctx, t.ask)
+						t.id, t.err = idf.Identify(ctx, t.ask)
 					}
 					t.text = ""     // done with it; do not carry a document through the queue
 					t.ask.Text = "" // same
