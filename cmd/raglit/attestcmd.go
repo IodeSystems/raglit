@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/iodesystems/raglit"
 	"github.com/iodesystems/raglit/attest"
+	"github.com/iodesystems/raglit/attest/service"
 	flag "github.com/spf13/pflag"
 )
 
@@ -95,7 +96,7 @@ page say THIS IS the image the words came from, or refuse to.
 	if err != nil {
 		return err
 	}
-	svc := &attest.Service{Root: abs, Ident: attest.Guest{}, Ev: evidenceFor(path, abs)}
+	svc := &service.Service{Root: abs, Ident: attest.Guest{}, Ev: evidenceFor(path, abs)}
 
 	router := chi.NewRouter()
 	api := humachi.New(router, huma.DefaultConfig("raglit attest", version))
@@ -105,14 +106,14 @@ page say THIS IS the image the words came from, or refuse to.
 	router.Method(http.MethodGet, "/", svc.UI("/api", "/source"))
 	router.Method(http.MethodGet, "/source", svc.AssetBytes())
 
-	ln, url, err := attest.ListenOn(*listen, *port, *cert != "")
+	ln, url, err := service.ListenOn(*listen, *port, *cert != "")
 	if err != nil {
 		return err
 	}
 	fmt.Printf("raglit attest → %s?asset=%s\n", url, filepath.Base(path))
 	fmt.Printf("  verdicts: %s  (appended, never rewritten)\n", attest.LogPath(path))
 	fmt.Printf("  authorized guest — every ruling must name the person making it\n")
-	return attest.Serve(ln, router, *cert, *key)
+	return service.Serve(ln, router, *cert, *key)
 }
 
 // readingFromRegions converts a recorded region tree into attest's shape.

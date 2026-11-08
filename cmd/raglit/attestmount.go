@@ -14,6 +14,7 @@ import (
 
 	"github.com/iodesystems/raglit"
 	"github.com/iodesystems/raglit/attest"
+	"github.com/iodesystems/raglit/attest/service"
 )
 
 // The review workbench, in the daemon, for every index.
@@ -81,8 +82,8 @@ func mountAttest(router chi.Router, api huma.API, reg *raglit.Registry) error {
 }
 
 // newAttestService is one index's review service.
-func newAttestService(reg *raglit.Registry, name string, st *raglit.Store, root string) *attest.Service {
-	return &attest.Service{
+func newAttestService(reg *raglit.Registry, name string, st *raglit.Store, root string) *service.Service {
+	return &service.Service{
 		Root: root, Ident: indexIdentity(reg, name), Ev: multiEvidence{root: root},
 		// Keep the index's projection current as rulings are made, rather
 		// than only when somebody remembers to sweep. The log is still the

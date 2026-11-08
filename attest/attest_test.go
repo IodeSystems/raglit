@@ -431,14 +431,14 @@ func TestDelegationKeepsBothNames(t *testing.T) {
 }
 
 func TestSignatureRefusesAnonymousAuthor(t *testing.T) {
-	principal, by, err := signature(t.Context(), Guest{}, "carl")
+	principal, by, err := Signature(t.Context(), Guest{}, "carl")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if principal != "guest" || by != "carl" {
 		t.Fatalf("signature = %q/%q, want guest/carl", principal, by)
 	}
-	if _, _, err := signature(t.Context(), Guest{}, ""); err == nil {
+	if _, _, err := Signature(t.Context(), Guest{}, ""); err == nil {
 		t.Fatal("the CLI guest may do anything, but still has to say who it is")
 	}
 }
