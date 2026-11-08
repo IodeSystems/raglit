@@ -41,6 +41,13 @@ var allowed = map[string]bool{
 var reviewed = map[string]string{
 	"modernc.org/sqlite LICENSE-SQLITE": "Public-Domain", // SQLite's public-domain dedication
 	"modernc.org/memory LICENSE-LOGO":   "attribution for a logo image; not linked code",
+	// An index of the driver's components and their licenses, not a license.
+	// It quotes MPL-2.0 in full, whose "Secondary License" definition names the
+	// GNU Affero GPL, so the AGPL rule matches it. Read 2026-11-08 (v1.62.0):
+	// every component linked into a program is MIT, BSD-3-Clause or public
+	// domain; MPL-2.0 appears only in its section 3, the module graph that is
+	// compiled into nothing. Re-read it when the driver moves.
+	"modernc.org/sqlite LICENSE-3RD-PARTY.md": "index of component licenses; not a license",
 }
 
 // rules classify license text. Order matters: copyleft first, so a text that
@@ -174,14 +181,16 @@ func goModule(path, version, dir string) (pkg, []string) {
 		if noticeFile.MatchString(name) {
 			continue
 		}
+		// A reviewed file is settled by the review, not the rules: some are
+		// texts no rule recognises, and some quote a license they are not.
+		if r, ok := reviewed[path+" "+name]; ok {
+			if allowed[r] && p.License == "" {
+				p.License = r
+			}
+			continue
+		}
 		lic := classify(string(b))
 		if lic == "" {
-			if r, ok := reviewed[path+" "+name]; ok {
-				if allowed[r] && p.License == "" {
-					p.License = r
-				}
-				continue
-			}
 			problems = append(problems, fmt.Sprintf("%s %s: license text not recognised; read it and add it to reviewed", path, name))
 			continue
 		}
