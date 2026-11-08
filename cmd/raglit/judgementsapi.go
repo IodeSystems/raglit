@@ -686,7 +686,7 @@ func identifyOp(reg *raglit.Registry) func(context.Context, *identifyIn) (*ident
 // Queueing captions, daemon-side.
 //
 // Enqueue returns immediately with a count; the daemon's identity worker drains
-// the rows at the endpoint's real concurrency (runIdentityWorkers). That split
+// the rows at the endpoint's real concurrency (raglit.Runner). That split
 // is the point: a 400-document sweep is durable the moment this returns, so the
 // client can be closed, and nothing depends on a CLI staying alive for an hour.
 

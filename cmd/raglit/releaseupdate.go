@@ -20,8 +20,8 @@ import (
 // key, and when it names a newer raglit for this platform, downloads and
 // checks the archive into a staging file beside the binary. The staged binary
 // must pass `daemon --check` with this daemon's own flags before it replaces
-// the binary. Then the queue drains (drain.go) and the daemon re-execs into
-// the new build, with the same PID, as SIGHUP does.
+// the binary. Then the queue drains (raglit.Runner.Drain) and the daemon
+// re-execs into the new build, with the same PID, as SIGHUP does.
 //
 // dun does the same check and then exits 75 for systemd to restart it, because
 // dund hands sessions over between two processes. raglit has no state to hand

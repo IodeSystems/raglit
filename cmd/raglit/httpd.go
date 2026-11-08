@@ -122,31 +122,32 @@ func runHttpd(subcmd string, args []string) error {
 	}
 	defer pool.Close()
 
-	// Two contexts so a stop can drain (drain.go): ctx ends the claiming and the
-	// background loops, work ends the ingest jobs already running.
-	work, cutOff := context.WithCancel(context.Background())
-	defer cutOff()
-	ctx, cancel := context.WithCancel(work)
-	defer cancel()
-	ingestDone := make(chan struct{})
-	go func() {
-		defer close(ingestDone)
-		runIngestRunners(ctx, work, reg, lf, cfgHome, pool)
-	}()
-	drain := &jobDrain{stopClaims: cancel, cutOff: cutOff, done: ingestDone}
-	// Captions, on their own queue and their own slot budget. See runIdentityWorkers.
-	go runIdentityWorkers(ctx, reg, cfgHome)
+	// The ingest and caption queues (raglit.Runner). Two contexts so a stop can
+	// drain: ctx ends the claiming and the background loops, work ends the
+	// ingest jobs already running.
+	runCfg, _, _ := raglit.LoadConfig(cfgHome)
+	runner := &raglit.Runner{
+		Stores: reg,
+		NewWorker: func(st *raglit.Store) (*raglit.Worker, error) {
+			return buildWorker(st, lf, cfgHome, pool), nil
+		},
+		Runners:       raglit.DefaultIngestRunners,
+		IdentitySlots: runCfg.IdentitySlots,
+		Notef:         daemonNotef,
+	}
+	ctx, work := runner.Start(context.Background())
+	defer runner.CutOff()
 	// Vectors from another embed model are dropped and rebuilt (reembed.go).
 	go reembedIndexes(ctx, reg, *lf.embedModel)
 	go backfillSourceStats(ctx, reg)
 	go reapSessionBranches(ctx, reg, cfgHome)
 	// Stay on the current source. Rebuilds immediately, then drains the queue
 	// and re-execs into the new build.
-	go daemonSelfUpdate(func() { drain.drain(reexecGrace) })
+	go daemonSelfUpdate(func() { runner.Drain(reexecGrace) })
 	// `raglit service reload`: SIGHUP re-execs the daemon, under the same rule.
-	go reloadOnHUP(func() { drain.drain(reexecGrace) })
+	go reloadOnHUP(func() { runner.Drain(reexecGrace) })
 	// A release build: the daily signed-release check, under the same rule.
-	go daemonReleaseUpdate(string(cfgHome), func() { drain.drain(reexecGrace) })
+	go daemonReleaseUpdate(string(cfgHome), func() { runner.Drain(reexecGrace) })
 
 	// Directory watching: keep opt-in projects (config watch:true) re-ingested on
 	// change. Registrations persist under the daemon root and reload here.
@@ -228,9 +229,9 @@ func runHttpd(subcmd string, args []string) error {
 		fmt.Fprintf(os.Stderr, "raglit daemon: stopping — no new jobs; running jobs get %s (signal again to stop them now)\n", stopGrace)
 		go func() {
 			<-sig
-			cutOff()
+			runner.CutOff()
 		}()
-		drain.drain(stopGrace)
+		runner.Drain(stopGrace)
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
 		srv.Shutdown(sctx)

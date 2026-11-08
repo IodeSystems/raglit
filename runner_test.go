@@ -1,4 +1,4 @@
-package main
+package raglit
 
 import (
 	"context"
@@ -6,11 +6,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/iodesystems/raglit"
 )
 
-// The property the scheduler exists for, through the real runner pool: a
+// The property the Runner exists for, through the real runner pool: a
 // document stuck on ONE model must not hold up documents that need a different
 // one.
 //
@@ -24,13 +22,13 @@ import (
 // The slow document here never finishes — it blocks inside the fetch until the
 // test releases it. If the rest can only proceed once it is done, this test
 // times out, which is precisely the old behaviour.
-func TestRunQueue_OneStuckDocumentDoesNotStallTheRest(t *testing.T) {
+func TestRunner_OneStuckDocumentDoesNotStallTheRest(t *testing.T) {
 	root := t.TempDir()
-	reg, err := raglit.OpenScopedRegistry(root)
+	reg, err := OpenScopedRegistry(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reg.Close()
+	t.Cleanup(func() { reg.Close() })
 	st, err := reg.Get("main")
 	if err != nil {
 		t.Fatal(err)
@@ -50,28 +48,26 @@ func TestRunQueue_OneStuckDocumentDoesNotStallTheRest(t *testing.T) {
 
 	release := make(chan struct{})
 	var stuckStarted atomic.Int32
-	newWorker := func(s *raglit.Store) *raglit.Worker {
-		return &raglit.Worker{
+	newWorker := func(s *Store) *Worker {
+		return &Worker{
 			Store: s,
-			Fetcher: func(ctx context.Context, url string) (raglit.Fetched, error) {
+			Fetcher: func(ctx context.Context, url string) (Fetched, error) {
 				// Stands in for a long vision call: the scan blocks, everything
 				// else returns immediately.
-				if raglit.LaneFor(url) == raglit.LaneHeavy {
+				if LaneFor(url) == LaneHeavy {
 					stuckStarted.Add(1)
 					select {
 					case <-release:
 					case <-ctx.Done():
 					}
-					return raglit.Fetched{}, context.Canceled
+					return Fetched{}, context.Canceled
 				}
-				return raglit.Fetched{Data: []byte("a light document, indexed in milliseconds")}, nil
+				return Fetched{Data: []byte("a light document, indexed in milliseconds")}, nil
 			},
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runQueue(ctx, ctx, reg, 4, newWorker)
+	r := startRunner(t, reg, 4, newWorker)
 
 	// Establish the premise before testing the conclusion: the slow document must
 	// really be in flight, or "the others finished" says nothing.
@@ -101,7 +97,7 @@ func TestRunQueue_OneStuckDocumentDoesNotStallTheRest(t *testing.T) {
 		t.Fatalf("the slow document ran %d times", stuckStarted.Load())
 	}
 	close(release)
-	cancel()
+	r.CutOff()
 }
 
 // The queue must never mark more jobs `running` than it has runners.
@@ -110,13 +106,13 @@ func TestRunQueue_OneStuckDocumentDoesNotStallTheRest(t *testing.T) {
 // its runners reports work that nothing is doing — the same lie owner_pid exists
 // to expose, told by the scheduler itself. Observed on the live daemon: a
 // one-slot lane ran one job and reported two.
-func TestRunQueue_NeverClaimsMoreThanItCanRun(t *testing.T) {
+func TestRunner_NeverClaimsMoreThanItCanRun(t *testing.T) {
 	root := t.TempDir()
-	reg, err := raglit.OpenScopedRegistry(root)
+	reg, err := OpenScopedRegistry(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reg.Close()
+	t.Cleanup(func() { reg.Close() })
 	st, err := reg.Get("main")
 	if err != nil {
 		t.Fatal(err)
@@ -129,25 +125,23 @@ func TestRunQueue_NeverClaimsMoreThanItCanRun(t *testing.T) {
 
 	release := make(chan struct{})
 	var inFlight atomic.Int32
-	newWorker := func(s *raglit.Store) *raglit.Worker {
-		return &raglit.Worker{
+	newWorker := func(s *Store) *Worker {
+		return &Worker{
 			Store: s,
-			Fetcher: func(ctx context.Context, _ string) (raglit.Fetched, error) {
+			Fetcher: func(ctx context.Context, _ string) (Fetched, error) {
 				inFlight.Add(1)
 				defer inFlight.Add(-1)
 				select {
 				case <-release:
 				case <-ctx.Done():
 				}
-				return raglit.Fetched{}, context.Canceled
+				return Fetched{}, context.Canceled
 			},
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	const runners = 2
-	go runQueue(ctx, ctx, reg, runners, newWorker)
+	r := startRunner(t, reg, runners, newWorker)
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -166,22 +160,26 @@ func TestRunQueue_NeverClaimsMoreThanItCanRun(t *testing.T) {
 		t.Fatal("nothing ever ran — the test proved nothing")
 	}
 	close(release)
-	cancel()
+	r.CutOff()
 }
 
-// drainQueue starts runQueue on one index with the two contexts the daemon
-// wires, and returns the jobDrain over it.
-func drainQueue(t *testing.T, reg *raglit.Registry, newWorker func(*raglit.Store) *raglit.Worker) *jobDrain {
+// startRunner starts a Runner on reg with the given runner count and a worker
+// factory that cannot fail. The test's cleanup cuts it off and waits for its
+// runners, so none outlives the registry.
+func startRunner(t *testing.T, reg *Registry, runners int, newWorker func(*Store) *Worker) *Runner {
 	t.Helper()
-	work, cutOff := context.WithCancel(context.Background())
-	claim, stopClaims := context.WithCancel(work)
-	t.Cleanup(cutOff)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runQueue(claim, work, reg, 1, newWorker)
-	}()
-	return &jobDrain{stopClaims: stopClaims, cutOff: cutOff, done: done}
+	r := &Runner{
+		Stores:    reg,
+		NewWorker: func(s *Store) (*Worker, error) { return newWorker(s), nil },
+		Runners:   runners,
+		Notef:     t.Logf,
+	}
+	r.Start(context.Background())
+	t.Cleanup(func() {
+		r.CutOff()
+		<-r.Done()
+	})
+	return r
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -193,7 +191,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-func jobCount(t *testing.T, st *raglit.Store, state string) int {
+func jobCount(t *testing.T, st *Store, state string) int {
 	t.Helper()
 	js, err := st.Jobs(state, 20)
 	if err != nil {
@@ -202,14 +200,14 @@ func jobCount(t *testing.T, st *raglit.Store, state string) int {
 	return len(js)
 }
 
-// A stop lets the running job finish and claims nothing after it: the job ends
+// A Drain lets the running job finish and claims nothing after it: the job ends
 // 'done', and the job behind it stays 'pending' for the next process.
-func TestJobDrain_RunningJobFinishesAndNothingNewIsClaimed(t *testing.T) {
-	reg, err := raglit.OpenScopedRegistry(t.TempDir())
+func TestRunnerDrain_RunningJobFinishesAndNothingNewIsClaimed(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reg.Close()
+	t.Cleanup(func() { reg.Close() })
 	st, err := reg.Get("main")
 	if err != nil {
 		t.Fatal(err)
@@ -221,17 +219,17 @@ func TestJobDrain_RunningJobFinishesAndNothingNewIsClaimed(t *testing.T) {
 	}
 	release := make(chan struct{})
 	var started atomic.Int32
-	d := drainQueue(t, reg, func(s *raglit.Store) *raglit.Worker {
-		return &raglit.Worker{Store: s, Fetcher: func(ctx context.Context, _ string) (raglit.Fetched, error) {
+	d := startRunner(t, reg, 1, func(s *Store) *Worker {
+		return &Worker{Store: s, Fetcher: func(ctx context.Context, _ string) (Fetched, error) {
 			started.Add(1)
 			<-release
-			return raglit.Fetched{Data: []byte("a short note")}, nil
+			return Fetched{Data: []byte("a short note")}, nil
 		}}
 	})
 	waitFor(t, "the first job to start", func() bool { return started.Load() == 1 })
 
 	drained := make(chan bool)
-	go func() { drained <- d.drain(10 * time.Second) }()
+	go func() { drained <- d.Drain(10 * time.Second) }()
 	// Give the claimer a chance to take the second job if it still could.
 	time.Sleep(100 * time.Millisecond)
 	close(release)
@@ -249,12 +247,12 @@ func TestJobDrain_RunningJobFinishesAndNothingNewIsClaimed(t *testing.T) {
 // A job still running when the grace ends is cancelled and goes back on the
 // queue. Before the drain it was cut off by the exit and marked 'error' at the
 // next start.
-func TestJobDrain_JobCutOffAtGraceIsRequeued(t *testing.T) {
-	reg, err := raglit.OpenScopedRegistry(t.TempDir())
+func TestRunnerDrain_JobCutOffAtGraceIsRequeued(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reg.Close()
+	t.Cleanup(func() { reg.Close() })
 	st, err := reg.Get("main")
 	if err != nil {
 		t.Fatal(err)
@@ -263,19 +261,89 @@ func TestJobDrain_JobCutOffAtGraceIsRequeued(t *testing.T) {
 		t.Fatal(err)
 	}
 	var started atomic.Int32
-	d := drainQueue(t, reg, func(s *raglit.Store) *raglit.Worker {
-		return &raglit.Worker{Store: s, Fetcher: func(ctx context.Context, _ string) (raglit.Fetched, error) {
+	d := startRunner(t, reg, 1, func(s *Store) *Worker {
+		return &Worker{Store: s, Fetcher: func(ctx context.Context, _ string) (Fetched, error) {
 			started.Add(1)
 			<-ctx.Done()
-			return raglit.Fetched{}, ctx.Err()
+			return Fetched{}, ctx.Err()
 		}}
 	})
 	waitFor(t, "the job to start", func() bool { return started.Load() == 1 })
 
-	if !d.drain(50 * time.Millisecond) {
+	if !d.Drain(50 * time.Millisecond) {
 		t.Fatal("drain reported runners still running after the cut-off")
 	}
 	if pending, failed := jobCount(t, st, "pending"), jobCount(t, st, "error"); pending != 1 || failed != 0 {
 		t.Fatalf("pending=%d error=%d, want the cut-off job back as pending", pending, failed)
+	}
+}
+
+// A NewWorker that fails leaves the job pending for a later pass, rather than
+// running it with no worker or marking it failed.
+func TestRunner_FailingNewWorkerLeavesTheJobPending(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	st, err := reg.Get("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Enqueue("file:///notes.md", ""); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	r := &Runner{
+		Stores: reg,
+		NewWorker: func(*Store) (*Worker, error) {
+			calls.Add(1)
+			return nil, fmt.Errorf("no models configured")
+		},
+		Runners: 1,
+		Notef:   t.Logf,
+	}
+	r.Start(context.Background())
+	t.Cleanup(r.CutOff)
+	waitFor(t, "NewWorker to be asked", func() bool { return calls.Load() >= 1 })
+	if !r.Drain(10 * time.Second) {
+		t.Fatal("drain reported runners still running")
+	}
+	if pending, failed := jobCount(t, st, "pending"), jobCount(t, st, "error"); pending != 1 || failed != 0 {
+		t.Fatalf("pending=%d error=%d, want the job left pending", pending, failed)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("NewWorker called %d times; a failing factory must not spin the queue", n)
+	}
+}
+
+// The set is read again on every pass: an index created after Start has its
+// queue worked.
+func TestRunner_WorksAnIndexAddedAfterStart(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	startRunner(t, reg, 2, func(s *Store) *Worker {
+		return &Worker{Store: s, Fetcher: func(context.Context, string) (Fetched, error) {
+			return Fetched{Data: []byte("a short note")}, nil
+		}}
+	})
+	time.Sleep(100 * time.Millisecond) // the claimer has made a pass with no "late" index
+	st, err := reg.Get("late")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Enqueue("file:///late.md", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the late index's job to finish", func() bool { return jobCount(t, st, "done") == 1 })
+}
+
+// Drain before Start has nothing to wait for.
+func TestRunnerDrain_BeforeStartReturns(t *testing.T) {
+	if !(&Runner{}).Drain(time.Hour) {
+		t.Fatal("Drain before Start reported runners still running")
 	}
 }

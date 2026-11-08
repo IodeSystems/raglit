@@ -178,9 +178,9 @@ func buildInput(name string) bool {
 // failed", which is the worse of the two.
 //
 // It therefore rebuilds as soon as the source changes — the build is the slow
-// part and it costs the queue nothing — and then drains the queue (drain.go)
-// before the re-exec: no new claims, running jobs finish or go back on the
-// queue. It used to wait for an idle queue while the queue went on claiming,
+// part and it costs the queue nothing — and then drains the queue
+// (raglit.Runner.Drain) before the re-exec: no new claims, running jobs finish
+// or go back on the queue. It used to wait for an idle queue while the queue went on claiming,
 // so a busy queue held the re-exec back without end.
 func daemonSelfUpdate(drain func()) {
 	if !daemonSelfUpdateEnabled() {

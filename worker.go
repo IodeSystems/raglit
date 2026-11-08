@@ -111,7 +111,7 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 	}
 	if ierr != nil && ctx.Err() != nil {
 		// Cut off by a stop, not failed by the document: the daemon cancelled
-		// the work to restart or exit (drain.go). Back to pending, so the next
+		// the work to restart or exit (Runner.Drain). Back to pending, so the next
 		// process runs it again. A crash does not come here — that row is still
 		// 'running' at the next start, and reclaimOrphanedJobs marks it 'error'.
 		return w.Store.RequeueJob(job.ID)
