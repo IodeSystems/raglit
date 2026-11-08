@@ -1,6 +1,8 @@
 package raglit
 
 import (
+	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -14,9 +16,17 @@ func TestRootDepsHaveNoServerStack(t *testing.T) {
 	if err != nil {
 		t.Skip("go not on PATH")
 	}
-	out, err := exec.Command(goBin, "list", "-deps", ".").Output()
+	// GOWORK=off: a parent go.work must not change how packages resolve.
+	cmd := exec.Command(goBin, "list", "-deps", ".")
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
 	if err != nil {
-		t.Skipf("go list -deps: %v", err)
+		// A failed list must fail the guard, not switch it off.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			t.Fatalf("go list -deps: %v\n%s", err, ee.Stderr)
+		}
+		t.Fatalf("go list -deps: %v", err)
 	}
 	// Module path prefixes, not substrings: go-humanize is not huma.
 	banned := []string{
