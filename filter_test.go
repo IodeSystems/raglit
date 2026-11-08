@@ -3,6 +3,7 @@ package raglit
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -227,6 +228,35 @@ func TestSearchFiltered_BranchShadowsStaleParentValues(t *testing.T) {
 			if got := hitPaths(h); !eq(got, c.want...) {
 				t.Errorf("%s #%d: = %v, want %v", name, i, got, c.want)
 			}
+		}
+	}
+}
+
+// Tags written through SetDocumentIdentity arrive raw — a person's correction,
+// an embedder's own tags — and are normalized on write, so a filter for the tag
+// matches however irregularly it was spelled.
+func TestSearchFiltered_RawTagsNormalizedOnWrite(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	must(t, s.Ingest(ctx, Document{Path: "raw.md", Title: "Raw", Fragments: []Fragment{{Text: "token"}}}))
+	must(t, s.SetDocumentIdentity(ctx, "raw.md", DocIdentity{
+		ContentTags: []string{"Lead  Paint", " survey", "v1.", "a;b", "  "},
+		RoleTags:    []string{" Reference "},
+	}))
+	d, err := s.DocumentIdentity("raw.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(d.ContentTags, "|"), "lead paint|survey|v1|a b"; got != want {
+		t.Errorf("stored content tags = %q, want %q", got, want)
+	}
+	for _, tag := range []string{"lead paint", "survey", "v1", "a b", "reference", "V1 ."} {
+		h, err := s.SearchFiltered("token", SearchFilter{Tags: []string{tag}}, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hitPaths(h); len(got) != 1 || got[0] != "raw.md" {
+			t.Errorf("tag %q: = %v, want [raw.md]", tag, got)
 		}
 	}
 }

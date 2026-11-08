@@ -19,9 +19,9 @@ type SearchFilter struct {
 	PathPrefix string
 	// Tags keeps documents that carry EVERY one of these tags, each as a whole
 	// tag in gen_content_tags or gen_role_tags — "paint" does not match
-	// "lead paint". A tag is compared the way it is stored: lowercased, its
-	// whitespace collapsed (normalizeContentTag). An entry that normalizes to
-	// nothing is ignored.
+	// "lead paint". A tag is compared the way writeIdentity stores it:
+	// lowercased, its whitespace collapsed (normalizeContentTag). An entry that
+	// normalizes to nothing is ignored.
 	Tags []string
 	// Fields keeps documents whose extracted fields (doc_fields.fields) have each
 	// key equal to its value. Only a JSON STRING value matches: a number or a
@@ -47,8 +47,8 @@ func filterPredicate(f SearchFilter) (string, []any, error) {
 		}
 		// A comma-joined column wrapped in commas holds ",tag," exactly when tag is
 		// one of its whole entries. The column is lowercased and a space after a
-		// comma dropped, so a row written by hand compares the way splitTagList
-		// would read it.
+		// comma dropped, so a row written before writeIdentity normalized, or by
+		// hand, compares the way splitTagList would read it.
 		preds = append(preds, `(instr(','||lower(replace(d.gen_content_tags, ', ', ','))||',', ?) > 0
 		  OR instr(','||lower(replace(d.gen_role_tags, ', ', ','))||',', ?) > 0)`)
 		needle := "," + t + ","
