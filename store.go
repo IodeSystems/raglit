@@ -15,6 +15,17 @@
 // Vectors are deliberately absent in v1. FTS5 lexical BM25 is the floor; a
 // vector sidecar (sqlite-vec, or a custom NSW file) is added only if lexical
 // recall proves insufficient — measured, not assumed.
+//
+// # Embedder surface
+//
+// A program may embed this package as a library (dund does). The surface it
+// may rely on is: OpenHome and OpenIndex (with Home); Store's ingest (Enqueue,
+// Ingest, SetEmbedder, SetIdentifier), search (Search, VecSearch, HybridSearch and their Path and Filtered
+// variants with SearchFilter) and branch (SetParent, BranchDiff) methods; Hit,
+// Job and JobInfo; Models and NewWorker; Runner with StoreSet. api_test.go uses
+// exactly this surface, so a break fails this repository's own tests. It
+// follows semantic versioning from v0.5.0. Everything else in the package is
+// internal to raglit and may change in any release.
 package raglit
 
 import (

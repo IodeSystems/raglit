@@ -1,6 +1,6 @@
 # ragcore: raglit's engine inside dund
 
-Status: APPROVED (Carl, 2026-11-07); being built. Each R step is an aw4
+Status: APPROVED (Carl, 2026-11-07); R1-R5 built on branch `ragcore`, tag v0.5.0 waits for Carl. Each R step is an aw4
 issue. This plan stays here as design history.
 
 ## Decided (Carl)
@@ -36,13 +36,13 @@ dund would have to copy them. Each step below moves one into the root package,
 with cmd/raglit then calling the moved code. Every step is a refactor with no
 behavior change for raglitd; the existing tests are the check.
 
-**R1. Split `attest` into types and service.** `attest/service.go` uses huma
+**R1. Split `attest` into types and service.** Done: 82e5d10, merged 0e37175. `attest/service.go` uses huma
 for HTTP errors, and the root package imports `attest` for its types
 (attest.Entry, Reading, Unit, Asset). Move the HTTP service to
 `attest/service` (or `cmd/raglit`). After this, the root package's closure has
 no huma.
 
-**R2. Worker construction.** `buildWorker` (`cmd/raglit/queuecmd.go:74`,
+**R2. Worker construction.** Done: 48c5e17, merged ff28f1f; fixes 4e637d4 (Channels required), 8bfcca3. `buildWorker` (`cmd/raglit/queuecmd.go:74`,
 about 150 lines) does the following:
 - builds STT, OCR (vision model, or tesseract alone), the segmenter and the
   retry tally;
@@ -56,7 +56,7 @@ endpoints, keys, model ids per role, OCR options. It does not use Home or
 flags. raglit fills `Models` from config.json and its flags. dund fills it from
 its own config.
 
-**R3. Scheduler and drain.** `runQueue` and `runIngestRunners`
+**R3. Scheduler and drain.** Done: 8a1cfea; fixes af4776a, 581b423. `runQueue` and `runIngestRunners`
 (`cmd/raglit/serve.go:359,381`), the lanes, `jobDrain` (`cmd/raglit/drain.go`),
 orphan reclaim and the identity-queue runner all take a `*Registry`. Move them
 to the root as `raglit.Runner` over a list of Stores. raglit passes the
@@ -65,7 +65,7 @@ the drain (stop claiming, cut off at grace, requeue) as much as raglitd does.
 `Worker.Run` alone is not enough: it has no drain, no lanes and no shared
 runner limit across indexes.
 
-**R4. Public surface and version tags.** The surface is:
+**R4. Public surface and version tags.** `api_test.go` and the package comment done; the v0.5.0 tag is not done. The surface is:
 - `OpenHome` / `OpenIndex`
 - `Store`'s ingest, search and branch methods
 - `Hit`, `Job` and `JobInfo`
@@ -76,7 +76,7 @@ break fails raglit's own tests before it reaches dun. Tag v0.5.0, then follow
 semver from there. dun depends on tags. dun does not use a `replace
 ../raglit`, which is what breaks aw4 today.
 
-**R5. Field filters before ranking.** This is needed for memory tags. Add a
+**R5. Field filters before ranking.** Done: 402f210, merged dff199a; fix 80e011e (tags normalized on write). This is needed for memory tags. Add a
 predicate next to `pathPredicate` (`store.go:788`). FTS (`searchLocal`) and
 the vector scan (`vecSearchLocal`) both put it in their WHERE. RRF fusion is
 unchanged. Tags already exist as `documents.gen_content_tags` and
@@ -84,6 +84,22 @@ unchanged. Tags already exist as `documents.gen_content_tags` and
 tags per document), so a tag filter matches on those columns. A field filter
 uses `json_extract` over `doc_fields.fields`. Filters apply in each branch
 layer, the same way the path filter does.
+
+## What the build revealed (for dund's author)
+
+- `Models.Channels` is required. Build one `NewChannels()` per process and pass
+  it in every `Models`.
+- `NewWorker(store, models, pool)` takes `nil` for the pool; the pool is the
+  daemon's cross-index cache.
+- `Runner` needs a `StoreSet` (`Names`, `Existing`). `*Registry` is one; a
+  five-line type over a fixed set is another (see `api_test.go`).
+- The identity queue drains only on a store whose identifier is set. Call
+  `Store.SetIdentifier` (from `Models.Identifier()`) before `Runner.Start`.
+- A branch needs no Registry: `OpenIndex(home, name)` plus `SetParent(parent)`.
+  `BranchDiff` reads the overlay. Registry adds only the on-disk branch.json
+  and lifecycle.
+- Vector search needs `Store.SetEmbedder`. The test sets none, so it checks
+  only the call shape of the vector and hybrid variants, not their results.
 
 ## Correction to dun's docs/rag.md
 
