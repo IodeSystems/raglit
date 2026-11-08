@@ -158,14 +158,16 @@ R5 filters ──────┘
 
 ## Blocking decisions (Carl)
 
-1. Open on dun's side: do code and document indexing move into dund now, or
-   only memory? It changes D1, not R1–R5.
-2. Tag v0.5.0 and push, after R4.
+None open. Tag v0.5.0: done 2026-11-08 (c1cf3a3); its signed manifest waits
+for Carl's `make release-manifest`.
 
 ## Optional, out of scope
 
 - A Postgres backend and a storage interface: not until a second backend is
   needed.
 - Branch merge (raglit P6).
+- A move operation for an index (Carl 2026-11-08: dund would like one; not
+  required). Without it, an index left behind when a project moves or is
+  dropped stays on disk unused. That is accepted.
 - Moving `acl.go`, `keys.go` and `Registry` out of the root package. They are
   not in dund's way.
