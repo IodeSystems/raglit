@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,11 +13,18 @@ import (
 // a time.
 type WatchHub struct {
 	opts WatchOptions
+	// life ends at Stop: index runs are cancelled by it, not by a caller.
+	life context.Context
+	end  context.CancelFunc
+	runs sync.WaitGroup
 
 	mu      sync.Mutex
+	stopped bool
 	roots   map[string]*hubRoot
 	flights map[string]*hubFlights
 }
+
+var errHubStopped = errors.New("raglit: watch hub stopped")
 
 type hubRoot struct {
 	w    *TreeWatcher
@@ -31,7 +39,8 @@ type hubSub struct {
 
 // NewWatchHub makes a hub whose watchers use o.
 func NewWatchHub(o WatchOptions) *WatchHub {
-	return &WatchHub{opts: o, roots: map[string]*hubRoot{}, flights: map[string]*hubFlights{}}
+	life, end := context.WithCancel(context.Background())
+	return &WatchHub{opts: o, life: life, end: end, roots: map[string]*hubRoot{}, flights: map[string]*hubFlights{}}
 }
 
 // Subscribe calls fn with every burst under root. The first subscriber of a
@@ -49,6 +58,9 @@ func (h *WatchHub) Subscribe(root string, r TreeRules, fn func(Changes)) (unsubs
 	key = filepath.Clean(key)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.stopped {
+		return nil, errHubStopped
+	}
 	hr := h.roots[key]
 	if hr == nil {
 		hr = &hubRoot{subs: map[int]hubSub{}}
@@ -146,18 +158,23 @@ func (h *WatchHub) watcher(root string) *TreeWatcher {
 	return nil
 }
 
-// Stop stops every watcher. Subscriptions end; Index still works.
+// Stop stops every watcher, cancels the index runs in flight and waits for
+// them. Subscriptions end; a later Subscribe or Index fails. Stop must not be
+// called from inside an Index do.
 func (h *WatchHub) Stop() {
 	h.mu.Lock()
+	h.stopped = true
 	ws := make([]*TreeWatcher, 0, len(h.roots))
 	for k, hr := range h.roots {
 		ws = append(ws, hr.w)
 		delete(h.roots, k)
 	}
 	h.mu.Unlock()
+	h.end()
 	for _, w := range ws {
 		w.Stop()
 	}
+	h.runs.Wait()
 }
 
 // hubFlights is one key's index runs: whether one is running, and the single
@@ -181,15 +198,20 @@ type hubFlight struct {
 // and the follow-up runs the do of the last of them. So do must cover
 // everything asked so far (drain a set of pending paths, say), not only its
 // own caller's request. A caller whose ctx ends stops waiting; the run goes
-// on, under a context that keeps ctx's values without its cancellation.
+// on, under a context that keeps ctx's values and is cancelled only by Stop.
 func (h *WatchHub) Index(ctx context.Context, key string, do func(context.Context) (TreeResult, error)) (TreeResult, error) {
 	h.mu.Lock()
+	if h.stopped {
+		h.mu.Unlock()
+		return TreeResult{}, errHubStopped
+	}
 	hf, running := h.flights[key]
 	var f *hubFlight
 	if !running {
 		hf = &hubFlights{}
 		h.flights[key] = hf
 		f = &hubFlight{done: make(chan struct{})}
+		h.runs.Add(1)
 		h.mu.Unlock()
 		go h.run(key, hf, f, do, context.WithoutCancel(ctx))
 	} else {
@@ -209,8 +231,9 @@ func (h *WatchHub) Index(ctx context.Context, key string, do func(context.Contex
 }
 
 func (h *WatchHub) run(key string, hf *hubFlights, f *hubFlight, do func(context.Context) (TreeResult, error), ctx context.Context) {
+	defer h.runs.Done()
 	for {
-		f.res, f.err = do(ctx)
+		f.res, f.err = h.runOne(ctx, do)
 		close(f.done)
 		h.mu.Lock()
 		if hf.next == nil {
@@ -222,4 +245,15 @@ func (h *WatchHub) run(key string, hf *hubFlights, f *hubFlight, do func(context
 		hf.next, hf.nextDo, hf.ctx = nil, nil, nil
 		h.mu.Unlock()
 	}
+}
+
+// runOne runs do under ctx's values and the hub's lifetime.
+func (h *WatchHub) runOne(ctx context.Context, do func(context.Context) (TreeResult, error)) (TreeResult, error) {
+	if err := h.life.Err(); err != nil {
+		return TreeResult{}, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(h.life, cancel)()
+	return do(ctx)
 }

@@ -111,3 +111,39 @@ func TestWatchHubIndexSingleFlight(t *testing.T) {
 		t.Errorf("third run result %+v", r)
 	}
 }
+
+// A waiter that gives up does not cancel the run; Stop does, and waits for
+// it. After Stop, Index fails.
+func TestWatchHubStopCancelsRuns(t *testing.T) {
+	h := NewWatchHub(WatchOptions{})
+	started := make(chan struct{})
+	var ended atomic.Bool
+	do := func(ctx context.Context) (TreeResult, error) {
+		close(started)
+		<-ctx.Done()
+		ended.Store(true)
+		return TreeResult{}, ctx.Err()
+	}
+	ctx, giveUp := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { _, err := h.Index(ctx, "root", do); errc <- err }()
+	<-started
+	giveUp()
+	if err := <-errc; err == nil {
+		t.Fatal("a waiter whose ctx ended got no error")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if ended.Load() {
+		t.Fatal("the waiter's cancel cancelled the run")
+	}
+	h.Stop()
+	if !ended.Load() {
+		t.Fatal("Stop returned before the run ended")
+	}
+	if _, err := h.Index(context.Background(), "root", do); err == nil {
+		t.Error("Index after Stop: want an error")
+	}
+	if _, err := h.Subscribe(t.TempDir(), TreeRules{}, func(Changes) {}); err == nil {
+		t.Error("Subscribe after Stop: want an error")
+	}
+}
