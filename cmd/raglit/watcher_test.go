@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -304,5 +305,78 @@ func TestWatcherAddOneFullPass(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if n := w.fullPasses.Load(); n != 1 {
 		t.Fatalf("%d full passes for one Add, want 1", n)
+	}
+}
+
+// A file deleted under a watched directory leaves the index from the burst:
+// the directory's no-link-out Skip does not drop a path that is gone.
+func TestWatcherDirDeleteRemovesDocument(t *testing.T) {
+	daemonRoot := t.TempDir()
+	reg, err := raglit.OpenScopedRegistry(daemonRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	st, err := reg.Get("notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.md")
+	must(t, os.WriteFile(p, []byte("alpha"), 0o644))
+	must(t, st.Ingest(context.Background(), raglit.Document{Path: p, Title: "a.md",
+		Fragments: []raglit.Fragment{{Text: "alpha"}}}))
+
+	w := newWatcher(reg, daemonRoot, time.Hour) // the poll never fires here
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	for {
+		w.mu.Lock()
+		up := w.hub != nil
+		w.mu.Unlock()
+		if up {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	must(t, w.AddDir("notes", dir))
+	must(t, os.Remove(p))
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		paths, err := st.DocumentPaths()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(paths, p) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still indexed after its file was deleted: %v", p, paths)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// noLinkOut admits a gone path whose parent is inside the root, and drops
+// one whose parent links out.
+func TestNoLinkOutGonePath(t *testing.T) {
+	root, out := t.TempDir(), t.TempDir()
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, os.Symlink(out, filepath.Join(root, "link")))
+	skip := noLinkOut(real)
+	if skip(filepath.Join(root, "gone.md")) || skip(filepath.Join(root, "gone", "deeper.md")) {
+		t.Error("a gone path inside the root was dropped")
+	}
+	if !skip(filepath.Join(root, "link", "gone.md")) {
+		t.Error("a gone path under a link out was admitted")
+	}
+	must(t, os.Symlink(filepath.Join(root, "nowhere"), filepath.Join(root, "dangling")))
+	if !skip(filepath.Join(root, "dangling")) {
+		t.Error("a dangling link was admitted")
 	}
 }

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -60,14 +63,24 @@ func configTargets(cfg raglit.Config, baseDir, ns, only string) []treeTarget {
 
 // noLinkOut is a Skip that drops a path whose real location is not under
 // real (a resolved root): a link out of a granted directory is not followed.
+// A path that is gone is judged by its nearest parent that exists, so the
+// removal of a file in the directory still reaches IndexTree.
 func noLinkOut(real string) func(string) bool {
-	return func(p string) bool {
+	var skip func(string) bool
+	skip = func(p string) bool {
 		r, err := filepath.EvalSymlinks(p)
 		if err != nil {
+			if _, lerr := os.Lstat(p); !errors.Is(lerr, fs.ErrNotExist) {
+				return true // a dangling link, or not readable
+			}
+			if d := filepath.Dir(p); d != p {
+				return skip(d)
+			}
 			return true
 		}
 		return r != real && !strings.HasPrefix(r, real+string(filepath.Separator))
 	}
+	return skip
 }
 
 // dirTarget is a watched directory as a tree target: no project config, and
