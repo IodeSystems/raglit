@@ -223,6 +223,21 @@ func TestWorktreeBranch_Overlay(t *testing.T) {
 	if len(m) != 1 || m[0].Path != f.wt("src/b.md") {
 		t.Errorf("MatchDocuments(worktree b) = %+v", m)
 	}
+	// A ref that starts inside the worktree directory's own name.
+	wtName := filepath.Base(f.wtRoot)
+	for _, ref := range []string{wtName + "/src/b.md", "t/src/b.md", wtName + "/src/b"} {
+		m, err = br.MatchDocuments(ref)
+		must(t, err)
+		if len(m) != 1 || m[0].Path != f.wt("src/b.md") {
+			t.Errorf("MatchDocuments(%s) = %+v, want worktree b", ref, m)
+		}
+	}
+	if m, _ := br.MatchDocuments(wtName + "/a.md"); len(m) != 0 {
+		t.Errorf("tombstoned a matched across the root: %+v", m)
+	}
+	if m, _ := br.MatchDocuments("main/src/b.md"); len(m) != 0 {
+		t.Errorf("a main-checkout fragment resolved through the worktree: %+v", m)
+	}
 	if m, _ := br.MatchDocuments(f.main("src/b.md")); len(m) != 0 {
 		t.Errorf("a main-checkout path resolved through the worktree: %+v", m)
 	}

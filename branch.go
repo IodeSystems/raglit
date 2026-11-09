@@ -212,10 +212,12 @@ func (s *Store) MatchDocuments(ref string) ([]DocRef, error) {
 		}
 		return local, nil
 	}
-	// A worktree branch asks the parent for the translated ref, and for the ref
+	// A worktree branch asks the parent for the translated ref, for the ref
 	// itself when it is not a branch path (a file name, a fragment of a path),
-	// and keeps what still matches the ref in branch paths: a main-checkout
-	// path must not resolve through a worktree.
+	// and for the part after the root when the ref starts inside the root's
+	// own name ("wt/src/b.md" for root /x/wt). It keeps what still matches the
+	// ref in branch paths: a main-checkout path must not resolve through a
+	// worktree.
 	ref = strings.TrimSpace(ref)
 	var refs []string
 	if pr, ok := s.toParent(ref); ok && pr != ref {
@@ -223,6 +225,15 @@ func (s *Store) MatchDocuments(ref string) ([]DocRef, error) {
 	}
 	refs = append(refs, ref)
 	lref := strings.ToLower(ref)
+	lroot := strings.ToLower(s.root)
+	// The longest overlap leaves the shortest tail; its parent matches cover
+	// those of every shorter overlap, and the filter below drops the extra.
+	for i := len(ref) - 1; i > 0; i-- {
+		if ref[i] == '/' && strings.HasSuffix(lroot, lref[:i]) {
+			refs = append(refs, ref[i:])
+			break
+		}
+	}
 	seen := map[string]bool{}
 	for _, r := range refs {
 		pmatch, err := s.parent.MatchDocuments(r)
