@@ -32,7 +32,8 @@ type TreeRules struct {
 	Gitignore *bool
 	// Skip drops an absolute path (a file, or for WatchTree a directory).
 	Skip func(path string) bool
-	// MaxBytes: a larger file counts as Skipped. 0 = 2 MiB.
+	// MaxBytes: a larger file counts as Skipped. 0 = 2 MiB; negative = no
+	// limit. A document whose file grew past the limit is kept, not Removed.
 	MaxBytes int64
 }
 
@@ -67,9 +68,13 @@ func (r *TreeResult) Add(o TreeResult) {
 
 const defaultTreeMaxBytes = 2 << 20
 
+// maxBytes is the size limit; 0 = none.
 func (r TreeRules) maxBytes() int64 {
-	if r.MaxBytes > 0 {
+	switch {
+	case r.MaxBytes > 0:
 		return r.MaxBytes
+	case r.MaxBytes < 0:
+		return 0
 	}
 	return defaultTreeMaxBytes
 }
@@ -373,8 +378,11 @@ func indexTreeFiles(ctx context.Context, st *Store, root string, scopes []string
 		if !fi.Mode().IsRegular() {
 			continue
 		}
-		if fi.Size() > limit {
+		if limit > 0 && fi.Size() > limit {
+			// Too large to index now is not gone: a document already
+			// stored for it stays.
 			res.Skipped++
+			keep[f] = true
 			continue
 		}
 		data, err := os.ReadFile(f)

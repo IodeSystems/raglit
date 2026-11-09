@@ -210,4 +210,8 @@ func TestConfigTargets(t *testing.T) {
 	if len(b.rules.Include) != 1 || b.rules.Include[0] != "*.txt" || len(b.rules.Ignore) != 3 {
 		t.Errorf("b: %+v", b)
 	}
+	// The daemon indexes documents of any size (no 2 MiB code-tree default).
+	if a.rules.MaxBytes >= 0 || b.rules.MaxBytes >= 0 {
+		t.Errorf("MaxBytes a=%d b=%d, want no limit", a.rules.MaxBytes, b.rules.MaxBytes)
+	}
 }

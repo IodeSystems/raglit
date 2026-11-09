@@ -219,3 +219,19 @@ func TestFailedSourcesMigratesOldIndex(t *testing.T) {
 		t.Error("failure not recorded after migration")
 	}
 }
+
+// A document whose file grew past MaxBytes stays; a negative MaxBytes is no
+// limit.
+func TestIndexTreeOversizeKeepsDocument(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"a.md": "alpha token text"})
+	s := treeStore(t)
+	indexTree(t, s, root, TreeOptions{})
+	drainStore(t, s)
+	writeFiles(t, root, map[string]string{"a.md": strings.Repeat("alpha token text\n", 3<<20/17+1)})
+	wantCounts(t, "grown", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 0, 1)
+	if h, _ := s.DocumentHash(filepath.Join(root, "a.md")); h == "" {
+		t.Fatal("document of the oversize file was removed")
+	}
+	wantCounts(t, "no limit", indexTree(t, s, root, TreeOptions{Rules: TreeRules{MaxBytes: -1}}), 1, 0, 0, 0, 0)
+}

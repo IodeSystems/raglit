@@ -20,6 +20,10 @@ type treeTarget struct {
 	sig   string // identity of dir+index+rules, to notice a config edit
 }
 
+// noSizeLimit: the daemon indexes documents (PDFs, scans) of any size, as
+// sync and the poll did before IndexTree; the 2 MiB default is for code trees.
+const noSizeLimit = -1
+
 // configTargets resolves a project config's indexes to tree targets, the way
 // PlanSources resolves them: a root's include overrides its index's, and the
 // ignores of config, index and root add up. only, when set, keeps one index.
@@ -40,7 +44,7 @@ func configTargets(cfg raglit.Config, baseDir, ns, only string) []treeTarget {
 				dir:   rootDir(baseDir, root.Path),
 				index: nsIndex(ns, name),
 				local: name,
-				rules: raglit.TreeRules{Include: include, Ignore: ignore, Gitignore: cfg.Gitignore},
+				rules: raglit.TreeRules{Include: include, Ignore: ignore, Gitignore: cfg.Gitignore, MaxBytes: noSizeLimit},
 			}
 			git := "on"
 			if cfg.Gitignore != nil && !*cfg.Gitignore {
@@ -75,7 +79,7 @@ func dirTarget(d dirWatch) (treeTarget, error) {
 	}
 	return treeTarget{
 		dir: d.Dir, index: d.Index, local: d.Index,
-		rules: raglit.TreeRules{Skip: noLinkOut(real)},
+		rules: raglit.TreeRules{Skip: noLinkOut(real), MaxBytes: noSizeLimit},
 		sig:   d.key(),
 	}, nil
 }
