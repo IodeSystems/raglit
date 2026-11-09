@@ -233,6 +233,14 @@ func cleanRoot(name, r string) (string, error) {
 // that differ from the parent's, plus tombstones. With both empty, the branch
 // does no translation. One set and the other empty is an error.
 //
+// Translation is a string prefix match: OpenBranch does not resolve symlinks.
+// root must be spelled as the paths the branch's documents are ingested under,
+// and parentRoot as the paths the parent index stores. A different spelling
+// (a symlinked directory, or git's resolved path from WorktreeOf against an
+// index of unresolved paths) translates nothing and reports nothing: every
+// worktree file counts as new, and the parent's documents show at their
+// main-checkout paths. root may be inside parentRoot.
+//
 // The parent index must exist. OpenBranch opens its own handle on it and does
 // not wire the parent's own parent. The returned store owns that handle: its
 // Close closes the parent too. Two branches of one parent each hold a handle.
@@ -328,6 +336,11 @@ func GCBranches(branches []Home, alive func(root string) bool) (removed int, err
 // --git-common-dir) and, when git cannot run, reads the .git file's gitdir
 // pointer. It only answers the question; the caller decides which index is the
 // parent.
+//
+// mainRoot is spelled as git records it, which is usually with symlinks
+// resolved, and may differ from the spelling of dir and of the paths an index
+// holds. Before passing it to OpenBranch, spell it as the parent index's
+// document paths are spelled (see OpenBranch).
 func WorktreeOf(dir string) (mainRoot string, ok bool) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
