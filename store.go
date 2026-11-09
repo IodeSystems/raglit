@@ -298,12 +298,23 @@ func Open(path string) (*Store, error) {
 	// captioning worker — and a writer that arrives while another holds the lock
 	// gets SQLITE_BUSY immediately unless told to wait. Ten seconds is far past
 	// any write here, all of which are short.
+	//
+	// _txlock=immediate makes every db.Begin a BEGIN IMMEDIATE, which takes the
+	// write lock first and waits for it under busy_timeout. A deferred BEGIN
+	// can read before its first write without any SELECT in the code: the
+	// prepare of a statement that reaches a virtual table connects that table
+	// on a connection that has not yet, and FTS5's connect reads its config
+	// table. A delete from documents reaches fragments_fts through the cascade
+	// and the fragments_ad trigger. That read opens a read transaction, and
+	// SQLite runs the busy handler only for a connection with no transaction,
+	// so the write then failed with SQLITE_BUSY at once whenever another
+	// connection held the write lock. Every transaction here writes.
 	dsn := path
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"
 	}
-	dsn += sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)"
+	dsn += sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

@@ -302,11 +302,12 @@ func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, e
 // The whole removal is one transaction that takes the write lock first.
 func (s *Store) DeleteDocument(path string) error {
 	ctx := context.Background()
-	// Every statement of the removal runs in one BEGIN IMMEDIATE transaction.
-	// Taking the write lock up front waits under busy_timeout like any writer;
-	// a deferred transaction that read before it wrote would fail with
-	// SQLITE_BUSY_SNAPSHOT the moment an ingest worker committed, and
-	// busy_timeout does not apply to that. Tags held for a document that never
+	// Every statement of the removal runs in one BEGIN IMMEDIATE transaction,
+	// so it takes the write lock up front and waits under busy_timeout like any
+	// writer. In a deferred transaction the first DELETE read before it wrote:
+	// its prepare connects fragments_fts, and FTS5 reads its config then (see
+	// Open). The write then failed with SQLITE_BUSY at once whenever an ingest
+	// worker held the write lock. Tags held for a document that never
 	// committed go with it (the document's own tags went with its row), and the
 	// tombstone hides a parent's version. The tombstone is harmless on a
 	// non-branch store.

@@ -1,6 +1,8 @@
 package raglit
 
 import (
+	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -16,24 +18,28 @@ func TestForeignKeysOnEveryPooledConnection(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	// Hold several connections simultaneously so the pool has to open new ones.
+	// Held as connections, not transactions: a transaction takes the write
+	// lock at BEGIN (_txlock=immediate), so a second one would wait for the
+	// first.
 	const n = 8
-	var txs []interface{ Rollback() error }
+	ctx := context.Background()
+	var conns []*sql.Conn
 	for range n {
-		tx, err := s.db.Begin()
+		c, err := s.db.Conn(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var fk int
-		if err := tx.QueryRow("PRAGMA foreign_keys").Scan(&fk); err != nil {
+		if err := c.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
 			t.Fatal(err)
 		}
 		if fk != 1 {
 			t.Fatalf("a pooled connection has foreign_keys=%d — the cascade will not fire on it", fk)
 		}
-		txs = append(txs, tx)
+		conns = append(conns, c)
 	}
-	for _, tx := range txs {
-		_ = tx.Rollback()
+	for _, c := range conns {
+		_ = c.Close()
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // Removing a document while ingest workers write must not fail with
@@ -81,6 +82,67 @@ func TestBusy_RemoveWhileWritersCommit(t *testing.T) {
 			wg.Wait()
 			if failed > 0 {
 				t.Errorf("%d of 200 removals failed", failed)
+			}
+		})
+	}
+}
+
+// A transaction whose first statement is a write still read first when that
+// statement's prepare connects a virtual table: deleting a document cascades
+// to fragments, whose trigger writes fragments_fts, and FTS5's xConnect reads
+// fragments_fts_config. Inside a deferred BEGIN that read opens a read
+// transaction, and the write that follows cannot wait for the lock: SQLite
+// runs the busy handler only for a connection with no transaction open, so
+// the DELETE fails with SQLITE_BUSY at once while another connection holds
+// the write lock. A connection connects the table once, so this is a fresh
+// pooled connection's first such statement (SetMaxIdleConns(0) makes every
+// connection fresh). The store's transactions take the write lock at BEGIN
+// and wait for it under busy_timeout instead.
+func TestBusy_FirstWriteOnAFreshConnectionWaits(t *testing.T) {
+	ctx := context.Background()
+	for name, remove := range map[string]func(s *Store, path string) error{
+		"Begin": func(s *Store, path string) error {
+			tx, err := s.db.Begin()
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback() //nolint:errcheck // no-op after Commit
+			if _, err := tx.Exec(`DELETE FROM documents WHERE path = ?`, path); err != nil {
+				return err
+			}
+			return tx.Commit()
+		},
+		"DeleteDocument": (*Store).DeleteDocument,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, err := Open(t.TempDir() + "/i.db")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			const p = "file:///doomed.md"
+			must(t, s.Ingest(ctx, Document{Path: p, Title: "D", Fragments: []Fragment{{Text: "doomed text"}}}))
+			s.db.SetMaxIdleConns(0)
+
+			holder, err := s.db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Close()
+			if _, err := holder.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- remove(s, p) }()
+			time.Sleep(200 * time.Millisecond)
+			if _, err := holder.ExecContext(ctx, `ROLLBACK`); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("remove while another connection held the write lock: %v", err)
+			}
+			if h, _ := s.DocumentHash(p); h != "" {
+				t.Errorf("document still there after the remove")
 			}
 		})
 	}
