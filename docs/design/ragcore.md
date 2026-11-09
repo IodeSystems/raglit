@@ -158,8 +158,7 @@ R5 filters ──────┘
 
 ## Blocking decisions (Carl)
 
-None open. Tag v0.5.0: done 2026-11-08 (c1cf3a3); its signed manifest waits
-for Carl's `make release-manifest`.
+None open. Tag v0.5.0: done 2026-11-08 (c1cf3a3), with its signed manifest.
 
 
 ## R6: what dund's first build asked for (APPROVED 2026-11-08)
