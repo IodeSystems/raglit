@@ -19,13 +19,28 @@
 // # Embedder surface
 //
 // A program may embed this package as a library (dund does). The surface it
-// may rely on is: OpenHome and OpenIndex (with Home); Store's ingest (Enqueue,
-// Ingest, SetEmbedder, SetIdentifier), search (Search, VecSearch, HybridSearch and their Path and Filtered
-// variants with SearchFilter) and branch (SetParent, BranchDiff) methods; Hit,
-// Job and JobInfo; Models and NewWorker; Runner with StoreSet. api_test.go uses
-// exactly this surface, so a break fails this repository's own tests. It
-// follows semantic versioning from v0.5.0. Everything else in the package is
-// internal to raglit and may change in any release.
+// may rely on is:
+//   - OpenHome and OpenIndex (with Home); StoreSet;
+//     Models, NewWorker, NewChannels, NewEmbedder (with VectorClient),
+//     NewIdentifier, Models.Identifier, NewSegmenter (Segmenter.SegmentText,
+//     SegResult.Degraded).
+//   - Store ingest: Enqueue, Ingest (Document, Fragment), SetEmbedder,
+//     SetIdentifier, SetTags (caller-owned tags, also on a path not yet
+//     ingested).
+//   - Store search: Search, VecSearch, HybridSearch and their Path and
+//     Filtered variants with SearchFilter.
+//   - Store vectors: EmbedModel, SyncEmbedModel(model, dim), MissingVectors,
+//     BackfillVectors, DropVectors; index metadata: Meta, SetMeta.
+//   - Store documents: Documents (DocSummary, with ContentHash and AddedAt),
+//     DocumentHash, RemoveDocument, Prune(dry, deleteOriginals) to collect
+//     originals, Close.
+//   - Branch: SetParent, BranchDiff. Jobs: Jobs, Job, ClaimNext; Hit, Job and
+//     JobInfo; Runner (Start, Drain, CutOff, Done).
+//
+// api_test.go uses exactly this surface, so a break fails this repository's
+// own tests. It follows semantic versioning from v0.5.0; v0.6.0 added the
+// vector, metadata, segmentation, listing and tag calls. Everything else in
+// the package is internal to raglit and may change in any release.
 package raglit
 
 import (

@@ -164,6 +164,19 @@ for Carl's `make release-manifest`.
 
 ## R6: what dund's first build asked for (APPROVED 2026-11-08)
 
+Status (v0.6.0 build, branch v060): R6a-f and R7a, R7b, R7d DONE; R7c stays
+deferred. Commits: R6c Done covers captions, R7a Documents/ContentHash, R7d
+page_readings sweep 5cb87f3; R6d atomic SetEmbedder, R6e embed_dim and
+DropVectors cb92e29 (fix: a reembed leaves no old vectors 1b2ab80); R6b, R7b
+SetTags c9d4b34; follow-up fixes c685a51 (cut-off captions requeue, ContentHash
+pin) and e8fc84b (pending_tags in the removal sweep); R6a, R6f, R7a pins in
+api_test.go and the package comment in the pins commit on top. Build notes:
+`DocSummary.Hash` was never added, `ContentHash` is the pinned name (see R7a).
+`Prune` is pinned as `Prune(dry, deleteOriginals bool) (PruneResult, error)`;
+dund collects originals with `Prune(false, true)`, and `Prune(true, false)` is
+the dry report. The pin test ingests directly, tags `kind:strategy`, filters by
+that tag (and not by `kind`), lists, and removes.
+
 dun-bb built dund against v0.5.1 (dun branch ragcore-dund, 2a7eb32). It works
 as is. It uses three exports that api_test.go does not pin, and it found two
 gaps. Nothing here blocks dund.

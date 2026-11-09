@@ -41,10 +41,40 @@ var (
 	_ func(*raglit.Store, int64) (raglit.JobInfo, error)                                           = (*raglit.Store).Job
 	_ func(*raglit.Store) (*raglit.Job, error)                                                     = (*raglit.Store).ClaimNext
 
+	// R6a, R6f, R7a: embedding, vectors, metadata, segmentation, listing, tags.
+	// Prune is what dund calls to collect originals: Prune(false, true).
+	_ func(raglit.VectorClient, string) *raglit.Embedder                                 = raglit.NewEmbedder
+	_ func(raglit.Models) *raglit.Identifier                                             = raglit.Models.Identifier
+	_ func(*raglit.Store) string                                                         = (*raglit.Store).EmbedModel
+	_ func(*raglit.Store, string, int) (bool, error)                                     = (*raglit.Store).SyncEmbedModel
+	_ func(*raglit.Store) (int, error)                                                   = (*raglit.Store).MissingVectors
+	_ func(*raglit.Store, context.Context, int) (int, error)                             = (*raglit.Store).BackfillVectors
+	_ func(*raglit.Store) (int, error)                                                   = (*raglit.Store).DropVectors
+	_ func(*raglit.Store, string) (string, bool)                                         = (*raglit.Store).Meta
+	_ func(*raglit.Store, string, string, int64) error                                   = (*raglit.Store).SetMeta
+	_ func(raglit.Chatter) *raglit.Segmenter                                             = raglit.NewSegmenter
+	_ func(*raglit.Segmenter, context.Context, string, string) (raglit.SegResult, error) = (*raglit.Segmenter).SegmentText
+	_ func(*raglit.Store) ([]raglit.DocSummary, error)                                   = (*raglit.Store).Documents
+	_ func(*raglit.Store, string) (string, error)                                        = (*raglit.Store).DocumentHash
+	_ func(*raglit.Store, string, bool) error                                            = (*raglit.Store).RemoveDocument
+	_ func() *raglit.Channels                                                            = raglit.NewChannels
+	_ func(*raglit.Store) error                                                          = (*raglit.Store).Close
+	_ func(raglit.Chatter, string) *raglit.Identifier                                    = raglit.NewIdentifier
+	_ func(*raglit.Store, bool, bool) (raglit.PruneResult, error)                        = (*raglit.Store).Prune
+	_ func(*raglit.Store, string, []string) error                                        = (*raglit.Store).SetTags
+
 	_ func(*raglit.Runner, context.Context) (context.Context, context.Context) = (*raglit.Runner).Start
 	_ func(*raglit.Runner, time.Duration) bool                                 = (*raglit.Runner).Drain
 	_ func(*raglit.Runner)                                                     = (*raglit.Runner).CutOff
 	_ func(*raglit.Runner) <-chan struct{}                                     = (*raglit.Runner).Done
+)
+
+// Types dund constructs or reads, named field by field so a rename fails here.
+var (
+	_ = raglit.Document{Path: "p", Title: "t", Fragments: []raglit.Fragment{{Page: 1, Ord: 0, Text: "x"}}}
+	_ = raglit.DocSummary{}.ContentHash // the document's source hash, same value as DocumentHash
+	_ = raglit.DocSummary{}.AddedAt
+	_ = raglit.SegResult{}.Degraded
 )
 
 // oneStore is the smallest StoreSet: what an embedder without a Registry passes.
@@ -164,6 +194,56 @@ func TestEmbedderSurface(t *testing.T) {
 	jobs, err := st.Jobs("", 10)
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("jobs: %v, err %v", jobs, err)
+	}
+
+	// Direct ingest of local text, tagged by the caller, listed and removed.
+	const dpath = "mem://strategy-1"
+	if err := st.Ingest(ctx, raglit.Document{Path: dpath, Title: "Strategy", Fragments: []raglit.Fragment{{Page: 0, Ord: 0, Text: "The quokka maneuver wins endgames."}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTags(dpath, []string{"kind:strategy"}); err != nil {
+		t.Fatal(err)
+	}
+	if hs, err := st.SearchFiltered("quokka", raglit.SearchFilter{Tags: []string{"kind:strategy"}}, 5); err != nil || len(hs) != 1 {
+		t.Fatalf("tag filter kind:strategy: %d hits, err %v", len(hs), err)
+	}
+	if hs, err := st.SearchFiltered("quokka", raglit.SearchFilter{Tags: []string{"kind"}}, 5); err != nil || len(hs) != 0 {
+		t.Fatalf("tag filter kind (whole tags only): %d hits, err %v", len(hs), err)
+	}
+	var found *raglit.DocSummary
+	docs, err := st.Documents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range docs {
+		if docs[i].Path == dpath {
+			found = &docs[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("Documents does not list %s", dpath)
+	}
+	dh, err := st.DocumentHash(dpath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.ContentHash != dh {
+		t.Fatalf("DocSummary.ContentHash %q != DocumentHash %q", found.ContentHash, dh)
+	}
+	if err := st.RemoveDocument(dpath, false); err != nil {
+		t.Fatal(err)
+	}
+	if hs, err := st.Search("quokka", 5); err != nil || len(hs) != 0 {
+		t.Fatalf("search after remove: %d hits, err %v", len(hs), err)
+	}
+	if docs, err := st.Documents(); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, d := range docs {
+			if d.Path == dpath {
+				t.Fatal("Documents still lists the removed document")
+			}
+		}
 	}
 
 	if !r.Drain(10 * time.Second) {
