@@ -263,6 +263,9 @@ func TestWatcherConcurrentRefreshUnwatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A pass that started before the Remove may still be walking; one that
+	// starts after it does nothing.
+	time.Sleep(200 * time.Millisecond)
 	p := filepath.Join(docs, "late.md")
 	must(t, os.WriteFile(p, []byte("late"), 0o644))
 	time.Sleep(1500 * time.Millisecond) // past the default debounce

@@ -522,8 +522,11 @@ func (w *watcher) indexWatch(rw *rootWatch) {
 	}
 	_, _ = hub.Index(ctx, rw.key, func(ctx context.Context) (raglit.TreeResult, error) {
 		paths, any := rw.take()
-		if !any {
-			return raglit.TreeResult{}, nil
+		w.mu.Lock()
+		live := w.subs[rw.key] == rw
+		w.mu.Unlock()
+		if !any || !live {
+			return raglit.TreeResult{}, nil // nothing pending, or unwatched since
 		}
 		return w.indexTarget(ctx, rw.owner, rw.t, paths)
 	})
