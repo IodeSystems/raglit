@@ -549,6 +549,24 @@ END;`); err != nil {
 	)`); err != nil {
 		return err
 	}
+	// Files whose last ingest failed, with the hash of the bytes that failed
+	// (failedsources.go). Raw SQL, like the tables above.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS failed_sources (
+		path  TEXT PRIMARY KEY,
+		hash  TEXT NOT NULL,
+		at    INTEGER NOT NULL,
+		error TEXT NOT NULL DEFAULT '',
+		attempts INTEGER NOT NULL DEFAULT 1
+	)`); err != nil {
+		return err
+	}
+	if has, err := hasColumn(db, "failed_sources", "attempts"); err != nil {
+		return err
+	} else if !has {
+		if _, err := db.Exec(`ALTER TABLE failed_sources ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
 	// Kinds gained families (captionprofile.go): a kind stored before that is a
 	// bare legal term, "court filing" → "legal:court-filing". Idempotent — a
 	// kind with a family is left alone.

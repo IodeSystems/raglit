@@ -134,8 +134,11 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 				return nil
 			}
 		}
+		// IndexTree does not queue these bytes again until they change.
+		w.Store.recordFailedSource(job.URL, sourceHash(job.URL), ierr.Error())
 		return w.Store.failJob(job.ID, ierr.Error())
 	}
+	w.Store.clearFailedSource(job.URL)
 	// The Documents tree's size and date (srcstat.go). Best-effort: a stat that
 	// fails leaves the document's size unknown, not the job failed.
 	_ = w.Store.RecordSourceStat(job.URL)
