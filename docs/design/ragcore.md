@@ -305,7 +305,16 @@ with no foreign key (schema.sql:201) and is not deleted. Fix: delete it in
 `DeleteDocument`, with a test that counts every table's rows after a remove.
 Originals stay on disk for the prune. Pin `Prune`, so dund can collect them.
 
-## R8: for the code index (APPROVED 2026-11-08; built after v0.6.0)
+## R8: for the code index (APPROVED 2026-11-08; BUILT in v0.7.0)
+
+Status: done on branch v070 (shas from `git log main..HEAD`; merge commits
+omitted).
+- Line ranges, stable ids (R8a, R8b): 9f768c6, review fix e753416.
+- Usage hook (R8c): 95793d9, review fix c10b631.
+- Priority and 429 ticket: no code, as decided.
+- Branch merge (P6): not built, as decided.
+- `api_test.go` and the package "Embedder surface" comment pin all of it
+  (the commit that adds this note).
 
 - **Line ranges.** Fragments have byte offsets `start_off`/`end_off`
   (schema.sql:75), set only on the text-overlap path. Neither lines nor offsets
@@ -342,7 +351,25 @@ Originals stay on disk for the prune. Pin `Prune`, so dund can collect them.
 **Not needed (dun-bb):** export/import, an ANN index, Postgres, Registry, or
 attestation in the core.
 
-## R8: code segmenter (APPROVED 2026-11-08)
+## R8: code segmenter (APPROVED 2026-11-08; BUILT in v0.7.0)
+
+Status: done.
+- Core: `KindCode`, `CodeSegmenter`, `CodeSpan`, `Models.Code`, the code
+  fragmenter, recipe hash with `Runtime()` (R8d): b4d2594, review fix 78e6256.
+- raglitd adapter over poly-lsp-mcp v0.5.0 `segment` (R8e): 186ba13, doc fix
+  7cfde84.
+- The switch is `code_segmenter` in config or `--code-segmenter` on the
+  daemon. Default off: `Models.Code` is nil, fragments and recipe hash are
+  unchanged.
+- Binary size, `cmd/raglit` built with `go build` on the same machine: 54.8 MB
+  before the adapter (78e6256), 69.1 MB with it (+14.2 MB, +26%). The cost is
+  the gotreesitter grammar blobs.
+- Found while building: `CodeSegmenter` gained `Sections` (Markdown
+  headings) and `Runtime` (recipe key) beyond the interface sketched below.
+  A file indexed before the switch is on keeps its windows: the unchanged-bytes
+  fast path skips it before the pool key is checked. `raglit ingest --fresh`
+  re-cuts it.
+- Root deps test unchanged: root imports no parser.
 
 What exists. poly-lsp-mcp's `symbols.FileSymbols(language, content)`
 (symbols/filesymbols.go:78) returns every symbol in source order. Each symbol

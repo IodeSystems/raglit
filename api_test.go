@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iodesystems/agentkit/llm"
 	"github.com/iodesystems/raglit"
 )
 
@@ -63,6 +64,9 @@ var (
 	_ func(*raglit.Store, bool, bool) (raglit.PruneResult, error)                        = (*raglit.Store).Prune
 	_ func(*raglit.Store, string, []string) error                                        = (*raglit.Store).SetTags
 
+	// R8: stable fragment ids and the code segmenter.
+	_ func(*raglit.Store, string) (bool, error) = (*raglit.Store).FragmentExists
+
 	_ func(*raglit.Runner, context.Context) (context.Context, context.Context) = (*raglit.Runner).Start
 	_ func(*raglit.Runner, time.Duration) bool                                 = (*raglit.Runner).Drain
 	_ func(*raglit.Runner)                                                     = (*raglit.Runner).CutOff
@@ -75,7 +79,28 @@ var (
 	_ = raglit.DocSummary{}.ContentHash // the document's source hash, same value as DocumentHash
 	_ = raglit.DocSummary{}.AddedAt
 	_ = raglit.SegResult{}.Degraded
+
+	// R8: line spans (half-open, 1-based), symbol path and stable id.
+	_ = raglit.Fragment{StartLine: 1, EndLine: 2, Symbol: "S.m"}
+	_ = raglit.Hit{}.StartLine
+	_ = raglit.Hit{}.EndLine
+	_ = raglit.Hit{}.Symbol
+	_ = raglit.Hit{}.ContentID
+
+	// R8: usage hook and code segmenter, nil by default.
+	_ = raglit.Models{OnUsage: func(role, model string, u llm.Usage) {}, Code: nil}
+	_ = raglit.CodeSpan{Sym: "s", Class: "c", StartLine: 1, EndLine: 2, CommentStartLine: 0, BodyStartLine: 0}
 )
+
+// fakeCode pins the CodeSegmenter method set.
+type fakeCode struct{}
+
+func (fakeCode) ForPath(string) (string, bool)                     { return "", false }
+func (fakeCode) Symbols(string, []byte) ([]raglit.CodeSpan, error) { return nil, nil }
+func (fakeCode) Sections([]byte) ([]raglit.CodeSpan, error)        { return nil, nil }
+func (fakeCode) Runtime() string                                   { return "fake" }
+
+var _ raglit.CodeSegmenter = fakeCode{}
 
 // oneStore is the smallest StoreSet: what an embedder without a Registry passes.
 type oneStore struct {
@@ -244,6 +269,28 @@ func TestEmbedderSurface(t *testing.T) {
 				t.Fatal("Documents still lists the removed document")
 			}
 		}
+	}
+
+	// Caller-given lines and symbol come back on the hit, with a stable id.
+	const cpath = "mem://code-1"
+	if err := st.Ingest(ctx, raglit.Document{Path: cpath, Title: "Code", Fragments: []raglit.Fragment{{Page: 0, Ord: 0, Text: "func Wombat() {}", StartLine: 10, EndLine: 11, Symbol: "Zoo.Wombat"}}}); err != nil {
+		t.Fatal(err)
+	}
+	hs, err := st.Search("Wombat", 5)
+	if err != nil || len(hs) != 1 {
+		t.Fatalf("search Wombat: %d hits, err %v", len(hs), err)
+	}
+	if hs[0].StartLine != 10 || hs[0].EndLine != 11 || hs[0].Symbol != "Zoo.Wombat" || hs[0].ContentID == "" {
+		t.Fatalf("hit lost its lines, symbol or content id: %+v", hs[0])
+	}
+	if ok, err := st.FragmentExists(hs[0].ContentID); err != nil || !ok {
+		t.Fatalf("FragmentExists after ingest: %v, err %v", ok, err)
+	}
+	if err := st.RemoveDocument(cpath, false); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.FragmentExists(hs[0].ContentID); err != nil || ok {
+		t.Fatalf("FragmentExists after remove: %v, err %v", ok, err)
 	}
 
 	if !r.Drain(10 * time.Second) {

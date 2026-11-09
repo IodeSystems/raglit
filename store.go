@@ -21,9 +21,12 @@
 // A program may embed this package as a library (dund does). The surface it
 // may rely on is:
 //   - OpenHome and OpenIndex (with Home); StoreSet;
-//     Models, NewWorker, NewChannels, NewEmbedder (with VectorClient),
+//     Models (OnUsage, Code), NewWorker, NewChannels, NewEmbedder (with VectorClient),
 //     NewIdentifier, Models.Identifier, NewSegmenter (Segmenter.SegmentText,
 //     SegResult.Degraded).
+//   - Code index: CodeSegmenter and CodeSpan (Models.Code, nil by default);
+//     Fragment.StartLine, EndLine and Symbol; Hit.StartLine, EndLine, Symbol
+//     and ContentID; Store.FragmentExists(contentID).
 //   - Store ingest: Enqueue, Ingest (Document, Fragment), SetEmbedder,
 //     SetIdentifier, SetTags (caller-owned tags, also on a path not yet
 //     ingested).
@@ -39,7 +42,8 @@
 //
 // api_test.go uses exactly this surface, so a break fails this repository's
 // own tests. It follows semantic versioning from v0.5.0; v0.6.0 added the
-// vector, metadata, segmentation, listing and tag calls. Everything else in
+// vector, metadata, segmentation, listing and tag calls; v0.7.0 added the
+// code-index calls above and Models.OnUsage. Everything else in
 // the package is internal to raglit and may change in any release.
 package raglit
 
