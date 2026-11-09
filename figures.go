@@ -90,13 +90,14 @@ type ImageEmbedder interface {
 // disk, else the DESCRIPTION via the text embedder (same space as fragments, so
 // text queries can match). Best-effort — a figure that can't be embedded is still
 // stored (searchable inline as text), it just won't appear in figure search.
-func (s *Store) embedMedia(ctx context.Context, media []stagedMedia) {
+// emb is the text embedder (nil for none), the same one the caller passes to
+// commitDoc.
+func (s *Store) embedMedia(ctx context.Context, emb *Embedder, media []stagedMedia) {
 	if len(media) == 0 {
 		return
 	}
 	// Image embeddings first (when available); collect the rest for a batched
 	// description embedding.
-	emb := s.textEmbedder()
 	var descIdx []int
 	for i := range media {
 		m := &media[i]

@@ -83,7 +83,7 @@ func TestEmbedMedia_ImageEmbedderWins(t *testing.T) {
 		f.Close()
 
 		media := []stagedMedia{{page: 1, kind: "figure", description: "a billing table", imagePath: f.Name()}}
-		s.embedMedia(context.Background(), media)
+		s.embedMedia(context.Background(), s.textEmbedder(), media)
 		if ie.called != 1 {
 			t.Fatalf("aligned=%v: image embedder called %d times, want 1", tc.aligned, ie.called)
 		}

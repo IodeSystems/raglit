@@ -230,3 +230,140 @@ func TestSetEmbedder_ConcurrentWithIngestAndSearch(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// gateClient is fixedDimClient whose first call signals entered and then waits
+// for release: the test swaps the embedder while that call is in flight.
+type gateClient struct {
+	fixedDimClient
+	once     sync.Once
+	entered  chan struct{}
+	released chan struct{}
+}
+
+func newGateClient(dim int) *gateClient {
+	return &gateClient{fixedDimClient: fixedDimClient{dim: dim},
+		entered: make(chan struct{}), released: make(chan struct{})}
+}
+
+func (c *gateClient) Embed(ctx context.Context, model string, input []string) ([][]float32, error) {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.released
+	})
+	return c.fixedDimClient.Embed(ctx, model, input)
+}
+
+func vectorDims(t *testing.T, s *Store) map[int]int {
+	t.Helper()
+	rows, err := s.db.Query(`SELECT dim, COUNT(*) FROM fragment_vectors GROUP BY dim`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[int]int{}
+	for rows.Next() {
+		var d, n int
+		if err := rows.Scan(&d, &n); err != nil {
+			t.Fatal(err)
+		}
+		out[d] = n
+	}
+	return out
+}
+
+// An ingest that embedded with the embedder a reembed replaced (SetEmbedder,
+// then SyncEmbedModel) writes no vectors: they would be in the old space, and
+// the backfill fills only fragments with none. The backfill then embeds the
+// fragment with the new model.
+func TestReembed_InFlightIngestLeavesNoOldVectors(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	old := newGateClient(3)
+	s.SetEmbedder(NewEmbedder(old, "old"))
+	if _, err := s.SyncEmbedModel("old", 3); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- s.Ingest(ctx, Document{Path: "file:///a.md", Title: "A",
+			Fragments: []Fragment{{Text: "token refresh"}}})
+	}()
+	<-old.entered
+	s.SetEmbedder(NewEmbedder(fixedDimClient{dim: 4}, "new"))
+	if dropped, err := s.SyncEmbedModel("new", 4); err != nil || !dropped {
+		t.Fatalf("model change: dropped=%v err=%v", dropped, err)
+	}
+	close(old.released)
+	must(t, <-done)
+	if miss, _ := s.MissingVectors(); miss != 1 {
+		t.Fatalf("after the in-flight ingest %d missing, want 1 (old vector discarded); dims %v", miss, vectorDims(t, s))
+	}
+	if n, err := s.BackfillVectors(ctx, 8); err != nil || n != 1 {
+		t.Fatalf("backfill: %d, %v", n, err)
+	}
+	if got := vectorDims(t, s); len(got) != 1 || got[4] != 1 {
+		t.Fatalf("vector dims %v, want one of dim 4", got)
+	}
+}
+
+// The same for a backfill batch in flight across the swap: its vectors are
+// discarded and it says so, rather than reporting the batch as embedded.
+func TestReembed_InFlightBackfillIsDiscarded(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	must(t, s.Ingest(ctx, Document{Path: "file:///a.md", Title: "A",
+		Fragments: []Fragment{{Text: "token refresh"}}}))
+	old := newGateClient(3)
+	s.SetEmbedder(NewEmbedder(old, "old"))
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		n, err := s.BackfillVectors(ctx, 8)
+		done <- result{n, err}
+	}()
+	<-old.entered
+	s.SetEmbedder(NewEmbedder(fixedDimClient{dim: 4}, "new"))
+	close(old.released)
+	if r := <-done; r.n != 0 || r.err != errEmbedderChanged {
+		t.Fatalf("stale backfill: %d, %v; want 0, errEmbedderChanged", r.n, r.err)
+	}
+	if miss, _ := s.MissingVectors(); miss != 1 {
+		t.Fatalf("%d missing, want 1", miss)
+	}
+}
+
+// commitDoc (the staged pipeline and the pool path) drops the vectors of an
+// embedder that is no longer the store's, fragment and description alike, and
+// keeps an image-space figure vector, which the text embedder did not make.
+func TestCommitDoc_StaleEmbedderVectorsDropped(t *testing.T) {
+	s := openMem(t)
+	a := NewEmbedder(fixedDimClient{dim: 3}, "a")
+	s.SetEmbedder(NewEmbedder(fixedDimClient{dim: 4}, "b"))
+	frags := []stagedFrag{{page: 1, ord: 0, text: "token refresh"}}
+	media := []stagedMedia{
+		{page: 1, kind: "figure", description: "d1", fragIdx: 0, vec: []float32{1, 0, 0}, space: spaceText},
+		{page: 1, ord: 1, kind: "figure", description: "d2", fragIdx: 0, vec: []float32{1, 0}, space: spaceImage},
+	}
+	must(t, s.commitDoc("file:///a.md", "A", "overlap", "", frags, nil, media,
+		map[int][]float32{0: {1, 0, 0}}, a, nil))
+	if miss, _ := s.MissingVectors(); miss != 1 {
+		t.Fatalf("%d missing, want 1", miss)
+	}
+	var spaces []string
+	rows, err := s.db.Query(`SELECT space FROM media_vectors`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sp string
+		must(t, rows.Scan(&sp))
+		spaces = append(spaces, sp)
+	}
+	if len(spaces) != 1 || spaces[0] != spaceImage {
+		t.Fatalf("media vector spaces %v, want only %q", spaces, spaceImage)
+	}
+}

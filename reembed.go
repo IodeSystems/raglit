@@ -3,6 +3,7 @@ package raglit
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -43,6 +44,8 @@ func (s *Store) SyncEmbedModel(model string, dim int) (dropped bool, err error) 
 	if model == "" {
 		return false, nil
 	}
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
 	cur, _ := s.Meta(metaEmbedModel)
 	metaDim, curDim := s.embedDims()
 	modelChanged := cur != "" && cur != model
@@ -108,6 +111,8 @@ func (s *Store) embedDims() (recorded, current int) {
 // the model and dim records are untouched. Returns the number of vectors
 // deleted.
 func (s *Store) DropVectors() (int, error) {
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -171,6 +176,11 @@ func (s *Store) FragmentCount() (int, error) {
 	return n, err
 }
 
+// errEmbedderChanged is a backfill whose embedder SetEmbedder replaced while
+// it embedded. Its vectors are discarded; a backfill with the new embedder
+// fills the same fragments.
+var errEmbedderChanged = errors.New("raglit: re-embed: the embedder changed during the batch; its vectors were discarded")
+
 // BackfillVectors embeds up to batch fragments that have no vector, then figure
 // descriptions with no text-space vector, and returns how many it embedded. 0
 // means there is nothing left (or no embedder, or the index is paused).
@@ -220,6 +230,11 @@ func (s *Store) backfill(ctx context.Context, emb *Embedder, batch int, sel, ins
 	}
 	if len(vecs) != len(ids) {
 		return 0, fmt.Errorf("raglit: re-embed: %d vectors for %d texts", len(vecs), len(ids))
+	}
+	current, unlock := s.vectorsCurrent(emb)
+	defer unlock()
+	if !current {
+		return 0, errEmbedderChanged
 	}
 	tx, err := s.db.Begin()
 	if err != nil {

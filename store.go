@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -64,6 +65,13 @@ type Store struct {
 	// goroutine reads it. Read it once per operation (textEmbedder), so a swap
 	// mid-call cannot pair a nil check with another embedder's use.
 	embedder atomic.Pointer[Embedder]
+	// vecMu orders vector writes against vector drops. A write of vectors from
+	// the text embedder holds it shared, and checks under it that the embedder
+	// is still the one that made them (vectorsCurrent); SyncEmbedModel and
+	// DropVectors hold it exclusive. An ingest that embedded with the embedder
+	// a reembed has just replaced therefore either writes before the drop, and
+	// is dropped with the rest, or finds the swap and writes no vectors.
+	vecMu sync.RWMutex
 	// imageEmbedder, when set, embeds figure IMAGES (a CLIP-style tower) for
 	// figure search; nil → figures fall back to embedding their DESCRIPTION with
 	// the text embedder (same space as fragments, so text queries can match).
@@ -149,10 +157,26 @@ func (s *Store) SetJobURL(id int64, url string) error {
 
 // SetEmbedder enables vector search: fragments are embedded on Ingest and
 // VecSearch/HybridSearch become available. nil disables it.
+//
+// A reembed of an index with ingests in flight is, in this order: SetEmbedder
+// with the new embedder, then SyncEmbedModel (or DropVectors), then
+// BackfillVectors until it returns 0. An in-flight ingest that embedded with
+// the old embedder then leaves no vectors behind (vecMu); its fragments are
+// missing a vector, and the backfill embeds them with the new one. The other
+// order (drop, then swap) leaves a window in which old vectors survive.
 func (s *Store) SetEmbedder(e *Embedder) { s.embedder.Store(e) }
 
 // textEmbedder returns the embedder SetEmbedder set, or nil.
 func (s *Store) textEmbedder() *Embedder { return s.embedder.Load() }
+
+// vectorsCurrent takes vecMu shared and reports whether emb, the embedder that
+// made the vectors about to be written, is still the store's. The caller
+// writes the vectors only when it is, and calls the returned unlock after the
+// write commits.
+func (s *Store) vectorsCurrent(emb *Embedder) (current bool, unlock func()) {
+	s.vecMu.RLock()
+	return s.textEmbedder() == emb, s.vecMu.RUnlock
+}
 
 // SetIdentifier enables document identity: each ingested document is captioned,
 // summarised and typed by the model (identity.go), and the summary is indexed.
@@ -606,6 +630,14 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 		vecs, err := emb.EmbedDocs(ctx, texts)
 		if err != nil {
 			return fmt.Errorf("raglit: embed fragments: %w", err)
+		}
+		current, unlock := s.vectorsCurrent(emb)
+		defer unlock()
+		if !current {
+			// A reembed replaced the embedder during the call: these vectors
+			// are in the old space. The fragments stay without one, for the
+			// reembed's backfill.
+			return nil
 		}
 		vtx, err := s.db.Begin()
 		if err != nil {

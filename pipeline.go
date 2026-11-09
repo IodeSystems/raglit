@@ -561,9 +561,9 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	}
 
 	media := extractMedia(frags, provenance)
-	s.embedMedia(ctx, media) // figure embeddings (image-or-description); best-effort
+	s.embedMedia(ctx, emb, media) // figure embeddings (image-or-description); best-effort
 	recipe := fragRecipe(fragMode, window, stride, floor, fc.FigurePrompt)
-	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs, nil); err != nil {
+	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs, emb, nil); err != nil {
 		sl.Fail("commit", "", err)
 		return 0, "", err
 	}
@@ -936,8 +936,23 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 // the fragment wipe above just deleted it: a document whose identity columns
 // survive an ingest but whose summary is no longer indexed is exactly the silent
 // half-state this transaction exists to make impossible.
-func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []stagedFrag, provenance []stagedPage, media []stagedMedia, vecs map[int][]float32, ident *DocIdentity) error {
+//
+// emb is the text embedder that made vecs and the text-space media vectors. If
+// a reembed replaced it since, those vectors are in the old space and are not
+// written: the fragments and figures go in without them, for the reembed's
+// backfill.
+func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []stagedFrag, provenance []stagedPage, media []stagedMedia, vecs map[int][]float32, emb *Embedder, ident *DocIdentity) error {
 	ctx := context.Background()
+	current, unlock := s.vectorsCurrent(emb)
+	defer unlock()
+	if !current {
+		vecs = nil
+		for i := range media {
+			if media[i].space != spaceImage {
+				media[i].vec = nil
+			}
+		}
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
