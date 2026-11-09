@@ -144,6 +144,13 @@ func (b *TokenBudget) Fits(ctx context.Context, text string) bool {
 	if b.Unlimited() {
 		return true
 	}
+	// Short text fits without asking the tokenizer. Counting is two requests
+	// (text and Overhead), and the code fragmenter checks each piece more than
+	// once. A tokenizer makes at most one token per byte (byte fallback); the
+	// factor 2 leaves room for one that does not quite.
+	if b.exact && 2*(len(text)+len(b.Overhead)) <= b.limit-b.Reserve {
+		return true
+	}
 	return b.Tokens(ctx, text) <= b.room(ctx)
 }
 

@@ -212,6 +212,39 @@ func TestIngestCode_OversizeDeclarationSplits(t *testing.T) {
 	}
 }
 
+// With no embed limit known, a declaration over the window is still cut: the
+// window bounds it, as it bounds the text path.
+func TestIngestCode_UnknownLimitBoundedByWindow(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("var table = []string{\n") // 1
+	for i := 0; i < 400; i++ {
+		fmt.Fprintf(&b, "\t\"row %03d of a generated table\",\n", i) // 2-401
+	}
+	b.WriteString("}\n") // 402
+	src := b.String()
+	spans := []CodeSpan{{Sym: "table", StartLine: 1, EndLine: 403}}
+	s := openMem(t)
+	if _, _, err := s.ingestCode(context.Background(), &fakeCode{symbols: spans}, "table.go", "table",
+		[]byte(src), FragConfig{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	window, _, floor := ResolveFragParams(0, 0, 0, 0)
+	got := docFrags(t, s, "table.go")
+	if len(got) < 2 {
+		t.Fatalf("a %d-byte declaration with no known limit is %d fragment(s)", len(src), len(got))
+	}
+	for _, f := range got {
+		if f.Symbol != "table" || len(f.Text) > window+floor {
+			t.Errorf("fragment [%d,%d) symbol %q, %d bytes: want table and at most %d",
+				f.StartLine, f.EndLine, f.Symbol, len(f.Text), window+floor)
+		}
+	}
+	doc, _ := s.DocText("table.go", 0, 0, 0)
+	if doc.Text != src {
+		t.Fatal("reassembly not exact")
+	}
+}
+
 // A parse error, or no spans, indexes the file exactly as the text fragmenter
 // does, and the stage log names the error.
 func TestIngestCode_ParseErrorFallsBack(t *testing.T) {
@@ -355,21 +388,9 @@ func TestWorker_CodeSegmenterRouting(t *testing.T) {
 	}
 }
 
-// The segmenter is in the pool recipe only when one is set, so a worker
-// without one keeps the recipe hash it had before.
-func TestIngestRecipe_SegmenterTerm(t *testing.T) {
-	in := recipeInputs{VisionModel: "v", EmbedModel: "e", CheapEngine: "c",
-		FragWindow: 1, FragStride: 2, FragFloor: 3, IndexHint: "h"}
-	before := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d|hint=%s",
-		"v", "e", "c", 1, 2, 3, FigurePromptVersion(), HashHex([]byte("h")))
-	if got := ingestRecipe(in); got != before {
-		t.Fatalf("recipe with no segmenter changed:\n got %q\nwant %q", got, before)
-	}
-	in.Segmenter = "fake@1"
-	if got := ingestRecipe(in); got != before+"|segmenter=fake@1" {
-		t.Fatalf("recipe with a segmenter = %q", got)
-	}
-
+// The segmenter is in the pool key of KindCode only: the other kinds never
+// reach it, and re-keying them would re-read every PDF and image for nothing.
+func TestPoolRecipe_SegmenterTerm(t *testing.T) {
 	pool, err := OpenPool(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -377,10 +398,50 @@ func TestIngestRecipe_SegmenterTerm(t *testing.T) {
 	t.Cleanup(func() { _ = pool.Close() })
 	plain := NewWorker(testStore(t), Models{OCR: noTesseract, Channels: NewChannels()}, pool)
 	coded := NewWorker(testStore(t), Models{OCR: noTesseract, Channels: NewChannels(), Code: &fakeCode{}}, pool)
+	bumped := NewWorker(testStore(t), Models{OCR: noTesseract, Channels: NewChannels(), Code: &fakeCode{runtime: "fake@2"}}, pool)
 	if plain.Code != nil || coded.Code == nil {
 		t.Fatal("NewWorker did not carry Models.Code")
 	}
-	if plain.RecipeHash == coded.RecipeHash {
-		t.Error("turning the segmenter on did not change the recipe hash")
+	if plain.RecipeHash != coded.RecipeHash {
+		t.Error("turning the segmenter on changed the recipe hash of every kind")
+	}
+	for _, k := range []DocKind{KindText, KindPDF, KindImage, KindOffice, KindEmail, KindSpreadsheet, KindUnknown} {
+		if plain.poolRecipe(k) != coded.poolRecipe(k) || coded.poolRecipe(k) != bumped.poolRecipe(k) {
+			t.Errorf("%s: pool key depends on the segmenter", k)
+		}
+	}
+	if coded.poolRecipe(KindCode) == bumped.poolRecipe(KindCode) {
+		t.Error("a new segmenter runtime kept the KindCode pool key")
+	}
+	if coded.poolRecipe(KindCode) == coded.poolRecipe(KindText) {
+		t.Error("KindCode and KindText share a pool key")
+	}
+}
+
+// countingTokenizer counts its requests.
+type countingTokenizer struct {
+	fakeTokenizer
+	calls int
+}
+
+func (c *countingTokenizer) CountTokens(ctx context.Context, text string) (int, bool) {
+	c.calls++
+	return c.fakeTokenizer.CountTokens(ctx, text)
+}
+
+// Pieces far under the token limit are not sent to the tokenizer: the code
+// fragmenter checks each piece more than once, and each check was two
+// requests to the embed endpoint.
+func TestIngestCode_ShortPiecesNotCounted(t *testing.T) {
+	tok := &countingTokenizer{fakeTokenizer: fakeTokenizer{charsPerToken: 1}}
+	fc := FragConfig{EmbedLimitTokens: 1000, EmbedTokenCounter: tok}
+	s := openMem(t)
+	if _, _, err := s.ingestCode(context.Background(), &fakeCode{symbols: goSpans}, "demo.go", "demo",
+		[]byte(goFile), fc, nil); err != nil {
+		t.Fatal(err)
+	}
+	// One probe, when the budget is built.
+	if tok.calls != 1 {
+		t.Errorf("%d tokenizer request(s) for a %d-byte file under a 1000-token limit, want 1", tok.calls, len(goFile))
 	}
 }

@@ -544,6 +544,12 @@ func (w *Worker) poolRecipe(kind DocKind) string {
 	if kind == KindText || kind == KindUnknown {
 		key += "|lines=1"
 	}
+	// Only KindCode output depends on the segmenter, so only its key names
+	// it. In RecipeHash it would re-key every PDF and image (a VLM re-read)
+	// whenever the segmenter is turned on or its version changes.
+	if kind == KindCode && w.Code != nil {
+		key += "|segmenter=" + w.Code.Runtime()
+	}
 	return HashHex([]byte(key))
 }
 

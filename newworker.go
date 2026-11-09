@@ -75,7 +75,7 @@ type Models struct {
 	OnUsage func(role, model string, u llm.Usage)
 	// Code cuts source files at their declarations and Markdown at its
 	// headings (KindCode, codesegment.go). nil → both are read into windows,
-	// as before. Its Runtime() is in the pool recipe.
+	// as before. Its Runtime() is in the KindCode pool key (poolRecipe).
 	Code CodeSegmenter
 }
 
@@ -412,16 +412,11 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 	if pool != nil {
 		w.Pool = pool
 		fw, fs, ff := ResolveFragParams(m.FragWindow, m.FragStride, m.FragFloor, m.EmbedLimitChars)
-		segmenter := ""
-		if m.Code != nil {
-			segmenter = m.Code.Runtime()
-		}
 		w.RecipeHash = HashHex([]byte(ingestRecipe(recipeInputs{
 			VisionModel: m.Vision.Model, EmbedModel: m.Embed.Model,
 			CheapEngine: cheapEngine,
 			FragWindow:  fw, FragStride: fs, FragFloor: ff,
 			IndexHint: store.IndexHint(),
-			Segmenter: segmenter,
 		})))
 	}
 	return w
@@ -443,21 +438,13 @@ type recipeInputs struct {
 	// document replaying the reading it got under the old one, and nothing
 	// would say so — the pool would report a hit and the job would report done.
 	IndexHint string
-	// Segmenter is Models.Code's Runtime(), empty with no segmenter. It
-	// decides how code and Markdown are cut. Empty adds no term, so a worker
-	// without one keeps the recipe it had before segmenters existed.
-	Segmenter string
 }
 
 // ingestRecipe renders the pool key's inputs. Its own function so the thing
 // that must not silently lose a term can be asserted on.
 func ingestRecipe(in recipeInputs) string {
-	r := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d|hint=%s",
+	return fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d|hint=%s",
 		in.VisionModel, in.EmbedModel, in.CheapEngine,
 		in.FragWindow, in.FragStride, in.FragFloor,
 		FigurePromptVersion(), HashHex([]byte(in.IndexHint)))
-	if in.Segmenter != "" {
-		r += "|segmenter=" + in.Segmenter
-	}
-	return r
 }

@@ -571,12 +571,18 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	} else if len(pages) == 1 && pages[0].code != nil {
 		// A file a CodeSegmenter cut (ingestCode). Too big means what the
 		// embedder cannot take as one input: the character limit, then tokens.
+		// With neither known (an endpoint that cannot be probed, and some
+		// truncate silently), it is the window, as on the text path: an
+		// unbounded piece would be sent whole and cut by the endpoint.
 		cu := pages[0].code
 		fragMode = fragModeCode
 		if cu.sections {
 			fragMode = fragModeSections
 		}
 		oversize := func(t string) bool {
+			if fc.EmbedLimit <= 0 && embedBudget.Unlimited() {
+				return len(t) > window
+			}
 			return (fc.EmbedLimit > 0 && len(t) > fc.EmbedLimit) || !embedBudget.Fits(ctx, t)
 		}
 		fragmentCode(pages[0], oversize, window, stride, floor, sink)
