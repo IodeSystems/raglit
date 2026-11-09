@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iodesystems/raglit"
@@ -55,6 +56,8 @@ type watcher struct {
 	hub      *raglit.WatchHub
 	subs     map[string]*rootWatch // rootWatch.key → subscription
 	degraded map[string]bool       // owners (home or dirWatch.key) that poll
+
+	fullPasses atomic.Int64 // whole-tree IndexTree runs, for tests
 }
 
 // rootWatch is one tree target's subscription and its pending changes.
@@ -169,8 +172,7 @@ func (w *watcher) Add(home string) error {
 	w.homes[abs] = true
 	w.mu.Unlock()
 	w.persist()
-	w.indexOwner(abs)
-	w.refresh()
+	w.scanOwner(abs, w.refresh())
 	return nil
 }
 
@@ -198,8 +200,7 @@ func (w *watcher) AddDir(index, dir string) error {
 		}
 	}
 	w.mu.Unlock()
-	w.indexOwner(d.key())
-	w.refresh()
+	w.scanOwner(d.key(), w.refresh())
 	return nil
 }
 
@@ -407,15 +408,16 @@ func homeTargets(home string) []treeTarget {
 
 // refresh makes the subscriptions match the registrations: a new target is
 // subscribed and indexed in full, a target no longer asked for (a config
-// edit, an unwatch) is unsubscribed. A no-op before run.
-func (w *watcher) refresh() {
+// edit, an unwatch) is unsubscribed. A no-op before run. It returns the
+// subscriptions it added.
+func (w *watcher) refresh() []*rootWatch {
 	w.refreshMu.Lock()
 	defer w.refreshMu.Unlock()
 	want := w.targets()
 	w.mu.Lock()
 	if w.hub == nil {
 		w.mu.Unlock()
-		return
+		return nil
 	}
 	if w.subs == nil {
 		w.subs = map[string]*rootWatch{}
@@ -468,6 +470,7 @@ func (w *watcher) refresh() {
 		rw.mark(raglit.Changes{}) // a new subscription starts from the whole tree
 		go w.indexWatch(rw)
 	}
+	return added
 }
 
 // refreshAfter is refresh for a caller holding w.mu: it runs once the
@@ -526,6 +529,33 @@ func (w *watcher) indexWatch(rw *rootWatch) {
 	})
 }
 
+// scanOwner indexes every target of one owner in full and returns when that
+// is done: one pass per target. With the hub, it goes through the target's
+// hub.Index flight, so it shares the full pass a new subscription (added, by
+// refresh) already asked for; an existing subscription is asked for one.
+// Before run, it indexes directly.
+func (w *watcher) scanOwner(owner string, added []*rootWatch) {
+	w.mu.Lock()
+	hub := w.hub
+	var rws []*rootWatch
+	for _, rw := range w.subs {
+		if rw.owner == owner {
+			rws = append(rws, rw)
+		}
+	}
+	w.mu.Unlock()
+	if hub == nil {
+		w.indexOwner(owner)
+		return
+	}
+	for _, rw := range rws {
+		if !slices.Contains(added, rw) {
+			rw.mark(raglit.Changes{})
+		}
+		w.indexWatch(rw)
+	}
+}
+
 // indexOwner indexes every target of one owner in full, now.
 func (w *watcher) indexOwner(owner string) {
 	ctx := context.Background()
@@ -548,6 +578,9 @@ func (w *watcher) indexTarget(ctx context.Context, owner string, t treeTarget, p
 	st, err := w.reg.Get(t.index)
 	if err != nil {
 		return raglit.TreeResult{}, err
+	}
+	if paths == nil {
+		w.fullPasses.Add(1)
 	}
 	var all []treeTarget
 	for _, ts := range w.targets() {

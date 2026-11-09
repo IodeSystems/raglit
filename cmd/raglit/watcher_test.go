@@ -270,3 +270,36 @@ func TestWatcherConcurrentRefreshUnwatches(t *testing.T) {
 		t.Fatalf("%s queued after unwatch: a subscription leaked", p)
 	}
 }
+
+// Add with run going indexes the new home in one full pass, done when Add
+// returns: not a pass of its own and a second from the new subscription.
+func TestWatcherAddOneFullPass(t *testing.T) {
+	reg, daemonRoot, home, docs := projectFixture(t)
+	must(t, os.WriteFile(filepath.Join(docs, "a.md"), []byte("alpha"), 0o644))
+	w := newWatcher(reg, daemonRoot, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	for {
+		w.mu.Lock()
+		up := w.hub != nil
+		w.mu.Unlock()
+		if up {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	must(t, w.Add(home))
+	st, err := reg.Get("proj__docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pendingURLs(t, st)[filepath.Join(docs, "a.md")] {
+		t.Fatal("a.md not queued when Add returned")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := w.fullPasses.Load(); n != 1 {
+		t.Fatalf("%d full passes for one Add, want 1", n)
+	}
+}
