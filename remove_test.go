@@ -2,8 +2,6 @@ package raglit
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,37 +9,55 @@ import (
 	"testing"
 )
 
-// Documents carries the content hash, equal to DocumentHash and to the sha256
-// of the file's bytes.
+// Documents carries the content hash: the sha256 of the source file's raw
+// bytes as the Worker reads them, not of the extracted text, and the same value
+// as DocumentHash. HTML is used because its extracted text differs from its
+// bytes, so a worker that hashed the text would fail here.
 func TestDocuments_HashIsSha256OfSourceBytes(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
-	src := filepath.Join(t.TempDir(), "a.md")
-	data := []byte("# token refresh\nrotate the key\n")
+	src := filepath.Join(t.TempDir(), "a.html")
+	data := []byte("<html><body><h1>Token refresh</h1><p>rotate the key before it expires</p></body></html>")
 	if err := os.WriteFile(src, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	path := "file://" + src
-	must(t, s.Ingest(ctx, Document{Path: path, Title: "A", Fragments: []Fragment{{Text: "token refresh"}}}))
-	sum := sha256.Sum256(data)
-	want := hex.EncodeToString(sum[:])
-	must(t, s.SetDocumentHash(path, want))
-
-	got, err := s.DocumentHash(path)
-	must(t, err)
-	if got != want {
-		t.Fatalf("DocumentHash = %q, want sha256 of the bytes %q", got, want)
+	if _, err := s.Enqueue(src, ""); err != nil {
+		t.Fatal(err)
+	}
+	did, err := (&Worker{Store: s}).ProcessOne(ctx)
+	if err != nil || !did {
+		t.Fatalf("ProcessOne = %v, %v", did, err)
 	}
 	docs, err := s.Documents()
 	must(t, err)
-	if len(docs) != 1 || docs[0].Hash != want || docs[0].Hash != got {
-		t.Fatalf("Documents = %+v, want one document with Hash %q", docs, want)
+	if len(docs) != 1 {
+		t.Fatalf("Documents = %+v, want one document", docs)
+	}
+	path := docs[0].Path
+	text, err := s.DocText(path, 0, 0, 0)
+	must(t, err)
+	if text.Text == "" || text.Text == string(data) {
+		t.Fatalf("extracted text %q: want it non-empty and different from the bytes", text.Text)
+	}
+
+	want := sha256hex(data)
+	if got := docs[0].ContentHash; got != want {
+		t.Fatalf("ContentHash = %q, want sha256 of the raw bytes %q", got, want)
+	}
+	if docs[0].ContentHash == sha256hex([]byte(text.Text)) {
+		t.Fatal("ContentHash is the sha256 of the extracted text")
+	}
+	got, err := s.DocumentHash(path)
+	must(t, err)
+	if got != want {
+		t.Fatalf("DocumentHash = %q, want %q", got, want)
 	}
 }
 
 // A removed document leaves no row behind in any per-document table. Tables
-// are enumerated from the schema: a table keyed on documents(id) or on a
-// document path that this test does not list fails it, so a new table gets a
+// are enumerated from the schema: a table with a doc_id column, or with a
+// column that holds a document path (doc, doc_path, path, url), that this test
+// neither counts nor lists as kept on purpose fails it, so a new table gets a
 // decision.
 func TestRemoveDocument_LeavesNothingBehind(t *testing.T) {
 	s := openMem(t)
@@ -94,26 +110,47 @@ func TestRemoveDocument_LeavesNothingBehind(t *testing.T) {
 		"page_readings": `SELECT COUNT(*) FROM page_readings WHERE doc = ?1`,
 	}
 	// Tables keyed on a document path that are not removed with the document,
-	// each on purpose and not checked here: attestations, readings, withdrawals
-	// (audit and ruling history), identity_jobs, ingest_jobs (queues), and the
-	// tombstone the removal itself writes.
-
-	// Every table with a doc_id column must be counted above.
-	rows, err := s.db.Query(`SELECT m.name FROM sqlite_master m
-		 WHERE m.type = 'table' AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) WHERE name = 'doc_id')`)
-	must(t, err)
-	var withDocID []string
-	for rows.Next() {
-		var n string
-		must(t, rows.Scan(&n))
-		withDocID = append(withDocID, n)
+	// each on purpose and not checked here: audit and ruling history, the
+	// queues and the caption held for a queued ingest (supplied_identities, which
+	// that ingest's commit consumes), and the tombstone the removal itself
+	// writes.
+	kept := map[string]bool{
+		"supplied_identities": true,
+		"attestations":        true,
+		"readings":            true,
+		"withdrawals":         true,
+		"identity_jobs":       true,
+		"ingest_jobs":         true,
+		"tombstones":          true,
 	}
-	must(t, rows.Err())
-	rows.Close()
-	sort.Strings(withDocID)
-	for _, n := range withDocID {
-		if _, ok := counts[n]; !ok {
-			t.Errorf("table %s has a doc_id column and is not covered by this test", n)
+
+	// Every table with a doc_id or a path column must be counted or kept above.
+	tableRows, err := s.db.Query(`SELECT m.name, EXISTS (SELECT 1 FROM pragma_table_info(m.name) WHERE name = 'doc_id')
+		  FROM sqlite_master m
+		 WHERE m.type = 'table' AND EXISTS (SELECT 1 FROM pragma_table_info(m.name)
+		       WHERE name IN ('doc_id', 'doc', 'doc_path', 'path', 'url'))`)
+	must(t, err)
+	type table struct {
+		name  string
+		docID bool
+	}
+	var found []table
+	for tableRows.Next() {
+		var tb table
+		must(t, tableRows.Scan(&tb.name, &tb.docID))
+		found = append(found, tb)
+	}
+	must(t, tableRows.Err())
+	tableRows.Close()
+	sort.Slice(found, func(i, j int) bool { return found[i].name < found[j].name })
+	for _, tb := range found {
+		_, byID := counts[tb.name]
+		_, byPath := pathCounts[tb.name]
+		switch {
+		case tb.docID && !byID:
+			t.Errorf("table %s has a doc_id column and is not counted by this test", tb.name)
+		case !tb.docID && !byID && !byPath && !kept[tb.name]:
+			t.Errorf("table %s has a document path column and is neither counted nor kept on purpose", tb.name)
 		}
 	}
 

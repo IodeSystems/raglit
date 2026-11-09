@@ -259,6 +259,9 @@ R8 covers what the code index will need.
 - `DocumentAddedAt` is not pinned. The listing carries `AddedAt`, which is the
   time of the last real ingest (worker.go:325 skips an unchanged file before
   commit). Document that.
+- Correction at build (2026-11-08): `DocSummary` already carried
+  `ContentHash` (`documents.content_hash`, json `content_hash`). A second
+  field with the same value was not added; `ContentHash` is the pinned name.
 - Pin `RemoveDocument(path, stored)` (docfiles.go:27). `stored` also deletes
   the document's bytes, but only if they are in this index's own storage (an
   upload or an extracted attachment).

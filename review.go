@@ -64,16 +64,13 @@ type DocSummary struct {
 	// A re-ingest of an unchanged file is skipped before commit (worker.go), so
 	// it does not move AddedAt.
 	AddedAt int64 `json:"added_at"`
-	// Hash is the sha256 hex of the raw source bytes, the same value as
-	// Store.DocumentHash; "" for a document never hashed. ContentHash carries the
-	// same value on the wire. Hash is for callers of the Go API and is not
-	// serialised.
-	Hash string `json:"-"`
 	// SrcSize / SrcMtime are the source file's bytes and modified time (unix
 	// seconds); 0 when unknown (srcstat.go).
 	SrcSize  int64 `json:"src_size,omitempty"`
 	SrcMtime int64 `json:"src_mtime,omitempty"`
-	// ContentHash is the sha256 of the source bytes.
+	// ContentHash is documents.content_hash: the sha256 hex of the raw source
+	// bytes, not of the extracted text, and the same value as
+	// Store.DocumentHash; "" for a document never hashed.
 	ContentHash string `json:"content_hash,omitempty"`
 	// GenName / GenKind / GenSource are what the document IS (identity.go), for a
 	// list a person can navigate. Both names travel: the caption is what a reader
@@ -132,7 +129,7 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 			return nil, err
 		}
 		out = append(out, DocSummary{Path: path, Title: title, Fragments: int(frags), FragMode: fragMode,
-			AddedAt: addedAt, Hash: contentHash, ContentHash: contentHash, SrcSize: srcSize, SrcMtime: srcMtime, Engines: map[string]int{},
+			AddedAt: addedAt, ContentHash: contentHash, SrcSize: srcSize, SrcMtime: srcMtime, Engines: map[string]int{},
 			GenName: genName, GenKind: genKind, GenSource: genSource, GenSummary: genSummary, GenModel: genModel,
 			GenContentTags: splitTagList(ctStr), GenRoleTags: splitTagList(rtStr)})
 		ids = append(ids, id)

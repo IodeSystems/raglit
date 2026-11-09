@@ -719,3 +719,50 @@ func TestIdentityWorker_StaleCaptionIsReplaced(t *testing.T) {
 		t.Fatalf("caption after the sweep = %q — the copied one was kept", id.Name)
 	}
 }
+
+// blockingChatter holds every call until its context ends, then fails with the
+// context's error: a caption in flight when the daemon stops.
+type blockingChatter struct{ started chan struct{} }
+
+func (c *blockingChatter) ChatStream(ctx context.Context, _ []llm.Message, _ []llm.ToolDef,
+	_ *llm.ChatOpts) (<-chan llm.StreamChunk, error) {
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A caption cut off by a stop goes back to pending, unowned, not to error: a
+// stop or reload is not the document's fault, and an error row is never retried.
+func TestIdentityWorker_CancelledCaptionRequeues(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	c := &blockingChatter{started: make(chan struct{}, 1)}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+	if _, err := s.EnqueueMissingIdentities(false); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-c.started; cancel() }()
+	if _, err := (&IdentityWorker{Store: s, Slots: 1}).Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var state, msg string
+	var pid int64
+	if err := s.db.QueryRow(`SELECT state, error, owner_pid FROM identity_jobs`).Scan(&state, &msg, &pid); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || pid != 0 {
+		t.Fatalf("row after a cancelled caption: state %q, owner_pid %d, error %q; want pending, 0", state, pid, msg)
+	}
+	// And the next drain does it.
+	s.SetIdentifier(NewIdentifier(&countingChatter{}, "m"))
+	if _, err := (&IdentityWorker{Store: s, Slots: 1}).Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	q, err := s.IdentityQueue()
+	if err != nil || q.Done != 1 || q.Pending != 0 {
+		t.Fatalf("queue after the second drain = %+v, %v", q, err)
+	}
+}
