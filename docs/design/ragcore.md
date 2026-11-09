@@ -161,6 +161,238 @@ R5 filters ──────┘
 None open. Tag v0.5.0: done 2026-11-08 (c1cf3a3); its signed manifest waits
 for Carl's `make release-manifest`.
 
+
+## R6: what dund's first build asked for (APPROVED 2026-11-08)
+
+dun-bb built dund against v0.5.1 (dun branch ragcore-dund, 2a7eb32). It works
+as is. It uses three exports that api_test.go does not pin, and it found two
+gaps. Nothing here blocks dund.
+
+**R6a. Pin what dund already uses.** Add these to api_test.go:
+- `NewEmbedder(VectorClient, model)`. This also pins the `VectorClient`
+  interface, which the agentkit llm client satisfies.
+- `Models.Identifier()`.
+- `Document{Path, Title, Fragments}` and `Fragment{Page, Ord, Text}`, so dund
+  can call `Store.Ingest` directly for local text instead of queueing a job.
+These are additions only, with no code change.
+
+**R6b. Caller-owned tags with no caption fragment.** Today the only way a
+caller can set tags is `SupplyIdentity`. It writes a caption, and the caption
+is a searchable fragment, so a tagged document can come back twice in the
+hits. Tags also cannot go in `gen_content_tags`, because the identity model
+rewrites that column on every caption (identity.go:1082).
+
+Plan:
+- A new `documents.tags` column that only the caller writes. Identity never
+  touches it.
+- `Store.SetTags(path, tags []string) error` replaces the document's tags,
+  normalized the same way as the other tags. Called on a path that has not
+  been ingested yet, it holds the tags pending and the next commit of that
+  path applies them, the same way a supplied identity is consumed. So
+  "enqueue, then tag" works without waiting for the job.
+- `SearchFilter.Tags` matches `tags`, `gen_content_tags` and `gen_role_tags`.
+- No fragment is written. Tags are filter data, not text.
+- Migration: add the column with default ''. Existing indexes are unaffected.
+
+**R6c. `Runner.Done()` covers the caption goroutines.** Done closes when
+ingest returns. The identity loop (`runIdentity`, runner.go:322) runs under
+the claim context and has no done signal. An embedder that closes its stores
+after `CutOff` can therefore close one under a caption in progress. Change:
+Done closes only after both loops have returned. raglitd waits on the same
+signal, so a stop can now wait for one in-flight caption call. That call has
+already been cancelled through the claim context, so the wait is short.
+
+**R6d. `SetEmbedder` atomic.** Today it is a plain field write
+(store.go:147), while `SetIdentifier` is an `atomic.Pointer`. dund's reembed
+swaps the embedder while an ingest job may be running on that index, which is
+a data race. Fix: make it an `atomic.Pointer[Embedder]` the same way, and
+cover it with a `-race` test. Until this lands, dund refuses a reembed while
+that index has active jobs.
+
+**R6e. A changed vector size drops the vectors.** `SyncEmbedModel(model)`
+(reembed.go:28) drops the vectors only when the model id changes. If the same
+id now returns a different dimension, the old vectors stay and cannot be used.
+dund records an `embed_dim` key in index_meta itself. Plan: raglit owns that
+key. `SyncEmbedModel` takes the dimension, records it next to `embed_model`
+and drops the vectors when either one differs. Also add
+`Store.DropVectors()`, which drops the vectors unconditionally, for a forced
+reembed. dund then stops writing `embed_dim` itself.
+
+**R6f. Pin the rest of what dund uses:**
+- the vector calls: `EmbedModel`, `SyncEmbedModel` (with its new signature),
+  `MissingVectors`, `BackfillVectors`, `DropVectors`;
+- the index metadata calls: `Meta`, `SetMeta`;
+- segmentation: `NewSegmenter(Chatter)`, `Segmenter.SegmentText`,
+  `SegResult.Degraded`.
+
+`SupplyIdentity` is not pinned. R6b's `SetTags` replaces dund's use of it,
+which is tags only. A caption that should be searchable still goes through
+`SupplyIdentity`, and that stays unpinned until someone needs it.
+
+**Version:** v0.6.0. These are additions, plus two changes: the
+`SyncEmbedModel` signature, and what Done waits for. Before 1.0 a minor
+version can break; dund is the only embedder.
+
+**Blocking decisions (Carl), for R6–R8:**
+1. R6b tags: DECIDED. A separate caller-owned `tags` column (Carl,
+   2026-11-08).
+2. Release: DECIDED. R6 and R7 ship as v0.6.0, R8 as v0.7.0 (Carl,
+   2026-11-08).
+3. R8 code segmenter: DECIDED (Carl, 2026-11-08). poly-lsp-mcp exports a
+   lightweight segmenter. raglit's core accepts one through an interface and
+   does not import poly-lsp-mcp. raglitd (cmd/raglit) and dund both import
+   poly-lsp-mcp and plug it in. Plan below, under "R8: code segmenter".
+
+## R7: dund's full list (APPROVED 2026-11-08)
+
+dun-bb sent everything dund needs for the remaining slices: memory,
+strategies, then code and docs. Each item below was checked against the code;
+the file:line references come from that check. R7 covers what dund uses now.
+R8 covers what the code index will need.
+
+**R7a. Listing and pins for what dund uses today.**
+- `Store.Documents()` (branch.go:173) returns `DocSummary` (review.go:55)
+  without the hash. Add `Hash` (`documents.content_hash`). Pin `Documents`
+  and `DocSummary`, so dund can reconcile a directory in one call. Pin
+  `DocumentHash` with its format: sha256 hex of the raw source bytes
+  (worker.go:250; schema.sql:10), not of the extracted text.
+- `DocumentAddedAt` is not pinned. The listing carries `AddedAt`, which is the
+  time of the last real ingest (worker.go:325 skips an unchanged file before
+  commit). Document that.
+- Pin `RemoveDocument(path, stored)` (docfiles.go:27). `stored` also deletes
+  the document's bytes, but only if they are in this index's own storage (an
+  upload or an extracted attachment).
+- Pin `NewChannels()`, `Store.Close`, `Identifier` and `NewIdentifier(Chatter,
+  model)`.
+
+**R7b. Tags (extends R6b).**
+- The normalizer keeps ':' (identity.go:899), and the filter matches whole
+  tags, exactly, after normalization (filter.go:43-56). So `kind:strategy`
+  works. A test will pin this.
+- `SetTags` works on a committed document without re-ingesting it, and on a
+  path that has not been ingested yet (pending).
+- It applies normalization only. The model-tag rules do not apply: at most 40
+  characters and 3 words, 3–5 tags, and a closed role vocabulary
+  (identity.go:854-889).
+
+**R7c. Branch writes copy the document up: DEFERRED (Carl, 2026-11-08).**
+`SetDocumentFields` (docfields.go:94) fails on a branch for a document that is
+only in the parent: "no document with path". The failure is loud, so nothing
+breaks silently. Branches are for the code index, and tags are for memory, so
+dund has no branch edit yet. Copy-up is built together with branch merge
+(P6). `SetTags` on a branch has the same rule: it works on a document already
+in the branch layer and fails loudly otherwise.
+
+**R7d. Nothing left behind after a remove.** Fragments, vectors, FTS (through
+the `fragments_ad` trigger), media, doc_fields, notes and shingles all
+cascade from documents (schema.sql:68-527). `page_readings` keys on a path
+with no foreign key (schema.sql:201) and is not deleted. Fix: delete it in
+`DeleteDocument`, with a test that counts every table's rows after a remove.
+Originals stay on disk for the prune. Pin `Prune`, so dund can collect them.
+
+## R8: for the code index (APPROVED 2026-11-08; built after v0.6.0)
+
+- **Line ranges.** Fragments have byte offsets `start_off`/`end_off`
+  (schema.sql:75), set only on the text-overlap path. Neither lines nor offsets
+  reach `Fragment` or `Hit`. Add `StartLine`/`EndLine` to `Fragment` (set by
+  the caller, or computed from the offsets at commit) and `Hit`. Code
+  segmentation: see "R8: code segmenter" below.
+- **Stable fragment ids.** `Hit.ID` is a rowid. A real re-ingest deletes and
+  re-inserts every fragment (pipeline.go:957-965), which gives new ids. Add
+  `fragments.content_id = sha256(path, symbol path, text)`, plus an
+  occurrence number when that still collides, for example repeated
+  boilerplate in one file. It is the same for unchanged text across
+  re-ingests. Add `Hit.ContentID` and
+  `Store.FragmentExists(contentID)`.
+- **Priority: no raglit change (Carl, 2026-11-08).** Search does not wait on
+  ingest: under WAL, readers do not block, and `commitDoc` is one short
+  transaction (store.go:205-246; pipeline.go:938). dund keeps a bulk code
+  ingest from starving a memory ingest by running two Runners: one over
+  memory and strategies, one over code and docs. The shared `Channels` limit
+  model capacity across both. A reembed is not a queued job:
+  `BackfillVectors` runs outside the queue.
+- **Usage hook.** agentkit's `llm.Client.OnUsage` exists (agentkit
+  client.go:617), but raglit never sets it. Add `Models.OnUsage func(role,
+  model string, u llm.Usage)` and wire it into each role's client. dund then
+  enforces per-role daily budgets.
+- **429 ticket.** Embed, vision, segment and identity use agentkit's llm
+  client, which already sends `X-Corrallm-Request-Id` on retry (agentkit
+  client.go:974). STT (stt.go:261), image embed (imageembed.go:49) and the OCR
+  engine (ocrengine.go:197) use plain HTTP clients without it. Not needed by
+  dund now (it uses no audio or image embedding). They stay as they are until
+  something needs them.
+- **Branch merge (P6):** when sub-agent or worktree branches of the code index
+  arrive. Not before.
+
+**Not needed (dun-bb):** export/import, an ANN index, Postgres, Registry, or
+attestation in the core.
+
+## R8: code segmenter (APPROVED 2026-11-08)
+
+What exists. poly-lsp-mcp's `symbols.FileSymbols(language, content)`
+(symbols/filesymbols.go:78) returns every symbol in source order. Each symbol
+has its dotted path, class, declaration line range, doc-comment range and
+body-start line. It parses with gotreesitter (MIT, pure Go, no cgo) and has
+grammars for c, cpp, go, groovy, java, kotlin, markdown, proto, python, sql,
+swift and tsx. Its package also imports poly-lsp-mcp's config, internal/git and
+yaml.v3, which a segmenter does not need.
+
+**poly-lsp-mcp side** (poly-lsp-mcp's session builds it; this is the request):
+- A new package `github.com/iodesystems/poly-lsp-mcp/segment` that imports
+  only gotreesitter and the grammars:
+  - no config, git or yaml;
+  - no LSP and no MCP.
+- `segment.Languages() []string` and `segment.ForPath(path) (lang string, ok
+  bool)`, from the file extension.
+- `segment.Sections(content []byte) ([]Span, error)` for Markdown: one span
+  per heading section, with its heading path as `Sym`. The docs index is
+  mostly Markdown, and today it is cut into windows.
+- Report the binary-size cost of the grammar blobs, measured on a small
+  program built with and without the package.
+- `segment.Symbols(lang string, content []byte) ([]Span, error)`. Here `Span`
+  is `{Sym, Class string; StartLine, EndLine, CommentStartLine, BodyStartLine
+  int}`, with lines 1-based and EndLine exclusive. It returns an error for a
+  language without a grammar.
+- `symbols.FileSymbols` is rebuilt on top of it, so the two cannot diverge.
+- A test that fails if `go list -deps ./segment` includes config, git, yaml
+  or anything MCP.
+- Tag it (v0.5.0), so raglit and dun depend on a version.
+
+**raglit core** (no poly-lsp-mcp import):
+- `KindCode`: a new DocKind for source files, chosen by extension through the
+  embedder's segmenter (`ForPath`). With no segmenter, code stays `KindText`,
+  as today.
+- A new interface `CodeSegmenter { ForPath(path string) (string, bool);
+  Symbols(lang string, content []byte) ([]CodeSpan, error) }` and a new field,
+  `Models.Code CodeSegmenter`. nil keeps today's behavior.
+- The fragmenter for `KindCode`:
+  - one fragment per top-level declaration, including its doc comment;
+  - a declaration over the embed limit is split at its nested symbols, then
+    by windows;
+  - code between declarations (imports, package clause) becomes its own
+    fragment;
+  - a parse error falls back to windows, recorded in the stage log.
+- Line ranges reach `Fragment` and `Hit` (R8 "Line ranges"), so a hit cites
+  `path:line`.
+- The symbol path is stored with the fragment and returned on the Hit
+  (`Hit.Symbol`). Search can then show `Server.Start` and not only the
+  lines.
+- The recipe hash includes the segmenter's name and version, so turning it on
+  re-fragments code through the pool.
+- Tests use a fake `CodeSegmenter`. The core's deps test is unchanged.
+
+**raglitd** (cmd/raglit) imports `poly-lsp-mcp/segment` and sets
+`Models.Code` to a small adapter. This is the only place raglit depends on
+poly-lsp-mcp. **dund** does the same.
+
+**Cost:** raglit's go.mod gains poly-lsp-mcp and gotreesitter. aw4 replaces
+both raglit and poly-lsp-mcp with ../ paths, so the first raglit commit with
+it, and every later version bump, needs an aw4 `go mod tidy`.
+
+**Order:** poly-lsp-mcp `segment` and its tag first, then the raglit core
+(it needs only the interface, so it can start in parallel against a fake),
+then the raglitd adapter once the tag exists, then dund.
+
 ## Optional, out of scope
 
 - A Postgres backend and a storage interface: not until a second backend is
