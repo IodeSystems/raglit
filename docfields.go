@@ -91,11 +91,14 @@ func (s *Store) DocumentFields(path string) (DocFields, error) {
 //
 // A person's extraction is what a re-run must not touch; that rule lives in the
 // CALLER, because this is also how a correction is written.
+//
+// On a branch, a document only the parent holds is an error wrapping
+// ErrParentOnly.
 func (s *Store) SetDocumentFields(ctx context.Context, path string, f DocFields) error {
 	var docID int64
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM documents WHERE path = ?`, path).Scan(&docID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("raglit: no document with path %q", path)
+			return s.noDocumentErr(ctx, "set fields", path)
 		}
 		return err
 	}

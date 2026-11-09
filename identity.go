@@ -1048,7 +1048,7 @@ func (s *Store) SetDocumentIdentity(ctx context.Context, path string, d DocIdent
 	var docID int64
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM documents WHERE path = ?`, path).Scan(&docID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("raglit: no document with path %q", path)
+			return s.noDocumentErr(ctx, "set identity", path)
 		}
 		return err
 	}

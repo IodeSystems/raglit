@@ -73,6 +73,12 @@ var (
 	_ func(*raglit.Runner) <-chan struct{}                                     = (*raglit.Runner).Done
 
 	_ func(raglit.Home) string = raglit.Home.IndexPath
+
+	// R11: worktree branches.
+	_ func(raglit.Home, raglit.Home, string, string) (*raglit.Store, error) = raglit.OpenBranch
+	_ func(string) (string, bool)                                           = raglit.WorktreeOf
+	_ func([]raglit.Home, func(string) bool) (int, error)                   = raglit.GCBranches
+	_ error                                                                 = raglit.ErrParentOnly
 )
 
 // Types dund constructs or reads, named field by field so a rename fails here.
@@ -81,6 +87,7 @@ var (
 	_ = raglit.DocSummary{}.ContentHash // the document's source hash, same value as DocumentHash
 	_ = raglit.DocSummary{}.AddedAt
 	_ = raglit.SegResult{}.Degraded
+	_ = raglit.BranchMeta{Parent: "p", Root: "r", ParentRoot: "pr"}
 
 	// R8: line spans (half-open, 1-based), symbol path and stable id.
 	_ = raglit.Fragment{StartLine: 1, EndLine: 2, Symbol: "S.m"}

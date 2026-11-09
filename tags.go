@@ -29,7 +29,7 @@ import (
 //
 // On a branch, a document that only the parent holds is an error: a branch
 // cannot edit the parent's document until copy-up exists (the same rule as
-// SetDocumentFields).
+// SetDocumentFields). The error wraps ErrParentOnly.
 func (s *Store) SetTags(path string, tags []string) error {
 	if path == "" {
 		return fmt.Errorf("raglit: set tags: empty path")
@@ -52,15 +52,13 @@ func (s *Store) SetTags(path string, tags []string) error {
 		return err
 	}
 	if n == 0 {
-		if s.parent != nil {
-			// Read through tx: an in-memory store has one connection, and tx holds it.
-			var tomb int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tombstones WHERE path = ?`, path).Scan(&tomb); err != nil {
-				return err
-			}
-			if _, shown := s.parent.viewHash(path); shown && tomb == 0 {
-				return fmt.Errorf("raglit: set tags: %q is in the parent index only; a branch cannot change a parent's document", path)
-			}
+		// Read through tx: an in-memory store has one connection, and tx holds it.
+		only, err := s.parentOnly(ctx, tx, path)
+		if err != nil {
+			return err
+		}
+		if only {
+			return fmt.Errorf("raglit: set tags: %q: %w", path, ErrParentOnly)
 		}
 		if joined == "" {
 			_, err = tx.ExecContext(ctx, `DELETE FROM pending_tags WHERE path = ?`, path)
@@ -97,10 +95,22 @@ func applyPendingTags(ctx context.Context, tx *sql.Tx, path string, docID int64)
 // Tags returns the caller's tags on the document at path, in the order SetTags
 // stored them. A document with none returns nil. An unknown path is an error;
 // tags still held for it are not reported.
+//
+// A branch with a root (OpenBranch) reads a parent-only document's tags through
+// to the parent. A branch with no root does not.
 func (s *Store) Tags(path string) ([]string, error) {
 	var tags string
 	err := s.db.QueryRow(`SELECT tags FROM documents WHERE path = ?`, path).Scan(&tags)
 	if errors.Is(err, sql.ErrNoRows) {
+		if s.worktree() {
+			only, perr := s.parentOnly(context.Background(), s.db, path)
+			if perr != nil {
+				return nil, perr
+			}
+			if only {
+				return s.parent.Tags(s.toParent(path))
+			}
+		}
 		return nil, fmt.Errorf("raglit: no document with path %q", path)
 	}
 	if err != nil {

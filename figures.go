@@ -210,12 +210,25 @@ func (s *Store) figuresOverlay(qv []float32, pathPrefix string, limit int, overl
 	if err != nil {
 		return nil, err
 	}
-	phits, err := s.parent.figuresOverlay(qv, pathPrefix, limit, true)
-	if err != nil {
-		return nil, err
-	}
-	for _, h := range phits {
-		if !shadow[h.Path] {
+	seen := map[string]bool{}
+	for _, pp := range s.parentPrefixes(pathPrefix) {
+		phits, err := s.parent.figuresOverlay(qv, pp, limit, true)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range phits {
+			bp := s.fromParent(h.Path)
+			if shadow[bp] || !s.admitParent(bp, pathPrefix) {
+				continue
+			}
+			if s.worktree() {
+				k := fmt.Sprintf("%s\x00%d", bp, h.MediaID)
+				if seen[k] {
+					continue
+				}
+				seen[k] = true
+			}
+			h.Path = bp
 			hits = append(hits, h)
 		}
 	}

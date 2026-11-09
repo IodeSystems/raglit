@@ -39,11 +39,14 @@
 //     originals, Close.
 //   - Branch: SetParent, BranchDiff. Jobs: Jobs, Job, ClaimNext; Hit, Job and
 //     JobInfo; Runner (Start, Drain, CutOff, Done).
+//   - Worktree branch: OpenBranch, BranchMeta (Root, ParentRoot), WorktreeOf,
+//     GCBranches, ErrParentOnly.
 //
 // api_test.go uses exactly this surface, so a break fails this repository's
 // own tests. It follows semantic versioning from v0.5.0; v0.6.0 added the
 // vector, metadata, segmentation, listing and tag calls; v0.7.0 added the
-// code-index calls above and Models.OnUsage. Everything else in
+// code-index calls above and Models.OnUsage; v0.8.0 adds the worktree branch
+// calls. Everything else in
 // the package is internal to raglit and may change in any release.
 package raglit
 
@@ -109,6 +112,11 @@ type Store struct {
 	// parent at document grain (a branch doc / tombstone shadows the parent's).
 	// Writes go to the branch only (copy-on-write). See branch.go.
 	parent *Store
+	// root and parentRoot, when set (OpenBranch), make this branch translate
+	// document paths between its root and its parent's (worktree.go).
+	root, parentRoot string
+	// ownedParent is the parent handle OpenBranch opened; Close closes it.
+	ownedParent *Store
 	// authority answers which reading of a source a person ruled governs.
 	// See SetAuthorityResolver.
 	authority func(source string) (string, bool)
@@ -140,9 +148,22 @@ func (s *Store) Path() string { return s.path }
 // is unknown or has none. The hash is the sha256 hex of the raw source bytes,
 // not of the extracted text. The worker uses it to skip re-ingesting unchanged
 // content (dedup work).
+//
+// A branch with a root (OpenBranch) reads through to its parent for a path it
+// has no row for and did not tombstone, so a worktree file whose bytes equal the
+// main checkout's is skipped rather than copied. A branch with no root does not.
 func (s *Store) DocumentHash(path string) (string, error) {
 	h, err := s.q.GetDocumentHash(context.Background(), path)
 	if errors.Is(err, sql.ErrNoRows) {
+		if s.worktree() {
+			tomb, terr := s.tombstoned(path)
+			if terr != nil {
+				return "", terr
+			}
+			if !tomb {
+				return s.parent.DocumentHash(s.toParent(path))
+			}
+		}
 		return "", nil
 	}
 	return h, err
@@ -599,7 +620,13 @@ func OpenIndex(home Home, name string) (*Store, error) {
 }
 
 // Close releases the underlying database.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	err := s.db.Close()
+	if s.ownedParent != nil {
+		err = errors.Join(err, s.ownedParent.Close())
+	}
+	return err
+}
 
 // Fragment is one indexable unit at the document:page:fragment grain.
 type Fragment struct {
@@ -1039,14 +1066,11 @@ func (s *Store) vecSearchOverlay(qv []float32, query string, f SearchFilter, lim
 	if err != nil {
 		return nil, err
 	}
-	phits, err := s.parent.vecSearchOverlay(qv, query, f, limit)
+	hits, err = s.overlayHits(hits, f, shadow, func(pf SearchFilter) ([]Hit, error) {
+		return s.parent.vecSearchOverlay(qv, query, pf, limit)
+	})
 	if err != nil {
 		return nil, err
-	}
-	for _, ph := range phits {
-		if !shadow[ph.Path] {
-			hits = append(hits, ph)
-		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 	if len(hits) > limit {

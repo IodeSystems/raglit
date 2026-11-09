@@ -122,12 +122,24 @@ func (s *Store) digestRows(pathPrefix string) ([]digestRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	prows, err := s.parent.digestRows(pathPrefix)
-	if err != nil {
-		return nil, err
-	}
-	for _, pr := range prows {
-		if !shadow[pr.path] {
+	seen := map[string]bool{}
+	for _, pp := range s.parentPrefixes(pathPrefix) {
+		prows, err := s.parent.digestRows(pp)
+		if err != nil {
+			return nil, err
+		}
+		for _, pr := range prows {
+			bp := s.fromParent(pr.path)
+			if shadow[bp] || !s.admitParent(bp, pathPrefix) {
+				continue
+			}
+			if s.worktree() {
+				if seen[bp] {
+					continue
+				}
+				seen[bp] = true
+			}
+			pr.path = bp
 			rows = append(rows, pr)
 		}
 	}

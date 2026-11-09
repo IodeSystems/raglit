@@ -171,7 +171,11 @@ func (s *Store) PageLayoutFor(docPath string, page int) (*PageLayout, error) {
 	                       WHERE d.path = ? AND o.page = ?`, docPath, page).
 		Scan(&out.Engine, &out.Model, &imgPath)
 	if errors.Is(err, sql.ErrNoRows) && s.parentHas(docPath) {
-		return s.parent.PageLayoutFor(docPath, page)
+		out, err := s.parent.PageLayoutFor(s.toParent(docPath), page)
+		if out != nil {
+			out.Doc = docPath
+		}
+		return out, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("raglit: no page %d recorded for %s: %w", page, docPath, err)

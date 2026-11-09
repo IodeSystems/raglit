@@ -198,7 +198,7 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 				return "", nil, serr
 			}
 			if !shadow[path] {
-				return s.parent.DocReview(path)
+				return s.parent.DocReview(s.toParent(path))
 			}
 		}
 		return "", nil, nil
@@ -237,7 +237,7 @@ func (s *Store) PageImagePath(path string, page int) (string, error) {
 	img, err := s.q.GetPageImagePath(context.Background(), gen.GetPageImagePathParams{Path: path, Page: int64(page)})
 	if errors.Is(err, sql.ErrNoRows) {
 		if s.parentHas(path) {
-			return s.parent.PageImagePath(path, page)
+			return s.parent.PageImagePath(s.toParent(path), page)
 		}
 		return "", nil
 	}

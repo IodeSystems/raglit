@@ -31,8 +31,8 @@ func (s *Store) DocumentPaths() ([]string, error) {
 		return nil, err
 	}
 	for _, p := range ppaths {
-		if !shadow[p] {
-			paths = append(paths, p)
+		if bp := s.fromParent(p); !shadow[bp] {
+			paths = append(paths, bp)
 		}
 	}
 	return paths, nil

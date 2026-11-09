@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -81,14 +82,11 @@ func (s *Store) SearchFiltered(query string, f SearchFilter, limit int) ([]Hit, 
 	if err != nil {
 		return nil, err
 	}
-	phits, err := s.parent.SearchFiltered(query, f, fetch)
+	hits, err = s.overlayHits(hits, f, shadow, func(pf SearchFilter) ([]Hit, error) {
+		return s.parent.SearchFiltered(query, pf, fetch)
+	})
 	if err != nil {
 		return nil, err
-	}
-	for _, ph := range phits {
-		if !shadow[ph.Path] {
-			hits = append(hits, ph)
-		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 	return s.collapseReadings(hits, limit), nil
@@ -184,7 +182,8 @@ func (s *Store) Documents() ([]DocSummary, error) {
 		return nil, err
 	}
 	for _, pd := range pdocs {
-		if !shadow[pd.Path] {
+		if bp := s.fromParent(pd.Path); !shadow[bp] {
+			pd.Path = bp
 			docs = append(docs, pd)
 		}
 	}
@@ -201,12 +200,45 @@ func (s *Store) MatchDocuments(ref string) ([]DocRef, error) {
 	if err != nil {
 		return nil, err
 	}
-	pmatch, err := s.parent.MatchDocuments(ref)
-	if err != nil {
-		return nil, err
+	if !s.worktree() {
+		pmatch, err := s.parent.MatchDocuments(ref)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range pmatch {
+			if !shadow[d.Path] {
+				local = append(local, d)
+			}
+		}
+		return local, nil
 	}
-	for _, d := range pmatch {
-		if !shadow[d.Path] {
+	// A worktree branch asks the parent for the translated ref, and for the ref
+	// itself when it is not a branch path (a file name, a fragment of a path),
+	// and keeps what still matches the ref in branch paths: a main-checkout
+	// path must not resolve through a worktree.
+	ref = strings.TrimSpace(ref)
+	refs := []string{s.toParent(ref)}
+	if refs[0] == ref {
+		refs = nil
+	}
+	refs = append(refs, ref)
+	lref := strings.ToLower(ref)
+	seen := map[string]bool{}
+	for _, r := range refs {
+		pmatch, err := s.parent.MatchDocuments(r)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range pmatch {
+			bp := s.fromParent(d.Path)
+			if shadow[bp] || seen[bp] {
+				continue
+			}
+			if bp != ref && !strings.Contains(strings.ToLower(bp), lref) && !strings.Contains(strings.ToLower(d.Title), lref) {
+				continue
+			}
+			seen[bp] = true
+			d.Path = bp
 			local = append(local, d)
 		}
 	}
@@ -230,7 +262,19 @@ func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, e
 			return DocContent{}, err // deleted-in-branch: stays "no document"
 		}
 	}
-	return s.parent.DocText(exactPath, from, to, maxChars)
+	if !s.worktree() {
+		return s.parent.DocText(exactPath, from, to, maxChars)
+	}
+	pp := s.toParent(exactPath)
+	if _, shown := s.parent.viewHash(pp); !shown {
+		return DocContent{}, err // the error names the branch path, not the parent's
+	}
+	out, err := s.parent.DocText(pp, from, to, maxChars)
+	if err != nil {
+		return out, err
+	}
+	out.Path = exactPath
+	return out, nil
 }
 
 // DeleteDocument removes a document from THIS store and, when it's a branch, marks
@@ -294,7 +338,7 @@ func (s *Store) BranchDiff() ([]BranchChange, error) {
 			return nil, err
 		}
 		own[c.Path] = true
-		ph, ok := s.parent.viewHash(c.Path)
+		ph, ok := s.parent.viewHash(s.toParent(c.Path))
 		switch {
 		case !ok:
 			c.Change = "added"
@@ -317,7 +361,7 @@ func (s *Store) BranchDiff() ([]BranchChange, error) {
 		if own[p] {
 			continue
 		}
-		if ph, ok := s.parent.viewHash(p); ok {
+		if ph, ok := s.parent.viewHash(s.toParent(p)); ok {
 			out = append(out, BranchChange{Path: p, Change: "deleted", ParentHash: ph})
 		}
 	}
@@ -325,28 +369,37 @@ func (s *Store) BranchDiff() ([]BranchChange, error) {
 }
 
 // viewHash is the content hash of path as this store shows it through its
-// overlay, and whether it shows the path at all.
+// overlay, and whether it shows the path at all. Each layer translates the path
+// for its own parent.
 func (s *Store) viewHash(path string) (string, bool) {
-	for st := s; st != nil; st = st.parent {
-		var h string
-		err := st.db.QueryRow(`SELECT content_hash FROM documents WHERE path = ?`, path).Scan(&h)
-		if err == nil {
-			return h, true
-		}
-		var n int
-		if st.db.QueryRow(`SELECT COUNT(*) FROM tombstones WHERE path = ?`, path).Scan(&n) == nil && n > 0 {
-			return "", false
-		}
+	var h string
+	err := s.db.QueryRow(`SELECT content_hash FROM documents WHERE path = ?`, path).Scan(&h)
+	if err == nil {
+		return h, true
 	}
-	return "", false
+	var n int
+	if s.db.QueryRow(`SELECT COUNT(*) FROM tombstones WHERE path = ?`, path).Scan(&n) == nil && n > 0 {
+		return "", false
+	}
+	if s.parent == nil {
+		return "", false
+	}
+	return s.parent.viewHash(s.toParent(path))
 }
 
 // ── branch metadata (branch.json in the branch's scoped Home) ───────────
 
 // BranchMeta records a branch's lineage + access times. Stored as branch.json in
 // the branch's scoped Home; absent for non-branch indexes.
+//
+// Parent is an index name for a Registry branch and the parent's home directory
+// for one opened with OpenBranch. Root and ParentRoot are the worktree's and
+// the main checkout's directories (OpenBranch); empty for a branch that does no
+// path translation.
 type BranchMeta struct {
 	Parent         string `json:"parent"`
+	Root           string `json:"root,omitempty"`
+	ParentRoot     string `json:"parent_root,omitempty"`
 	CreatedAt      int64  `json:"created_at"`
 	LastAccessedAt int64  `json:"last_accessed_at"`
 }
