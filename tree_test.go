@@ -322,3 +322,32 @@ func TestIndexTreeKeep(t *testing.T) {
 		t.Error("Admits selected a path outside its root, the root, or a built-in ignore")
 	}
 }
+
+// scanFile, which reads in pieces, agrees with the whole-file measures it
+// replaces: the hash, IsMinified, and the head the sniffers read.
+func TestScanFileMatchesWholeFile(t *testing.T) {
+	dir := t.TempDir()
+	short := strings.Repeat("prose line\n", 20000)                                  // many reads, short lines
+	long := strings.Repeat("a\n", 10000) + strings.Repeat("y", 3*minifiedLineBytes) // a long line across read boundaries
+	edge := strings.Repeat("z", minifiedLineBytes-1) + "\n"
+	for name, body := range map[string]string{"short.txt": short, "long.txt": long, "edge.txt": edge, "empty.txt": ""} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sc, err := scanFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := []byte(body)
+		if sc.hash != sha256hex(data) {
+			t.Errorf("%s: hash differs from sha256hex", name)
+		}
+		if got, want := sc.longest >= minifiedLineBytes, IsMinified(data); got != want {
+			t.Errorf("%s: minified %v, IsMinified %v", name, got, want)
+		}
+		if want := data[:min(len(data), fileScanHead)]; string(sc.head) != string(want) {
+			t.Errorf("%s: head of %d bytes, want %d", name, len(sc.head), len(want))
+		}
+	}
+}

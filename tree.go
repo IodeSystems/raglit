@@ -1,9 +1,14 @@
 package raglit
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -346,21 +351,75 @@ func underAny(p string, dirs []string) bool {
 	return false
 }
 
-// treeSkipsBytes reports whether the worker would refuse these bytes for
-// having nothing to index: the same test as its binary and minified guards,
-// which only judge a file whose kind nothing named.
-func treeSkipsBytes(path string, data []byte) bool {
+// treeSkipsBytes reports whether the worker would refuse the file's bytes
+// for having nothing to index: the same test as its binary and minified
+// guards, which only judge a file whose kind nothing named. It takes a
+// fileScan, not the bytes, so a large file is not held in memory.
+func treeSkipsBytes(path string, sc fileScan) bool {
 	kind := ClassifyDoc(path, "")
 	if kind == KindUnknown {
-		kind = SniffBytes(data)
+		kind = SniffBytes(sc.head)
 	}
 	if kind != KindUnknown {
 		return false
 	}
-	if ct := http.DetectContentType(data); strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "video/") {
+	if ct := http.DetectContentType(sc.head); strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "video/") {
 		return false // the worker routes it to the transcriber
 	}
-	return IsOpaque(data) || IsMinified(data)
+	return IsOpaque(sc.head) || sc.longest >= minifiedLineBytes
+}
+
+// fileScanHead is how many leading bytes a fileScan keeps: more than
+// http.DetectContentType (512) and SniffBytes look at.
+const fileScanHead = 8 << 10
+
+// fileScan is what one streaming read of a file learns: the hash of its
+// bytes, its first bytes, and its longest line (IsMinified's measure).
+type fileScan struct {
+	hash    string
+	head    []byte
+	longest int
+}
+
+// scanWriter feeds a fileScan from io.Copy.
+type scanWriter struct {
+	h       hash.Hash
+	head    []byte
+	longest int
+	line    int // bytes since the last newline
+}
+
+func (w *scanWriter) Write(b []byte) (int, error) {
+	n := len(b)
+	w.h.Write(b)
+	if room := fileScanHead - len(w.head); room > 0 {
+		w.head = append(w.head, b[:min(room, len(b))]...)
+	}
+	for len(b) > 0 {
+		i := bytes.IndexByte(b, '\n')
+		if i < 0 {
+			w.line += len(b)
+			break
+		}
+		w.longest = max(w.longest, w.line+i)
+		w.line = 0
+		b = b[i+1:]
+	}
+	return n, nil
+}
+
+// scanFile reads the file at path once, in pieces.
+func scanFile(path string) (fileScan, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return fileScan{}, err
+	}
+	defer f.Close()
+	w := &scanWriter{h: sha256.New()}
+	if _, err := io.Copy(w, f); err != nil {
+		return fileScan{}, err
+	}
+	return fileScan{hash: hex.EncodeToString(w.h.Sum(nil)), head: w.head, longest: max(w.longest, w.line)}, nil
 }
 
 // indexTreeFiles classifies files (selected and routed to st) and removes
@@ -406,19 +465,19 @@ func indexTreeFiles(ctx context.Context, st *Store, root string, scopes []string
 			keep[f] = true
 			continue
 		}
-		data, err := os.ReadFile(f)
+		sc, err := scanFile(f)
 		if err != nil {
 			res.Errors = append(res.Errors, err)
 			keep[f] = true
 			continue
 		}
-		hash := sha256hex(data)
+		hash := sc.hash
 		if prev, _ := st.DocumentHash(key); prev != "" && prev == hash {
 			res.Current++
 			keep[f] = true
 			continue
 		}
-		if treeSkipsBytes(f, data) {
+		if treeSkipsBytes(f, sc) {
 			res.Skipped++
 			continue
 		}
