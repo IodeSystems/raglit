@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -296,29 +297,29 @@ func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, e
 //
 // page_readings keys on the path with no foreign key, so the cascade from
 // documents does not reach it; it is deleted here, in the same transaction.
+// The whole removal is one transaction that takes the write lock first.
 func (s *Store) DeleteDocument(path string) error {
 	ctx := context.Background()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := gq(tx).DeleteDocumentByPath(ctx, path); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM page_readings WHERE doc = ?`, path); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// Tags held for a document that never committed go with it; the document's
-	// own tags went with its row.
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM pending_tags WHERE path = ?`, path); err != nil {
-		return err
-	}
-	// Tombstone so a parent doc is hidden. Harmless on a non-branch store.
-	return s.q.InsertTombstone(ctx, path)
+	// Every statement of the removal runs in one BEGIN IMMEDIATE transaction.
+	// Taking the write lock up front waits under busy_timeout like any writer;
+	// a deferred transaction that read before it wrote would fail with
+	// SQLITE_BUSY_SNAPSHOT the moment an ingest worker committed, and
+	// busy_timeout does not apply to that. Tags held for a document that never
+	// committed go with it (the document's own tags went with its row), and the
+	// tombstone hides a parent's version. The tombstone is harmless on a
+	// non-branch store.
+	return s.writeTx(ctx, func(tx *sql.Conn) error {
+		if err := gq(tx).DeleteDocumentByPath(ctx, path); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM page_readings WHERE doc = ?`, path); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM pending_tags WHERE path = ?`, path); err != nil {
+			return err
+		}
+		return gq(tx).InsertTombstone(ctx, path)
+	})
 }
 
 // BranchChange is one document a branch differs from its parent on.
