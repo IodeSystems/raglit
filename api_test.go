@@ -71,6 +71,8 @@ var (
 	_ func(*raglit.Runner, time.Duration) bool                                 = (*raglit.Runner).Drain
 	_ func(*raglit.Runner)                                                     = (*raglit.Runner).CutOff
 	_ func(*raglit.Runner) <-chan struct{}                                     = (*raglit.Runner).Done
+
+	_ func(raglit.Home) string = raglit.Home.IndexPath
 )
 
 // Types dund constructs or reads, named field by field so a rename fails here.
@@ -88,8 +90,26 @@ var (
 	_ = raglit.Hit{}.ContentID
 
 	// R8: usage hook and code segmenter, nil by default.
-	_ = raglit.Models{OnUsage: func(role, model string, u llm.Usage) {}, Code: nil}
-	_ = raglit.CodeSpan{Sym: "s", Class: "c", StartLine: 1, EndLine: 2, CommentStartLine: 0, BodyStartLine: 0}
+	_                  = raglit.Models{OnUsage: func(role, model string, u llm.Usage) {}, Code: nil}
+	_                  = raglit.ModelRole{BaseURL: "u", APIKey: "k", Model: "m"}
+	_                  = raglit.Models{Embed: raglit.ModelRole{}, Vision: raglit.ModelRole{}, Segment: raglit.ModelRole{}, Identity: raglit.ModelRole{}}
+	_ int64            = raglit.Hit{}.ID
+	_ string           = raglit.Hit{}.Title
+	_ int              = raglit.Hit{}.Page
+	_ int              = raglit.Hit{}.Ord
+	_ float64          = raglit.Hit{}.Score
+	_ string           = raglit.Hit{}.Origin
+	_ *float64         = raglit.Hit{}.Similarity
+	_ []string         = raglit.Hit{}.Matched
+	_ int              = raglit.Hit{}.QueryTerms
+	_ string           = raglit.Hit{}.Text
+	_ string           = raglit.Hit{}.Path
+	_ int64            = raglit.JobInfo{}.ID
+	_ string           = raglit.JobInfo{}.URL
+	_ string           = raglit.JobInfo{}.Title
+	_ int              = raglit.JobInfo{}.Fragments
+	_ []raglit.Segment = raglit.SegResult{}.Fragments
+	_                  = raglit.CodeSpan{Sym: "s", Class: "c", StartLine: 1, EndLine: 2, CommentStartLine: 0, BodyStartLine: 0}
 )
 
 // fakeCode pins the CodeSegmenter method set.
