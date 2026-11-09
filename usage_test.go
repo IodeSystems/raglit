@@ -2,9 +2,12 @@ package raglit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +29,15 @@ func usageServer(t *testing.T) string {
 			fmt.Fprint(w, "data: [DONE]\n\n")
 		case strings.HasSuffix(r.URL.Path, "/embeddings"):
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1,0]}]}`))
+			var req struct {
+				Input []string `json:"input"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			var data []string
+			for i := range req.Input {
+				data = append(data, fmt.Sprintf(`{"index":%d,"embedding":[1,0]}`, i))
+			}
+			fmt.Fprintf(w, `{"data":[%s]}`, strings.Join(data, ","))
 		default:
 			http.NotFound(w, r)
 		}
@@ -81,7 +92,8 @@ func TestNewWorker_OnUsageReportsPerRole(t *testing.T) {
 	want := map[string]string{"vision": "vis", "segment": "seg", "identity": "idm"}
 	for _, r := range got {
 		if r.role == "embed" {
-			continue // the limit probe; checked in the next test
+			t.Errorf("NewWorker's embed limit probe reported usage: %+v", r)
+			continue
 		}
 		if want[r.role] != r.model {
 			t.Errorf("role %q reported model %q, want %q", r.role, r.model, want[r.role])
@@ -135,5 +147,53 @@ func TestUsageVector_ReportsEmbed(t *testing.T) {
 	c := llm.NewClient(base, "", "emb")
 	if (Models{}).UsageVector(c) != VectorClient(c) {
 		t.Error("nil OnUsage wrapped the embed client")
+	}
+}
+
+// The embed calls ingest makes report through Models.Embedder: a worker from
+// NewWorker, with that embedder on its store, sends "embed" usage to OnUsage.
+func TestModelsEmbedder_IngestReportsEmbed(t *testing.T) {
+	base := usageServer(t)
+	var mu sync.Mutex
+	var got []usageRec
+	m := Models{
+		Embed:           ModelRole{BaseURL: base, Model: "emb"},
+		EmbedLimitChars: 4000,
+		OCR:             noTesseract,
+		Channels:        NewChannels(),
+		OnUsage: func(role, model string, u llm.Usage) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, usageRec{role, model, u})
+		},
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "auth.md")
+	if err := os.WriteFile(src, []byte("Access tokens expire.\n\nThe refresh token rotates."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := testStore(t)
+	s.SetEmbedder(m.Embedder())
+	w := NewWorker(s, m, nil)
+	if _, err := s.Enqueue("file://"+src, ""); err != nil {
+		t.Fatal(err)
+	}
+	if did, err := w.ProcessOne(context.Background()); err != nil || !did {
+		t.Fatalf("ProcessOne: did=%v err=%v", did, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) == 0 {
+		t.Fatal("ingest made no embed report")
+	}
+	for _, r := range got {
+		if r.role != "embed" || r.model != "emb" || r.u.PromptTokens <= 0 {
+			t.Errorf("report %+v, want role embed, model emb, tokens > 0", r)
+		}
+	}
+	// No Embed model → no embedder.
+	if (Models{Channels: NewChannels()}).Embedder() != nil {
+		t.Error("Embedder without an Embed model is not nil")
 	}
 }
