@@ -39,6 +39,11 @@ func TestRootDepsHaveNoServerStack(t *testing.T) {
 		"github.com/mark3labs/mcp-go",
 		"github.com/iodesystems/raglit/cmd",
 		"github.com/iodesystems/raglit/attest/service",
+		// The code segmenter's parser: only raglitd's adapter imports it
+		// (cmd/raglit/codesegment.go). The root has the interface.
+		"github.com/iodesystems/poly-lsp-mcp",
+		"github.com/odvcencio/gotreesitter",
+		"github.com/smacker/go-tree-sitter",
 	}
 	for _, pkg := range strings.Fields(string(out)) {
 		for _, b := range banned {

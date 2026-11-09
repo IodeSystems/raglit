@@ -123,6 +123,14 @@ type Config struct {
 	// nobody can navigate, so this is for a corpus whose names are already good
 	// (a code tree) or an endpoint you do not want the extra call on.
 	NoIdentity bool `json:"no_identity,omitempty"`
+	// CodeSegmenter cuts source files at their declarations and Markdown at
+	// its headings (KindCode), one fragment per declaration or section, each
+	// with its lines and symbol path. raglitd's segmenter is poly-lsp-mcp's
+	// tree-sitter segment package (cmd/raglit/codesegment.go). False → code
+	// and Markdown are read into windows, as before. Turning it on changes the
+	// KindCode pool key, so those files are cut again on their next ingest.
+	// The daemon flag --code-segmenter turns it on as well.
+	CodeSegmenter bool `json:"code_segmenter,omitempty"`
 	// DefaultIndex is the index used when a command gives no --index. Empty →
 	// "default". Set it in the wizard to make one named index your working default.
 	DefaultIndex string `json:"default_index,omitempty"`

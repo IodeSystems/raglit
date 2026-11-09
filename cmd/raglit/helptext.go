@@ -59,7 +59,10 @@ raglit index [--home DIR] FILE|DIR...
               REST + review UI at / + OpenAPI (/openapi.json) + GraphQL (/graphql); scoped
               per-index storage under --root (default ~/.raglit); --home for a single index;
               records <root>/daemon.json for client discovery; --stop signals a running one,
-              --restart replaces it with a detached one on these flags (after a rebuild)`},
+              --restart replaces it with a detached one on these flags (after a rebuild)
+              --code-segmenter (or config "code_segmenter": true) cuts source files
+              at declarations and Markdown at headings, each fragment with its
+              lines and symbol; off, they are read into windows`},
 		{"service", "run the daemon under systemd or launchd", `raglit service install|uninstall|start|stop|restart|reload|status|logs|login-admin
               run the daemon under systemd (Linux) or launchd (macOS). reload
               re-reads config; the daemon re-execs once no job is running.`},

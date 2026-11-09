@@ -36,6 +36,9 @@ type llmFlags struct {
 	// chans is the per-model admission registry, shared by every client this
 	// command builds. See raglit/modelchan.go.
 	chans *raglit.Channels
+	// codeSegmenter is the daemon's --code-segmenter. It or config
+	// code_segmenter sets Models.Code (polySegmenter).
+	codeSegmenter bool
 }
 
 func addLLMFlags(fs *flag.FlagSet) *llmFlags {
@@ -192,6 +195,11 @@ func (f *llmFlags) models(home raglit.Home) raglit.Models {
 		EmbedLimitTokens:        cfg.EmbedLimitTokens,
 		SegmentInputLimitTokens: cfg.SegmentInputLimitTokens,
 		Channels:                f.chans,
+	}
+	// Off by default: on, code and Markdown are cut at declarations and
+	// headings, and the KindCode pool key changes.
+	if f.codeSegmenter || cfg.CodeSegmenter {
+		m.Code = polySegmenter{}
 	}
 	// Audio ingest turns on with the MODEL alone. oidio is normally behind the
 	// same broker as the vision and embed models, so the endpoint is already

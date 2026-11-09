@@ -48,8 +48,10 @@ func runHttpd(subcmd string, args []string) error {
 	stop := fs.Bool("stop", false, "signal the running daemon (recorded in <root>/daemon.json) to shut down, then exit")
 	restart := fs.Bool("restart", false, "stop the running daemon, then relaunch it detached with these flags (picks up a rebuilt binary), and exit")
 	watchInterval := fs.Duration("watch-interval", 5*time.Second, "how often to re-scan watched projects for changes")
+	codeSeg := fs.Bool("code-segmenter", false, "cut source files at declarations and Markdown at headings (config code_segmenter)")
 	check := fs.Bool("check", false, "parse these flags and exit; nothing is started, nothing is opened")
 	fs.Parse(args)
+	lf.codeSegmenter = *codeSeg
 
 	// --check: prove a set of daemon flags is valid without starting anything.
 	//
