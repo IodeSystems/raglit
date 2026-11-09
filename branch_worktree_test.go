@@ -705,3 +705,37 @@ func TestWorktreeBranch_NestedRoot(t *testing.T) {
 		t.Errorf("DocumentHash(main b) = %q, want empty", h)
 	}
 }
+
+// TestWriteBranchMeta_Atomic: a reader during rewrites always parses
+// branch.json, and no temp file is left behind.
+func TestWriteBranchMeta_Atomic(t *testing.T) {
+	h := Home(t.TempDir())
+	m := BranchMeta{Parent: "p", Root: "/w", ParentRoot: "/m", CreatedAt: 1}
+	must(t, writeBranchMeta(h, m))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			m.LastAccessedAt = int64(i)
+			if err := writeBranchMeta(h, m); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			ents, err := os.ReadDir(string(h))
+			must(t, err)
+			if len(ents) != 1 || ents[0].Name() != "branch.json" {
+				t.Errorf("home holds %v, want only branch.json", ents)
+			}
+			return
+		default:
+			if got, ok := readBranchMeta(h); !ok || got.Root != "/w" {
+				t.Fatalf("readBranchMeta during a rewrite = %+v, %v", got, ok)
+			}
+		}
+	}
+}

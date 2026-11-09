@@ -442,12 +442,33 @@ func readBranchMeta(home Home) (BranchMeta, bool) {
 	return m, true
 }
 
+// writeBranchMeta replaces a home's branch.json through a temp file and a
+// rename, so a reader (OpenBranch, GCBranches) never sees a partial file and
+// a crash mid-write leaves the old one.
 func writeBranchMeta(home Home, m BranchMeta) error {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(branchMetaPath(home), b, 0o644)
+	f, err := os.CreateTemp(string(home), ".branch.json.*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmp, branchMetaPath(home))
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
 // touchBranchMeta records a branch's last_accessed_at, throttled to at most once
