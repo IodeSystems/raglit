@@ -951,6 +951,10 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 	if err := q.SetDocumentFrag(ctx, gen.SetDocumentFragParams{FragMode: fragMode, FragRecipe: fragRecipe, ID: docID}); err != nil {
 		return fmt.Errorf("raglit: set frag mode: %w", err)
 	}
+	// Tags the caller set before this path had a document (SetTags).
+	if err := applyPendingTags(ctx, tx, docPath, docID); err != nil {
+		return fmt.Errorf("raglit: pending tags: %w", err)
+	}
 	if err := q.DeleteMediaByDoc(ctx, docID); err != nil {
 		return err
 	}

@@ -18,8 +18,8 @@ type SearchFilter struct {
 	// PathPrefix keeps documents whose path starts with it (see pathPredicate).
 	PathPrefix string
 	// Tags keeps documents that carry EVERY one of these tags, each as a whole
-	// tag in gen_content_tags or gen_role_tags — "paint" does not match
-	// "lead paint". A tag is compared the way writeIdentity stores it:
+	// tag in the caller's tags (Store.SetTags), gen_content_tags or
+	// gen_role_tags — "paint" does not match "lead paint". A tag is compared the way writeIdentity stores it:
 	// lowercased, its whitespace collapsed (normalizeContentTag). An entry that
 	// normalizes to nothing is ignored.
 	Tags []string
@@ -49,10 +49,11 @@ func filterPredicate(f SearchFilter) (string, []any, error) {
 		// one of its whole entries. The column is lowercased and a space after a
 		// comma dropped, so a row written before writeIdentity normalized, or by
 		// hand, compares the way splitTagList would read it.
-		preds = append(preds, `(instr(','||lower(replace(d.gen_content_tags, ', ', ','))||',', ?) > 0
+		preds = append(preds, `(instr(','||lower(replace(d.tags, ', ', ','))||',', ?) > 0
+		  OR instr(','||lower(replace(d.gen_content_tags, ', ', ','))||',', ?) > 0
 		  OR instr(','||lower(replace(d.gen_role_tags, ', ', ','))||',', ?) > 0)`)
 		needle := "," + t + ","
-		args = append(args, needle, needle)
+		args = append(args, needle, needle, needle)
 	}
 	// Sorted, so the same filter always produces the same SQL text.
 	keys := make([]string, 0, len(f.Fields))

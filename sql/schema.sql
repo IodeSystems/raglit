@@ -61,7 +61,13 @@ CREATE TABLE IF NOT EXISTS documents (
   -- a classifier of its own: the model is already reading the document to say
   -- what it is, and "which of these types is it" is that same question with a
   -- shorter list of answers.
-  gen_doc_type TEXT NOT NULL DEFAULT ''
+  gen_doc_type TEXT NOT NULL DEFAULT '',
+  -- The CALLER's tags (Store.SetTags), comma-separated like gen_content_tags.
+  -- A column of its own because the identity model rewrites gen_content_tags on
+  -- every caption: a caller's tag there would last until the next one. Nothing
+  -- in raglit writes this but SetTags; a search filter reads it with the other
+  -- two. Not text and not a fragment, so a tag is never a search hit.
+  tags TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS fragments (
   id     INTEGER PRIMARY KEY,

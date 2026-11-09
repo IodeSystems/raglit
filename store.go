@@ -398,6 +398,9 @@ func migrate(db *sql.DB) error {
 		// Documents tree. 0 is unknown: a URL, an upload, or a file gone.
 		{"documents", "src_size", "INTEGER NOT NULL DEFAULT 0"},
 		{"documents", "src_mtime", "INTEGER NOT NULL DEFAULT 0"},
+		// Caller-owned tags (tags.go). An index that predates the column has no
+		// caller tags, which is what '' says.
+		{"documents", "tags", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
@@ -430,6 +433,14 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS supplied_identities (
 		path     TEXT PRIMARY KEY,
 		identity TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	// Tags set on a path before its first ingest commits (Store.SetTags), held
+	// until that commit applies them, the way supplied_identities is.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS pending_tags (
+		path TEXT PRIMARY KEY,
+		tags TEXT NOT NULL
 	)`); err != nil {
 		return err
 	}
@@ -538,6 +549,10 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 	docID, err := q.UpsertDocument(ctx, gen.UpsertDocumentParams{Path: doc.Path, Title: doc.Title, AddedAt: time.Now().UnixNano()})
 	if err != nil {
 		return fmt.Errorf("raglit: upsert document: %w", err)
+	}
+	// Tags the caller set before this path had a document (SetTags).
+	if err := applyPendingTags(ctx, tx, doc.Path, docID); err != nil {
+		return fmt.Errorf("raglit: pending tags: %w", err)
 	}
 	// Replace-on-reingest: drop old fragments (triggers clean the fts mirror;
 	// FK cascade drops their vectors).

@@ -66,6 +66,7 @@ type Document struct {
 	GenContentTags string `db:"gen_content_tags" derived:"documents.gen_content_tags" json:"gen_content_tags"`
 	GenRoleTags    string `db:"gen_role_tags" derived:"documents.gen_role_tags" json:"gen_role_tags"`
 	GenDocType     string `db:"gen_doc_type" derived:"documents.gen_doc_type" json:"gen_doc_type"`
+	Tags           string `db:"tags" derived:"documents.tags" json:"tags"`
 }
 
 type DocumentNote struct {
