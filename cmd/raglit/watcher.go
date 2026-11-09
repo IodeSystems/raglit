@@ -549,7 +549,11 @@ func (w *watcher) indexTarget(ctx context.Context, owner string, t treeTarget, p
 	if err != nil {
 		return raglit.TreeResult{}, err
 	}
-	res, err := raglit.IndexTree(ctx, st, t.dir, raglit.TreeOptions{Rules: t.rules, Paths: paths})
+	var all []treeTarget
+	for _, ts := range w.targets() {
+		all = append(all, ts...)
+	}
+	res, err := raglit.IndexTree(ctx, st, t.dir, raglit.TreeOptions{Rules: t.rules, Paths: paths, Keep: keepFor(t, all)})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "raglit watch %s → %s: %v\n", t.dir, t.index, err)
 		return res, err

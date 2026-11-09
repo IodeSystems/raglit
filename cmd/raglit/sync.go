@@ -208,7 +208,7 @@ func syncOp(reg *raglit.Registry) func(context.Context, *syncIn) (*syncOut, erro
 			if !admin {
 				rules.Skip = func(p string) bool { return !hostPathAllowed(ctx, reg, p) }
 			}
-			res, err := raglit.IndexTree(ctx, st, t.dir, raglit.TreeOptions{Rules: rules})
+			res, err := raglit.IndexTree(ctx, st, t.dir, raglit.TreeOptions{Rules: rules, Keep: keepFor(t, targets)})
 			if err != nil {
 				return nil, huma.Error400BadRequest(fmt.Sprintf("sync %s: %v", t.dir, err))
 			}

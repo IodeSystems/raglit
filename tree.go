@@ -48,6 +48,11 @@ type TreeOptions struct {
 	// Route picks the index (a key of IndexTrees' map) for a file. Optional
 	// with one store.
 	Route func(path string) string
+	// Keep spares a document under the root that the rules do not select:
+	// one whose path (absolute, no scheme) Keep reports true for is not
+	// Removed. For roots that overlap in one index, each with its own rules:
+	// Keep is "another root selects it".
+	Keep func(path string) bool
 }
 
 // TreeResult counts what IndexTree did per file. Errors are per-file
@@ -89,6 +94,20 @@ func (r TreeRules) excluded(abs, rel string) bool {
 		return true
 	}
 	return r.Skip != nil && r.Skip(abs)
+}
+
+// Admits reports whether the path rules (built-in ignores, Ignore, Include,
+// Skip) select the file at path under root. Not .gitignore, and not the
+// file's size or bytes. False outside root.
+func (r TreeRules) Admits(root, path string) bool {
+	if !under(path, root) || path == root {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return r.admits(path, filepath.ToSlash(rel))
 }
 
 // admits reports whether a file at abs (rel to the root) is selected by its
@@ -170,7 +189,7 @@ func IndexTrees(ctx context.Context, stores map[string]*Store, root string, o Tr
 	sort.Strings(names)
 	out := make(map[string]TreeResult, len(stores))
 	for _, name := range names {
-		res, err := indexTreeFiles(ctx, stores[name], root, scopes, o.Rules, routed[name])
+		res, err := indexTreeFiles(ctx, stores[name], root, scopes, o, routed[name])
 		out[name] = res
 		if err != nil {
 			return out, err
@@ -346,8 +365,9 @@ func treeSkipsBytes(path string, data []byte) bool {
 
 // indexTreeFiles classifies files (selected and routed to st) and removes
 // st's documents under root that are not among the files kept.
-func indexTreeFiles(ctx context.Context, st *Store, root string, scopes []string, r TreeRules, files []string) (TreeResult, error) {
+func indexTreeFiles(ctx context.Context, st *Store, root string, scopes []string, o TreeOptions, files []string) (TreeResult, error) {
 	var res TreeResult
+	r := o.Rules
 	docs, scheme, err := treeDocs(st, root, scopes)
 	if err != nil {
 		return res, err
@@ -428,7 +448,7 @@ func indexTreeFiles(ctx context.Context, st *Store, root string, scopes []string
 	}
 	gone := make([]string, 0, len(docs))
 	for f := range docs {
-		if !keep[f] {
+		if !keep[f] && (o.Keep == nil || !o.Keep(f)) {
 			gone = append(gone, f)
 		}
 	}

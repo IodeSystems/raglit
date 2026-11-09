@@ -84,6 +84,31 @@ func dirTarget(d dirWatch) (treeTarget, error) {
 	}, nil
 }
 
+// keepFor is t's TreeOptions.Keep: a document another target of the same
+// index selects is not t's to remove. IndexTree removes every document under
+// its root that its own rules do not select, so without this two roots that
+// overlap in one index (root "." with *.md, root "docs" with *.pdf) would
+// remove each other's documents on every pass. nil when nothing overlaps.
+func keepFor(t treeTarget, all []treeTarget) func(string) bool {
+	var others []treeTarget
+	for _, o := range all {
+		if o.index == t.index && o.sig != t.sig && (strings.HasPrefix(o.dir+"/", t.dir+"/") || strings.HasPrefix(t.dir+"/", o.dir+"/")) {
+			others = append(others, o)
+		}
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	return func(p string) bool {
+		for _, o := range others {
+			if o.rules.Admits(o.dir, p) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // treeLine is a TreeResult as one log or output line.
 func treeLine(r raglit.TreeResult) string {
 	s := fmt.Sprintf("queued %d, current %d, removed %d, failed %d, skipped %d",

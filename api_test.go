@@ -131,10 +131,12 @@ var (
 
 	// R10a, R10b, R12e.
 	_ = raglit.TreeRules{Include: []string{"*.go"}, Ignore: []string{"gen/**"}, Gitignore: new(bool), Skip: func(string) bool { return false }, MaxBytes: 1}
-	_ = raglit.TreeOptions{Rules: raglit.TreeRules{}, Paths: []string{"a"}, Route: func(string) string { return "" }}
+	_ = raglit.TreeOptions{Rules: raglit.TreeRules{}, Paths: []string{"a"}, Route: func(string) string { return "" }, Keep: func(string) bool { return false }}
 	_ = raglit.TreeResult{Queued: 1, Current: 1, Removed: 1, Failed: 1, Skipped: 1, Errors: []error{}}
 	_ = raglit.WatchOptions{Quiet: 1, MaxDelay: 1, MinInterval: 1, Idle: 1}
 	_ = raglit.Changes{Root: "r", Paths: []string{"p"}, Degraded: true}
+
+	_ func(root, path string) bool = raglit.TreeRules{}.Admits
 )
 
 // fakeCode pins the CodeSegmenter method set.

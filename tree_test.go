@@ -305,3 +305,20 @@ func TestFailedSourcesMigratesAttempts(t *testing.T) {
 		t.Error("failure not recorded after migration")
 	}
 }
+
+// Keep spares a document the rules do not select; Admits is the path rules.
+func TestIndexTreeKeep(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"a.md": "a", "docs/x.txt": "x"})
+	s := treeStore(t)
+	drainPaths(t, s, filepath.Join(root, "a.md"), filepath.Join(root, "docs/x.txt"))
+	md := TreeRules{Include: []string{"*.md"}}
+	txt := TreeRules{Include: []string{"*.txt"}}
+	docs := filepath.Join(root, "docs")
+	keep := func(p string) bool { return txt.Admits(docs, p) }
+	wantCounts(t, "kept", indexTree(t, s, root, TreeOptions{Rules: md, Keep: keep}), 0, 1, 0, 0, 0)
+	wantCounts(t, "no keep", indexTree(t, s, root, TreeOptions{Rules: md}), 0, 1, 1, 0, 0)
+	if txt.Admits(docs, filepath.Join(root, "a.txt")) || txt.Admits(docs, docs) || md.Admits(root, filepath.Join(root, "node_modules/m.md")) {
+		t.Error("Admits selected a path outside its root, the root, or a built-in ignore")
+	}
+}
