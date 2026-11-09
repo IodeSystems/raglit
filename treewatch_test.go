@@ -190,3 +190,51 @@ func TestWatchTreeDegraded(t *testing.T) {
 		t.Errorf("added watches after degrading")
 	}
 }
+
+// Stop from another goroutine during a slow callback waits for it; Stop from
+// inside the callback does not deadlock.
+func TestWatchTreeStopWaitsForCallback(t *testing.T) {
+	root := t.TempDir()
+	in, release := make(chan struct{}), make(chan struct{})
+	var ended atomic.Bool
+	w, err := WatchTree(context.Background(), root, TreeRules{}, fastWatch, func(Changes) {
+		close(in)
+		<-release
+		ended.Store(true)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, root, map[string]string{"a.md": "a"})
+	<-in
+	stopped := make(chan struct{})
+	go func() { w.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the callback was running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-stopped
+	if !ended.Load() {
+		t.Fatal("callback not finished when Stop returned")
+	}
+
+	root2 := t.TempDir()
+	var w2 *TreeWatcher
+	ready := make(chan struct{})
+	w2, err = WatchTree(context.Background(), root2, TreeRules{}, fastWatch, func(Changes) {
+		<-ready
+		w2.Stop()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(ready)
+	writeFiles(t, root2, map[string]string{"b.md": "b"})
+	select {
+	case <-w2.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop from inside the callback did not end the watcher")
+	}
+}

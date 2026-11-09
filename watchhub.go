@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 // WatchHub shares watchers and index runs across callers (R12e): one
@@ -28,13 +29,26 @@ var errHubStopped = errors.New("raglit: watch hub stopped")
 
 type hubRoot struct {
 	w    *TreeWatcher
-	subs map[int]hubSub
+	subs map[int]*hubSub
 	next int
 }
 
 type hubSub struct {
 	rules TreeRules
 	fn    func(Changes)
+	// mu is held while fn runs; unsubscribe takes it to wait out a call in
+	// progress. dead: unsubscribed, deliver nothing more.
+	mu   sync.Mutex
+	dead atomic.Bool
+}
+
+// deliver calls fn unless s was unsubscribed.
+func (s *hubSub) deliver(c Changes) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.dead.Load() {
+		s.fn(c)
+	}
 }
 
 // NewWatchHub makes a hub whose watchers use o.
@@ -48,8 +62,10 @@ func NewWatchHub(o WatchOptions) *WatchHub {
 // that subscriber's Gitignore setting skip, and each subscriber's Ignore,
 // Include and Skip then filter the paths it is given (a burst left with no
 // paths is not delivered, unless it is a whole-tree or Degraded one). The
-// last unsubscribe stops the watcher. A watcher that idles out (WatchOptions
-// Idle) drops its subscribers; the next Subscribe starts a new one.
+// last unsubscribe stops the watcher. Once unsubscribe returns, fn is not
+// called again (unsubscribe from inside fn returns at once; fn gets no
+// later burst). A watcher that idles out (WatchOptions Idle) drops its
+// subscribers; the next Subscribe starts a new one.
 func (h *WatchHub) Subscribe(root string, r TreeRules, fn func(Changes)) (unsubscribe func(), err error) {
 	key, err := filepath.Abs(root)
 	if err != nil {
@@ -63,7 +79,7 @@ func (h *WatchHub) Subscribe(root string, r TreeRules, fn func(Changes)) (unsubs
 	}
 	hr := h.roots[key]
 	if hr == nil {
-		hr = &hubRoot{subs: map[int]hubSub{}}
+		hr = &hubRoot{subs: map[int]*hubSub{}}
 		w, err := watchTree(context.Background(), key, TreeRules{Gitignore: r.Gitignore}, h.opts,
 			func(c Changes) { h.fanout(key, hr, c) },
 			func() { h.dropRoot(key, hr) })
@@ -75,10 +91,12 @@ func (h *WatchHub) Subscribe(root string, r TreeRules, fn func(Changes)) (unsubs
 	}
 	id := hr.next
 	hr.next++
-	hr.subs[id] = hubSub{rules: r, fn: fn}
+	sub := &hubSub{rules: r, fn: fn}
+	hr.subs[id] = sub
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			sub.dead.Store(true)
 			h.mu.Lock()
 			delete(hr.subs, id)
 			var stop *TreeWatcher
@@ -89,6 +107,10 @@ func (h *WatchHub) Subscribe(root string, r TreeRules, fn func(Changes)) (unsubs
 			h.mu.Unlock()
 			if stop != nil {
 				stop.Stop()
+			}
+			if !hr.w.onLoop() {
+				sub.mu.Lock() // wait out a delivery in progress
+				sub.mu.Unlock()
 			}
 		})
 	}, nil
@@ -105,7 +127,7 @@ func (h *WatchHub) dropRoot(key string, hr *hubRoot) {
 // fanout delivers c to each subscriber of hr, filtered by its rules.
 func (h *WatchHub) fanout(root string, hr *hubRoot, c Changes) {
 	h.mu.Lock()
-	subs := make([]hubSub, 0, len(hr.subs))
+	subs := make([]*hubSub, 0, len(hr.subs))
 	for _, s := range hr.subs {
 		subs = append(subs, s)
 	}
@@ -123,7 +145,7 @@ func (h *WatchHub) fanout(root string, hr *hubRoot, c Changes) {
 				continue
 			}
 		}
-		s.fn(sc)
+		s.deliver(sc)
 	}
 }
 

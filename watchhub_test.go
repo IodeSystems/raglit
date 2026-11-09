@@ -147,3 +147,45 @@ func TestWatchHubStopCancelsRuns(t *testing.T) {
 		t.Error("Subscribe after Stop: want an error")
 	}
 }
+
+// Once unsubscribe returns, the subscriber gets no callback, even with
+// another subscriber keeping the watcher going.
+func TestWatchHubUnsubscribeWaitsForDelivery(t *testing.T) {
+	root := t.TempDir()
+	h := NewWatchHub(fastWatch)
+	t.Cleanup(h.Stop)
+	in, release := make(chan struct{}, 10), make(chan struct{})
+	var after atomic.Bool
+	var unsubbed atomic.Bool
+	ua, err := h.Subscribe(root, TreeRules{}, func(Changes) {
+		if unsubbed.Load() {
+			after.Store(true)
+		}
+		in <- struct{}{}
+		<-release
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ub, err := h.Subscribe(root, TreeRules{}, func(Changes) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ub()
+	writeFiles(t, root, map[string]string{"a.md": "a"})
+	<-in
+	done := make(chan struct{})
+	go func() { ua(); unsubbed.Store(true); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("unsubscribe returned during a delivery")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-done
+	writeFiles(t, root, map[string]string{"b.md": "b"})
+	time.Sleep(300 * time.Millisecond)
+	if after.Load() {
+		t.Fatal("callback after unsubscribe returned")
+	}
+}

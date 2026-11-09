@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,8 +84,8 @@ type TreeWatcher struct {
 	stopC   chan struct{}
 	done    chan struct{}
 	once    sync.Once
-	inFn    atomic.Bool
-	onStop  func() // WatchHub's hook, called once when the loop ends
+	loopG   atomic.Uint64 // the loop goroutine's id, which runs fn
+	onStop  func()        // WatchHub's hook, called once when the loop ends
 }
 
 // watchAdd adds one directory watch. A test replaces it to simulate the OS
@@ -145,13 +147,31 @@ func (w *TreeWatcher) Touch() {
 	}
 }
 
-// Stop ends the watcher and waits for it, unless a callback is running: Stop
-// from inside fn only signals.
+// Stop ends the watcher and waits for it, a callback in progress included,
+// so no callback runs once Stop returns. Stop from inside fn only signals:
+// the watcher ends when fn returns.
 func (w *TreeWatcher) Stop() {
 	w.once.Do(func() { close(w.stopC) })
-	if !w.inFn.Load() {
+	if !w.onLoop() {
 		<-w.done
 	}
+}
+
+// onLoop reports whether the caller is the watcher's own goroutine (inside
+// fn or onStop).
+func (w *TreeWatcher) onLoop() bool { return goid() == w.loopG.Load() }
+
+// goid is the calling goroutine's id, from its stack header
+// ("goroutine 123 [running]:"). Only compared with another goid.
+func goid() uint64 {
+	var b [64]byte
+	s := string(b[:runtime.Stack(b[:], false)])
+	s = strings.TrimPrefix(s, "goroutine ")
+	if i := strings.IndexByte(s, ' '); i > 0 {
+		s = s[:i]
+	}
+	id, _ := strconv.ParseUint(s, 10, 64)
+	return id
 }
 
 // Root is the watched directory, absolute and clean.
@@ -273,6 +293,7 @@ func (w *TreeWatcher) event(ev fsnotify.Event) []string {
 }
 
 func (w *TreeWatcher) loop(ctx context.Context) {
+	w.loopG.Store(goid())
 	defer func() {
 		_ = w.fw.Close()
 		close(w.done)
@@ -354,9 +375,7 @@ func (w *TreeWatcher) loop(ctx context.Context) {
 			return
 		}
 		lastEmit = time.Now()
-		w.inFn.Store(true)
 		w.fn(c)
-		w.inFn.Store(false)
 	}
 	schedule()
 	for {
