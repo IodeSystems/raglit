@@ -481,6 +481,9 @@ func migrate(db *sql.DB) error {
 		{"fragments", "end_line", "INTEGER NOT NULL DEFAULT 0"},
 		{"fragments", "symbol", "TEXT NOT NULL DEFAULT ''"},
 		{"fragments", "content_id", "TEXT NOT NULL DEFAULT ''"},
+		// The key vector reuse looks up (R12a, reuse.go). Backfilled below with
+		// the content ids.
+		{"fragments", "text_key", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
@@ -513,6 +516,12 @@ func migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS fragments_content ON fragments(content_id)`); err != nil {
 		return err
 	}
+	// Vector reuse's lookup by text, and the backfill's search for fragments
+	// still owing a key.
+	if _, err := db.Exec(
+		`CREATE INDEX IF NOT EXISTS fragments_text_key ON fragments(text_key)`); err != nil {
+		return err
+	}
 	// The FTS update trigger fires on text only (schema.sql). An index made
 	// before that has one that fires on every update, which would rewrite the
 	// FTS row of each fragment the content-id backfill touches.
@@ -531,7 +540,7 @@ END;`); err != nil {
 		}
 	}
 	if err := backfillContentIDs(db); err != nil {
-		return fmt.Errorf("content id backfill: %w", err)
+		return fmt.Errorf("content id and text key backfill: %w", err)
 	}
 	// Captions handed in with a document, held until its ingest commits
 	// (Store.SupplyIdentity). Raw SQL, like the column ALTERs above.
@@ -656,6 +665,21 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 	if doc.Path == "" {
 		return fmt.Errorf("raglit: ingest: empty path")
 	}
+	// Stored vectors for this text, looked up before the transaction below
+	// deletes this document's fragments and their vectors with them (R12a,
+	// reuse.go). Only the misses are embedded after the commit.
+	emb := s.textEmbedder()
+	var have map[string][]float32
+	if emb != nil {
+		var keys []string
+		for _, f := range doc.Fragments {
+			keys = append(keys, textKey(f.Text))
+		}
+		var err error
+		if have, err = s.reusableVectors(ctx, emb, keys); err != nil {
+			return fmt.Errorf("raglit: reuse vectors: %w", err)
+		}
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -726,12 +750,13 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 
 	// Vector tier (opt-in): embed the fresh fragments and store their vectors.
 	// Done AFTER commit so the network round-trip doesn't hold the write tx.
-	if emb := s.textEmbedder(); emb != nil && len(frags) > 0 {
+	// Stored vectors are copied rather than embedded again (embedMisses).
+	if emb != nil && len(frags) > 0 {
 		texts := make([]string, len(frags))
 		for i, f := range frags {
 			texts[i] = f.text
 		}
-		vecs, err := emb.EmbedDocs(ctx, texts)
+		vecs, _, _, err := embedMisses(ctx, emb, texts, have)
 		if err != nil {
 			return fmt.Errorf("raglit: embed fragments: %w", err)
 		}
@@ -752,6 +777,9 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 		for i, f := range frags {
 			if i >= len(vecs) {
 				break
+			}
+			if vecs[i] == nil {
+				continue
 			}
 			if err := vq.InsertVector(ctx, gen.InsertVectorParams{FragmentID: f.id, Dim: int64(len(vecs[i])), Vec: encodeVec(vecs[i])}); err != nil {
 				return fmt.Errorf("raglit: store vector: %w", err)

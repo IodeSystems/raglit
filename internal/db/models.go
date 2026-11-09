@@ -90,6 +90,7 @@ type Fragment struct {
 	EndLine   int64  `db:"end_line" derived:"fragments.end_line" json:"end_line"`
 	Symbol    string `db:"symbol" derived:"fragments.symbol" json:"symbol"`
 	ContentID string `db:"content_id" derived:"fragments.content_id" json:"content_id"`
+	TextKey   string `db:"text_key" derived:"fragments.text_key" json:"text_key"`
 	PageSpans string `db:"page_spans" derived:"fragments.page_spans" json:"page_spans"`
 	Origin    string `db:"origin" derived:"fragments.origin" json:"origin"`
 }

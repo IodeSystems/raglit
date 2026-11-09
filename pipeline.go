@@ -459,7 +459,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	if emb != nil {
 		embedCh = make(chan embedItem, 64)
 		embedDone = make(chan embedResult, 1)
-		go runStagedEmbed(ctx, emb, embedCh, embedDone)
+		go s.runStagedEmbed(ctx, emb, embedCh, embedDone)
 	}
 	// The embedder's ceiling, enforced HERE because this is the only point every
 	// fragment passes through on every path.
@@ -603,7 +603,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 			return 0, "", res.err
 		}
 		vecs = res.vecs
-		sl.Done("embed", "vectors", fmt.Sprintf("%d vector(s)", len(vecs)))
+		sl.Done("embed", "vectors", fmt.Sprintf("%d vector(s): reused %d, embedded %d", len(vecs), res.reused, res.embedded))
 	}
 
 	media := extractMedia(frags, provenance)
@@ -1177,18 +1177,26 @@ type embedItem struct {
 }
 type embedResult struct {
 	vecs map[int][]float32 // fragment index → vector
-	err  error
+	// reused is the fragments given a stored vector (or one this run already
+	// made for the same text); embedded is the texts sent to the embedder.
+	reused, embedded int
+	err              error
 }
 
 // runStagedEmbed batches finalized fragments and embeds them, collecting the
 // vectors in memory keyed by fragment index (they're written later, in the
-// atomic swap). It always drains ch so a producer never blocks, and reports the
-// first error. The returned map is only safe to read after receiving from done
-// (channel receive establishes the happens-before).
-func runStagedEmbed(ctx context.Context, emb *Embedder, ch <-chan embedItem, done chan<- embedResult) {
+// atomic swap). A fragment whose text already has a vector in the index (this
+// document's current fragments, which the swap has not deleted yet, any other
+// document, or a branch's parent) reuses it rather than being embedded
+// (embedReusing). It always drains ch so a producer never blocks, and reports
+// the first error. The returned map is only safe to read after receiving from
+// done (channel receive establishes the happens-before).
+func (s *Store) runStagedEmbed(ctx context.Context, emb *Embedder, ch <-chan embedItem, done chan<- embedResult) {
 	const batch = 16
 	vecs := map[int][]float32{}
+	made := map[string][]float32{} // text_key → vector, from this run
 	var buf []embedItem
+	var reused, embedded int
 	var firstErr error
 
 	flush := func() {
@@ -1196,23 +1204,35 @@ func runStagedEmbed(ctx context.Context, emb *Embedder, ch <-chan embedItem, don
 			buf = nil
 			return
 		}
-		texts := make([]string, len(buf))
-		for i, it := range buf {
-			texts[i] = it.text
+		var texts []string
+		var pending []embedItem
+		for _, it := range buf {
+			if v, ok := made[textKey(it.text)]; ok {
+				vecs[it.idx] = v
+				reused++
+				continue
+			}
+			texts = append(texts, it.text)
+			pending = append(pending, it)
 		}
-		out, err := emb.EmbedDocs(ctx, texts)
-		if err != nil {
-			firstErr = err
-			buf = nil
+		buf = nil
+		if len(pending) == 0 {
 			return
 		}
-		for i, it := range buf {
-			if i >= len(out) {
+		out, r, e, err := s.embedReusing(ctx, emb, texts)
+		if err != nil {
+			firstErr = err
+			return
+		}
+		reused += r
+		embedded += e
+		for i, it := range pending {
+			if i >= len(out) || out[i] == nil {
 				break
 			}
 			vecs[it.idx] = out[i]
+			made[textKey(it.text)] = out[i]
 		}
-		buf = nil
 	}
 
 	for it := range ch {
@@ -1222,7 +1242,7 @@ func runStagedEmbed(ctx context.Context, emb *Embedder, ch <-chan embedItem, don
 		}
 	}
 	flush()
-	done <- embedResult{vecs: vecs, err: firstErr}
+	done <- embedResult{vecs: vecs, reused: reused, embedded: embedded, err: firstErr}
 }
 
 // encodePageSpans serialises page boundaries for storage. Empty string when the

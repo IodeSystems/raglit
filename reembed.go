@@ -182,14 +182,17 @@ func (s *Store) FragmentCount() (int, error) {
 var errEmbedderChanged = errors.New("raglit: re-embed: the embedder changed during the batch; its vectors were discarded")
 
 // BackfillVectors embeds up to batch fragments that have no vector, then figure
-// descriptions with no text-space vector, and returns how many it embedded. 0
-// means there is nothing left (or no embedder, or the index is paused).
+// descriptions with no text-space vector, and returns how many it gave a
+// vector. A fragment whose text already has a vector in this model's space
+// (another fragment's, here or in a branch's parent) gets a copy of it rather
+// than an embed call (R12a, reuse.go). 0 means there is nothing left (or no
+// embedder, or the index is paused).
 func (s *Store) BackfillVectors(ctx context.Context, batch int) (int, error) {
 	emb := s.textEmbedder()
 	if emb == nil || s.Paused() {
 		return 0, nil
 	}
-	n, err := s.backfill(ctx, emb, batch,
+	n, err := s.backfill(ctx, emb, batch, true,
 		`SELECT f.id, f.text FROM fragments f
 		   LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 		  WHERE fv.fragment_id IS NULL AND `+SQLOwnWordsF+` ORDER BY f.id LIMIT ?`,
@@ -197,14 +200,17 @@ func (s *Store) BackfillVectors(ctx context.Context, batch int) (int, error) {
 	if err != nil || n > 0 {
 		return n, err
 	}
-	return s.backfill(ctx, emb, batch,
+	return s.backfill(ctx, emb, batch, false,
 		`SELECT m.id, m.description FROM media m
 		   LEFT JOIN media_vectors mv ON mv.media_id = m.id
 		  WHERE mv.media_id IS NULL AND TRIM(m.description) <> '' ORDER BY m.id LIMIT ?`,
 		`INSERT OR REPLACE INTO media_vectors (media_id, dim, vec, space) VALUES (?, ?, ?, '`+spaceText+`')`)
 }
 
-func (s *Store) backfill(ctx context.Context, emb *Embedder, batch int, sel, ins string) (int, error) {
+// backfill gives up to batch rows of sel a vector and writes them with ins.
+// reuse copies a stored vector for text that has one; it is for fragments only,
+// whose vectors are the ones reuse reads.
+func (s *Store) backfill(ctx context.Context, emb *Embedder, batch int, reuse bool, sel, ins string) (int, error) {
 	rows, err := s.db.QueryContext(ctx, sel, batch)
 	if err != nil {
 		return 0, err
@@ -224,12 +230,22 @@ func (s *Store) backfill(ctx context.Context, emb *Embedder, batch int, sel, ins
 	if err := rows.Err(); err != nil || len(ids) == 0 {
 		return 0, err
 	}
-	vecs, err := emb.EmbedDocs(ctx, texts)
+	var vecs [][]float32
+	if reuse {
+		vecs, _, _, err = s.embedReusing(ctx, emb, texts)
+	} else {
+		vecs, err = emb.EmbedDocs(ctx, texts)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("raglit: re-embed: %w", err)
 	}
 	if len(vecs) != len(ids) {
 		return 0, fmt.Errorf("raglit: re-embed: %d vectors for %d texts", len(vecs), len(ids))
+	}
+	for i, v := range vecs {
+		if len(v) == 0 {
+			return 0, fmt.Errorf("raglit: re-embed: no vector for text %d of %d", i+1, len(ids))
+		}
 	}
 	current, unlock := s.vectorsCurrent(emb)
 	defer unlock()

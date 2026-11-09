@@ -78,14 +78,16 @@ func ContentIDs(path string, frags []Fragment) []string {
 	return out
 }
 
-// setContentIDs (re)computes content_id for every fragment of one document, in
-// rowid order, inside the caller's transaction (a *sql.Tx, or a *sql.Conn
-// that has begun one).
+// setContentIDs (re)computes content_id and text_key for every fragment of one
+// document, in rowid order, inside the caller's transaction (a *sql.Tx, or a
+// *sql.Conn that has begun one).
 //
 // Per document rather than per insert, because a repeat's occurrence number
 // depends on every fragment before it, and fragments of one document are written
 // by several paths (commitDoc, writeIdentity, replaceFieldsFragment). Each of
-// them calls this before it commits. Only rows whose id changed are written.
+// them calls this before it commits. text_key rides the same pass because every
+// one of those paths already calls it. Only rows whose id or key changed are
+// written; the count is of those rows.
 func setContentIDs(ctx context.Context, tx gen.DBTX, docID int64) (int, error) {
 	var path string
 	if err := tx.QueryRowContext(ctx, `SELECT path FROM documents WHERE id = ?`, docID).Scan(&path); err != nil {
@@ -95,25 +97,25 @@ func setContentIDs(ctx context.Context, tx gen.DBTX, docID int64) (int, error) {
 		return 0, err
 	}
 	rows, err := tx.QueryContext(ctx,
-		`SELECT id, symbol, text, content_id FROM fragments WHERE doc_id = ? ORDER BY id`, docID)
+		`SELECT id, symbol, text, content_id, text_key FROM fragments WHERE doc_id = ? ORDER BY id`, docID)
 	if err != nil {
 		return 0, err
 	}
 	type upd struct {
-		id  int64
-		cid string
+		id       int64
+		cid, key string
 	}
 	var ups []upd
 	ids := newContentIDs(path)
 	for rows.Next() {
 		var id int64
-		var symbol, text, cur string
-		if err := rows.Scan(&id, &symbol, &text, &cur); err != nil {
+		var symbol, text, cur, curKey string
+		if err := rows.Scan(&id, &symbol, &text, &cur, &curKey); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		if cid := ids.next(symbol, text); cid != cur {
-			ups = append(ups, upd{id, cid})
+		if cid, key := ids.next(symbol, text), textKey(text); cid != cur || key != curKey {
+			ups = append(ups, upd{id, cid, key})
 		}
 	}
 	rows.Close()
@@ -121,7 +123,7 @@ func setContentIDs(ctx context.Context, tx gen.DBTX, docID int64) (int, error) {
 		return 0, err
 	}
 	for _, u := range ups {
-		if _, err := tx.ExecContext(ctx, `UPDATE fragments SET content_id = ? WHERE id = ?`, u.cid, u.id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE fragments SET content_id = ?, text_key = ? WHERE id = ?`, u.cid, u.key, u.id); err != nil {
 			return 0, fmt.Errorf("raglit: set content id: %w", err)
 		}
 	}
@@ -129,7 +131,7 @@ func setContentIDs(ctx context.Context, tx gen.DBTX, docID int64) (int, error) {
 }
 
 // backfillContentIDs gives the fragments of an index written before content_id
-// existed their ids, at open (migrate). Eager rather than lazy, because
+// (or text_key) existed their ids and keys, at open (migrate). Eager rather than lazy, because
 // FragmentExists and Hit.ContentID must not depend on whether a document has
 // been touched since the upgrade.
 //
@@ -148,7 +150,9 @@ func setContentIDs(ctx context.Context, tx gen.DBTX, docID int64) (int, error) {
 // wait and not a silent stall at open.
 func backfillContentIDs(db *sql.DB) error {
 	ctx := context.Background()
-	rows, err := db.QueryContext(ctx, `SELECT DISTINCT doc_id FROM fragments WHERE content_id = ''`)
+	// Two probes, each on its own index, rather than one OR that may scan.
+	rows, err := db.QueryContext(ctx, `SELECT doc_id FROM fragments WHERE content_id = ''
+		UNION SELECT doc_id FROM fragments WHERE text_key = ''`)
 	if err != nil {
 		return err
 	}
@@ -169,7 +173,7 @@ func backfillContentIDs(db *sql.DB) error {
 		return nil
 	}
 	start := time.Now()
-	fmt.Fprintf(os.Stderr, "raglit: content ids: backfilling %d document(s) from before content ids\n", len(docs))
+	fmt.Fprintf(os.Stderr, "raglit: content ids: backfilling %d document(s) from before content ids or text keys\n", len(docs))
 	n := 0
 	for len(docs) > 0 {
 		batch := docs[:min(backfillBatch, len(docs))]
