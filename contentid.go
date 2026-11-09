@@ -148,6 +148,16 @@ func setContentIDs(ctx context.Context, tx gen.DBTX, docID int64) (int, error) {
 // TestContentIDBackfillTiming): 5.3s on the dev box in one transaction. It says
 // so on stderr when it starts and when it ends, so a slow disk is a reported
 // wait and not a silent stall at open.
+//
+// text_key (R12a) came after content_id, so the first open after that upgrade
+// rewrites EVERY document of the index, once, and Open blocks until it is done.
+// Measured 2026-11-09 on copies of the two largest indexes on the dev box:
+// 2,397 documents / 22,479 fragments / 29 MB of text in 2.5s, and 2,347
+// documents / 10,107 fragments in 1.6s; the next open of each took 40ms. At the
+// synthetic rate above, 100k documents of 100 fragments would take about nine
+// minutes. Kept eager and in migrate because that is seconds on the indexes
+// that exist; a corpus of that size should move the text_key pass to a
+// background task (a fragment without a key only misses reuse).
 func backfillContentIDs(db *sql.DB) error {
 	ctx := context.Background()
 	// Two probes, each on its own index, rather than one OR that may scan.
