@@ -348,7 +348,7 @@ func TestCommitDoc_StaleEmbedderVectorsDropped(t *testing.T) {
 		{page: 1, ord: 1, kind: "figure", description: "d2", fragIdx: 0, vec: []float32{1, 0}, space: spaceImage},
 	}
 	must(t, s.commitDoc("file:///a.md", "A", "overlap", "", frags, nil, media,
-		map[int][]float32{0: {1, 0, 0}}, a, nil))
+		map[int][]float32{0: {1, 0, 0}}, &embedStamp{emb: a}, nil))
 	if miss, _ := s.MissingVectors(); miss != 1 {
 		t.Fatalf("%d missing, want 1", miss)
 	}

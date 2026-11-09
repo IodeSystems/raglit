@@ -97,6 +97,11 @@ CREATE TABLE IF NOT EXISTS fragments (
   -- rowid changes; this does not while the text does not. Indexed in migrate(),
   -- not here: see the note there on indexes over migrated columns.
   content_id TEXT NOT NULL DEFAULT '',
+  -- hex sha256 of `text`, the text the embedder is given (less the model's
+  -- fixed DocPrefix). An ingest looks up a stored vector by it before embedding
+  -- (reuse.go), so unchanged text costs no embed call. Set with content_id by
+  -- setContentIDs; indexed in migrate(), like content_id.
+  text_key TEXT NOT NULL DEFAULT '',
   -- Page boundaries WITHIN this fragment, as JSON [{"off":N,"page":P},...] where
   -- off is a byte offset into `text` at which page P's content begins.
   --
