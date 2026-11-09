@@ -60,7 +60,15 @@ type DocSummary struct {
 	Vision    int            `json:"vision"`    // pages that used the VLM
 	FragMode  string         `json:"frag_mode"` // how it was fragmented: text-overlap | llm-seg
 	Engines   map[string]int `json:"engines"`   // engine → page count
-	AddedAt   int64          `json:"added_at"`
+	// AddedAt is when the document was last really ingested (Unix nanoseconds).
+	// A re-ingest of an unchanged file is skipped before commit (worker.go), so
+	// it does not move AddedAt.
+	AddedAt int64 `json:"added_at"`
+	// Hash is the sha256 hex of the raw source bytes, the same value as
+	// Store.DocumentHash; "" for a document never hashed. ContentHash carries the
+	// same value on the wire. Hash is for callers of the Go API and is not
+	// serialised.
+	Hash string `json:"-"`
 	// SrcSize / SrcMtime are the source file's bytes and modified time (unix
 	// seconds); 0 when unknown (srcstat.go).
 	SrcSize  int64 `json:"src_size,omitempty"`
@@ -124,7 +132,7 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 			return nil, err
 		}
 		out = append(out, DocSummary{Path: path, Title: title, Fragments: int(frags), FragMode: fragMode,
-			AddedAt: addedAt, ContentHash: contentHash, SrcSize: srcSize, SrcMtime: srcMtime, Engines: map[string]int{},
+			AddedAt: addedAt, Hash: contentHash, ContentHash: contentHash, SrcSize: srcSize, SrcMtime: srcMtime, Engines: map[string]int{},
 			GenName: genName, GenKind: genKind, GenSource: genSource, GenSummary: genSummary, GenModel: genModel,
 			GenContentTags: splitTagList(ctStr), GenRoleTags: splitTagList(rtStr)})
 		ids = append(ids, id)

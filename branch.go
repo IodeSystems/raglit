@@ -235,9 +235,23 @@ func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, e
 
 // DeleteDocument removes a document from THIS store and, when it's a branch, marks
 // the path tombstoned so the parent's version stops showing through the overlay.
+//
+// page_readings keys on the path with no foreign key, so the cascade from
+// documents does not reach it; it is deleted here, in the same transaction.
 func (s *Store) DeleteDocument(path string) error {
 	ctx := context.Background()
-	if err := s.q.DeleteDocumentByPath(ctx, path); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := gq(tx).DeleteDocumentByPath(ctx, path); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM page_readings WHERE doc = ?`, path); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	// Tombstone so a parent doc is hidden. Harmless on a non-branch store.

@@ -57,6 +57,9 @@ type Runner struct {
 	stopClaims context.CancelFunc // the claim loop ends; running jobs go on
 	cutOff     context.CancelFunc // running jobs are cancelled and requeue themselves
 	done       chan struct{}      // closed when every runner has returned
+	// drainIdentity drains one index's caption queue. nil → IdentityWorker.Drain.
+	// A seam for tests, which need a drain that blocks.
+	drainIdentity func(ctx context.Context, st *Store, slots int) (int, error)
 }
 
 // DefaultIngestRunners is how many documents may be in flight at once.
@@ -107,16 +110,30 @@ func (r *Runner) Start(parent context.Context) (claim, work context.Context) {
 	work, r.cutOff = context.WithCancel(parent)
 	claim, r.stopClaims = context.WithCancel(work)
 	r.done = make(chan struct{})
+	// Captions, on their own queue and their own slot budget. See runIdentity.
+	// Done waits for both loops.
+	var loops sync.WaitGroup
+	loops.Add(2)
 	go func() {
-		defer close(r.done)
+		defer loops.Done()
 		r.runIngest(claim, work)
 	}()
-	// Captions, on their own queue and their own slot budget. See runIdentity.
-	go r.runIdentity(claim)
+	go func() {
+		defer loops.Done()
+		r.runIdentity(claim)
+	}()
+	go func() {
+		loops.Wait()
+		close(r.done)
+	}()
 	return claim, work
 }
 
-// Done is closed when every ingest runner has returned. nil before Start.
+// Done is closed when the ingest runners and the caption loop have both
+// returned, including every caption drain the loop started. After it closes the
+// Runner touches no store, so a caller may close them. A caption call in flight
+// when the claim context ends is cancelled through that context, so the wait is
+// short. nil before Start.
 func (r *Runner) Done() <-chan struct{} { return r.done }
 
 // CutOff cancels the running jobs now; they requeue themselves. It also ends
@@ -354,7 +371,13 @@ func (r *Runner) runIdentity(ctx context.Context) {
 			wg.Add(1)
 			go func(name string, st *Store) {
 				defer wg.Done()
-				n, werr := (&IdentityWorker{Store: st, Slots: slots}).Drain(ctx)
+				drain := r.drainIdentity
+				if drain == nil {
+					drain = func(ctx context.Context, st *Store, slots int) (int, error) {
+						return (&IdentityWorker{Store: st, Slots: slots}).Drain(ctx)
+					}
+				}
+				n, werr := drain(ctx, st, slots)
 				if werr != nil && !errors.Is(werr, ErrNoIdentifier) {
 					r.logf("raglit: identity queue %s: %v", name, werr)
 				}

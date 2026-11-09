@@ -105,7 +105,8 @@ func gq(tx gen.DBTX) *gen.Queries { return gen.New(tx) }
 func (s *Store) Path() string { return s.path }
 
 // DocumentHash returns a document's stored source-content hash, or "" if the doc
-// is unknown or has none. The worker uses it to skip re-ingesting unchanged
+// is unknown or has none. The hash is the sha256 hex of the raw source bytes,
+// not of the extracted text. The worker uses it to skip re-ingesting unchanged
 // content (dedup work).
 func (s *Store) DocumentHash(path string) (string, error) {
 	h, err := s.q.GetDocumentHash(context.Background(), path)

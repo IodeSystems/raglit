@@ -347,3 +347,101 @@ func TestRunnerDrain_BeforeStartReturns(t *testing.T) {
 		t.Fatal("Drain before Start reported runners still running")
 	}
 }
+
+// Done closes only after the caption loop and its in-flight drains have
+// returned, so a caller that closes stores after Done never closes one under a
+// caption call.
+func TestRunnerDone_WaitsForCaptionDrain(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	st, err := reg.Get("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.EnqueueIdentity("file:///notes.md", false); err != nil {
+		t.Fatal(err)
+	}
+	var started atomic.Int32
+	release := make(chan struct{})
+	r := &Runner{
+		Stores:    reg,
+		NewWorker: func(s *Store) (*Worker, error) { return nil, fmt.Errorf("no ingest") },
+		Runners:   1,
+		Notef:     t.Logf,
+		Logf:      t.Logf,
+		// A fake caption call: blocks until its context is cancelled, then
+		// lingers until released, as a slow cancellation would.
+		drainIdentity: func(ctx context.Context, _ *Store, _ int) (int, error) {
+			started.Add(1)
+			<-ctx.Done()
+			<-release
+			return 0, ctx.Err()
+		},
+	}
+	r.Start(context.Background())
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		r.CutOff()
+		<-r.Done()
+	})
+	waitFor(t, "the caption drain to start", func() bool { return started.Load() >= 1 })
+
+	r.CutOff()
+	select {
+	case <-r.Done():
+		t.Fatal("Done closed while a caption drain was still running")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-r.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("Done did not close after the caption drain returned")
+	}
+}
+
+// Drain reports success only when the caption loop has returned too.
+func TestRunnerDrain_WaitsForCaptionDrain(t *testing.T) {
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	st, err := reg.Get("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.EnqueueIdentity("file:///notes.md", false); err != nil {
+		t.Fatal(err)
+	}
+	var started atomic.Int32
+	r := &Runner{
+		Stores:    reg,
+		NewWorker: func(s *Store) (*Worker, error) { return nil, fmt.Errorf("no ingest") },
+		Runners:   1,
+		Notef:     t.Logf,
+		Logf:      t.Logf,
+		drainIdentity: func(ctx context.Context, _ *Store, _ int) (int, error) {
+			started.Add(1)
+			<-ctx.Done()
+			return 0, ctx.Err()
+		},
+	}
+	r.Start(context.Background())
+	waitFor(t, "the caption drain to start", func() bool { return started.Load() >= 1 })
+	if !r.Drain(10 * time.Second) {
+		t.Fatal("Drain reported runners still running")
+	}
+	select {
+	case <-r.Done():
+	default:
+		t.Fatal("Drain returned true but Done is open")
+	}
+}
