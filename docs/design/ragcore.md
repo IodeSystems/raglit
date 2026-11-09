@@ -439,6 +439,311 @@ it, and every later version bump, needs an aw4 `go mod tidy`.
 (it needs only the interface, so it can start in parallel against a fake),
 then the raglitd adapter once the tag exists, then dund.
 
+## R10: tree indexing, watching, worktree branches, content-addressed fragments (PLAN FOR REVIEW, 2026-11-09)
+
+Carl's requests, relayed by dun-bb: these go into raglit core so that
+raglitd and dund share them. dund keeps its interim `rag_index` until they
+land. dun-bb will forward the API shape its sub-agent wanted while it built
+dund's interim version; this plan is reconciled against that when it arrives.
+`EnqueueMany` (fbb99de, local main, not released) stays; tree indexing is built
+on it.
+
+### What exists (read 2026-11-09)
+
+- **Selection rules: in the core.** `PlanSources(cfg, baseDir)` (sources.go:106)
+  uses `git ls-files` in a git work tree and a directory walk otherwise. It
+  applies include globs plus the built-in, config, index and root ignore globs,
+  and already ignores `.claude/worktrees` and `.dun/worktrees`
+  (indexcontrol.go:62). `Enqueue` refuses ignored paths and sidecars. The
+  worker refuses binary content (worker.go:313) and minified content
+  (extract.go:307). There is no size limit.
+- **Hash skip: in the core.** The worker skips a file whose bytes match
+  `DocumentHash` (worker.go:331).
+- **`sync`, the watcher and removal: in cmd only.**
+  - `sync` (cmd/raglit/sync.go) enqueues the plan, with no removal and no
+    counts.
+  - The watcher (cmd/raglit/watcher.go) polls every 5 s by mtime, enqueues
+    changed files and calls `RemoveDocument` for files that disappeared. It has
+    no fsnotify and no debounce.
+- **Not in raglit anywhere:** retrying a failed file only after it changes.
+  That logic exists only in dund.
+- **Branches.** A branch is its own SQLite file in its own scoped Home
+  (`branch.json`), layered over its parent at document grain with tombstones.
+  - `ReapSessionBranches` reaps by last access (registry.go:448). Nothing reaps
+    a branch whose root is gone.
+  - A branch ingest of a file identical to the parent's stores a full copy,
+    because `DocumentHash` does not read through the parent (store.go:143).
+  - There is no git worktree detection.
+- **Reuse.** The pool reuses whole documents keyed by (recipe, file bytes)
+  across indexes, so same bytes at a new path cost nothing (pool.go:20-27).
+  There is no reuse at fragment grain.
+  - `content_id` hashes the path, so it changes on a move (contentid.go:30).
+  - The embedded input is the fragment text alone, plus the model's fixed
+    document prefix (pipeline.go:1203, embed.go:54). Identical text therefore
+    gives an identical vector within one embed model.
+- **Two tables reference `fragments(id)`:** `fragment_vectors`
+  (schema.sql:141) and `media.fragment_id` (schema.sql:339). FTS follows
+  fragments through triggers.
+
+### R10a. Tree indexing in the core (additive)
+
+```go
+type TreeOptions struct {
+    Include, Ignore []string // on top of the built-in rules
+    Gitignore       *bool    // nil = on
+    MaxBytes        int64    // 0 = a default (proposed 2 MiB); larger files count as Skipped
+    Route           func(path string) (index string) // optional: code vs docs, per caller
+    Paths           []string // optional: check only these (from WatchTree); empty = whole tree
+}
+type TreeResult struct{ Queued, Current, Removed, Failed, Skipped int; Errors []error }
+func IndexTree(ctx context.Context, st *Store, root string, o TreeOptions) (TreeResult, error)
+```
+
+- **Selection:** the `PlanSources` rules move behind it unchanged (git
+  ls-files, globs, worktree ignores). The size limit is new.
+- **Classifying files:**
+  - Current: the stored hash equals the file's hash.
+  - Queued: new or changed, enqueued with one `EnqueueMany`.
+  - Removed: an indexed document under `root` that is no longer selected, gone
+    through `RemoveDocument`.
+- **Failed:** a new table `failed_sources(path, hash, at, error)`, written when
+  a job ends in error. A failed file is requeued only when its hash changes.
+  This uses the hash, not mtime, so a `touch` or a checkout of the same bytes
+  does not retry it.
+- **Routing to more than one index** (dund's code vs docs):
+  `IndexTrees(map[index]*Store, root, o)` routes by `o.Route` and returns
+  per-index results.
+- **raglitd:** `sync` and the watcher's reconcile call `IndexTree`, so
+  raglitd gains counts and failed-file tracking. One behavior change: `sync`
+  now also removes documents whose files are gone. Today only the watcher
+  removes them.
+
+### R10b. Watching in the core (adds a dependency)
+
+The API follows the shape dund's builder asked for (dun-bb, 2026-11-09). The
+watcher reports changes; indexing them is a separate call.
+
+```go
+type TreeRules struct {           // shared by IndexTree and WatchTree
+    Include   []string
+    Gitignore *bool               // nil = on
+    Skip      func(path string) bool
+    MaxBytes  int64
+}
+type WatchOptions struct{ Quiet, MaxDelay, Idle time.Duration }
+type Changes struct{ Paths []string; Degraded bool } // one per burst
+func WatchTree(ctx context.Context, root string, r TreeRules, o WatchOptions, fn func(Changes)) (*TreeWatcher, error)
+func (w *TreeWatcher) Rescan()    // report everything selected, as one burst
+func (w *TreeWatcher) Touch()     // resets the idle timer; sessions call it
+func (w *TreeWatcher) Stop()
+```
+
+- **Events:** fsnotify (BSD-3) watches the selected tree recursively, adding
+  directories as they appear.
+- **Debounce:** a quiet period (proposed 500 ms) plus a maximum delay
+  (proposed 5 s). A save storm or a git checkout becomes one `Changes`
+  callback, filtered by the same rules as `IndexTree`.
+- **Watch limit:** when the OS limit is hit (ENOSPC on Linux), it logs once
+  and sends `Changes{Degraded: true}`. From then on the caller decides: call
+  `Rescan()` on its own trigger, as dund does at session start and turn end,
+  or poll.
+- **Idle:** with `Idle` > 0, the watcher stops itself after that long without
+  a `Touch` or an event.
+- **Typical use:** `fn` calls `IndexTree` (R10a). Pass the changed paths and
+  it checks only those, falling back to the whole tree on `Degraded`.
+  dund's `codeLink.reindex` (dun codesearch.go) is the call this replaces.
+- **raglitd:** its project watchers switch to `WatchTree`. Polling remains
+  only as raglitd's own fallback on `Degraded`. This changes how raglitd
+  watches: a change is seen within ~0.5 s instead of within 5 s, and it costs
+  inotify watches.
+
+### R10c. Content-addressed fragments (schema redesign; breaking)
+
+- **Fragment key:** `sha256(text)`. The text is exactly what is embedded (the
+  document prefix is fixed per model), so equal text means an equal vector.
+  The symbol is left out of the key on purpose: identical text under two
+  symbols shares one embedding, and the symbol is a property of the location.
+- **`fragments(id, key UNIQUE, text)`** holds the text, the FTS row and the
+  vector, each once.
+- **`locations(id, doc_id, fragment_id, page, ord, start_off, end_off,
+  start_line, end_line, symbol, loc_id)`** holds everything that is per
+  document today. `loc_id` is the R8 content id (`sha256(path, symbol, text)`
+  plus the occurrence number), so `Hit.ContentID` keeps its meaning.
+- **Commit:** `commitDoc` diffs the document's old locations against its new
+  ones. Only fragments whose key is new are inserted, FTS-indexed and
+  embedded. A copy, a vendored file or a rename adds location rows only.
+- **Search:** rank fragments with FTS, vector and RRF exactly as today, then
+  expand each hit to its live locations. Path, tag and field filters and the
+  branch overlay apply to locations, so a fragment whose only locations are
+  filtered out does not match. A filter is a join against locations inside
+  the same query, so it still applies before ranking.
+- **Hit:** one Hit per fragment, with `Locations []Location`. dund prefers
+  this shape. The existing Path, Page, Ord, StartLine, EndLine, Symbol and
+  ContentID fields carry the best location: the first in the overlay order,
+  then by path. raglitd's output keeps today's one-row-per-hit shape from
+  those fields.
+- **GC:** removing a document drops its locations. A fragment with no live
+  location is deleted along with its FTS row and vector, in the same
+  transaction.
+- **`FragmentExists(locID)`** means "this location is live", through the
+  overlay. A new `FragmentKeyExists(key)` means "the text is indexed
+  somewhere".
+- **Media/figures:** `media.fragment_id` points at a location, not at a
+  fragment, because a figure belongs to a place in a document.
+- **Pool:** stays at document grain across indexes. Within an index, reuse is
+  native.
+
+### R10d. Worktree branches (on R10c)
+
+- **Storage options:** dun-bb's sketch puts a branch column on locations.
+  With today's one-file-per-branch layout, a branch's locations would point at
+  fragments in its parent's file. Keys are content hashes, so that works, but
+  every search then joins two databases.
+  - Option 1: keep one file per branch. Branch locations reference fragments
+    by key; a fragment not in the parent is stored in the branch file. Search
+    queries both files and merges.
+  - Option 2 (recommended): one database per index. A branch is a row in
+    `branches(id, name, parent_id, root, created_at, last_access)`, and
+    locations and tombstones carry `branch_id`. One FTS table, one vector
+    table, one writer. The overlay becomes a visibility rule on locations: a
+    document's locations from the nearest branch that has the document, with
+    tombstones hiding the parent's. A branch costs rows, not a file. Reaping a
+    branch deletes its rows, then the fragment GC runs.
+- **Worktree detection:** `WorktreeOf(root) (mainRoot string, ok bool)`
+  through `git rev-parse --git-common-dir`. A worktree's index is a branch of
+  the main checkout's index. `IndexTree` on a branch:
+  - stores nothing for a file whose bytes equal what the parent shows, since
+    hashes now read through the overlay;
+  - adds locations for a file that differs;
+  - tombstones a file deleted in the worktree.
+- **GC:** `ReapBranches` drops a branch whose `root` no longer exists, in
+  addition to the existing idle-time reaping of session branches.
+- **API (dund's shape):**
+  - `OpenBranch(parent Home, name, root string) (*Store, error)`. It is
+    idempotent: it opens an existing branch or creates one. Writes go to the
+    branch only, and deletions are tombstones.
+  - `GCBranches(alive func(root string) bool) (removed int, err error)`: the
+    caller decides whether a root still exists.
+  - `BranchDiff` stays: it compares by content hash. With R10c it becomes
+    "add or tombstone locations".
+- **Tags:** `SetTags` on a parent-only document keeps failing. Tree indexing
+  never calls it, and copy-up waits for P6. The failure becomes a typed error,
+  `ErrParentOnly` (`errors.Is`), in v0.8.0. dund asked for that in place of a
+  string.
+
+### Order and versions
+
+1. **R10a, R10b and `ErrParentOnly`** are additive. raglitd gains removal in
+   `sync` and the switch to fsnotify. Release as **v0.8.0**.
+2. **R10c, then R10d**, are breaking: the schema, the `Hit` shape and branch
+   storage change. Release as **v0.9.0**.
+3. **Step 0 before R10c:** a migration prototype on a copy of a real raglitd
+   index, which measures the dedupe ratio and the migration time. If the
+   dedupe ratio is near 1 for document corpora, R10c's benefit is mostly
+   code. That would argue for a smaller version.
+
+### Risks
+
+- **R10c touches the hottest code in raglit:** commit, search, the overlay,
+  figures, identity and fields fragments, collapse and the pool. It is the
+  largest change since the daemon.
+- **Migration:** existing indexes are rewritten in place (dedupe by key, the
+  locations built from today's fragments, existing vectors kept). This must
+  be resumable and logged, like the R8 backfill. It is not measured yet.
+- **The one-database branch model (option 2) replaces how raglitd stores
+  branches.** Existing session branches are short-lived (TTL-reaped), so they
+  are dropped rather than migrated. Named branches are migrated.
+- **Watching:** fsnotify on large trees can hit inotify limits. The poll
+  fallback covers that, but changes are slower there.
+
+### Blocking decisions (Carl)
+
+1. Fragment key: `sha256(text)`, with the symbol on the location
+   (recommended), or `sha256(text, symbol)`?
+2. Branch storage: one database per index with a branches table (option 2,
+   recommended), or one file per branch with cross-file references by key
+   (option 1)?
+3. Existing indexes: migrate in place (recommended), or require a re-index?
+4. raglitd: switch its watcher to fsnotify with the poll as fallback
+   (recommended), and have `sync` remove documents whose files are gone
+   (recommended)?
+5. Releases: tree indexing and watching first as v0.8.0, then content
+   addressing and worktree branches as v0.9.0 after the step-0 measurement?
+
+## R11: worktree branches on today's storage (APPROVED, Carl 2026-11-09)
+
+Carl: branches and worktrees come first, as the most cost-effective part of
+R10. They are built on today's storage, the per-file branch with a
+document-grain overlay, without waiting for content addressing (R10c). A
+worktree's index stores copies only of the files that differ from the main
+checkout, plus tombstones for files deleted in the worktree. This is most of
+the saving, at a fraction of R10c's cost. R10a, R10b and R10c stay planned
+and unbuilt.
+
+### The problem today's overlay does not solve: paths
+
+A worktree's files live at different absolute paths from the main checkout's
+files (`<main>/a.go` vs `<worktree>/a.go`). The overlay shadows by path, so as
+it stands every worktree file looks new and nothing in the parent is ever
+shadowed.
+
+The fix: a branch records its **root**, and the parent's root is known. The
+overlay translates paths at the boundary.
+- Reading through to the parent (`DocumentHash`, `Documents`, search hits,
+  `DocText`, `FragmentExists`, `Tags`): a branch path under `branchRoot`
+  becomes `parentRoot + rel` for the lookup, and parent results come back
+  rewritten to `branchRoot + rel`.
+- Shadowing and tombstones are keyed by the branch path.
+- A branch with no root (today's session branches) does no translation, so
+  existing behavior is unchanged.
+- Limitation: `Hit.ContentID` for a hit served from the parent is the
+  parent's id, because it hashes the parent's path. `FragmentExists` through
+  the branch accepts it. Content ids that survive a move need R10c.
+
+### What gets built
+
+- **`BranchMeta` gains `Root` and `ParentRoot`.**
+  `OpenBranch(parent Home, name, root, parentRoot string) (*Store, error)` is
+  idempotent: it opens an existing branch home or creates one. The branch home
+  is a directory chosen by the caller (`Home(dir)`), not the Registry. Writes
+  go to the branch, and deletions are tombstones (`DeleteDocument` already
+  does this).
+- **`DocumentHash` reads through** the parent with path translation. The
+  worker's unchanged-bytes skip (worker.go:331) then skips a worktree file
+  whose bytes equal the parent's, so nothing is copied.
+  - Caveat: if the main checkout later changes that file, the branch still
+    shows the parent's new version until the branch's next index sees the
+    mismatch and stores its own copy. That is correct, because the worktree's
+    file then differs.
+- **`Documents()` lists parent documents under branch paths.** A caller's
+  tree indexer (dund's, or `IndexTree` later) can then see a file deleted in
+  the worktree and call `RemoveDocument`, which tombstones it.
+- **Search, filters and listings** translate paths: FTS, vector, hybrid, the
+  filtered variants, and a path-prefix filter given in branch paths.
+- **`WorktreeOf(dir) (mainRoot string, ok bool)`** uses `git rev-parse
+  --git-common-dir`, or reads the `.git` file. It is a helper; the caller
+  decides which index is the parent.
+- **`GCBranches(dirs []Home, alive func(root string) bool) (removed int, err
+  error)`** removes branch homes whose root is gone. The caller lists its
+  branch homes, because raglit does not own dund's layout.
+- **`ErrParentOnly`** (`errors.Is`) replaces the string error for `SetTags`
+  and field writes on a parent-only document.
+- **Pins** in api_test.go for all of the above.
+- **raglitd:** no behavior change. Its Registry branches have no root.
+
+### Risks
+
+- Path translation has to be applied at every overlay boundary. Missing one
+  shows the parent's path or misses a shadow. The tests have to cover every
+  overlay read: search in all three forms, filtered, Documents,
+  MatchDocuments, DocText, DocumentHash, FragmentExists, Tags and BranchDiff.
+- Two worktrees of one main checkout are two branches of the same parent.
+  That needs no extra handling, but it gets a test.
+
+### Release
+
+This ships with `EnqueueMany` (fbb99de) as **v0.8.0**.
+
 ## Optional, out of scope
 
 - A Postgres backend and a storage interface: not until a second backend is
