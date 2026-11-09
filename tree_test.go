@@ -235,3 +235,73 @@ func TestIndexTreeOversizeKeepsDocument(t *testing.T) {
 	}
 	wantCounts(t, "no limit", indexTree(t, s, root, TreeOptions{Rules: TreeRules{MaxBytes: -1}}), 1, 0, 0, 0, 0)
 }
+
+// A failure is retried once its backoff passes, and the backoff doubles with
+// each failure on the same bytes: a transient outage does not lose the file.
+func TestIndexTreeFailedRetriedAfterBackoff(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"bad.pdf": "this is not a pdf"})
+	s := treeStore(t)
+	p := filepath.Join(root, "bad.pdf")
+	indexTree(t, s, root, TreeOptions{})
+	drainStore(t, s)
+	wantCounts(t, "fresh failure", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 1, 0)
+	age := func(d time.Duration) {
+		t.Helper()
+		if _, err := s.db.Exec(`UPDATE failed_sources SET at=? WHERE path=?`, time.Now().Add(-d).UnixNano(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age(failRetryBase + time.Minute)
+	wantCounts(t, "backoff passed", indexTree(t, s, root, TreeOptions{}), 1, 0, 0, 0, 0)
+	drainStore(t, s)
+	var attempts int
+	if err := s.db.QueryRow(`SELECT attempts FROM failed_sources WHERE path=?`, p).Scan(&attempts); err != nil || attempts != 2 {
+		t.Fatalf("attempts=%d err=%v, want 2", attempts, err)
+	}
+	age(failRetryBase + time.Minute) // past one backoff, inside the doubled one
+	wantCounts(t, "doubled", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 1, 0)
+	if failBackoff(1) != failRetryBase || failBackoff(2) != 2*failRetryBase || failBackoff(100) != failRetryMax {
+		t.Errorf("backoff 1=%v 2=%v 100=%v", failBackoff(1), failBackoff(2), failBackoff(100))
+	}
+}
+
+// failed_sources made before attempts existed gains the column.
+func TestFailedSourcesMigratesAttempts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, s.Close())
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`DROP TABLE failed_sources`,
+		`CREATE TABLE failed_sources (path TEXT PRIMARY KEY, hash TEXT NOT NULL, at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '')`,
+		`INSERT INTO failed_sources(path, hash, at, error) VALUES ('/x.md', 'h', 0, 'boom')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(t, db.Close())
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.failedOn("h", "/x.md") {
+		t.Error("an old failure from 1970 is still inside its backoff")
+	}
+	s.recordFailedSource("/x.md", "h", "boom")
+	var attempts int
+	if err := s.db.QueryRow(`SELECT attempts FROM failed_sources WHERE path='/x.md'`).Scan(&attempts); err != nil || attempts != 2 {
+		t.Errorf("attempts=%d err=%v, want 2", attempts, err)
+	}
+	if !s.failedOn("h", "/x.md") {
+		t.Error("failure not recorded after migration")
+	}
+}
