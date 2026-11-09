@@ -18,16 +18,16 @@ import (
 // Directory watching (daemon-side, opt-in per project via config "watch": true).
 //
 // A client registers its project home; the daemon then keeps that project's
-// configured source roots fresh — on an interval it re-reads the project config,
-// re-plans the sources (same include/ignore/.gitignore as `sync`), and enqueues
-// files whose mtime changed (new or modified) into the project's namespaced
-// indexes, and removes documents whose source file disappeared. The content-hash
-// dedup means an unchanged file that slips through is a no-op, so the poll is
-// cheap. Registrations persist to <root>/watches.json and reload on startup.
+// configured source roots fresh. Each root is watched through a shared
+// raglit.WatchHub (fsnotify, debounced, one watcher per directory), and each
+// burst of changes runs raglit.IndexTree over the changed paths: new and
+// changed files are queued, documents whose files are gone are removed.
+// Registrations persist to <root>/watches.json and reload on startup.
 //
-// Poll (not fsnotify) on purpose: no recursive-watch bookkeeping, it naturally
-// catches deletes and offline changes, and re-reading the config each tick picks
-// up edits to roots/rules with no re-registration.
+// On every interval the daemon re-reads the configs, so an edit to roots or
+// rules changes what is watched with no re-registration. Polling remains as
+// the fallback for a root whose watcher hit the OS watch limit (Degraded):
+// its owner is then reconciled by mtime on every interval, as before.
 
 type fileState struct {
 	mtime int64
@@ -43,6 +43,56 @@ type watcher struct {
 	homes map[string]bool                 // registered project homes (abs .raglit paths)
 	dirs  []dirWatch                      // directories watched into an index
 	seen  map[string]map[string]fileState // home or dirWatch.key → (abs file → last state)
+
+	// Event watching, set up by run. Nil hub: no watching (tests, and before
+	// run), and Add/AddDir index synchronously only.
+	ctx      context.Context
+	hub      *raglit.WatchHub
+	subs     map[string]*rootWatch // rootWatch.key → subscription
+	degraded map[string]bool       // owners (home or dirWatch.key) that poll
+}
+
+// rootWatch is one tree target's subscription and its pending changes.
+type rootWatch struct {
+	key   string // owner + target signature
+	owner string // home, or dirWatch.key()
+	t     treeTarget
+	unsub func()
+
+	mu    sync.Mutex
+	dirty map[string]bool
+	full  bool
+}
+
+func (rw *rootWatch) mark(c raglit.Changes) {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	if len(c.Paths) == 0 {
+		rw.full = true
+		return
+	}
+	if rw.dirty == nil {
+		rw.dirty = map[string]bool{}
+	}
+	for _, p := range c.Paths {
+		rw.dirty[p] = true
+	}
+}
+
+// take drains what is pending: (nil, true) is the whole tree.
+func (rw *rootWatch) take() (paths []string, any bool) {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	if rw.full {
+		rw.full, rw.dirty = false, nil
+		return nil, true
+	}
+	for p := range rw.dirty {
+		paths = append(paths, p)
+	}
+	rw.dirty = nil
+	sort.Strings(paths)
+	return paths, len(paths) > 0
 }
 
 // dirWatch is a directory the daemon keeps one index fresh from. Unlike a home
@@ -114,7 +164,8 @@ func (w *watcher) Add(home string) error {
 	w.homes[abs] = true
 	w.mu.Unlock()
 	w.persist()
-	w.scanHome(abs)
+	w.indexOwner(abs)
+	w.refresh()
 	return nil
 }
 
@@ -142,7 +193,8 @@ func (w *watcher) AddDir(index, dir string) error {
 		}
 	}
 	w.mu.Unlock()
-	w.scanDir(d)
+	w.indexOwner(d.key())
+	w.refresh()
 	return nil
 }
 
@@ -157,6 +209,7 @@ func (w *watcher) RemoveDir(index, dir string) error {
 	}
 	w.dirs = slices.Delete(w.dirs, i, i+1)
 	delete(w.seen, d.key())
+	defer w.refreshAfter()
 	return w.persistDirsLocked()
 }
 
@@ -177,6 +230,7 @@ func (w *watcher) RemoveIndex(index string) error {
 		return nil
 	}
 	w.dirs = kept
+	defer w.refreshAfter()
 	return w.persistDirsLocked()
 }
 
@@ -228,6 +282,7 @@ func (w *watcher) Remove(home string) error {
 	delete(w.seen, abs)
 	w.mu.Unlock()
 	w.persist()
+	w.refresh()
 	return nil
 }
 
@@ -277,19 +332,223 @@ func (w *watcher) List() []watchInfo {
 	return out
 }
 
-// run scans all registered homes once, then every interval until ctx is done.
+// run watches every registered home and directory until ctx is done. Each
+// interval it re-reads the configs (refresh) and polls the owners whose
+// watchers are Degraded.
 func (w *watcher) run(ctx context.Context) {
-	w.scanAll()
-	t := time.NewTicker(w.interval)
+	w.mu.Lock()
+	w.ctx = ctx
+	w.hub = raglit.NewWatchHub(raglit.WatchOptions{})
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		hub := w.hub
+		w.hub, w.subs = nil, nil
+		w.mu.Unlock()
+		hub.Stop()
+	}()
+	w.refresh()
+	interval := w.interval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			w.scanAll()
+			w.refresh()
+			w.pollDegraded()
 		}
 	}
+}
+
+// targets is every tree target the registrations ask for, by owner.
+func (w *watcher) targets() map[string][]treeTarget {
+	w.mu.Lock()
+	homes := make([]string, 0, len(w.homes))
+	for h := range w.homes {
+		homes = append(homes, h)
+	}
+	dirs := slices.Clone(w.dirs)
+	w.mu.Unlock()
+	out := map[string][]treeTarget{}
+	for _, h := range homes {
+		if ts := homeTargets(h); len(ts) > 0 {
+			out[h] = ts
+		}
+	}
+	for _, d := range dirs {
+		if t, err := dirTarget(d); err == nil {
+			out[d.key()] = append(out[d.key()], t)
+		}
+	}
+	return out
+}
+
+// homeTargets is a registered home's targets; none when its config is gone
+// or has watch turned off.
+func homeTargets(home string) []treeTarget {
+	cfg, ok, err := raglit.LoadConfig(raglit.Home(home))
+	if err != nil || !ok || !cfg.Watch || cfg.Project == "" {
+		return nil
+	}
+	return configTargets(cfg, filepath.Dir(home), raglit.NormalizeIndexName(cfg.Project), "")
+}
+
+// refresh makes the subscriptions match the registrations: a new target is
+// subscribed and indexed in full, a target no longer asked for (a config
+// edit, an unwatch) is unsubscribed. A no-op before run.
+func (w *watcher) refresh() {
+	want := w.targets()
+	w.mu.Lock()
+	if w.hub == nil {
+		w.mu.Unlock()
+		return
+	}
+	if w.subs == nil {
+		w.subs = map[string]*rootWatch{}
+	}
+	keep := map[string]bool{}
+	var added []*rootWatch
+	for owner, ts := range want {
+		for _, t := range ts {
+			key := owner + "\x00" + t.sig
+			keep[key] = true
+			if w.subs[key] != nil {
+				continue
+			}
+			rw := &rootWatch{key: key, owner: owner, t: t}
+			w.subs[key] = rw
+			added = append(added, rw)
+		}
+	}
+	var gone []*rootWatch
+	for key, rw := range w.subs {
+		if !keep[key] {
+			gone = append(gone, rw)
+			delete(w.subs, key)
+		}
+	}
+	hub := w.hub
+	w.mu.Unlock()
+	for _, rw := range gone {
+		if rw.unsub != nil {
+			rw.unsub()
+		}
+	}
+	for _, rw := range added {
+		unsub, err := hub.Subscribe(rw.t.dir, rw.t.rules, func(c raglit.Changes) {
+			if c.Degraded {
+				w.setDegraded(rw.owner)
+			}
+			rw.mark(c)
+			go w.indexWatch(rw)
+		})
+		if err != nil {
+			// A root that is not there (yet): polled until it is.
+			fmt.Fprintf(os.Stderr, "raglit watch %s: %v\n", rw.t.dir, err)
+			w.mu.Lock()
+			delete(w.subs, rw.key)
+			w.mu.Unlock()
+			continue
+		}
+		rw.unsub = unsub
+		rw.mark(raglit.Changes{}) // a new subscription starts from the whole tree
+		go w.indexWatch(rw)
+	}
+}
+
+// refreshAfter is refresh for a caller holding w.mu: it runs once the
+// caller's deferred unlock has.
+func (w *watcher) refreshAfter() { go w.refresh() }
+
+func (w *watcher) setDegraded(owner string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.degraded == nil {
+		w.degraded = map[string]bool{}
+	}
+	w.degraded[owner] = true
+}
+
+// pollDegraded reconciles, by mtime, the owners whose watchers stopped
+// adding watches.
+func (w *watcher) pollDegraded() {
+	w.mu.Lock()
+	var homes []string
+	var dirs []dirWatch
+	for owner := range w.degraded {
+		if w.homes[owner] {
+			homes = append(homes, owner)
+		}
+	}
+	for _, d := range w.dirs {
+		if w.degraded[d.key()] {
+			dirs = append(dirs, d)
+		}
+	}
+	w.mu.Unlock()
+	for _, h := range homes {
+		w.scanHome(h)
+	}
+	for _, d := range dirs {
+		w.scanDir(d)
+	}
+}
+
+// indexWatch runs what rw has pending, one run per target at a time: bursts
+// that arrive during a run share one follow-up, which drains them all.
+func (w *watcher) indexWatch(rw *rootWatch) {
+	w.mu.Lock()
+	hub, ctx := w.hub, w.ctx
+	w.mu.Unlock()
+	if hub == nil {
+		return
+	}
+	_, _ = hub.Index(ctx, rw.key, func(ctx context.Context) (raglit.TreeResult, error) {
+		paths, any := rw.take()
+		if !any {
+			return raglit.TreeResult{}, nil
+		}
+		return w.indexTarget(ctx, rw.owner, rw.t, paths)
+	})
+}
+
+// indexOwner indexes every target of one owner in full, now.
+func (w *watcher) indexOwner(owner string) {
+	ctx := context.Background()
+	for _, t := range w.targets()[owner] {
+		_, _ = w.indexTarget(ctx, owner, t, nil)
+	}
+}
+
+// indexTarget runs IndexTree for one target over paths (nil = the whole
+// tree), and logs what changed.
+func (w *watcher) indexTarget(ctx context.Context, owner string, t treeTarget, paths []string) (raglit.TreeResult, error) {
+	// A project whose keys are all revoked stops reading the host: the grant
+	// that allowed a directory watch is gone. It resumes if a key is minted.
+	if strings.HasPrefix(owner, "dir:") {
+		o := w.reg.ACLOf(t.index).Owner
+		if ns, ok := strings.CutPrefix(o, raglit.ProjectPrincipalPrefix); ok && !w.reg.Keys().HasProject(ns) {
+			return raglit.TreeResult{}, nil
+		}
+	}
+	st, err := w.reg.Get(t.index)
+	if err != nil {
+		return raglit.TreeResult{}, err
+	}
+	res, err := raglit.IndexTree(ctx, st, t.dir, raglit.TreeOptions{Rules: t.rules, Paths: paths})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "raglit watch %s → %s: %v\n", t.dir, t.index, err)
+		return res, err
+	}
+	if treeChanged(res) {
+		fmt.Fprintf(os.Stderr, "raglit watch %s → %s: %s\n", t.dir, t.index, treeLine(res))
+	}
+	return res, nil
 }
 
 func (w *watcher) scanAll() {

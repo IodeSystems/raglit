@@ -79,6 +79,17 @@ var (
 	_ func(string) (string, bool)                                           = raglit.WorktreeOf
 	_ func([]raglit.Home, func(string) bool) (int, error)                   = raglit.GCBranches
 	_ error                                                                 = raglit.ErrParentOnly
+
+	// R10a, R10b, R12e: tree indexing, watching, and the hub that shares them.
+	_ func(context.Context, *raglit.Store, string, raglit.TreeOptions) (raglit.TreeResult, error)                                  = raglit.IndexTree
+	_ func(context.Context, map[string]*raglit.Store, string, raglit.TreeOptions) (map[string]raglit.TreeResult, error)            = raglit.IndexTrees
+	_ func(context.Context, string, raglit.TreeRules, raglit.WatchOptions, func(raglit.Changes)) (*raglit.TreeWatcher, error)      = raglit.WatchTree
+	_ func(*raglit.TreeWatcher)                                                                                                    = (*raglit.TreeWatcher).Rescan
+	_ func(*raglit.TreeWatcher)                                                                                                    = (*raglit.TreeWatcher).Touch
+	_ func(*raglit.TreeWatcher)                                                                                                    = (*raglit.TreeWatcher).Stop
+	_ func(raglit.WatchOptions) *raglit.WatchHub                                                                                   = raglit.NewWatchHub
+	_ func(*raglit.WatchHub, string, raglit.TreeRules, func(raglit.Changes)) (func(), error)                                       = (*raglit.WatchHub).Subscribe
+	_ func(*raglit.WatchHub, context.Context, string, func(context.Context) (raglit.TreeResult, error)) (raglit.TreeResult, error) = (*raglit.WatchHub).Index
 )
 
 // Types dund constructs or reads, named field by field so a rename fails here.
@@ -117,6 +128,13 @@ var (
 	_ int              = raglit.JobInfo{}.Fragments
 	_ []raglit.Segment = raglit.SegResult{}.Fragments
 	_                  = raglit.CodeSpan{Sym: "s", Class: "c", StartLine: 1, EndLine: 2, CommentStartLine: 0, BodyStartLine: 0}
+
+	// R10a, R10b, R12e.
+	_ = raglit.TreeRules{Include: []string{"*.go"}, Ignore: []string{"gen/**"}, Gitignore: new(bool), Skip: func(string) bool { return false }, MaxBytes: 1}
+	_ = raglit.TreeOptions{Rules: raglit.TreeRules{}, Paths: []string{"a"}, Route: func(string) string { return "" }}
+	_ = raglit.TreeResult{Queued: 1, Current: 1, Removed: 1, Failed: 1, Skipped: 1, Errors: []error{}}
+	_ = raglit.WatchOptions{Quiet: 1, MaxDelay: 1, MinInterval: 1, Idle: 1}
+	_ = raglit.Changes{Root: "r", Paths: []string{"p"}, Degraded: true}
 )
 
 // fakeCode pins the CodeSegmenter method set.
@@ -367,5 +385,42 @@ func TestEmbedderSurface(t *testing.T) {
 
 	if !r.Drain(10 * time.Second) {
 		t.Fatal("drain did not finish")
+	}
+}
+
+// Tree indexing and watching, as an embedder drives them: a burst from the
+// hub, IndexTree over its paths, single-flight through the hub.
+func TestTreeSurface(t *testing.T) {
+	dir := t.TempDir()
+	st, err := raglit.OpenHome(raglit.Home(filepath.Join(dir, "idx")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	root := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hub := raglit.NewWatchHub(raglit.WatchOptions{Quiet: 20 * time.Millisecond, MinInterval: -1})
+	bursts := make(chan raglit.Changes, 4)
+	unsub, err := hub.Subscribe(root, raglit.TreeRules{}, func(c raglit.Changes) { bursts <- c })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a walrus"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var c raglit.Changes
+	select {
+	case c = <-bursts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no burst")
+	}
+	res, err := hub.Index(context.Background(), root, func(ctx context.Context) (raglit.TreeResult, error) {
+		return raglit.IndexTree(ctx, st, root, raglit.TreeOptions{Paths: c.Paths})
+	})
+	if err != nil || res.Queued != 1 || len(res.Errors) != 0 {
+		t.Fatalf("IndexTree over the burst: %+v, err %v", res, err)
 	}
 }

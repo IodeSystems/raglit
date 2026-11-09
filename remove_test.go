@@ -115,8 +115,10 @@ func TestRemoveDocument_LeavesNothingBehind(t *testing.T) {
 	// each on purpose and not checked here: audit and ruling history, the
 	// queues and the caption held for a queued ingest (supplied_identities, which
 	// that ingest's commit consumes), and the tombstone the removal itself
-	// writes.
+	// writes. failed_sources is queue history too: it records a job's failure
+	// on a path that may never have become a document.
 	kept := map[string]bool{
+		"failed_sources":      true,
 		"supplied_identities": true,
 		"attestations":        true,
 		"readings":            true,
