@@ -423,6 +423,15 @@ func (s *Store) finishIdentityJob(id int64, err error) error {
 	return e
 }
 
+// requeueIdentityJob returns a claimed row to pending, unowned. For a job cut
+// off by a stop: the work was not done and not refused, so the next drain does
+// it. Only a 'running' row moves.
+func (s *Store) requeueIdentityJob(id int64) error {
+	_, err := s.db.Exec(`UPDATE identity_jobs SET state='pending', started_at=0, owner_pid=0
+		  WHERE id = ? AND state='running'`, id)
+	return err
+}
+
 // ReclaimIdentityJobs returns rows left 'running' by a process that is gone to
 // pending, and reports how many.
 //
@@ -727,7 +736,13 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 	finished := make(chan identityTask, slots)
 
 	var loadErr error
+	// The loader is waited for before run returns, and what it left in loaded is
+	// requeued. A slot stops on ctx without emptying loaded, so without this the
+	// loader can outlive run, claim a row a stop just requeued, and leave it
+	// 'running' after the drain is over.
+	loaderDone := make(chan struct{})
 	go func() {
+		defer close(loaderDone)
 		defer close(loaded)
 		for ctx.Err() == nil {
 			job, err := w.Store.claimNextIdentityJob()
@@ -786,6 +801,9 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 			select {
 			case loaded <- t:
 			case <-ctx.Done():
+				// Claimed and never handed on: back to pending, or it stays
+				// 'running' under this pid, which nothing reclaims.
+				_ = w.Store.requeueIdentityJob(t.job.ID)
 				return
 			}
 		}
@@ -815,6 +833,7 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 				select {
 				case finished <- t:
 				case <-ctx.Done():
+					_ = w.Store.requeueIdentityJob(t.job.ID) // same as the loader
 					return
 				}
 			}
@@ -845,6 +864,17 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 				err = w.Store.SetDocumentIdentity(ctx, t.job.Path, t.id)
 			}
 		}
+		if err != nil && ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			// Cut off by a stop (in the model call or the write), not failed by
+			// the document. Runner.Done waits for this drain, so without this
+			// every stop or reload during a caption would leave a failed row that
+			// nothing retries. Back to pending, as a cancelled ingest job is
+			// (worker.go).
+			if ferr := w.Store.requeueIdentityJob(t.job.ID); ferr != nil && firstErr == nil {
+				firstErr = ferr
+			}
+			continue
+		}
 		if errors.Is(err, ErrIdentityKept) {
 			// Not a failure: something already answers for this document. The row
 			// closes done, so a re-run does not keep re-asking.
@@ -873,6 +903,11 @@ func (w *IdentityWorker) run(ctx context.Context, forever bool) (int, error) {
 			w.OnDone(t.job, t.id, err)
 		}
 		n++
+	}
+	<-loaderDone
+	// A task the loader buffered as the slots stopped was claimed and never run.
+	for t := range loaded {
+		_ = w.Store.requeueIdentityJob(t.job.ID)
 	}
 	if loadErr != nil && firstErr == nil {
 		firstErr = loadErr

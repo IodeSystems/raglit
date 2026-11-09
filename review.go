@@ -60,12 +60,17 @@ type DocSummary struct {
 	Vision    int            `json:"vision"`    // pages that used the VLM
 	FragMode  string         `json:"frag_mode"` // how it was fragmented: text-overlap | llm-seg
 	Engines   map[string]int `json:"engines"`   // engine → page count
-	AddedAt   int64          `json:"added_at"`
+	// AddedAt is when the document was last really ingested (Unix nanoseconds).
+	// A re-ingest of an unchanged file is skipped before commit (worker.go), so
+	// it does not move AddedAt.
+	AddedAt int64 `json:"added_at"`
 	// SrcSize / SrcMtime are the source file's bytes and modified time (unix
 	// seconds); 0 when unknown (srcstat.go).
 	SrcSize  int64 `json:"src_size,omitempty"`
 	SrcMtime int64 `json:"src_mtime,omitempty"`
-	// ContentHash is the sha256 of the source bytes.
+	// ContentHash is documents.content_hash: the sha256 hex of the raw source
+	// bytes, not of the extracted text, and the same value as
+	// Store.DocumentHash; "" for a document never hashed.
 	ContentHash string `json:"content_hash,omitempty"`
 	// GenName / GenKind / GenSource are what the document IS (identity.go), for a
 	// list a person can navigate. Both names travel: the caption is what a reader
