@@ -182,7 +182,7 @@ func (s *Store) Documents() ([]DocSummary, error) {
 		return nil, err
 	}
 	for _, pd := range pdocs {
-		if bp := s.fromParent(pd.Path); !shadow[bp] {
+		if bp, ok := s.fromParent(pd.Path); ok && !shadow[bp] {
 			pd.Path = bp
 			docs = append(docs, pd)
 		}
@@ -217,9 +217,9 @@ func (s *Store) MatchDocuments(ref string) ([]DocRef, error) {
 	// and keeps what still matches the ref in branch paths: a main-checkout
 	// path must not resolve through a worktree.
 	ref = strings.TrimSpace(ref)
-	refs := []string{s.toParent(ref)}
-	if refs[0] == ref {
-		refs = nil
+	var refs []string
+	if pr, ok := s.toParent(ref); ok && pr != ref {
+		refs = append(refs, pr)
 	}
 	refs = append(refs, ref)
 	lref := strings.ToLower(ref)
@@ -230,8 +230,8 @@ func (s *Store) MatchDocuments(ref string) ([]DocRef, error) {
 			return nil, err
 		}
 		for _, d := range pmatch {
-			bp := s.fromParent(d.Path)
-			if shadow[bp] || seen[bp] {
+			bp, ok := s.fromParent(d.Path)
+			if !ok || shadow[bp] || seen[bp] {
 				continue
 			}
 			if bp != ref && !strings.Contains(strings.ToLower(bp), lref) && !strings.Contains(strings.ToLower(d.Title), lref) {
@@ -265,7 +265,10 @@ func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, e
 	if !s.worktree() {
 		return s.parent.DocText(exactPath, from, to, maxChars)
 	}
-	pp := s.toParent(exactPath)
+	pp, ok := s.toParent(exactPath)
+	if !ok {
+		return DocContent{}, err
+	}
 	if _, shown := s.parent.viewHash(pp); !shown {
 		return DocContent{}, err // the error names the branch path, not the parent's
 	}
@@ -338,7 +341,7 @@ func (s *Store) BranchDiff() ([]BranchChange, error) {
 			return nil, err
 		}
 		own[c.Path] = true
-		ph, ok := s.parent.viewHash(s.toParent(c.Path))
+		ph, ok := s.parentViewHash(c.Path)
 		switch {
 		case !ok:
 			c.Change = "added"
@@ -361,7 +364,7 @@ func (s *Store) BranchDiff() ([]BranchChange, error) {
 		if own[p] {
 			continue
 		}
-		if ph, ok := s.parent.viewHash(s.toParent(p)); ok {
+		if ph, ok := s.parentViewHash(p); ok {
 			out = append(out, BranchChange{Path: p, Change: "deleted", ParentHash: ph})
 		}
 	}
@@ -384,7 +387,16 @@ func (s *Store) viewHash(path string) (string, bool) {
 	if s.parent == nil {
 		return "", false
 	}
-	return s.parent.viewHash(s.toParent(path))
+	return s.parentViewHash(path)
+}
+
+// parentViewHash is viewHash in the parent for branch path path, translated.
+func (s *Store) parentViewHash(path string) (string, bool) {
+	pp, ok := s.toParent(path)
+	if !ok {
+		return "", false
+	}
+	return s.parent.viewHash(pp)
 }
 
 // ── branch metadata (branch.json in the branch's scoped Home) ───────────

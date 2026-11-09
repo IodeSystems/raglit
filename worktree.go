@@ -19,8 +19,9 @@ import (
 // absolute paths. A branch opened with a root (OpenBranch) translates paths
 // where it reads through to its parent: a branch path under root is looked up
 // in the parent as parentRoot + rel, and a parent path under parentRoot comes
-// back as root + rel. Shadowing and tombstones key on branch paths. A path
-// outside the root passes through untranslated.
+// back as root + rel. Shadowing and tombstones key on branch paths. A
+// main-checkout path (under parentRoot, not under root) is not a path the
+// branch shows; a path outside both roots passes through untranslated.
 //
 // A branch with no root (a Registry or session branch) does no translation and
 // does not read DocumentHash or Tags through to its parent: its behavior is the
@@ -56,22 +57,44 @@ func rebase(p, from, to string) (string, bool) {
 	return p, false
 }
 
-// toParent is a branch path as the parent stores it.
-func (s *Store) toParent(p string) string {
-	if !s.worktree() {
-		return p
-	}
-	q, _ := rebase(p, s.root, s.parentRoot)
-	return q
+// under reports whether p, with any scheme removed, is dir or inside it.
+func under(p, dir string) bool {
+	_, rest := splitScheme(p)
+	return rest == dir || strings.HasPrefix(rest, dir+"/")
 }
 
-// fromParent is a parent path as this branch shows it.
-func (s *Store) fromParent(p string) string {
+// toParent is branch path p as the parent stores it, and false when the branch
+// does not show p. A path under the parent root and not under the root names a
+// main-checkout file: a worktree branch never shows one (listings and
+// MatchDocuments leave them out), so a point lookup must not reach the
+// parent's copy either. A path outside both roots passes through.
+func (s *Store) toParent(p string) (string, bool) {
 	if !s.worktree() {
-		return p
+		return p, true
+	}
+	if q, ok := rebase(p, s.root, s.parentRoot); ok {
+		return q, true
+	}
+	if under(p, s.parentRoot) {
+		return "", false
+	}
+	return p, true
+}
+
+// fromParent is parent path p as this branch shows it, and false when the
+// branch does not show it. A parent path under the root is left out: when the
+// root is inside the parent root (<main>/.worktrees/x), it is the main
+// checkout's index of the worktree's own files, and rebasing it again would
+// name a file that does not exist.
+func (s *Store) fromParent(p string) (string, bool) {
+	if !s.worktree() {
+		return p, true
+	}
+	if under(p, s.root) {
+		return "", false
 	}
 	q, _ := rebase(p, s.parentRoot, s.root)
-	return q
+	return q, true
 }
 
 // parentPrefixes are the path prefixes to ask the parent for, so that its
@@ -130,7 +153,11 @@ func (s *Store) parentOnly(ctx context.Context, q rowQuerier, path string) (bool
 	if tomb > 0 {
 		return false, nil
 	}
-	_, shown := s.parent.viewHash(s.toParent(path))
+	pp, ok := s.toParent(path)
+	if !ok {
+		return false, nil
+	}
+	_, shown := s.parent.viewHash(pp)
 	return shown, nil
 }
 
@@ -164,8 +191,8 @@ func (s *Store) overlayHits(hits []Hit, f SearchFilter, shadow map[string]bool, 
 			return nil, err
 		}
 		for _, ph := range phits {
-			bp := s.fromParent(ph.Path)
-			if shadow[bp] || !s.admitParent(bp, f.PathPrefix) {
+			bp, ok := s.fromParent(ph.Path)
+			if !ok || shadow[bp] || !s.admitParent(bp, f.PathPrefix) {
 				continue
 			}
 			if s.worktree() {

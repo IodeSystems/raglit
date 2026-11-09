@@ -197,8 +197,8 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 			if serr != nil {
 				return "", nil, serr
 			}
-			if !shadow[path] {
-				return s.parent.DocReview(s.toParent(path))
+			if pp, ok := s.toParent(path); ok && !shadow[path] {
+				return s.parent.DocReview(pp)
 			}
 		}
 		return "", nil, nil
@@ -236,8 +236,8 @@ func (s *Store) DocReview(path string) (title string, pages []PageReview, err er
 func (s *Store) PageImagePath(path string, page int) (string, error) {
 	img, err := s.q.GetPageImagePath(context.Background(), gen.GetPageImagePathParams{Path: path, Page: int64(page)})
 	if errors.Is(err, sql.ErrNoRows) {
-		if s.parentHas(path) {
-			return s.parent.PageImagePath(s.toParent(path), page)
+		if pp, ok := s.parentHas(path); ok {
+			return s.parent.PageImagePath(pp, page)
 		}
 		return "", nil
 	}
@@ -260,13 +260,18 @@ func (s *Store) PagesRoot() string {
 }
 
 // parentHas reports whether a document this layer lacks shows through from the
-// parent: there is a parent, and this layer neither has nor tombstoned it.
-func (s *Store) parentHas(path string) bool {
+// parent: there is a parent, this layer neither has nor tombstoned it, and the
+// branch shows the path (toParent). It returns the path as the parent stores it.
+func (s *Store) parentHas(path string) (string, bool) {
 	if s.parent == nil {
-		return false
+		return "", false
+	}
+	pp, ok := s.toParent(path)
+	if !ok {
+		return "", false
 	}
 	shadow, err := s.shadowedPaths()
-	return err == nil && !shadow[path]
+	return pp, err == nil && !shadow[path]
 }
 
 // ServesPageImage reports whether img is a page image this store may serve:

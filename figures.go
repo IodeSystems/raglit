@@ -217,8 +217,8 @@ func (s *Store) figuresOverlay(qv []float32, pathPrefix string, limit int, overl
 			return nil, err
 		}
 		for _, h := range phits {
-			bp := s.fromParent(h.Path)
-			if shadow[bp] || !s.admitParent(bp, pathPrefix) {
+			bp, ok := s.fromParent(h.Path)
+			if !ok || shadow[bp] || !s.admitParent(bp, pathPrefix) {
 				continue
 			}
 			if s.worktree() {

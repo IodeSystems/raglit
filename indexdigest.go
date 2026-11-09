@@ -129,8 +129,8 @@ func (s *Store) digestRows(pathPrefix string) ([]digestRow, error) {
 			return nil, err
 		}
 		for _, pr := range prows {
-			bp := s.fromParent(pr.path)
-			if shadow[bp] || !s.admitParent(bp, pathPrefix) {
+			bp, ok := s.fromParent(pr.path)
+			if !ok || shadow[bp] || !s.admitParent(bp, pathPrefix) {
 				continue
 			}
 			if s.worktree() {

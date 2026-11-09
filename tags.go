@@ -108,7 +108,8 @@ func (s *Store) Tags(path string) ([]string, error) {
 				return nil, perr
 			}
 			if only {
-				return s.parent.Tags(s.toParent(path))
+				pp, _ := s.toParent(path) // parentOnly is false for a path the branch hides
+				return s.parent.Tags(pp)
 			}
 		}
 		return nil, fmt.Errorf("raglit: no document with path %q", path)

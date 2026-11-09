@@ -265,7 +265,7 @@ func (s *Store) contentIDPaths(contentID string) ([]string, error) {
 		return nil, err
 	}
 	for _, p := range ppaths {
-		if bp := s.fromParent(p); !shadow[bp] {
+		if bp, ok := s.fromParent(p); ok && !shadow[bp] {
 			paths = append(paths, bp)
 		}
 	}

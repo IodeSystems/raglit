@@ -139,8 +139,8 @@ func TestWorktreeBranch_Overlay(t *testing.T) {
 	if h, _ := br.DocumentHash(f.wt("a.md")); h != "" {
 		t.Errorf("DocumentHash of tombstoned a = %q, want empty", h)
 	}
-	if h, _ := br.DocumentHash(f.main("src/b.md")); h != ph {
-		t.Errorf("a path outside the root passes through untranslated: got %q, want %q", h, ph)
+	if h, _ := br.DocumentHash(f.main("src/b.md")); h != "" {
+		t.Errorf("DocumentHash(main-checkout b) = %q, want empty: a worktree branch does not show main paths", h)
 	}
 
 	checkHits := func(name string, hs []Hit, want ...string) {
@@ -239,6 +239,34 @@ func TestWorktreeBranch_Overlay(t *testing.T) {
 	}
 	if dt, err := br.DocText(f.wt("src/c.md"), 0, 0, 0); err != nil || !strings.Contains(dt.Text, "new") {
 		t.Errorf("DocText(worktree c) = %+v, %v; want the branch's copy", dt, err)
+	}
+
+	// A main-checkout path is not a path the branch shows: point lookups agree
+	// with the listings, for a parent-only (b), a tombstoned (a) and a changed
+	// (c) document.
+	for _, rel := range []string{"a.md", "src/b.md", "src/c.md"} {
+		mp := f.main(rel)
+		if dt, err := br.DocText(mp, 0, 0, 0); err == nil {
+			t.Errorf("DocText(main %s) = %q, want no document", rel, dt.Text)
+		}
+		if h, _ := br.DocumentHash(mp); h != "" {
+			t.Errorf("DocumentHash(main %s) = %q, want empty", rel, h)
+		}
+		if _, err := br.Tags(mp); err == nil {
+			t.Errorf("Tags(main %s) succeeded", rel)
+		}
+		if title, pages, _ := br.DocReview(mp); title != "" || pages != nil {
+			t.Errorf("DocReview(main %s) = %q, %d pages", rel, title, len(pages))
+		}
+		if img, _ := br.PageImagePath(mp, 1); img != "" {
+			t.Errorf("PageImagePath(main %s) = %q", rel, img)
+		}
+		if _, err := br.PageLayoutFor(mp, 1); err == nil {
+			t.Errorf("PageLayoutFor(main %s) succeeded", rel)
+		}
+		if err := br.SetDocumentFields(ctx, mp, DocFields{Type: "t"}); errors.Is(err, ErrParentOnly) {
+			t.Errorf("SetDocumentFields(main %s) = ErrParentOnly, want no document", rel)
+		}
 	}
 
 	// Tags through translation: the parent's tags show; the branch cannot set
@@ -543,13 +571,33 @@ func TestRebaseAndPrefixes(t *testing.T) {
 		"/w/tx/a":       "/w/tx/a",
 		"file:///w/t/a": "file:///m/a",
 		"/other":        "/other",
+		"/mx/a":         "/mx/a",
+		"/m/a":          "",
+		"file:///m":     "",
 	} {
-		if got := s.toParent(in); got != want {
-			t.Errorf("toParent(%q) = %q, want %q", in, got, want)
+		got, ok := s.toParent(in)
+		if got != want || ok != (want != "") {
+			t.Errorf("toParent(%q) = %q, %v, want %q", in, got, ok, want)
 		}
 	}
-	if got := s.fromParent("file:///m/a"); got != "file:///w/t/a" {
-		t.Errorf("fromParent = %q", got)
+	if got, ok := s.fromParent("file:///m/a"); got != "file:///w/t/a" || !ok {
+		t.Errorf("fromParent = %q, %v", got, ok)
+	}
+	// A worktree nested in the main checkout: the main index's copy of the
+	// worktree's files is not shown, and a main path outside the worktree is
+	// hidden from point lookups.
+	nested := &Store{parent: &Store{}, root: "/m/.wt/x", parentRoot: "/m"}
+	if got, ok := nested.fromParent("/m/.wt/x/a"); ok {
+		t.Errorf("nested fromParent(main copy of worktree file) = %q, want dropped", got)
+	}
+	if got, ok := nested.fromParent("/m/a"); got != "/m/.wt/x/a" || !ok {
+		t.Errorf("nested fromParent(/m/a) = %q, %v", got, ok)
+	}
+	if got, ok := nested.toParent("/m/.wt/x/a"); got != "/m/a" || !ok {
+		t.Errorf("nested toParent(worktree a) = %q, %v", got, ok)
+	}
+	if _, ok := nested.toParent("/m/a"); ok {
+		t.Error("nested toParent(main a) passed through")
 	}
 	for in, want := range map[string]string{
 		"/w/t/s": "/m/s",
@@ -562,7 +610,83 @@ func TestRebaseAndPrefixes(t *testing.T) {
 		}
 	}
 	rootless := &Store{parent: &Store{}}
-	if rootless.toParent("/w/t/a") != "/w/t/a" || strings.Join(rootless.parentPrefixes("/w/"), "|") != "/w/" {
+	if p, ok := rootless.toParent("/m/a"); p != "/m/a" || !ok {
+		t.Error("a rootless branch hid a path")
+	}
+	if p, _ := rootless.toParent("/w/t/a"); p != "/w/t/a" || strings.Join(rootless.parentPrefixes("/w/"), "|") != "/w/" {
 		t.Error("a rootless branch translated")
+	}
+}
+
+// TestWorktreeBranch_NestedRoot: a worktree inside the main checkout, with a
+// worktree file the main index also holds. The branch shows each worktree file
+// once, at its worktree path, and never a main path rebased a second time.
+//
+// The main index's copy has bytes no main file has: identical bytes are
+// readings of one source, and the parent's search collapses them to one hit
+// before the overlay sees them.
+func TestWorktreeBranch_NestedRoot(t *testing.T) {
+	base := t.TempDir()
+	mainRoot := filepath.Join(base, "main")
+	wtRoot := filepath.Join(mainRoot, ".wt", "x")
+	writeFiles(t, mainRoot, worktreeFiles)
+	writeFiles(t, wtRoot, worktreeFiles)
+	writeFiles(t, wtRoot, map[string]string{"d.md": "delta token text"})
+	ph := Home(filepath.Join(base, "homes", "main"))
+	p, err := OpenHome(ph)
+	must(t, err)
+	p.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
+	all := []string{filepath.Join(wtRoot, "d.md")}
+	for rel := range worktreeFiles {
+		all = append(all, filepath.Join(mainRoot, rel))
+	}
+	drainPaths(t, p, all...)
+	must(t, p.Close())
+
+	br, err := OpenBranch(ph, Home(filepath.Join(base, "homes", "wt")), wtRoot, mainRoot)
+	must(t, err)
+	defer br.Close()
+	br.SetEmbedder(NewEmbedder(&fakeVecClient{}, "fake"))
+
+	want := map[string]bool{}
+	for rel := range worktreeFiles {
+		want[filepath.Join(wtRoot, rel)] = true
+	}
+	check := func(name string, got []string) {
+		t.Helper()
+		seen := map[string]int{}
+		for _, g := range got {
+			seen[g]++
+			if !want[g] {
+				t.Errorf("%s: path %s is not a worktree file", name, g)
+			}
+		}
+		for w := range want {
+			if seen[w] != 1 {
+				t.Errorf("%s: %s seen %d times, want once", name, w, seen[w])
+			}
+		}
+	}
+	docs, err := br.Documents()
+	must(t, err)
+	var dp []string
+	for _, d := range docs {
+		dp = append(dp, d.Path)
+	}
+	check("Documents", dp)
+	paths, err := br.DocumentPaths()
+	must(t, err)
+	check("DocumentPaths", paths)
+	hs, err := br.Search("token", 20)
+	must(t, err)
+	check("Search", hitPaths(hs))
+	hs, err = br.SearchFiltered("token", SearchFilter{PathPrefix: wtRoot + "/"}, 20)
+	must(t, err)
+	check("SearchFiltered", hitPaths(hs))
+	if h, _ := br.DocumentHash(filepath.Join(wtRoot, "src/b.md")); h == "" {
+		t.Error("DocumentHash(worktree b) is empty, want the parent's")
+	}
+	if h, _ := br.DocumentHash(filepath.Join(mainRoot, "src/b.md")); h != "" {
+		t.Errorf("DocumentHash(main b) = %q, want empty", h)
 	}
 }

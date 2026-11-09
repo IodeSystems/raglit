@@ -160,8 +160,8 @@ func (s *Store) DocumentHash(path string) (string, error) {
 			if terr != nil {
 				return "", terr
 			}
-			if !tomb {
-				return s.parent.DocumentHash(s.toParent(path))
+			if pp, ok := s.toParent(path); ok && !tomb {
+				return s.parent.DocumentHash(pp)
 			}
 		}
 		return "", nil
