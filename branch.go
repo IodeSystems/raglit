@@ -2,8 +2,11 @@ package raglit
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -296,29 +299,30 @@ func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, e
 //
 // page_readings keys on the path with no foreign key, so the cascade from
 // documents does not reach it; it is deleted here, in the same transaction.
+// The whole removal is one transaction that takes the write lock first.
 func (s *Store) DeleteDocument(path string) error {
 	ctx := context.Background()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := gq(tx).DeleteDocumentByPath(ctx, path); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM page_readings WHERE doc = ?`, path); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// Tags held for a document that never committed go with it; the document's
-	// own tags went with its row.
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM pending_tags WHERE path = ?`, path); err != nil {
-		return err
-	}
-	// Tombstone so a parent doc is hidden. Harmless on a non-branch store.
-	return s.q.InsertTombstone(ctx, path)
+	// Every statement of the removal runs in one BEGIN IMMEDIATE transaction,
+	// so it takes the write lock up front and waits under busy_timeout like any
+	// writer. In a deferred transaction the first DELETE read before it wrote:
+	// its prepare connects fragments_fts, and FTS5 reads its config then (see
+	// Open). The write then failed with SQLITE_BUSY at once whenever an ingest
+	// worker held the write lock. Tags held for a document that never
+	// committed go with it (the document's own tags went with its row), and the
+	// tombstone hides a parent's version. The tombstone is harmless on a
+	// non-branch store.
+	return s.writeTx(ctx, func(tx *sql.Conn) error {
+		if err := gq(tx).DeleteDocumentByPath(ctx, path); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM page_readings WHERE doc = ?`, path); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM pending_tags WHERE path = ?`, path); err != nil {
+			return err
+		}
+		return gq(tx).InsertTombstone(ctx, path)
+	})
 }
 
 // BranchChange is one document a branch differs from its parent on.
@@ -419,12 +423,42 @@ func (s *Store) parentViewHash(path string) (string, bool) {
 // for one opened with OpenBranch. Root and ParentRoot are the worktree's and
 // the main checkout's directories (OpenBranch); empty for a branch that does no
 // path translation.
+//
+// Fields:
+//   - Parent: the parent index (name or home directory, see above).
+//   - Root: the worktree directory this branch indexes; empty without path translation.
+//   - ParentRoot: the main checkout directory the parent indexes; empty without path translation.
+//   - CreatedAt: when the branch was forked, in Unix nanoseconds.
+//   - LastAccessedAt: when the branch was last read, in Unix nanoseconds. Updated
+//     at most once a minute, so it can lag a real query by up to that long.
 type BranchMeta struct {
 	Parent         string `json:"parent"`
 	Root           string `json:"root,omitempty"`
 	ParentRoot     string `json:"parent_root,omitempty"`
 	CreatedAt      int64  `json:"created_at"`
 	LastAccessedAt int64  `json:"last_accessed_at"`
+}
+
+// ReadBranch reads home's branch.json without opening the index. ok is false,
+// with a nil error, when the home has no branch.json (a plain index). An
+// unreadable or malformed branch.json is an error, so a caller does not take a
+// damaged branch for a plain index.
+func ReadBranch(home Home) (BranchMeta, bool, error) {
+	if m, ok := readBranchMeta(home); ok {
+		return m, true, nil
+	}
+	b, err := os.ReadFile(branchMetaPath(home))
+	if errors.Is(err, fs.ErrNotExist) {
+		return BranchMeta{}, false, nil
+	}
+	if err != nil {
+		return BranchMeta{}, false, fmt.Errorf("raglit: read branch.json: %w", err)
+	}
+	var m BranchMeta
+	if err := json.Unmarshal(b, &m); err != nil {
+		return BranchMeta{}, false, fmt.Errorf("raglit: read branch.json: %w", err)
+	}
+	return m, true, nil
 }
 
 func branchMetaPath(home Home) string { return filepath.Join(string(home), "branch.json") }

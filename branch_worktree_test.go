@@ -432,6 +432,56 @@ func TestOpenBranch_IdempotentAndMismatch(t *testing.T) {
 	}
 }
 
+// OpenBranchOn uses the caller's parent store and does not close it; the
+// branch it opens is the same branch OpenBranch opens.
+func TestOpenBranchOn_SharesTheParent(t *testing.T) {
+	f := newWorktreeFixture(t)
+	home := Home(filepath.Join(f.base, "homes", "wt"))
+	p, err := OpenHome(f.parentHome)
+	must(t, err)
+	defer p.Close()
+	s, err := OpenBranchOn(p, home, f.wtRoot, f.mainRoot)
+	must(t, err)
+	if s.ownedParent != nil || s.parent != p {
+		t.Fatalf("branch parent = %p owned %p, want the caller's %p and not owned", s.parent, s.ownedParent, p)
+	}
+	if h, _ := s.DocumentHash(f.wt("a.md")); h == "" {
+		t.Fatal("the branch does not show the parent's a")
+	}
+	must(t, s.RemoveDocument(f.wt("a.md"), false))
+	must(t, s.Close())
+	if docs, err := p.Documents(); err != nil || len(docs) != 3 {
+		t.Fatalf("parent after the branch closed: %d documents, %v; want 3, open", len(docs), err)
+	}
+
+	// The same branch.json: OpenBranch reopens it, with its tombstone.
+	s, err = OpenBranch(f.parentHome, home, f.wtRoot, f.mainRoot)
+	must(t, err)
+	if h, _ := s.DocumentHash(f.wt("a.md")); h != "" {
+		t.Errorf("DocumentHash of a, tombstoned through OpenBranchOn = %q, want empty", h)
+	}
+	must(t, s.Close())
+	s, err = OpenBranchOn(p, home, f.wtRoot, f.mainRoot)
+	must(t, err)
+	must(t, s.Close())
+
+	if _, err := OpenBranchOn(nil, home, f.wtRoot, f.mainRoot); err == nil {
+		t.Error("OpenBranchOn with no parent succeeded")
+	}
+	named, err := OpenIndex(f.parentHome, "other")
+	must(t, err)
+	defer named.Close()
+	if _, err := OpenBranchOn(named, home, f.wtRoot, f.mainRoot); err == nil {
+		t.Error("OpenBranchOn over a named index succeeded")
+	}
+	plain, err := Open(filepath.Join(f.base, "plain.db"))
+	must(t, err)
+	defer plain.Close()
+	if _, err := OpenBranchOn(plain, Home(filepath.Join(f.base, "homes", "wt2")), f.wtRoot, f.mainRoot); err == nil {
+		t.Error("OpenBranchOn over a store with no home succeeded")
+	}
+}
+
 func TestWorktreeOf(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")

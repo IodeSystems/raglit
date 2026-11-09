@@ -75,10 +75,12 @@ var (
 	_ func(raglit.Home) string = raglit.Home.IndexPath
 
 	// R11: worktree branches.
-	_ func(raglit.Home, raglit.Home, string, string) (*raglit.Store, error) = raglit.OpenBranch
-	_ func(string) (string, bool)                                           = raglit.WorktreeOf
-	_ func([]raglit.Home, func(string) bool) (int, error)                   = raglit.GCBranches
-	_ error                                                                 = raglit.ErrParentOnly
+	_ func(raglit.Home, raglit.Home, string, string) (*raglit.Store, error)   = raglit.OpenBranch
+	_ func(*raglit.Store, raglit.Home, string, string) (*raglit.Store, error) = raglit.OpenBranchOn
+	_ func(string) (string, bool)                                             = raglit.WorktreeOf
+	_ func(raglit.Home) (raglit.BranchMeta, bool, error)                      = raglit.ReadBranch
+	_ func([]raglit.Home, func(string) bool) (int, error)                     = raglit.GCBranches
+	_ error                                                                   = raglit.ErrParentOnly
 
 	// R10a, R10b, R12e: tree indexing, watching, and the hub that shares them.
 	_ func(context.Context, *raglit.Store, string, raglit.TreeOptions) (raglit.TreeResult, error)                                  = raglit.IndexTree
@@ -98,7 +100,7 @@ var (
 	_ = raglit.DocSummary{}.ContentHash // the document's source hash, same value as DocumentHash
 	_ = raglit.DocSummary{}.AddedAt
 	_ = raglit.SegResult{}.Degraded
-	_ = raglit.BranchMeta{Parent: "p", Root: "r", ParentRoot: "pr"}
+	_ = raglit.BranchMeta{Parent: "p", Root: "r", ParentRoot: "pr", CreatedAt: 1, LastAccessedAt: 2}
 
 	// R8: line spans (half-open, 1-based), symbol path and stable id.
 	_ = raglit.Fragment{StartLine: 1, EndLine: 2, Symbol: "S.m"}
