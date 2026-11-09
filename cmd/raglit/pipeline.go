@@ -240,9 +240,10 @@ func (f *llmFlags) embedder() *raglit.Embedder {
 	// Gated on the EMBED model's own channel, which is the change that lets
 	// embedding run while a transcription is in flight: they are different
 	// models, usually on different cards, and nothing about one bounds the other.
-	c := f.embedClientForProbe()
-	c.OnRetry = f.chans.Observe(*f.embedModel, c.OnRetry)
-	return raglit.NewEmbedder(f.chans.GateVector(c, *f.embedModel), *f.embedModel)
+	return raglit.Models{
+		Embed:    raglit.ModelRole{BaseURL: f.or(f.embed).url, APIKey: f.or(f.embed).key, Model: *f.embedModel},
+		Channels: f.chans,
+	}.Embedder()
 }
 
 // buildImageEmbedder returns a figure IMAGE embedder from config (nomic-vision),
