@@ -100,7 +100,7 @@ func TestIngestText_Frontmatter(t *testing.T) {
 
 	s := openMem(t)
 	for pass := 0; pass < 2; pass++ { // second pass: reingest is idempotent
-		n, mode, err := s.ingestText(ctx, "doc.md", "Doc", text, fc, nil)
+		n, mode, err := s.ingestText(ctx, "doc.md", "Doc", text, true, fc, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestIngestText_FrontmatterNeverAppliesElsewhere(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := openMem(t)
-			if _, _, err := s.ingestText(context.Background(), c.path, "T", c.text, fc, nil); err != nil {
+			if _, _, err := s.ingestText(context.Background(), c.path, "T", c.text, true, fc, nil); err != nil {
 				t.Fatal(err)
 			}
 			first := true
@@ -212,7 +212,7 @@ func TestWorker_MarkdownFrontmatterTitleAndFragment(t *testing.T) {
 	}
 	s := openMem(t)
 	w := &Worker{Store: s}
-	if _, _, err := w.ingestPlainText(context.Background(), src, f.Title, f.Data, nil); err != nil {
+	if _, _, err := w.ingestPlainText(context.Background(), src, f.Title, f.Data, true, nil); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := s.DocText(src, 0, 0, 0)

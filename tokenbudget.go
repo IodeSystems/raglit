@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -292,6 +293,12 @@ func splitForEmbed(ctx context.Context, b *TokenBudget, f stagedFrag) []stagedFr
 		if f.endOff > f.startOff {
 			piece.startOff = f.startOff + off
 			piece.endOff = piece.startOff + take
+		}
+		// Lines likewise: a piece covers only its own lines, half-open, counted
+		// the way fragmentOverlap counts them. Unknown (0/0) stays unknown.
+		if f.startLine > 0 {
+			piece.startLine = f.startLine + strings.Count(f.text[:off], "\n")
+			piece.endLine = piece.startLine + strings.Count(piece.text[:take-1], "\n") + 1
 		}
 		out = append(out, piece)
 		off += take

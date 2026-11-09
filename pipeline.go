@@ -42,6 +42,11 @@ type ingestUnit struct {
 	// frontmatter is the byte length of a leading YAML block in text (0 = none).
 	// It is kept verbatim and fragmented separately; see FragOriginFrontmatter.
 	frontmatter int
+	// fileText: text is the file's own bytes (a text file, ingestText), so a
+	// line of text is a line of the file. Not set for text derived from the
+	// file (pandoc output, a transcript, OCR), whose lines exist nowhere a
+	// reader can open.
+	fileText bool
 	// dpi is the resolution this page was rendered at, carried through to the
 	// page's provenance: it decides what any reader could possibly see, and
 	// without it "why is this page wrong" cannot be answered afterwards.
@@ -57,7 +62,7 @@ type stagedFrag struct {
 	page, ord        int
 	startOff, endOff int
 	// startLine, endLine: half-open 1-based line span, 0/0 for unknown. Set by
-	// fragmentOverlap for a pageless text document.
+	// fragmentOverlap for a text file (ingestUnit.fileText).
 	startLine, endLine int
 	// symbol is the fragment's dotted symbol path, empty for none.
 	symbol string
@@ -170,6 +175,9 @@ type resolvedPage struct {
 	// frontmatter is the length of the leading block fragmentOverlap emits as its
 	// own FragOriginFrontmatter fragment (see ingestUnit.frontmatter).
 	frontmatter int
+	// fileText: see ingestUnit.fileText. Cleared when flattening changed the
+	// text, since its lines are then no longer the file's.
+	fileText bool
 }
 
 // pageFailure is one page that could not be read, kept so the document can be
@@ -291,7 +299,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		} else if u.page >= 1 {
 			provenance = append(provenance, stagedPage{page: u.page, engine: engine})
 		}
-		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model, frontmatter: u.frontmatter})
+		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model, frontmatter: u.frontmatter, fileText: u.fileText})
 	}
 	// Every page a hole is a failed document; some holes among readable pages is a
 	// partial one, which is worth keeping. Reported either way, because an ingest
@@ -392,6 +400,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		if flat != pages[i].text {
 			flattened += len(pages[i].text) - len(flat)
 			pages[i].text = flat
+			pages[i].fileText = false
 		}
 	}
 	for i := range provenance {
@@ -913,12 +922,13 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 		}
 		return out
 	}
-	// Lines, for a pageless text document only: one page 0 unit whose text is
-	// the file's (ingestText), so a line of src is a line of the file. A paged
+	// Lines, for a text file only: one unit whose text is the file's own bytes
+	// (resolvedPage.fileText), so a line of src is a line of the file. A paged
 	// document's src is pages joined with pageSep, whose lines are no line of
-	// any page, so its fragments stay 0/0.
+	// any page, and derived text (pandoc, a transcript) has lines no reader can
+	// open, so their fragments stay 0/0.
 	linesOf := func(start, end int) (int, int) { return 0, 0 }
-	if len(pages) == 1 && pages[0].page == 0 {
+	if len(pages) == 1 && pages[0].fileText {
 		var nl []int // offsets of every '\n' in src, ascending
 		for i := 0; i < len(src); i++ {
 			if src[i] == '\n' {

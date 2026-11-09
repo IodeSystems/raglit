@@ -10,6 +10,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	gen "github.com/iodesystems/raglit/internal/db"
 )
 
 // Stable fragment ids.
@@ -59,14 +61,32 @@ func (c *contentIDs) next(symbol, text string) string {
 	return base
 }
 
+// ContentIDs is the content id Store.Ingest gives each of frags, in order, for
+// a document at path: the id a Hit carries and FragmentExists takes. A caller
+// that keeps its own fragments (the code index) uses it to decide what it has
+// already embedded without asking the index for every one.
+//
+// Exact for Store.Ingest, which replaces every fragment of the document and
+// numbers them in the order given. A fragment Ingest skips (blank, or bytes
+// that are not text) still gets an id here, one that no stored fragment has.
+func ContentIDs(path string, frags []Fragment) []string {
+	ids := newContentIDs(path)
+	out := make([]string, len(frags))
+	for i, f := range frags {
+		out[i] = ids.next(f.Symbol, f.Text)
+	}
+	return out
+}
+
 // setContentIDs (re)computes content_id for every fragment of one document, in
-// rowid order, inside the caller's transaction.
+// rowid order, inside the caller's transaction (a *sql.Tx, or a *sql.Conn
+// that has begun one).
 //
 // Per document rather than per insert, because a repeat's occurrence number
 // depends on every fragment before it, and fragments of one document are written
 // by several paths (commitDoc, writeIdentity, replaceFieldsFragment). Each of
 // them calls this before it commits. Only rows whose id changed are written.
-func setContentIDs(ctx context.Context, tx *sql.Tx, docID int64) (int, error) {
+func setContentIDs(ctx context.Context, tx gen.DBTX, docID int64) (int, error) {
 	var path string
 	if err := tx.QueryRowContext(ctx, `SELECT path FROM documents WHERE id = ?`, docID).Scan(&path); err != nil {
 		if err == sql.ErrNoRows {
@@ -113,13 +133,19 @@ func setContentIDs(ctx context.Context, tx *sql.Tx, docID int64) (int, error) {
 // FragmentExists and Hit.ContentID must not depend on whether a document has
 // been touched since the upgrade.
 //
-// One transaction: an interrupted open leaves either every id or none. The
-// lookup of documents still owing an id rides fragments_content, so an index
-// with nothing owed pays one index probe per open. Measured 2026-11-08 on a
-// synthetic index of 100,000 fragments of ~1,000 bytes over 1,000 documents
-// (RAGLIT_BACKFILL_TIMING=1 go test -run TestContentIDBackfillTiming): 5.3s on
-// the dev box. It says so on stderr when it starts and when it ends, so a slow
-// disk is a reported wait and not a silent stall at open.
+// In batches of backfillBatch documents, each its own BEGIN IMMEDIATE
+// transaction, for the reasons writeTx gives: setContentIDs reads before it
+// writes, and a deferred BEGIN would fail with SQLITE_BUSY the moment another
+// process committed between the two. Batches keep each hold on the write lock
+// well inside busy_timeout on a large index. Each document's ids are its own,
+// so an interrupted backfill leaves whole documents done and the next open
+// resumes with the rest. The lookup of documents still owing an id rides
+// fragments_content, so an index with nothing owed pays one index probe per
+// open. Measured 2026-11-08 on a synthetic index of 100,000 fragments of
+// ~1,000 bytes over 1,000 documents (RAGLIT_BACKFILL_TIMING=1 go test -run
+// TestContentIDBackfillTiming): 5.3s on the dev box in one transaction. It says
+// so on stderr when it starts and when it ends, so a slow disk is a reported
+// wait and not a silent stall at open.
 func backfillContentIDs(db *sql.DB) error {
 	ctx := context.Background()
 	rows, err := db.QueryContext(ctx, `SELECT DISTINCT doc_id FROM fragments WHERE content_id = ''`)
@@ -144,25 +170,52 @@ func backfillContentIDs(db *sql.DB) error {
 	}
 	start := time.Now()
 	fmt.Fprintf(os.Stderr, "raglit: content ids: backfilling %d document(s) from before content ids\n", len(docs))
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
 	n := 0
-	for _, d := range docs {
-		k, err := setContentIDs(ctx, tx, d)
+	for len(docs) > 0 {
+		batch := docs[:min(backfillBatch, len(docs))]
+		docs = docs[len(batch):]
+		k, err := backfillBatchTx(ctx, db, batch)
 		if err != nil {
 			return err
 		}
 		n += k
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "raglit: content ids: backfilled %d fragment(s) in %d document(s) in %s\n",
-		n, len(docs), time.Since(start).Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "raglit: content ids: backfilled %d fragment(s) in %s\n",
+		n, time.Since(start).Round(time.Millisecond))
 	return nil
+}
+
+// backfillBatch is the documents per backfill transaction. At the measured
+// rate (1,000 documents of 100 fragments in 5.3s) a batch holds the write lock
+// for about half a second.
+const backfillBatch = 100
+
+// backfillBatchTx numbers one batch of documents in one BEGIN IMMEDIATE
+// transaction on one connection (see Store.writeTx, which this mirrors: migrate
+// runs before there is a Store).
+func backfillBatchTx(ctx context.Context, db *sql.DB, docs []int64) (int, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, d := range docs {
+		k, err := setContentIDs(ctx, conn, d)
+		if err != nil {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+			return 0, err
+		}
+		n += k
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		return 0, err
+	}
+	return n, nil
 }
 
 // FragmentExists reports whether a fragment with this content id is in the

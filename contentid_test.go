@@ -42,7 +42,7 @@ func TestOverlapFragments_LinesFromOffsets(t *testing.T) {
 	}
 	text := strings.Join(lines, "\n") + "\n"
 	fc := FragConfig{Window: 120, Stride: 80, Floor: 30}
-	if _, _, err := s.ingestText(context.Background(), "code.txt", "Code", text, fc, nil); err != nil {
+	if _, _, err := s.ingestText(context.Background(), "code.txt", "Code", text, true, fc, nil); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := s.db.Query(`SELECT start_off, end_off, start_line, end_line FROM fragments ORDER BY id`)
@@ -387,5 +387,171 @@ func TestContentIDBackfillTiming(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("%d fragment(s) left without an id", n)
+	}
+}
+
+// fragmentLines checks every stored fragment of path: its line span is the
+// lines its offsets cover in text. It returns the fragment count.
+func fragmentLines(t *testing.T, s *Store, path, text string) int {
+	t.Helper()
+	rows, err := s.db.Query(`SELECT f.start_off, f.end_off, f.start_line, f.end_line FROM fragments f
+		JOIN documents d ON d.id = f.doc_id WHERE d.path = ? ORDER BY f.id`, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var so, eo, sl, el int
+		if err := rows.Scan(&so, &eo, &sl, &el); err != nil {
+			t.Fatal(err)
+		}
+		wantS := strings.Count(text[:so], "\n") + 1
+		wantE := strings.Count(text[:eo-1], "\n") + 2
+		if sl != wantS || el != wantE {
+			t.Fatalf("fragment [%d,%d): lines [%d,%d), want [%d,%d)", so, eo, sl, el, wantS, wantE)
+		}
+		n++
+	}
+	return n
+}
+
+// A fragment split to fit the embed limit gives each piece its own lines, not
+// the whole window's.
+func TestSplitForEmbed_PiecesGetTheirOwnLines(t *testing.T) {
+	s := openMem(t)
+	var lines []string
+	for i := 1; i <= 200; i++ {
+		lines = append(lines, fmt.Sprintf("line%d alpha beta gamma", i))
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	fc := FragConfig{Window: 3000, Stride: 2500, Floor: 100,
+		EmbedLimitTokens: 1000, EmbedTokenCounter: &fakeTokenizer{charsPerToken: 1}}
+	if _, _, err := s.ingestText(context.Background(), "code.txt", "Code", text, true, fc, nil); err != nil {
+		t.Fatal(err)
+	}
+	n := fragmentLines(t, s, "code.txt", text)
+	// Two windows at most; a 1000-token limit cuts each into several pieces.
+	if n < 5 {
+		t.Fatalf("want the windows split, got %d fragment(s)", n)
+	}
+}
+
+// Text derived from a file (pandoc output, a transcript) has no lines in it,
+// and neither does text that flattening rewrote: 0/0.
+func TestLines_OnlyForTheFilesOwnText(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	fc := FragConfig{Window: 120, Stride: 80, Floor: 30}
+	text := strings.Repeat("paragraph walrus text\n", 30)
+	if _, _, err := s.ingestText(ctx, "a.docx", "A", text, false, fc, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A Markdown table: flattening drops the rule line, so src's lines are not
+	// the file's.
+	md := "# T\n\n| a | b |\n|---|---|\n| 1 | 2 |\n" + strings.Repeat("walrus prose here\n", 20)
+	if _, _, err := s.ingestText(ctx, "t.md", "T", md, true, fc, nil); err != nil {
+		t.Fatal(err)
+	}
+	var n, bad int
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(start_line != 0 OR end_line != 0), 0) FROM fragments`).Scan(&n, &bad); err != nil {
+		t.Fatal(err)
+	}
+	if n < 4 || bad != 0 {
+		t.Fatalf("%d of %d derived fragment(s) have lines", bad, n)
+	}
+}
+
+// Lines and the symbol survive the pool: exported from one index, replayed
+// into another, they come back on the Hit.
+func TestPool_CarriesLinesAndSymbol(t *testing.T) {
+	ctx := context.Background()
+	src := openMem(t)
+	var lines []string
+	for i := 1; i <= 40; i++ {
+		lines = append(lines, fmt.Sprintf("line%d alpha beta gamma", i))
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	fc := FragConfig{Window: 120, Stride: 80, Floor: 30}
+	if _, _, err := src.ingestText(ctx, "code.txt", "Code", text, true, fc, nil); err != nil {
+		t.Fatal(err)
+	}
+	must(t, src.Ingest(ctx, Document{Path: "a.go", Fragments: []Fragment{
+		{Text: "func Start walrus", StartLine: 10, EndLine: 25, Symbol: "Server.Start"},
+	}}))
+	dst := openMem(t)
+	for _, p := range []string{"code.txt", "a.go"} {
+		doc, err := src.ExportDoc(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dst.IngestPooled(ctx, p, "", doc, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := fragmentLines(t, dst, "code.txt", text); n < 2 {
+		t.Fatalf("pooled code.txt has %d fragment(s)", n)
+	}
+	hits, err := dst.Search("walrus", 5)
+	if err != nil || len(hits) != 1 {
+		t.Fatalf("hits = %+v, %v", hits, err)
+	}
+	if h := hits[0]; h.StartLine != 10 || h.EndLine != 25 || h.Symbol != "Server.Start" ||
+		h.ContentID != ContentIDs("a.go", []Fragment{{Text: "func Start walrus", Symbol: "Server.Start"}})[0] {
+		t.Fatalf("pooled hit = %+v", h)
+	}
+}
+
+// ContentIDs gives the ids Store.Ingest stores, repeats included.
+func TestContentIDs_MatchWhatIngestStores(t *testing.T) {
+	s := openMem(t)
+	frags := []Fragment{{Text: "alpha"}, {Text: "beta", Symbol: "B"}, {Text: "alpha"}, {Text: "beta", Symbol: "B"}}
+	must(t, s.Ingest(context.Background(), Document{Path: "x.go", Fragments: frags}))
+	want := ContentIDs("x.go", frags)
+	if got := contentIDsOf(t, s, "x.go"); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("stored %v, ContentIDs %v", got, want)
+	}
+	for _, id := range want {
+		if ok, err := s.FragmentExists(id); err != nil || !ok {
+			t.Fatalf("FragmentExists(%s) = %v, %v", id, ok, err)
+		}
+	}
+}
+
+// The backfill commits in batches; an index with more documents than one batch
+// is numbered whole, and one left part-done (an interrupted open) resumes.
+func TestContentIDBackfill_BatchesAndResumes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	ndoc := backfillBatch*2 + 5
+	createPreR8Index(t, path, ndoc, ndoc*2)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owing := func(s *Store) int {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM fragments WHERE content_id = ''`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := owing(s); n != 0 {
+		t.Fatalf("%d fragment(s) left without an id", n)
+	}
+	want := contentIDsOf(t, s, "doc7.md")
+	if _, err := s.db.Exec(`UPDATE fragments SET content_id = '' WHERE doc_id > ?`, ndoc/2); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if n := owing(s2); n != 0 {
+		t.Fatalf("resume left %d fragment(s) without an id", n)
+	}
+	if got := contentIDsOf(t, s2, "doc7.md"); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatal("resume changed a done document's ids")
 	}
 }
