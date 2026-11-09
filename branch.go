@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -420,12 +422,42 @@ func (s *Store) parentViewHash(path string) (string, bool) {
 // for one opened with OpenBranch. Root and ParentRoot are the worktree's and
 // the main checkout's directories (OpenBranch); empty for a branch that does no
 // path translation.
+//
+// Fields:
+//   - Parent: the parent index (name or home directory, see above).
+//   - Root: the worktree directory this branch indexes; empty without path translation.
+//   - ParentRoot: the main checkout directory the parent indexes; empty without path translation.
+//   - CreatedAt: when the branch was forked, in Unix nanoseconds.
+//   - LastAccessedAt: when the branch was last read, in Unix nanoseconds. Updated
+//     at most once a minute, so it can lag a real query by up to that long.
 type BranchMeta struct {
 	Parent         string `json:"parent"`
 	Root           string `json:"root,omitempty"`
 	ParentRoot     string `json:"parent_root,omitempty"`
 	CreatedAt      int64  `json:"created_at"`
 	LastAccessedAt int64  `json:"last_accessed_at"`
+}
+
+// ReadBranch reads home's branch.json without opening the index. ok is false,
+// with a nil error, when the home has no branch.json (a plain index). An
+// unreadable or malformed branch.json is an error, so a caller does not take a
+// damaged branch for a plain index.
+func ReadBranch(home Home) (BranchMeta, bool, error) {
+	if m, ok := readBranchMeta(home); ok {
+		return m, true, nil
+	}
+	b, err := os.ReadFile(branchMetaPath(home))
+	if errors.Is(err, fs.ErrNotExist) {
+		return BranchMeta{}, false, nil
+	}
+	if err != nil {
+		return BranchMeta{}, false, fmt.Errorf("raglit: read branch.json: %w", err)
+	}
+	var m BranchMeta
+	if err := json.Unmarshal(b, &m); err != nil {
+		return BranchMeta{}, false, fmt.Errorf("raglit: read branch.json: %w", err)
+	}
+	return m, true, nil
 }
 
 func branchMetaPath(home Home) string { return filepath.Join(string(home), "branch.json") }

@@ -312,3 +312,19 @@ func TestBranch_Diff(t *testing.T) {
 		t.Fatalf("a non-branch has a diff: %+v", d)
 	}
 }
+
+func TestReadBranch(t *testing.T) {
+	plain := Home(t.TempDir())
+	if m, ok, err := ReadBranch(plain); ok || err != nil || m != (BranchMeta{}) {
+		t.Fatalf("plain home = %+v, %v, %v", m, ok, err)
+	}
+	want := BranchMeta{Parent: "p", Root: "/w", ParentRoot: "/m", CreatedAt: 1, LastAccessedAt: 2}
+	must(t, writeBranchMeta(plain, want))
+	if m, ok, err := ReadBranch(plain); !ok || err != nil || m != want {
+		t.Fatalf("branch home = %+v, %v, %v", m, ok, err)
+	}
+	must(t, os.WriteFile(branchMetaPath(plain), []byte("{"), 0o644))
+	if _, ok, err := ReadBranch(plain); ok || err == nil {
+		t.Fatalf("malformed branch.json: ok=%v err=%v", ok, err)
+	}
+}
