@@ -27,6 +27,12 @@ const (
 	// or a server that truncates, under one name), and a vector of another
 	// length cannot be compared with the query at all.
 	metaEmbedDim = "embed_dim"
+	// metaVectorsDropped is set by DropVectors and cleared when SyncEmbedModel
+	// drops the vectors for another model or length. While it is set, a branch
+	// does not reuse its parent's vectors (reuse.go): the drop was a forced
+	// re-embed of vectors the same model name made, and the parent's are from
+	// the same, now distrusted, model.
+	metaVectorsDropped = "vectors_dropped"
 )
 
 // SyncEmbedModel records model and dim as the source of this index's vectors
@@ -64,6 +70,9 @@ func (s *Store) SyncEmbedModel(model string, dim int) (dropped bool, err error) 
 		if _, err := dropVectorsTx(tx); err != nil {
 			return false, err
 		}
+		if _, err := tx.Exec(`DELETE FROM index_meta WHERE key = ?`, metaVectorsDropped); err != nil {
+			return false, err
+		}
 	}
 	set := func(key, value string) error {
 		_, err := tx.Exec(
@@ -87,7 +96,13 @@ func (s *Store) SyncEmbedModel(model string, dim int) (dropped bool, err error) 
 			return false, err
 		}
 	}
-	return drop, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	if drop {
+		s.vecGen.Add(1)
+	}
+	return drop, nil
 }
 
 // embedDims returns the recorded vector length (0 when there is no record) and
@@ -110,6 +125,12 @@ func (s *Store) embedDims() (recorded, current int) {
 // re-embed (BackfillVectors) rebuilds them all. Fragments, their FTS rows and
 // the model and dim records are untouched. Returns the number of vectors
 // deleted.
+//
+// Nothing made before the drop comes back: an ingest or backfill in flight
+// writes no vectors (vecGen), and a branch stops reusing its parent's vectors
+// until SyncEmbedModel next drops them for another model or length. The
+// branch's re-embed sends every fragment to the embedder. The parent itself is
+// untouched: drop its vectors separately to re-embed it too.
 func (s *Store) DropVectors() (int, error) {
 	s.vecMu.Lock()
 	defer s.vecMu.Unlock()
@@ -122,7 +143,17 @@ func (s *Store) DropVectors() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return n, tx.Commit()
+	if _, err := tx.Exec(
+		`INSERT INTO index_meta (key, value, updated_at) VALUES (?, '1', ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		metaVectorsDropped, time.Now().Unix()); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	s.vecGen.Add(1)
+	return n, nil
 }
 
 // dropVectorsTx deletes the fragment vectors, and the figure vectors that are
@@ -176,10 +207,10 @@ func (s *Store) FragmentCount() (int, error) {
 	return n, err
 }
 
-// errEmbedderChanged is a backfill whose embedder SetEmbedder replaced while
-// it embedded. Its vectors are discarded; a backfill with the new embedder
-// fills the same fragments.
-var errEmbedderChanged = errors.New("raglit: re-embed: the embedder changed during the batch; its vectors were discarded")
+// errEmbedderChanged is a backfill whose embedder SetEmbedder replaced, or
+// whose index's vectors a drop deleted, while it embedded. Its vectors are
+// discarded; the next backfill fills the same fragments.
+var errEmbedderChanged = errors.New("raglit: re-embed: the embedder changed or the vectors were dropped during the batch; its vectors were discarded")
 
 // BackfillVectors embeds up to batch fragments that have no vector, then figure
 // descriptions with no text-space vector, and returns how many it gave a
@@ -188,11 +219,11 @@ var errEmbedderChanged = errors.New("raglit: re-embed: the embedder changed duri
 // than an embed call (R12a, reuse.go). 0 means there is nothing left (or no
 // embedder, or the index is paused).
 func (s *Store) BackfillVectors(ctx context.Context, batch int) (int, error) {
-	emb := s.textEmbedder()
-	if emb == nil || s.Paused() {
+	st := s.stampEmbed()
+	if st.emb == nil || s.Paused() {
 		return 0, nil
 	}
-	n, err := s.backfill(ctx, emb, batch, true,
+	n, err := s.backfill(ctx, st, batch, true,
 		`SELECT f.id, f.text FROM fragments f
 		   LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 		  WHERE fv.fragment_id IS NULL AND `+SQLOwnWordsF+` ORDER BY f.id LIMIT ?`,
@@ -200,7 +231,7 @@ func (s *Store) BackfillVectors(ctx context.Context, batch int) (int, error) {
 	if err != nil || n > 0 {
 		return n, err
 	}
-	return s.backfill(ctx, emb, batch, false,
+	return s.backfill(ctx, st, batch, false,
 		`SELECT m.id, m.description FROM media m
 		   LEFT JOIN media_vectors mv ON mv.media_id = m.id
 		  WHERE mv.media_id IS NULL AND TRIM(m.description) <> '' ORDER BY m.id LIMIT ?`,
@@ -210,7 +241,8 @@ func (s *Store) BackfillVectors(ctx context.Context, batch int) (int, error) {
 // backfill gives up to batch rows of sel a vector and writes them with ins.
 // reuse copies a stored vector for text that has one; it is for fragments only,
 // whose vectors are the ones reuse reads.
-func (s *Store) backfill(ctx context.Context, emb *Embedder, batch int, reuse bool, sel, ins string) (int, error) {
+func (s *Store) backfill(ctx context.Context, st *embedStamp, batch int, reuse bool, sel, ins string) (int, error) {
+	emb := st.emb
 	rows, err := s.db.QueryContext(ctx, sel, batch)
 	if err != nil {
 		return 0, err
@@ -247,7 +279,7 @@ func (s *Store) backfill(ctx context.Context, emb *Embedder, batch int, reuse bo
 			return 0, fmt.Errorf("raglit: re-embed: no vector for text %d of %d", i+1, len(ids))
 		}
 	}
-	current, unlock := s.vectorsCurrent(emb)
+	current, unlock := s.vectorsCurrent(st)
 	defer unlock()
 	if !current {
 		return 0, errEmbedderChanged

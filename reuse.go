@@ -21,6 +21,11 @@ import (
 // names another model, or whose vectors have another length, gives nothing. An
 // index with no record is taken to hold the configured model's vectors, the
 // same assumption SyncEmbedModel makes when it adopts the model.
+//
+// A drop (DropVectors, SyncEmbedModel) bumps vecGen. Vectors looked up before
+// it are not written after it (vectorsCurrent), and after a DropVectors a
+// branch does not read its parent (metaVectorsDropped): a forced re-embed
+// under the same model name must not get the old vectors back as copies.
 
 // textKey is fragments.text_key: hex sha256 of the text the embedder is given,
 // less its DocPrefix. The prefix is fixed per model, so it adds nothing to the
@@ -74,11 +79,12 @@ func (s *Store) collectReusable(ctx context.Context, emb *Embedder, keys []strin
 	if ok {
 		err = s.lookupVectors(ctx, keys, want, out)
 	}
+	_, dropped := s.Meta(metaVectorsDropped)
 	s.vecMu.RUnlock()
 	if err != nil {
 		return err
 	}
-	if s.parent == nil {
+	if s.parent == nil || dropped {
 		return nil
 	}
 	var rest []string

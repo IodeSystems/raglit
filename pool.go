@@ -461,9 +461,9 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 	// restored page images (same as a fresh ingest), not serialized. Re-embed them
 	// (cheap; figures are few) so pooled figures are searchable too.
 	media := extractMedia(frags, prov)
-	emb := s.textEmbedder()
-	s.embedMedia(ctx, emb, media)
-	if err := s.commitDoc(docPath, title, doc.FragMode, doc.FragRecipe, frags, prov, media, vecs, emb, doc.Identity); err != nil {
+	st := s.stampEmbed()
+	s.embedMedia(ctx, st.emb, media)
+	if err := s.commitDoc(docPath, title, doc.FragMode, doc.FragRecipe, frags, prov, media, vecs, st, doc.Identity); err != nil {
 		return 0, err
 	}
 	return len(frags), nil

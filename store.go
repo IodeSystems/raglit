@@ -94,6 +94,12 @@ type Store struct {
 	// a reembed has just replaced therefore either writes before the drop, and
 	// is dropped with the rest, or finds the swap and writes no vectors.
 	vecMu sync.RWMutex
+	// vecGen counts vector drops (DropVectors, and SyncEmbedModel when it
+	// drops), incremented under vecMu held exclusive. A write of vectors made
+	// or looked up before a drop (stampEmbed) finds it changed and writes none:
+	// with the same embedder, a copy of a dropped vector would otherwise
+	// survive the forced re-embed that dropped it (R12a, reuse.go).
+	vecGen atomic.Uint64
 	// imageEmbedder, when set, embeds figure IMAGES (a CLIP-style tower) for
 	// figure search; nil → figures fall back to embedding their DESCRIPTION with
 	// the text embedder (same space as fragments, so text queries can match).
@@ -210,13 +216,38 @@ func (s *Store) SetEmbedder(e *Embedder) { s.embedder.Store(e) }
 // textEmbedder returns the embedder SetEmbedder set, or nil.
 func (s *Store) textEmbedder() *Embedder { return s.embedder.Load() }
 
-// vectorsCurrent takes vecMu shared and reports whether emb, the embedder that
-// made the vectors about to be written, is still the store's. The caller
-// writes the vectors only when it is, and calls the returned unlock after the
-// write commits.
-func (s *Store) vectorsCurrent(emb *Embedder) (current bool, unlock func()) {
+// embedStamp is the embedder an operation makes or looks up vectors with, and
+// the store's vector generation (vecGen) when it began. A nil stamp is no
+// embedder.
+type embedStamp struct {
+	emb *Embedder
+	gen uint64
+}
+
+// stampEmbed returns the stamp for an operation that starts now.
+func (s *Store) stampEmbed() *embedStamp {
+	gen := s.vecGen.Load()
+	return &embedStamp{emb: s.textEmbedder(), gen: gen}
+}
+
+// embedder returns st's embedder, nil for a nil stamp.
+func (st *embedStamp) embedder() *Embedder {
+	if st == nil {
+		return nil
+	}
+	return st.emb
+}
+
+// vectorsCurrent takes vecMu shared and reports whether the vectors about to be
+// written, made or looked up under st, are still valid: the store's embedder is
+// still st's, and no drop ran since st was taken. The caller writes the vectors
+// only when they are, and calls the returned unlock after the write commits.
+func (s *Store) vectorsCurrent(st *embedStamp) (current bool, unlock func()) {
 	s.vecMu.RLock()
-	return s.textEmbedder() == emb, s.vecMu.RUnlock
+	if st == nil {
+		return s.textEmbedder() == nil, s.vecMu.RUnlock
+	}
+	return s.textEmbedder() == st.emb && s.vecGen.Load() == st.gen, s.vecMu.RUnlock
 }
 
 // SetIdentifier enables document identity: each ingested document is captioned,
@@ -668,7 +699,8 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 	// Stored vectors for this text, looked up before the transaction below
 	// deletes this document's fragments and their vectors with them (R12a,
 	// reuse.go). Only the misses are embedded after the commit.
-	emb := s.textEmbedder()
+	st := s.stampEmbed()
+	emb := st.emb
 	var have map[string][]float32
 	if emb != nil {
 		var keys []string
@@ -760,12 +792,13 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 		if err != nil {
 			return fmt.Errorf("raglit: embed fragments: %w", err)
 		}
-		current, unlock := s.vectorsCurrent(emb)
+		current, unlock := s.vectorsCurrent(st)
 		defer unlock()
 		if !current {
-			// A reembed replaced the embedder during the call: these vectors
-			// are in the old space. The fragments stay without one, for the
-			// reembed's backfill.
+			// A reembed replaced the embedder or dropped the vectors during
+			// the call: these vectors are in the old space, or copies of
+			// dropped ones. The fragments stay without one, for the reembed's
+			// backfill.
 			return nil
 		}
 		vtx, err := s.db.Begin()

@@ -418,3 +418,124 @@ func TestReuse_SearchMatchesFreshEmbed(t *testing.T) {
 		}
 	}
 }
+
+// A forced re-embed of a branch (DropVectors, then BackfillVectors) embeds
+// every fragment again: the parent's vectors are from the same, now
+// distrusted, model and are not copied.
+func TestReuse_BranchDropVectorsEmbedsAll(t *testing.T) {
+	base := t.TempDir()
+	mainRoot, wtRoot := filepath.Join(base, "main"), filepath.Join(base, "wt")
+	must(t, os.MkdirAll(mainRoot, 0o755))
+	must(t, os.MkdirAll(wtRoot, 0o755))
+	parentHome := Home(filepath.Join(base, "homes", "main"))
+	c := &recordingVecClient{}
+
+	p, err := OpenHome(parentHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetEmbedder(NewEmbedder(c, "m"))
+	ingestFile(t, p, filepath.Join(mainRoot, "doc.txt"), paragraphs(12, -1))
+	must(t, p.Close())
+
+	br, err := OpenBranch(parentHome, Home(filepath.Join(base, "homes", "wt")), wtRoot, mainRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = br.Close() })
+	br.SetEmbedder(NewEmbedder(c, "m"))
+	wtPath := filepath.Join(wtRoot, "doc.txt")
+	ingestFile(t, br, wtPath, paragraphs(12, 3))
+	distinct := map[string]bool{}
+	for _, x := range fragmentTexts(t, br, wtPath) {
+		distinct[x] = true
+	}
+	c.take()
+
+	if _, err := br.DropVectors(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for {
+		n, err := br.BackfillVectors(ctx, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+	if got := c.take(); len(distinct) == 0 || len(got) != len(distinct) {
+		t.Fatalf("re-embed sent %d text(s) to the embedder, want all %d", len(got), len(distinct))
+	}
+}
+
+// An ingest that looked up stored vectors before a DropVectors writes none of
+// them after it, though the embedder is the same: they are copies of the
+// vectors the drop deleted.
+func TestReuse_InFlightIngestAcrossDropWritesNoCopies(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	s.SetEmbedder(NewEmbedder(fixedDimClient{dim: 3}, "m"))
+	must(t, s.Ingest(ctx, Document{Path: "a.md", Fragments: []Fragment{{Text: "token refresh"}}}))
+	gate := newGateClient(3)
+	s.SetEmbedder(NewEmbedder(gate, "m"))
+	done := make(chan error, 1)
+	go func() {
+		done <- s.Ingest(ctx, Document{Path: "b.md", Fragments: []Fragment{
+			{Text: "token refresh"}, {Text: "session expiry"}}})
+	}()
+	<-gate.entered
+	if _, err := s.DropVectors(); err != nil {
+		t.Fatal(err)
+	}
+	close(gate.released)
+	must(t, <-done)
+	if miss, _ := s.MissingVectors(); miss != 3 {
+		t.Fatalf("%d fragment(s) without a vector, want all 3", miss)
+	}
+}
+
+// The same for the staged pipeline's commit: vectors stamped before a drop are
+// not written.
+func TestReuse_CommitDocAfterDropWritesNoVectors(t *testing.T) {
+	s := openMem(t)
+	s.SetEmbedder(NewEmbedder(fixedDimClient{dim: 3}, "m"))
+	st := s.stampEmbed()
+	if _, err := s.DropVectors(); err != nil {
+		t.Fatal(err)
+	}
+	must(t, s.commitDoc("file:///a.md", "A", "overlap", "", []stagedFrag{{page: 1, ord: 0, text: "token refresh"}},
+		nil, nil, map[int][]float32{0: {1, 0, 0}}, st, nil))
+	if miss, _ := s.MissingVectors(); miss != 1 {
+		t.Fatalf("%d missing, want 1", miss)
+	}
+}
+
+// DropVectors marks the index so a branch skips its parent's vectors; a
+// SyncEmbedModel that drops the vectors for another model clears the mark,
+// since the parent's model record then decides on its own.
+func TestReuse_DropMarkClearedByModelChange(t *testing.T) {
+	s := openMem(t)
+	if _, err := s.SyncEmbedModel("m", 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DropVectors(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Meta(metaVectorsDropped); !ok {
+		t.Fatal("DropVectors left no mark")
+	}
+	if _, err := s.SyncEmbedModel("m", 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Meta(metaVectorsDropped); !ok {
+		t.Fatal("a SyncEmbedModel with no change cleared the mark")
+	}
+	if dropped, err := s.SyncEmbedModel("m2", 3); err != nil || !dropped {
+		t.Fatalf("model change: dropped=%v err=%v", dropped, err)
+	}
+	if _, ok := s.Meta(metaVectorsDropped); ok {
+		t.Fatal("the model change kept the mark")
+	}
+}
