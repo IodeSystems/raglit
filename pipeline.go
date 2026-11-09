@@ -51,6 +51,10 @@ type ingestUnit struct {
 	// page's provenance: it decides what any reader could possibly see, and
 	// without it "why is this page wrong" cannot be answered afterwards.
 	dpi int
+	// code is what a CodeSegmenter found in a text file's own bytes. Set → the
+	// unit is cut at those spans (fragmentCode) and not flattened, since its
+	// spans are lines of the file as read.
+	code *codeUnit
 }
 
 func (u ingestUnit) isImage() bool { return len(u.data) > 0 }
@@ -178,6 +182,8 @@ type resolvedPage struct {
 	// fileText: see ingestUnit.fileText. Cleared when flattening changed the
 	// text, since its lines are then no longer the file's.
 	fileText bool
+	// code: see ingestUnit.code.
+	code *codeUnit
 }
 
 // pageFailure is one page that could not be read, kept so the document can be
@@ -299,7 +305,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		} else if u.page >= 1 {
 			provenance = append(provenance, stagedPage{page: u.page, engine: engine})
 		}
-		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model, frontmatter: u.frontmatter, fileText: u.fileText})
+		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model, frontmatter: u.frontmatter, fileText: u.fileText, code: u.code})
 	}
 	// Every page a hole is a failed document; some holes among readable pages is a
 	// partial one, which is worth keeping. Reported either way, because an ingest
@@ -386,6 +392,12 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		// see DescribableRead. Anything that is not a model read (a text layer, a
 		// glyph recogniser) cannot describe at all, so 0 there is true.
 		scorable := !isVisionEngine(pages[i].engine) || DescribableRead(pages[i].text)
+		// A segmented file is kept verbatim: its spans are lines of the file as
+		// read, and flattening would move them. It is a file's own text, so it
+		// has no layout markup to strip.
+		if pages[i].code != nil {
+			continue
+		}
 		// A frontmatter block is kept verbatim: its fragment's offsets are the
 		// file's own, and flattening must not shift them.
 		fm := pages[i].frontmatter
@@ -556,6 +568,19 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 				sl.Done("segment", "llm", detail)
 			}
 		}
+	} else if len(pages) == 1 && pages[0].code != nil {
+		// A file a CodeSegmenter cut (ingestCode). Too big means what the
+		// embedder cannot take as one input: the character limit, then tokens.
+		cu := pages[0].code
+		fragMode = fragModeCode
+		if cu.sections {
+			fragMode = fragModeSections
+		}
+		oversize := func(t string) bool {
+			return (fc.EmbedLimit > 0 && len(t) > fc.EmbedLimit) || !embedBudget.Fits(ctx, t)
+		}
+		fragmentCode(pages[0], oversize, window, stride, floor, sink)
+		sl.Done("segment", fragMode+":"+cu.lang, fmt.Sprintf("%d fragment(s) from %d span(s)", len(frags), len(cu.spans)))
 	} else {
 		fragmentOverlap(pages, window, stride, floor, sink)
 		sl.Done("segment", fragModeOverlap, fmt.Sprintf("%d fragment(s)", len(frags)))

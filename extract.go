@@ -51,6 +51,13 @@ const (
 	// whole. A kind that split them would have two routes to the same producer.
 	KindAudio
 	KindUnknown
+	// KindCode is a text file the embedder's CodeSegmenter (Models.Code) takes:
+	// source code by extension (CodeSegmenter.ForPath), and Markdown. It is cut
+	// at declarations or heading sections, not into windows (codesegment.go).
+	// Never returned by ClassifyDoc: only a worker with a segmenter routes to
+	// it, so without one these files stay KindText or KindUnknown. After
+	// KindUnknown so that no existing constant changes value.
+	KindCode
 )
 
 // String names a kind stably, for the pool key.
@@ -77,6 +84,8 @@ func (k DocKind) String() string {
 		return "spreadsheet"
 	case KindAudio:
 		return "audio"
+	case KindCode:
+		return "code"
 	}
 	return "unknown"
 }

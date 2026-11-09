@@ -73,6 +73,10 @@ type Models struct {
 	// input. Code often runs below four bytes per token, so the estimate can
 	// be low.
 	OnUsage func(role, model string, u llm.Usage)
+	// Code cuts source files at their declarations and Markdown at its
+	// headings (KindCode, codesegment.go). nil → both are read into windows,
+	// as before. Its Runtime() is in the pool recipe.
+	Code CodeSegmenter
 }
 
 // usageHook points c.OnUsage at m.OnUsage for one role, after any hook the
@@ -285,7 +289,7 @@ func TesseractOnlyOCR(oc OCRConfig) *OCR {
 // cross-index pool (daemon only). m.Channels must be set (Models.Channels).
 func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 	m.Channels = m.channels()
-	w := &Worker{Store: store}
+	w := &Worker{Store: store, Code: m.Code}
 	// Audio ingest turns on with the MODEL alone.
 	if m.Audio.Model != "" {
 		// Gated on the same channels as every other model. The daemon starts one
@@ -408,11 +412,16 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 	if pool != nil {
 		w.Pool = pool
 		fw, fs, ff := ResolveFragParams(m.FragWindow, m.FragStride, m.FragFloor, m.EmbedLimitChars)
+		segmenter := ""
+		if m.Code != nil {
+			segmenter = m.Code.Runtime()
+		}
 		w.RecipeHash = HashHex([]byte(ingestRecipe(recipeInputs{
 			VisionModel: m.Vision.Model, EmbedModel: m.Embed.Model,
 			CheapEngine: cheapEngine,
 			FragWindow:  fw, FragStride: fs, FragFloor: ff,
 			IndexHint: store.IndexHint(),
+			Segmenter: segmenter,
 		})))
 	}
 	return w
@@ -434,13 +443,21 @@ type recipeInputs struct {
 	// document replaying the reading it got under the old one, and nothing
 	// would say so — the pool would report a hit and the job would report done.
 	IndexHint string
+	// Segmenter is Models.Code's Runtime(), empty with no segmenter. It
+	// decides how code and Markdown are cut. Empty adds no term, so a worker
+	// without one keeps the recipe it had before segmenters existed.
+	Segmenter string
 }
 
 // ingestRecipe renders the pool key's inputs. Its own function so the thing
 // that must not silently lose a term can be asserted on.
 func ingestRecipe(in recipeInputs) string {
-	return fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d|hint=%s",
+	r := fmt.Sprintf("seg=%s|emb=%s|ocr=%s|frag=overlap,w=%d,s=%d,f=%d|fig=%d|hint=%s",
 		in.VisionModel, in.EmbedModel, in.CheapEngine,
 		in.FragWindow, in.FragStride, in.FragFloor,
 		FigurePromptVersion(), HashHex([]byte(in.IndexHint)))
+	if in.Segmenter != "" {
+		r += "|segmenter=" + in.Segmenter
+	}
+	return r
 }

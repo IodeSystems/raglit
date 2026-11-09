@@ -42,6 +42,10 @@ type Worker struct {
 	// so they take the deterministic overlapping-window fragmenter regardless of
 	// whether a model is configured. nil → PDF/image llm-seg unavailable.
 	Segmenter *Segmenter
+	// Code cuts source files at declarations and Markdown at headings
+	// (KindCode, codesegment.go). nil → those files are text, read into
+	// windows as before.
+	Code CodeSegmenter
 	// Frag tunes the deterministic text fragmenter (window/stride/floor) and caps
 	// the fragment ceiling by the embed model's probed input limit. Zero → defaults.
 	Frag FragConfig
@@ -286,7 +290,9 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	// cached garbage — precisely the permanence poolRecipe's own comment
 	// describes for a misrouted read. Whether a file can be indexed at all is a
 	// property of its bytes, so it must not depend on cache state.
-	if kind == KindUnknown {
+	// KindCode from a file nothing else named is the same unknown text: a
+	// minified .js must still be refused.
+	if kind == KindUnknown || kind == KindCode && ClassifyDoc(job.URL, f.ContentType) == KindUnknown {
 		if IsOpaque(f.Data) {
 			// Say which of the two refusals this is. Now that IsOpaque stops media
 			// as well as binaries, "has no text or image representation" is false
@@ -505,6 +511,11 @@ func (w *Worker) route(job *Job, f Fetched) DocKind {
 	if f.IsPDF {
 		kind = KindPDF
 	}
+	// A text file the segmenter can cut. Only a text kind: a .ts that sniffs
+	// to a PDF is a PDF.
+	if (kind == KindText || kind == KindUnknown) && segmentsPath(w.Code, job.URL) {
+		kind = KindCode
+	}
 	return kind
 }
 
@@ -669,6 +680,10 @@ func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, ki
 		}
 		sl.Done("extract", "pandoc", fmt.Sprintf("%d chars", len(text)))
 		return w.ingestPlainText(ctx, job.URL, title, []byte(text), false, sl)
+
+	case KindCode:
+		sl.Done("extract", "text", fmt.Sprintf("%d bytes", len(f.Data)))
+		return w.Store.ingestCode(ctx, w.Code, job.URL, title, f.Data, w.Frag, sl)
 	}
 
 	// KindText / KindUnknown: read as text.

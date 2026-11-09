@@ -58,7 +58,7 @@ type DocSummary struct {
 	Fragments int            `json:"fragments"`
 	Pages     int            `json:"pages"`     // OCR-tracked pages (page ≥ 1)
 	Vision    int            `json:"vision"`    // pages that used the VLM
-	FragMode  string         `json:"frag_mode"` // how it was fragmented: text-overlap | llm-seg
+	FragMode  string         `json:"frag_mode"` // how it was fragmented: text-overlap | llm-seg | code | sections
 	Engines   map[string]int `json:"engines"`   // engine → page count
 	// AddedAt is when the document was last really ingested (Unix nanoseconds).
 	// A re-ingest of an unchanged file is skipped before commit (worker.go), so
