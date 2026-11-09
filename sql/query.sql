@@ -34,8 +34,10 @@ DELETE FROM fragments WHERE doc_id = ?;
 -- origin marks text nobody wrote: 'described' for a model's account of an image
 -- (indextext.go), 'identity' for a generated caption (identity.go). Empty is
 -- transcription, and the only kind that may be quoted as the record.
-INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans, origin)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id;
+-- content_id is not set here: setContentIDs writes it for the whole document,
+-- because a repeat's occurrence number depends on the fragments before it.
+INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, start_line, end_line, symbol, page_spans, origin)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id;
 
 -- name: ListFragmentTextByPage :many
 SELECT text FROM fragments WHERE doc_id = ? AND page = ? ORDER BY ord;

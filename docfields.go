@@ -127,6 +127,9 @@ func (s *Store) SetDocumentFields(ctx context.Context, path string, f DocFields)
 	if err := replaceFieldsFragment(ctx, tx, docID, f); err != nil {
 		return err
 	}
+	if _, err := setContentIDs(ctx, tx, docID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

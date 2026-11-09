@@ -81,6 +81,22 @@ CREATE TABLE IF NOT EXISTS fragments (
   -- model-emitted text and not a span of anything.
   start_off INTEGER NOT NULL DEFAULT 0,
   end_off   INTEGER NOT NULL DEFAULT 0,
+  -- Half-open [start_line, end_line) 1-based line span into the source text, so
+  -- a hit can cite path:line. 0/0 is unknown: llm-seg, a paged document, or a
+  -- fragment written before the columns existed. Set from the offsets on the
+  -- text-overlap path for a pageless text document, or by the caller of
+  -- Store.Ingest.
+  start_line INTEGER NOT NULL DEFAULT 0,
+  end_line   INTEGER NOT NULL DEFAULT 0,
+  -- The dotted symbol path the fragment is ("Server.Start"), '' for none. Set by
+  -- a code segmenter or the caller of Store.Ingest.
+  symbol TEXT NOT NULL DEFAULT '',
+  -- A stable id for this text: hex sha256 over (document path, symbol, text),
+  -- with ":2", ":3"... on a repeat of the same three in one document
+  -- (contentid.go). A re-ingest deletes and re-inserts every fragment, so the
+  -- rowid changes; this does not while the text does not. Indexed in migrate(),
+  -- not here: see the note there on indexes over migrated columns.
+  content_id TEXT NOT NULL DEFAULT '',
   -- Page boundaries WITHIN this fragment, as JSON [{"off":N,"page":P},...] where
   -- off is a byte offset into `text` at which page P's content begins.
   --
@@ -114,7 +130,10 @@ END;
 CREATE TRIGGER IF NOT EXISTS fragments_ad AFTER DELETE ON fragments BEGIN
   INSERT INTO fragments_fts(fragments_fts, rowid, text) VALUES ('delete', old.id, old.text);
 END;
-CREATE TRIGGER IF NOT EXISTS fragments_au AFTER UPDATE ON fragments BEGIN
+-- OF text: the mirror holds only the text, and an update of any other column
+-- (content_id, origin) must not rewrite the FTS row. migrate() replaces the
+-- older trigger that fired on every update.
+CREATE TRIGGER IF NOT EXISTS fragments_au AFTER UPDATE OF text ON fragments BEGIN
   INSERT INTO fragments_fts(fragments_fts, rowid, text) VALUES ('delete', old.id, old.text);
   INSERT INTO fragments_fts(rowid, text) VALUES (new.id, new.text);
 END;

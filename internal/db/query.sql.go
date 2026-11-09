@@ -400,8 +400,8 @@ func (q *Queries) GetReadingForDoc(ctx context.Context, docPath string) (Reading
 }
 
 const insertFragment = `-- name: InsertFragment :one
-INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, page_spans, origin)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+INSERT INTO fragments(doc_id, page, ord, text, start_off, end_off, start_line, end_line, symbol, page_spans, origin)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
 `
 
 type InsertFragmentParams struct {
@@ -411,6 +411,9 @@ type InsertFragmentParams struct {
 	Text      string `db:"text" derived:"fragments.text" json:"text"`
 	StartOff  int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
 	EndOff    int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
+	StartLine int64  `db:"start_line" derived:"fragments.start_line" json:"start_line"`
+	EndLine   int64  `db:"end_line" derived:"fragments.end_line" json:"end_line"`
+	Symbol    string `db:"symbol" derived:"fragments.symbol" json:"symbol"`
 	PageSpans string `db:"page_spans" derived:"fragments.page_spans" json:"page_spans"`
 	Origin    string `db:"origin" derived:"fragments.origin" json:"origin"`
 }
@@ -418,6 +421,8 @@ type InsertFragmentParams struct {
 // origin marks text nobody wrote: 'described' for a model's account of an image
 // (indextext.go), 'identity' for a generated caption (identity.go). Empty is
 // transcription, and the only kind that may be quoted as the record.
+// content_id is not set here: setContentIDs writes it for the whole document,
+// because a repeat's occurrence number depends on the fragments before it.
 func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, insertFragment,
 		arg.DocID,
@@ -426,6 +431,9 @@ func (q *Queries) InsertFragment(ctx context.Context, arg InsertFragmentParams) 
 		arg.Text,
 		arg.StartOff,
 		arg.EndOff,
+		arg.StartLine,
+		arg.EndLine,
+		arg.Symbol,
 		arg.PageSpans,
 		arg.Origin,
 	)

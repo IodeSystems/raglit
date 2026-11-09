@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,7 +56,12 @@ func (u ingestUnit) isImage() bool { return len(u.data) > 0 }
 type stagedFrag struct {
 	page, ord        int
 	startOff, endOff int
-	text             string
+	// startLine, endLine: half-open 1-based line span, 0/0 for unknown. Set by
+	// fragmentOverlap for a pageless text document.
+	startLine, endLine int
+	// symbol is the fragment's dotted symbol path, empty for none.
+	symbol string
+	text   string
 	// pageSpans is where each page's content begins inside text, for a fragment
 	// that spans pages. Nil when it lies on one page.
 	pageSpans []PageSpan
@@ -907,9 +913,33 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 		}
 		return out
 	}
+	// Lines, for a pageless text document only: one page 0 unit whose text is
+	// the file's (ingestText), so a line of src is a line of the file. A paged
+	// document's src is pages joined with pageSep, whose lines are no line of
+	// any page, so its fragments stay 0/0.
+	linesOf := func(start, end int) (int, int) { return 0, 0 }
+	if len(pages) == 1 && pages[0].page == 0 {
+		var nl []int // offsets of every '\n' in src, ascending
+		for i := 0; i < len(src); i++ {
+			if src[i] == '\n' {
+				nl = append(nl, i)
+			}
+		}
+		// lineAt is the 1-based line holding byte off: one more than the
+		// newlines before it.
+		lineAt := func(off int) int { return sort.SearchInts(nl, off) + 1 }
+		linesOf = func(start, end int) (int, int) {
+			if end <= start {
+				return 0, 0
+			}
+			return lineAt(start), lineAt(end-1) + 1
+		}
+	}
 	ordByPage := map[int]int{}
 	if fm > 0 {
+		sl, el := linesOf(0, fm)
 		sink(stagedFrag{page: pages[0].page, ord: 0, startOff: 0, endOff: fm,
+			startLine: sl, endLine: el,
 			text: src[:fm], origin: FragOriginFrontmatter})
 		ordByPage[pages[0].page] = 1
 	}
@@ -919,7 +949,9 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 		page := pageForOffset(of.Start)
 		ord := ordByPage[page]
 		ordByPage[page] = ord + 1
+		sl, el := linesOf(of.Start, of.End)
 		sink(stagedFrag{page: page, ord: ord, startOff: of.Start, endOff: of.End,
+			startLine: sl, endLine: el,
 			text: of.Text, pageSpans: spansWithin(of.Start, of.End)})
 	}
 }
@@ -985,6 +1017,7 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		fid, err := q.InsertFragment(ctx, gen.InsertFragmentParams{
 			DocID: docID, Page: int64(f.page), Ord: int64(f.ord), Text: f.text,
 			StartOff: int64(f.startOff), EndOff: int64(f.endOff),
+			StartLine: int64(f.startLine), EndLine: int64(f.endLine), Symbol: f.symbol,
 			PageSpans: encodePageSpans(f.pageSpans),
 			Origin:    f.origin,
 		})
@@ -1087,6 +1120,10 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		if err := enqueueIdentityTx(ctx, tx, docPath); err != nil {
 			return err
 		}
+	}
+	// After every fragment of the document is in, the identity one included.
+	if _, err := setContentIDs(ctx, tx, docID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

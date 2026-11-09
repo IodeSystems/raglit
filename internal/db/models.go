@@ -86,6 +86,10 @@ type Fragment struct {
 	Text      string `db:"text" derived:"fragments.text" json:"text"`
 	StartOff  int64  `db:"start_off" derived:"fragments.start_off" json:"start_off"`
 	EndOff    int64  `db:"end_off" derived:"fragments.end_off" json:"end_off"`
+	StartLine int64  `db:"start_line" derived:"fragments.start_line" json:"start_line"`
+	EndLine   int64  `db:"end_line" derived:"fragments.end_line" json:"end_line"`
+	Symbol    string `db:"symbol" derived:"fragments.symbol" json:"symbol"`
+	ContentID string `db:"content_id" derived:"fragments.content_id" json:"content_id"`
 	PageSpans string `db:"page_spans" derived:"fragments.page_spans" json:"page_spans"`
 	Origin    string `db:"origin" derived:"fragments.origin" json:"origin"`
 }
