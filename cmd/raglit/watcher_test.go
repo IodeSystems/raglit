@@ -380,3 +380,37 @@ func TestNoLinkOutGonePath(t *testing.T) {
 		t.Error("a dangling link was admitted")
 	}
 }
+
+// A directory watch whose index was deleted does not make it again: neither
+// a pass of its target still in flight nor the degraded-mode scan.
+func TestWatcherDirDoesNotRecreateDeletedIndex(t *testing.T) {
+	daemonRoot := t.TempDir()
+	reg, err := raglit.OpenScopedRegistry(daemonRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	if _, err := reg.Get("notes"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("alpha"), 0o644))
+	d := dirWatch{Index: "notes", Dir: dir}
+	tt, err := dirTarget(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, reg.DeleteIndex("notes"))
+	w := newWatcher(reg, daemonRoot, time.Hour)
+	if _, err := w.indexTarget(context.Background(), d.key(), tt, nil); err == nil {
+		t.Error("indexTarget of a deleted index: no error")
+	}
+	if enq, _ := w.scanDir(d); enq != 0 {
+		t.Errorf("scanDir of a deleted index queued %d", enq)
+	}
+	for _, n := range reg.Names() {
+		if n == "notes" {
+			t.Fatal("the deleted index was made again")
+		}
+	}
+}

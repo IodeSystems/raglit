@@ -359,6 +359,9 @@ func TestWatchDir_DoesNotFollowALinkOut(t *testing.T) {
 	must(t, os.WriteFile(outside+"/x.md", []byte("# X"), 0o600))
 	must(t, os.Symlink(outside, dir+"/link"))
 	must(t, os.Symlink(outside+"/x.md", dir+"/file-link.md"))
+	if _, err := reg.Get("notes"); err != nil {
+		t.Fatal(err)
+	}
 	if enq, _ := newWatcher(reg, root, 0).scanDir(dirWatch{Index: "notes", Dir: dir}); enq != 1 {
 		t.Errorf("enqueued %d, want only a.md", enq)
 	}

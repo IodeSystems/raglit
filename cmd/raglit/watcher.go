@@ -256,6 +256,9 @@ func (w *watcher) scanDir(d dirWatch) (int, int) {
 	if ns, ok := strings.CutPrefix(owner, raglit.ProjectPrincipalPrefix); ok && !w.reg.Keys().HasProject(ns) {
 		return 0, 0
 	}
+	if _, err := w.reg.Existing(d.Index); err != nil {
+		return 0, 0 // deleted: a directory watch does not make the index again
+	}
 	cfg := raglit.Config{Indexes: map[string]raglit.IndexConfig{d.Index: {Roots: []raglit.Root{{Path: d.Dir}}}}}
 	plan, err := raglit.PlanSources(cfg, d.Dir)
 	if err != nil {
@@ -572,13 +575,19 @@ func (w *watcher) indexOwner(owner string) {
 func (w *watcher) indexTarget(ctx context.Context, owner string, t treeTarget, paths []string) (raglit.TreeResult, error) {
 	// A project whose keys are all revoked stops reading the host: the grant
 	// that allowed a directory watch is gone. It resumes if a key is minted.
+	get := w.reg.Get
 	if strings.HasPrefix(owner, "dir:") {
 		o := w.reg.ACLOf(t.index).Owner
 		if ns, ok := strings.CutPrefix(o, raglit.ProjectPrincipalPrefix); ok && !w.reg.Keys().HasProject(ns) {
 			return raglit.TreeResult{}, nil
 		}
+		// A directory watch feeds an index that exists; it does not make one.
+		// The index deleted while a burst or pass of this target is in
+		// flight (RemoveIndex unsubscribes after DeleteAs, asynchronously)
+		// stays deleted.
+		get = w.reg.Existing
 	}
-	st, err := w.reg.Get(t.index)
+	st, err := get(t.index)
 	if err != nil {
 		return raglit.TreeResult{}, err
 	}
