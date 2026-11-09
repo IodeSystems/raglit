@@ -44,6 +44,11 @@ type watcher struct {
 	dirs  []dirWatch                      // directories watched into an index
 	seen  map[string]map[string]fileState // home or dirWatch.key → (abs file → last state)
 
+	// refreshMu serializes refresh, and run's teardown with it: two refreshes
+	// at once could each see a target added or gone, and a subscription made
+	// beside an unsubscribe would never be ended.
+	refreshMu sync.Mutex
+
 	// Event watching, set up by run. Nil hub: no watching (tests, and before
 	// run), and Add/AddDir index synchronously only.
 	ctx      context.Context
@@ -341,6 +346,8 @@ func (w *watcher) run(ctx context.Context) {
 	w.hub = raglit.NewWatchHub(raglit.WatchOptions{})
 	w.mu.Unlock()
 	defer func() {
+		w.refreshMu.Lock()
+		defer w.refreshMu.Unlock()
 		w.mu.Lock()
 		hub := w.hub
 		w.hub, w.subs = nil, nil
@@ -402,6 +409,8 @@ func homeTargets(home string) []treeTarget {
 // subscribed and indexed in full, a target no longer asked for (a config
 // edit, an unwatch) is unsubscribed. A no-op before run.
 func (w *watcher) refresh() {
+	w.refreshMu.Lock()
+	defer w.refreshMu.Unlock()
 	want := w.targets()
 	w.mu.Lock()
 	if w.hub == nil {

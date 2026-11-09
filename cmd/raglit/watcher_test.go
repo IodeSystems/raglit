@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -213,5 +214,59 @@ func TestConfigTargets(t *testing.T) {
 	// The daemon indexes documents of any size (no 2 MiB code-tree default).
 	if a.rules.MaxBytes >= 0 || b.rules.MaxBytes >= 0 {
 		t.Errorf("MaxBytes a=%d b=%d, want no limit", a.rules.MaxBytes, b.rules.MaxBytes)
+	}
+}
+
+// Refreshes that race an unwatch leave no subscription behind: after the
+// last Remove, a write under the root is not queued.
+func TestWatcherConcurrentRefreshUnwatches(t *testing.T) {
+	reg, daemonRoot, home, docs := projectFixture(t)
+	w := newWatcher(reg, daemonRoot, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	for {
+		w.mu.Lock()
+		up := w.hub != nil
+		w.mu.Unlock()
+		if up {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var wg sync.WaitGroup
+	for i := range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			switch i % 3 {
+			case 0:
+				must(t, w.Add(home))
+			case 1:
+				must(t, w.Remove(home))
+			default:
+				w.refresh()
+			}
+		}()
+	}
+	wg.Wait()
+	must(t, w.Remove(home))
+	w.refresh()
+	w.mu.Lock()
+	n := len(w.subs)
+	w.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d subscriptions left after Remove", n)
+	}
+	st, err := reg.Get("proj__docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(docs, "late.md")
+	must(t, os.WriteFile(p, []byte("late"), 0o644))
+	time.Sleep(1500 * time.Millisecond) // past the default debounce
+	if pendingURLs(t, st)[p] {
+		t.Fatalf("%s queued after unwatch: a subscription leaked", p)
 	}
 }
