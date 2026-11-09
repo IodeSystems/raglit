@@ -73,20 +73,20 @@ func (s *Store) failedOn(hash string, paths ...string) bool {
 	return false
 }
 
-// sourceHash is the hash of a job url's local bytes, "" when it has none.
+// sourceHash is the hash of a job url's local bytes, "" when it has none. It
+// reads the file in pieces, so a file of any size is recorded: one left
+// unrecorded would be queued again on every IndexTree pass.
 func sourceHash(url string) string {
 	p, ok := localPathOf(url)
 	if !ok {
 		return ""
 	}
-	// A file too large to hash cheaply stays unrecorded, which only means it
-	// is retried.
-	if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() || fi.Size() > 256<<20 {
+	if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
 		return ""
 	}
-	b, err := os.ReadFile(p)
+	sc, err := scanFile(p)
 	if err != nil {
 		return ""
 	}
-	return sha256hex(b)
+	return sc.hash
 }
