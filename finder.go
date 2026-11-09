@@ -42,7 +42,7 @@ func (f *Finder) Find(ctx context.Context, texts []string) ([]agent.DocHit, erro
 	// Hybrid (BM25 + vectors) when the store has an embedder; lexical otherwise.
 	var hits []Hit
 	var err error
-	if f.Store.embedder != nil {
+	if f.Store.textEmbedder() != nil {
 		hits, err = f.Store.HybridSearch(ctx, query, limit)
 	} else {
 		hits, err = f.Store.Search(query, limit)

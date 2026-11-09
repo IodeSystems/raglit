@@ -58,7 +58,12 @@ type Store struct {
 	path     string
 	home     Home
 	withHome bool
-	embedder *Embedder // nil → lexical only; set for vector/hybrid search
+	// embedder, when set, embeds fragments on ingest and queries for vector and
+	// hybrid search; nil → lexical only. Atomic for the same reason as
+	// identifier: a reembed swaps it while an ingest or a search on another
+	// goroutine reads it. Read it once per operation (textEmbedder), so a swap
+	// mid-call cannot pair a nil check with another embedder's use.
+	embedder atomic.Pointer[Embedder]
 	// imageEmbedder, when set, embeds figure IMAGES (a CLIP-style tower) for
 	// figure search; nil → figures fall back to embedding their DESCRIPTION with
 	// the text embedder (same space as fragments, so text queries can match).
@@ -144,7 +149,10 @@ func (s *Store) SetJobURL(id int64, url string) error {
 
 // SetEmbedder enables vector search: fragments are embedded on Ingest and
 // VecSearch/HybridSearch become available. nil disables it.
-func (s *Store) SetEmbedder(e *Embedder) { s.embedder = e }
+func (s *Store) SetEmbedder(e *Embedder) { s.embedder.Store(e) }
+
+// textEmbedder returns the embedder SetEmbedder set, or nil.
+func (s *Store) textEmbedder() *Embedder { return s.embedder.Load() }
 
 // SetIdentifier enables document identity: each ingested document is captioned,
 // summarised and typed by the model (identity.go), and the summary is indexed.
@@ -590,12 +598,12 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 
 	// Vector tier (opt-in): embed the fresh fragments and store their vectors.
 	// Done AFTER commit so the network round-trip doesn't hold the write tx.
-	if s.embedder != nil && len(frags) > 0 {
+	if emb := s.textEmbedder(); emb != nil && len(frags) > 0 {
 		texts := make([]string, len(frags))
 		for i, f := range frags {
 			texts[i] = f.text
 		}
-		vecs, err := s.embedder.EmbedDocs(ctx, texts)
+		vecs, err := emb.EmbedDocs(ctx, texts)
 		if err != nil {
 			return fmt.Errorf("raglit: embed fragments: %w", err)
 		}
@@ -882,7 +890,8 @@ func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, lim
 // VecSearchFiltered is VecSearchPath constrained by a SearchFilter, applied in
 // each layer's scan before the ranking and the limit.
 func (s *Store) VecSearchFiltered(ctx context.Context, query string, f SearchFilter, limit int) ([]Hit, error) {
-	if s.embedder == nil {
+	emb := s.textEmbedder()
+	if emb == nil {
 		return nil, fmt.Errorf("raglit: VecSearch needs an embedder (SetEmbedder)")
 	}
 	if strings.TrimSpace(query) == "" {
@@ -891,7 +900,7 @@ func (s *Store) VecSearchFiltered(ctx context.Context, query string, f SearchFil
 	if limit <= 0 {
 		limit = 10
 	}
-	qv, err := s.embedder.EmbedQuery(ctx, query)
+	qv, err := emb.EmbedQuery(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -1005,7 +1014,7 @@ func (s *Store) HybridSearchPath(ctx context.Context, query, pathPrefix string, 
 // sides filter before they rank, so the fusion only ever sees qualifying
 // fragments; RRF itself is unchanged.
 func (s *Store) HybridSearchFiltered(ctx context.Context, query string, f SearchFilter, limit int) ([]Hit, error) {
-	if s.embedder == nil {
+	if s.textEmbedder() == nil {
 		return nil, fmt.Errorf("raglit: HybridSearch needs an embedder (SetEmbedder)")
 	}
 	if limit <= 0 {

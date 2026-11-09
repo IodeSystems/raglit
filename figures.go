@@ -96,6 +96,7 @@ func (s *Store) embedMedia(ctx context.Context, media []stagedMedia) {
 	}
 	// Image embeddings first (when available); collect the rest for a batched
 	// description embedding.
+	emb := s.textEmbedder()
 	var descIdx []int
 	for i := range media {
 		m := &media[i]
@@ -112,7 +113,7 @@ func (s *Store) embedMedia(ctx context.Context, media []stagedMedia) {
 				}
 			}
 		}
-		if s.embedder != nil && strings.TrimSpace(m.description) != "" {
+		if emb != nil && strings.TrimSpace(m.description) != "" {
 			descIdx = append(descIdx, i)
 		}
 	}
@@ -123,7 +124,7 @@ func (s *Store) embedMedia(ctx context.Context, media []stagedMedia) {
 	for j, i := range descIdx {
 		texts[j] = media[i].description
 	}
-	vecs, err := s.embedder.EmbedDocs(ctx, texts)
+	vecs, err := emb.EmbedDocs(ctx, texts)
 	if err != nil {
 		return // best-effort
 	}
@@ -159,7 +160,8 @@ func (s *Store) SearchFigures(ctx context.Context, query string, limit int) ([]F
 // (nomic-vision, whose space nomic-text shares). Non-aligned image embeddings are
 // skipped (they await an image-query path). Requires a text embedder.
 func (s *Store) SearchFiguresPath(ctx context.Context, query, pathPrefix string, limit int) ([]FigureHit, error) {
-	if s.embedder == nil {
+	emb := s.textEmbedder()
+	if emb == nil {
 		return nil, fmt.Errorf("raglit: SearchFigures needs an embedder (SetEmbedder)")
 	}
 	if strings.TrimSpace(query) == "" {
@@ -168,7 +170,7 @@ func (s *Store) SearchFiguresPath(ctx context.Context, query, pathPrefix string,
 	if limit <= 0 {
 		limit = 10
 	}
-	qv, err := s.embedder.EmbedQuery(ctx, query)
+	qv, err := emb.EmbedQuery(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +180,8 @@ func (s *Store) SearchFiguresPath(ctx context.Context, query, pathPrefix string,
 // SearchFiguresOwnLayer is SearchFiguresPath over this layer's own documents
 // only — for sibling fan-out, where the caller's layer already covers the parent.
 func (s *Store) SearchFiguresOwnLayer(ctx context.Context, query, pathPrefix string, limit int) ([]FigureHit, error) {
-	if s.embedder == nil {
+	emb := s.textEmbedder()
+	if emb == nil {
 		return nil, fmt.Errorf("raglit: SearchFigures needs an embedder (SetEmbedder)")
 	}
 	if strings.TrimSpace(query) == "" {
@@ -187,7 +190,7 @@ func (s *Store) SearchFiguresOwnLayer(ctx context.Context, query, pathPrefix str
 	if limit <= 0 {
 		limit = 10
 	}
-	qv, err := s.embedder.EmbedQuery(ctx, query)
+	qv, err := emb.EmbedQuery(ctx, query)
 	if err != nil {
 		return nil, err
 	}

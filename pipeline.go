@@ -428,10 +428,11 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	// (keyed by fragment index) — written in the final swap, not as produced.
 	var embedCh chan embedItem
 	var embedDone chan embedResult
-	if s.embedder != nil {
+	emb := s.textEmbedder()
+	if emb != nil {
 		embedCh = make(chan embedItem, 64)
 		embedDone = make(chan embedResult, 1)
-		go runStagedEmbed(ctx, s.embedder, embedCh, embedDone)
+		go runStagedEmbed(ctx, emb, embedCh, embedDone)
 	}
 	// The embedder's ceiling, enforced HERE because this is the only point every
 	// fragment passes through on every path.
@@ -447,8 +448,8 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 	// What the EMBEDDER adds to a fragment before the endpoint sees it. Counting
 	// the fragment alone was off by exactly the difference: a fragment sized to
 	// 8192 came back "input (8194 tokens) is too large to process".
-	if s.embedder != nil {
-		embedBudget.Overhead = s.embedder.DocPrefix
+	if emb != nil {
+		embedBudget.Overhead = emb.DocPrefix
 	}
 	embedBudget.Reserve = embedSpecialReserve
 	var frags []stagedFrag
