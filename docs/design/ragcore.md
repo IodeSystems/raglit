@@ -359,8 +359,11 @@ Status: done.
 - raglitd adapter over poly-lsp-mcp v0.5.0 `segment` (R8e): 186ba13, doc fix
   7cfde84.
 - The switch is `code_segmenter` in config or `--code-segmenter` on the
-  daemon. Default off: `Models.Code` is nil, fragments and recipe hash are
-  unchanged.
+  daemon. Default off: `Models.Code` is nil and no file routes to
+  `KindCode`. Text files still get line spans in v0.7.0, and the pool key for
+  the text kinds changes once (`|lines=1`, worker.go `poolRecipe`), so a
+  changed text file, or a text file added to another index, is fragmented and
+  embedded once more. Unchanged files are skipped before the pool is checked.
 - Binary size, `cmd/raglit` built with `go build` on the same machine: 54.8 MB
   before the adapter (78e6256), 69.1 MB with it (+14.2 MB, +26%). The cost is
   the gotreesitter grammar blobs.
@@ -369,7 +372,8 @@ Status: done.
   A file indexed before the switch is on keeps its windows: the unchanged-bytes
   fast path skips it before the pool key is checked. `raglit ingest --fresh`
   re-cuts it.
-- Root deps test unchanged: root imports no parser.
+- The root deps test now also bans poly-lsp-mcp and the tree-sitter modules;
+  the root package imports no parser.
 
 What exists. poly-lsp-mcp's `symbols.FileSymbols(language, content)`
 (symbols/filesymbols.go:78) returns every symbol in source order. Each symbol
