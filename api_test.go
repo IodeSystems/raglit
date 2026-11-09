@@ -159,6 +159,33 @@ func TestEmbedderSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Batch enqueue: signature and field names pinned; two more files, one pass.
+	var enqMany func([]raglit.EnqueueItem) ([]raglit.EnqueueResult, error) = st.EnqueueMany
+	_ = raglit.EnqueueItem{URL: "", Title: "", Fresh: false}
+	_ = raglit.EnqueueResult{ID: 0, Err: nil}
+	var manyIDs []int64
+	var manyPaths []string
+	for _, name := range []string{"one.txt", "two.txt"} {
+		p := filepath.Join(dir, "docs", name)
+		if err := os.WriteFile(p, []byte("Batch file "+name+" mentions a narwhal.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		manyPaths = append(manyPaths, p)
+	}
+	mres, err := enqMany([]raglit.EnqueueItem{
+		{URL: "file://" + manyPaths[0], Title: "one"},
+		{URL: "file://" + manyPaths[1], Title: "two", Fresh: true},
+	})
+	if err != nil || len(mres) != 2 {
+		t.Fatalf("EnqueueMany: %v, err %v", mres, err)
+	}
+	for _, r := range mres {
+		if r.Err != nil || r.ID == 0 {
+			t.Fatalf("EnqueueMany result: %+v", r)
+		}
+		manyIDs = append(manyIDs, r.ID)
+	}
+
 	models := raglit.Models{Channels: raglit.NewChannels()} // offline: no model of any role
 	r := &raglit.Runner{
 		Stores: oneStore{"default", st},
@@ -187,6 +214,24 @@ func TestEmbedderSurface(t *testing.T) {
 	}
 	if ji.State != string(raglit.JobDone) {
 		t.Fatalf("job ended %q: %s", ji.State, ji.Error)
+	}
+	for _, mid := range manyIDs {
+		for {
+			mji, err := st.Job(mid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mji.State == string(raglit.JobDone) {
+				break
+			}
+			if mji.State == string(raglit.JobError) || time.Now().After(deadline) {
+				t.Fatalf("batch job %d ended %q: %s", mid, mji.State, mji.Error)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if hs, err := st.Search("narwhal", 5); err != nil || len(hs) == 0 {
+		t.Fatalf("batch-enqueued files not searchable: %d hits, err %v", len(hs), err)
 	}
 
 	var _ raglit.Job // the claimed-job type, named so a rename breaks here
@@ -236,8 +281,8 @@ func TestEmbedderSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	jobs, err := st.Jobs("", 10)
-	if err != nil || len(jobs) != 1 {
+	jobs, err := st.Jobs("", 10) // notes + the two EnqueueMany files
+	if err != nil || len(jobs) != 3 {
 		t.Fatalf("jobs: %v, err %v", jobs, err)
 	}
 

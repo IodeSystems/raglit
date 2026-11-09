@@ -73,42 +73,60 @@ func (s *Store) Enqueue(url, title string) (int64, error) {
 // dedupes against a pending one: the caller is asking for work the queued job
 // would specifically NOT do.
 func (s *Store) EnqueueFresh(url, title string, fresh bool) (int64, error) {
+	if err := s.enqueueRefusal(url); err != nil {
+		return 0, err
+	}
+	return enqueueOne(
+		func(args ...any) *sql.Row { return s.db.QueryRow(enqueueInsertSQL, args...) },
+		func(args ...any) *sql.Row { return s.db.QueryRow(enqueueExistingSQL, args...) },
+		url, title, fresh)
+}
+
+// enqueueRefusal returns the reason url may not be queued, or nil.
+func (s *Store) enqueueRefusal(url string) error {
 	if url == "" {
-		return 0, fmt.Errorf("raglit: enqueue: empty url")
+		return fmt.Errorf("raglit: enqueue: empty url")
 	}
 	// raglit's own output is not a source. Refused HERE because this is the one
 	// point every ingest path passes through — the sync planner's ignore globs
 	// guard only `sync`, and a directory walked by `ingest`/`index`/POST /ingest
 	// applied no rules at all. See IsGeneratedSidecar.
 	if IsGeneratedSidecar(url) {
-		return 0, fmt.Errorf("raglit: enqueue: %s is raglit's own output, not a source document", url)
+		return fmt.Errorf("raglit: enqueue: %s is raglit's own output, not a source document", url)
 	}
 	// The ignore patterns are checked here for the same reason: every ingest
 	// path passes through, so none can go around them.
 	if pat := s.IgnoredBy(url); pat != "" {
-		return 0, fmt.Errorf("%w: %s matches %q", ErrIgnored, url, pat)
+		return fmt.Errorf("%w: %s matches %q", ErrIgnored, url, pat)
 	}
-	// ONE statement, not a transaction — the same hazard claimNextIdentityJob
-	// documents. A deferred transaction that SELECTs the queue and then INSERTs
-	// takes a read snapshot first; if a worker commits in between, the upgrade
-	// to a write fails with SQLITE_BUSY_SNAPSHOT at once, and busy_timeout does
-	// not apply. With the worker pool committing steadily, `sync` failed that
-	// way on most attempts. An INSERT ... SELECT takes the write lock when the
-	// statement starts, so it waits its turn, and the NOT EXISTS check and the
-	// insert see the same queue: two callers racing on one url cannot both
-	// insert. fresh and lane are set in the same row for the same reason — a
-	// row with no lane is claimed by nobody and reports `pending` forever.
+	return nil
+}
+
+// ONE statement, not a transaction — the same hazard claimNextIdentityJob
+// documents. A deferred transaction that SELECTs the queue and then INSERTs
+// takes a read snapshot first; if a worker commits in between, the upgrade
+// to a write fails with SQLITE_BUSY_SNAPSHOT at once, and busy_timeout does
+// not apply. With the worker pool committing steadily, `sync` failed that
+// way on most attempts. An INSERT ... SELECT takes the write lock when the
+// statement starts, so it waits its turn, and the NOT EXISTS check and the
+// insert see the same queue: two callers racing on one url cannot both
+// insert. fresh and lane are set in the same row for the same reason — a
+// row with no lane is claimed by nobody and reports `pending` forever.
+const enqueueInsertSQL = `INSERT INTO ingest_jobs(url, title, state, enqueued_at, fresh, lane)
+	 SELECT ?, ?, 'pending', ?, ?, ?
+	  WHERE NOT EXISTS (SELECT 1 FROM ingest_jobs
+	                     WHERE url = ? AND state IN ('pending','running') AND fresh >= ?)
+	 RETURNING id`
+
+const enqueueExistingSQL = `SELECT id FROM ingest_jobs WHERE url = ? AND state IN ('pending','running') AND fresh >= ? ORDER BY id LIMIT 1`
+
+// enqueueOne runs the insert-or-return-existing pair through ins and sel, which
+// bind the two statements to a db, a connection or a prepared statement.
+func enqueueOne(ins, sel func(args ...any) *sql.Row, url, title string, fresh bool) (int64, error) {
 	now := time.Now().UnixNano()
 	for range 3 {
 		var id int64
-		err := s.db.QueryRow(
-			`INSERT INTO ingest_jobs(url, title, state, enqueued_at, fresh, lane)
-			 SELECT ?, ?, 'pending', ?, ?, ?
-			  WHERE NOT EXISTS (SELECT 1 FROM ingest_jobs
-			                     WHERE url = ? AND state IN ('pending','running') AND fresh >= ?)
-			 RETURNING id`,
-			url, title, now, boolInt(fresh), string(LaneFor(url)), url, boolInt(fresh),
-		).Scan(&id)
+		err := ins(url, title, now, boolInt(fresh), string(LaneFor(url)), url, boolInt(fresh)).Scan(&id)
 		if err == nil {
 			return id, nil
 		}
@@ -116,10 +134,7 @@ func (s *Store) EnqueueFresh(url, title string, fresh bool) (int64, error) {
 			return 0, fmt.Errorf("raglit: enqueue: %w", err)
 		}
 		// A queued job already covers this url: return it.
-		err = s.db.QueryRow(
-			`SELECT id FROM ingest_jobs WHERE url = ? AND state IN ('pending','running') AND fresh >= ? ORDER BY id LIMIT 1`,
-			url, boolInt(fresh),
-		).Scan(&id)
+		err = sel(url, boolInt(fresh)).Scan(&id)
 		if err == nil {
 			return id, nil
 		}
@@ -129,6 +144,75 @@ func (s *Store) EnqueueFresh(url, title string, fresh bool) (int64, error) {
 		// It finished between the two statements; insert again.
 	}
 	return 0, fmt.Errorf("raglit: enqueue: %s: queue changed on every attempt", url)
+}
+
+// EnqueueItem is one entry of an EnqueueMany batch.
+type EnqueueItem struct {
+	URL, Title string
+	Fresh      bool
+}
+
+// EnqueueResult is the outcome for one EnqueueItem: the job id (new, or the
+// existing job that already covers it), or the per-item refusal.
+type EnqueueResult struct {
+	ID  int64
+	Err error
+}
+
+// EnqueueMany enqueues every item in ONE write transaction and returns one
+// result per item, in order. Each item behaves as EnqueueFresh does: empty,
+// generated-sidecar and ignored urls are refused per item (Err set, batch
+// continues), and an item already covered by a pending/running job returns that
+// job's id — including a job inserted earlier in the same batch.
+//
+// One transaction because one Enqueue per file costs a commit (fsync) each:
+// ~826 files took 5-12 s. BEGIN IMMEDIATE takes the write lock up front, so
+// the batch waits under busy_timeout like any writer and cannot hit the
+// SQLITE_BUSY_SNAPSHOT upgrade failure EnqueueFresh documents. The returned
+// error is only for a transaction or database failure; then nothing is
+// committed.
+func (s *Store) EnqueueMany(items []EnqueueItem) ([]EnqueueResult, error) {
+	out := make([]EnqueueResult, len(items))
+	// Refusals read the ignore patterns through s.db; do them before the write
+	// lock is held so they never wait on the pool while it is.
+	live := make([]bool, len(items))
+	for i, it := range items {
+		if err := s.enqueueRefusal(it.URL); err != nil {
+			out[i].Err = err
+			continue
+		}
+		live[i] = true
+	}
+	ctx := context.Background()
+	err := s.writeTx(ctx, func(conn *sql.Conn) error {
+		ins, err := conn.PrepareContext(ctx, enqueueInsertSQL)
+		if err != nil {
+			return err
+		}
+		defer ins.Close()
+		sel, err := conn.PrepareContext(ctx, enqueueExistingSQL)
+		if err != nil {
+			return err
+		}
+		defer sel.Close()
+		insFn := func(args ...any) *sql.Row { return ins.QueryRowContext(ctx, args...) }
+		selFn := func(args ...any) *sql.Row { return sel.QueryRowContext(ctx, args...) }
+		for i, it := range items {
+			if !live[i] {
+				continue
+			}
+			id, err := enqueueOne(insFn, selFn, it.URL, it.Title, it.Fresh)
+			if err != nil {
+				return err
+			}
+			out[i].ID = id
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("raglit: enqueue many: %w", err)
+	}
+	return out, nil
 }
 
 func boolInt(b bool) int {
