@@ -744,6 +744,172 @@ overlay translates paths at the boundary.
 
 This ships with `EnqueueMany` (fbb99de) as **v0.8.0**.
 
+## R12: cut model cost on edits (APPROVED, Carl 2026-11-09)
+
+Carl's priority, relayed by dun-bb: a minor edit must not cost model calls
+for nothing.
+
+### What a one-line edit costs today (read in the code)
+
+- **Every fragment is embedded again.** `commitDoc` deletes and re-inserts
+  all of the document's fragments, and the embedder runs over all of them
+  (pipeline.go:1017, 1203). Nothing reuses a vector for unchanged text.
+- **One identity call.** Any change to the text queues a full re-caption
+  in the same transaction (pipeline.go:1161), whatever the size of the change.
+- **The segmenter is free for text and code.** It uses the overlap windows or
+  the tree-sitter code segmenter. The LLM segmenter runs only on pages that
+  escalate to the vision model (scans and images), and those are re-read only
+  when their bytes change.
+
+So for dund's code, docs and memory indexes, the waste is the
+**re-embedding** and the **re-caption**. Both can be fixed without the
+content-addressed store (R10c).
+
+### R12a. Reuse vectors by text (no schema redesign)
+
+- Add `fragments.text_key = sha256(text)`, indexed.
+- Before embedding, look up an existing vector for each new fragment's
+  `text_key` in the same index and embed model. That covers this document's
+  old fragments (read before they are deleted), other documents, and the
+  parent of a branch. A hit copies the vector and costs no call.
+- Only text that is actually new gets embedded.
+- Storage still holds one vector row per fragment. Only the embed calls are
+  saved, and the calls are what costs.
+- With R11, a worktree branch then spends model calls only on its changed
+  text. That meets dun-bb's item 2 ("a worktree costs only its changed text")
+  for cost, without R10c. R10c would also save storage. It is deferred.
+
+### R12b. Delta report before any spend
+
+- Segmentation for text and code is local, so the delta is known before any
+  model call. At commit, compare the new fragments with the stored ones by
+  `text_key`:
+  - **unchanged:** same text, same order;
+  - **moved:** same text, different order or lines;
+  - **added**, **removed**.
+- **Damage** = (bytes of added text + bytes of removed text) / (bytes of the
+  document before the edit), counted in bytes. Bytes are used, not a fragment
+  count, because fragment sizes vary widely (a one-line gap fragment against
+  a 200-line function).
+- The delta is stored per document (`doc_deltas`: the latest, plus the
+  damage accumulated since the last caption). It is returned by
+  `Store.DocumentDelta(path)`, on `JobInfo`, and summed in `IndexTree`'s
+  result once R10a exists.
+
+### R12c. Re-caption only past a damage threshold
+
+- A new `Models.RecaptionDamage float64`. When it is > 0, a text change queues
+  identity only once accumulated damage reaches the threshold (for example
+  0.30), or when the document has no caption.
+- Below the threshold, the caption stays. It is marked stale with the damage
+  so far, and `DocSummary` carries `CaptionDamage`. Damage accumulates across
+  edits, and a re-caption resets it to 0.
+- 0 means today's behavior: re-caption on every change.
+- A forced re-caption (`EnqueueIdentity(force)`) always runs.
+
+### R12d. Budgets per role
+
+- A new `Models.Budget map[role]Budget{Tokens, Calls int; Period
+  time.Duration}`, metered through the same hook that feeds `OnUsage`.
+- **Before a job spends:**
+  - an embed over budget defers the whole document's job (state `deferred`,
+    with its delta and the reason);
+  - an identity call over budget defers the identity job.
+  
+  Deferred work is not dropped. It runs once the period resets.
+- **Query embeddings for search are never metered or deferred.**
+- `Store.Spend()` reports the spend and remaining budget per role, and
+  `Jobs("deferred")` lists what is waiting.
+- A nil budget means no limit, which is today's behavior.
+
+### R12e. Throttled tree watcher (R10a + R10b, extended)
+
+The watcher from R10b, plus:
+- a **minimum interval per root**;
+- **one walk per root** no matter how many callers watch it (single-flight);
+- requests merged across callers, through a `WatchHub` keyed by root with
+  `Subscribe(root, fn) / Unsubscribe`.
+
+It replaces dund's turn-end re-index. `IndexTree` (R10a) comes with it,
+because the watcher's callback is what calls it.
+
+### R12f. LLM re-segmentation of only the changed region
+
+For paged documents that escalate to the LLM segmenter, re-segment only the
+pages whose text hash changed and reuse the segments of the other pages.
+Whether the current per-page provenance allows this has not been checked.
+Investigate before committing to it.
+
+### Releases (proposed)
+
+- **v0.8.0:** EnqueueMany and R11 worktree branches. In progress.
+- **v0.9.0:** R12a–e. R12a goes first, because it alone removes most of the
+  embedding cost.
+- R12f after investigation. R10c (content addressing) is deferred: with
+  R12a, its remaining gain is storage, not cost.
+
+### Decisions (Carl, 2026-11-09)
+
+1. **Order:** R12e (the throttled watcher, with IndexTree) and R12a first,
+   then R12b–d. R12f only after its investigation. R10c (one fragment, N
+   locations) is not dropped: it comes right after v0.9.0.
+2. **Damage:** in bytes, reported **per fragment and per document**. A
+   fragment's damage is the share of its text that changed (1.0 for added or
+   removed). A document's damage is (added + removed bytes) / its bytes
+   before the edit, accumulated across edits. dund starts its threshold at
+   30%.
+3. **Over budget:** commit the free parts and defer the paid ones.
+   - Committed now: unchanged and moved fragments, deletions, and new text in
+     FTS, so text search stays correct.
+   - Deferred: embedding of the new text, and the re-caption. The document is
+     marked as pending vectors.
+4. **raglitd:** no gating by default. dund turns gating on from its config.
+
+### R12g. Pack small pieces into fragments of a target size (Carl, 2026-11-09)
+
+Carl asked whether small pieces are merged so that damage is not fickle. The
+code says (2026-11-09):
+- **Text-overlap windows** stay near a target: window 1000 chars, stride 750,
+  floor 300. Only the tail under the floor is folded in (fragment.go:27-29,
+  98-105).
+- **The LLM segmenter** has a real floor and ceiling: `Assembler` MinChars
+  3000, MaxChars 9000 (segment.go:391-399).
+- **The v0.7.0 code and Markdown path has no floor.** Each top-level
+  declaration and each heading section becomes its own fragment, however
+  small (codesegment.go fragmentCode). Only pieces with no letters or digits
+  are merged. A file of 40 one-line declarations is 40 fragments, so one edit
+  changes 1/40 of the fragments but a large share of a small fragment.
+
+Fix: pack adjacent declarations (or sections) into one fragment up to a
+target. Use the text window as the target and the floor as the minimum, so a
+fragment sits at roughly 750–1000 chars like the text path does.
+- A declaration that is too large on its own is still split as today.
+- Symbol becomes the list of the packed symbols, so Hit.Symbol stays useful:
+  `Symbol` is the first one and `Symbols` the full list.
+- Pack boundaries must not cascade. Greedy packing from the top of the file
+  shifts every later pack when one function grows, and every fragment after
+  the edit then counts as changed. Packing is therefore content-defined:
+  - a pack ends at a declaration boundary where hash(declaration text)
+    satisfies a condition, with the target size as the expected spacing and
+    the floor and ceiling as hard limits;
+  - this is the rolling-hash chunking rsync and restic use, applied at
+    declaration grain.
+  An edit then changes its own pack and at most the next one.
+- Markdown sections pack the same way, never across a top-level (`#`)
+  heading.
+- Ships in v0.9.0, before R12b (damage is computed over packed fragments).
+
+### Small items queued for v0.9.0 (dun-bb, 2026-11-09)
+
+- `SearchFilter.NotTags []string`: whole tags, where any match excludes. It
+  is applied before ranking, like Tags. dun keeps unaccepted lessons tagged
+  `candidate`, and recall must not return them or let them take up result
+  slots.
+- Pin `Models.Embedder()` and `Embedder.Client`, or a pinned way to build an
+  admitted embedder for ingest and an unadmitted one for queries. Document
+  that an embedder built with `NewEmbedder` over a plain client bypasses
+  Channels admission.
+
 ## Optional, out of scope
 
 - A Postgres backend and a storage interface: not until a second backend is
