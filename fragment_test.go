@@ -16,7 +16,7 @@ func TestIngestText_DeterministicOverlap(t *testing.T) {
 	text := strings.Join(lines, "\n")
 	fc := FragConfig{Window: 120, Stride: 80, Floor: 30}
 
-	n, mode, err := s.ingestText(context.Background(), "code.txt", "Code", text, fc, nil)
+	n, mode, err := s.ingestText(context.Background(), "code.txt", "Code", text, true, fc, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

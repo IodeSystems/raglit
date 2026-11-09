@@ -366,7 +366,7 @@ func (w *Worker) ingestAudio(ctx context.Context, job *Job, f Fetched, title str
 		}
 	}
 
-	return w.ingestPlainText(ctx, job.URL, title, []byte(text), sl)
+	return w.ingestPlainText(ctx, job.URL, title, []byte(text), false, sl)
 }
 
 // sttProducer names what read the recording, from the model id.

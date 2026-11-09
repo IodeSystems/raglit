@@ -1060,6 +1060,9 @@ func (s *Store) SetDocumentIdentity(ctx context.Context, path string, d DocIdent
 	if err := writeIdentity(ctx, tx, docID, d); err != nil {
 		return err
 	}
+	if _, err := setContentIDs(ctx, tx, docID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

@@ -47,3 +47,19 @@ func TestKindNamesArePinned(t *testing.T) {
 		}
 	}
 }
+
+// A text file's pool key changed when fragments gained line spans, so a payload
+// pooled before them (0/0) is a miss; other kinds keep their key.
+func TestTextKindsRekeyedForLines(t *testing.T) {
+	w := &Worker{RecipeHash: "abc123"}
+	for _, k := range []DocKind{KindText, KindUnknown} {
+		if w.poolRecipe(k) == HashHex([]byte("abc123|kind="+k.String())) {
+			t.Errorf("%s: pre-lines pool key still in use", k)
+		}
+	}
+	for _, k := range []DocKind{KindPDF, KindOffice, KindImage, KindEmail, KindSpreadsheet} {
+		if w.poolRecipe(k) != HashHex([]byte("abc123|kind="+k.String())) {
+			t.Errorf("%s: key changed; this kind gained no lines", k)
+		}
+	}
+}

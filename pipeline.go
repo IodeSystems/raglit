@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,11 @@ type ingestUnit struct {
 	// frontmatter is the byte length of a leading YAML block in text (0 = none).
 	// It is kept verbatim and fragmented separately; see FragOriginFrontmatter.
 	frontmatter int
+	// fileText: text is the file's own bytes (a text file, ingestText), so a
+	// line of text is a line of the file. Not set for text derived from the
+	// file (pandoc output, a transcript, OCR), whose lines exist nowhere a
+	// reader can open.
+	fileText bool
 	// dpi is the resolution this page was rendered at, carried through to the
 	// page's provenance: it decides what any reader could possibly see, and
 	// without it "why is this page wrong" cannot be answered afterwards.
@@ -55,7 +61,12 @@ func (u ingestUnit) isImage() bool { return len(u.data) > 0 }
 type stagedFrag struct {
 	page, ord        int
 	startOff, endOff int
-	text             string
+	// startLine, endLine: half-open 1-based line span, 0/0 for unknown. Set by
+	// fragmentOverlap for a text file (ingestUnit.fileText).
+	startLine, endLine int
+	// symbol is the fragment's dotted symbol path, empty for none.
+	symbol string
+	text   string
 	// pageSpans is where each page's content begins inside text, for a fragment
 	// that spans pages. Nil when it lies on one page.
 	pageSpans []PageSpan
@@ -164,6 +175,9 @@ type resolvedPage struct {
 	// frontmatter is the length of the leading block fragmentOverlap emits as its
 	// own FragOriginFrontmatter fragment (see ingestUnit.frontmatter).
 	frontmatter int
+	// fileText: see ingestUnit.fileText. Cleared when flattening changed the
+	// text, since its lines are then no longer the file's.
+	fileText bool
 }
 
 // pageFailure is one page that could not be read, kept so the document can be
@@ -285,7 +299,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		} else if u.page >= 1 {
 			provenance = append(provenance, stagedPage{page: u.page, engine: engine})
 		}
-		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model, frontmatter: u.frontmatter})
+		pages = append(pages, resolvedPage{page: u.page, text: text, engine: engine, model: model, frontmatter: u.frontmatter, fileText: u.fileText})
 	}
 	// Every page a hole is a failed document; some holes among readable pages is a
 	// partial one, which is worth keeping. Reported either way, because an ingest
@@ -386,6 +400,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		if flat != pages[i].text {
 			flattened += len(pages[i].text) - len(flat)
 			pages[i].text = flat
+			pages[i].fileText = false
 		}
 	}
 	for i := range provenance {
@@ -907,9 +922,34 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 		}
 		return out
 	}
+	// Lines, for a text file only: one unit whose text is the file's own bytes
+	// (resolvedPage.fileText), so a line of src is a line of the file. A paged
+	// document's src is pages joined with pageSep, whose lines are no line of
+	// any page, and derived text (pandoc, a transcript) has lines no reader can
+	// open, so their fragments stay 0/0.
+	linesOf := func(start, end int) (int, int) { return 0, 0 }
+	if len(pages) == 1 && pages[0].fileText {
+		var nl []int // offsets of every '\n' in src, ascending
+		for i := 0; i < len(src); i++ {
+			if src[i] == '\n' {
+				nl = append(nl, i)
+			}
+		}
+		// lineAt is the 1-based line holding byte off: one more than the
+		// newlines before it.
+		lineAt := func(off int) int { return sort.SearchInts(nl, off) + 1 }
+		linesOf = func(start, end int) (int, int) {
+			if end <= start {
+				return 0, 0
+			}
+			return lineAt(start), lineAt(end-1) + 1
+		}
+	}
 	ordByPage := map[int]int{}
 	if fm > 0 {
+		sl, el := linesOf(0, fm)
 		sink(stagedFrag{page: pages[0].page, ord: 0, startOff: 0, endOff: fm,
+			startLine: sl, endLine: el,
 			text: src[:fm], origin: FragOriginFrontmatter})
 		ordByPage[pages[0].page] = 1
 	}
@@ -919,7 +959,9 @@ func fragmentOverlap(pages []resolvedPage, window, stride, floor int, sink func(
 		page := pageForOffset(of.Start)
 		ord := ordByPage[page]
 		ordByPage[page] = ord + 1
+		sl, el := linesOf(of.Start, of.End)
 		sink(stagedFrag{page: page, ord: ord, startOff: of.Start, endOff: of.End,
+			startLine: sl, endLine: el,
 			text: of.Text, pageSpans: spansWithin(of.Start, of.End)})
 	}
 }
@@ -985,6 +1027,7 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		fid, err := q.InsertFragment(ctx, gen.InsertFragmentParams{
 			DocID: docID, Page: int64(f.page), Ord: int64(f.ord), Text: f.text,
 			StartOff: int64(f.startOff), EndOff: int64(f.endOff),
+			StartLine: int64(f.startLine), EndLine: int64(f.endLine), Symbol: f.symbol,
 			PageSpans: encodePageSpans(f.pageSpans),
 			Origin:    f.origin,
 		})
@@ -1087,6 +1130,10 @@ func (s *Store) commitDoc(docPath, title, fragMode, fragRecipe string, frags []s
 		if err := enqueueIdentityTx(ctx, tx, docPath); err != nil {
 			return err
 		}
+	}
+	// After every fragment of the document is in, the identity one included.
+	if _, err := setContentIDs(ctx, tx, docID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

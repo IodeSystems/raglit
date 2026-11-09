@@ -525,7 +525,15 @@ func (w *Worker) poolRecipe(kind DocKind) string {
 	if w.RecipeHash == "" {
 		return ""
 	}
-	return HashHex([]byte(w.RecipeHash + "|kind=" + kind.String()))
+	key := w.RecipeHash + "|kind=" + kind.String()
+	// A text file's fragments carry line spans (R8). A payload pooled before
+	// them has 0/0 and would replay that into every index, so the text kinds
+	// get a new key. Only those: no other kind gains lines, and re-keying a PDF
+	// would re-read it for nothing.
+	if kind == KindText || kind == KindUnknown {
+		key += "|lines=1"
+	}
+	return HashHex([]byte(key))
 }
 
 // extractAndIngest routes a fetched document by kind (extract.go) and indexes it:
@@ -660,12 +668,12 @@ func (w *Worker) extractAndIngestAs(ctx context.Context, job *Job, f Fetched, ki
 			return 0, "", err
 		}
 		sl.Done("extract", "pandoc", fmt.Sprintf("%d chars", len(text)))
-		return w.ingestPlainText(ctx, job.URL, title, []byte(text), sl)
+		return w.ingestPlainText(ctx, job.URL, title, []byte(text), false, sl)
 	}
 
 	// KindText / KindUnknown: read as text.
 	sl.Done("extract", "text", fmt.Sprintf("%d bytes", len(f.Data)))
-	return w.ingestPlainText(ctx, job.URL, title, f.Data, sl)
+	return w.ingestPlainText(ctx, job.URL, title, f.Data, true, sl)
 }
 
 // extractAttachments writes a mail archive's attachments beside it, when this
@@ -702,8 +710,8 @@ func (w *Worker) extractAttachments(url, srcPath string, sl *StageLog) {
 // overlapping-window fragmenter (fragment.go) — text never escalates to a model,
 // so there is no LLM fork: the same path runs whether or not a model is
 // configured. mode is the fragmenter chosen ("text-overlap").
-func (w *Worker) ingestPlainText(ctx context.Context, url, title string, data []byte, sl *StageLog) (int, string, error) {
-	return w.Store.ingestText(ctx, url, title, string(data), w.Frag, sl)
+func (w *Worker) ingestPlainText(ctx context.Context, url, title string, data []byte, fileText bool, sl *StageLog) (int, string, error) {
+	return w.Store.ingestText(ctx, url, title, string(data), fileText, w.Frag, sl)
 }
 
 // ingestPaged indexes a document that already knows its own pages, keeping the

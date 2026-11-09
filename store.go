@@ -449,6 +449,13 @@ func migrate(db *sql.DB) error {
 		// Caller-owned tags (tags.go). An index that predates the column has no
 		// caller tags, which is what '' says.
 		{"documents", "tags", "TEXT NOT NULL DEFAULT ''"},
+		// Line span, symbol path and stable id (R8). An index that predates them
+		// has 0/0 lines and no symbol, which is "unknown"; its content ids are
+		// backfilled below.
+		{"fragments", "start_line", "INTEGER NOT NULL DEFAULT 0"},
+		{"fragments", "end_line", "INTEGER NOT NULL DEFAULT 0"},
+		{"fragments", "symbol", "TEXT NOT NULL DEFAULT ''"},
+		{"fragments", "content_id", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
@@ -475,6 +482,31 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(
 		`CREATE INDEX IF NOT EXISTS ingest_jobs_lane ON ingest_jobs(state, lane, id)`); err != nil {
 		return err
+	}
+	// FragmentExists, and the backfill's search for fragments still owing an id.
+	if _, err := db.Exec(
+		`CREATE INDEX IF NOT EXISTS fragments_content ON fragments(content_id)`); err != nil {
+		return err
+	}
+	// The FTS update trigger fires on text only (schema.sql). An index made
+	// before that has one that fires on every update, which would rewrite the
+	// FTS row of each fragment the content-id backfill touches.
+	var auSQL string
+	if err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='trigger' AND name='fragments_au'`).Scan(&auSQL); err != nil {
+		return err
+	}
+	if !strings.Contains(auSQL, "UPDATE OF text") {
+		if _, err := db.Exec(`DROP TRIGGER fragments_au;
+CREATE TRIGGER fragments_au AFTER UPDATE OF text ON fragments BEGIN
+  INSERT INTO fragments_fts(fragments_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO fragments_fts(rowid, text) VALUES (new.id, new.text);
+END;`); err != nil {
+			return err
+		}
+	}
+	if err := backfillContentIDs(db); err != nil {
+		return fmt.Errorf("content id backfill: %w", err)
 	}
 	// Captions handed in with a document, held until its ingest commits
 	// (Store.SupplyIdentity). Raw SQL, like the column ALTERs above.
@@ -570,6 +602,12 @@ type Fragment struct {
 	Page int    // 1-based page number (0 for pageless sources like plain text)
 	Ord  int    // fragment order within the page
 	Text string // the searchable text
+	// StartLine and EndLine are the half-open [StartLine, EndLine) 1-based line
+	// span of Text in the source, 0/0 for unknown. Stored as given.
+	StartLine, EndLine int
+	// Symbol is the dotted symbol path the fragment is ("Server.Start"), empty
+	// for none. It is part of the fragment's content id.
+	Symbol string
 }
 
 // Document is a source doc plus its fragments. Path is the unique key.
@@ -633,7 +671,8 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 			unreadable++
 			continue
 		}
-		id, err := q.InsertFragment(ctx, gen.InsertFragmentParams{DocID: docID, Page: int64(f.Page), Ord: int64(f.Ord), Text: f.Text})
+		id, err := q.InsertFragment(ctx, gen.InsertFragmentParams{DocID: docID, Page: int64(f.Page), Ord: int64(f.Ord), Text: f.Text,
+			StartLine: int64(f.StartLine), EndLine: int64(f.EndLine), Symbol: f.Symbol})
 		if err != nil {
 			return fmt.Errorf("raglit: insert fragment: %w", err)
 		}
@@ -646,6 +685,9 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 		fmt.Fprintf(os.Stderr, "raglit: %d page(s) of %s produced bytes rather than text "+
 			"and were NOT stored — the pages are unreadable, not empty; re-index to retry "+
 			"the extraction\n", unreadable, doc.Path)
+	}
+	if _, err := setContentIDs(ctx, tx, docID); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -743,6 +785,14 @@ type Hit struct {
 	Ord   int
 	Text  string
 	Score float64
+	// StartLine and EndLine are the fragment's half-open 1-based line span in
+	// its source, 0/0 when unknown (llm-seg, a paged document, an older index).
+	StartLine, EndLine int
+	// Symbol is the fragment's dotted symbol path, empty for none.
+	Symbol string
+	// ContentID is the fragment's stable id (contentid.go): the same across a
+	// re-ingest of unchanged text, unlike ID. See Store.FragmentExists.
+	ContentID string
 	// Origin is empty for the document's own words, and names what a machine
 	// made otherwise: "identity" for a generated caption/summary (identity.go),
 	// "described" for a model's account of an IMAGE (indextext.go) — the 700
@@ -903,7 +953,7 @@ func (s *Store) searchLocal(query string, f SearchFilter, limit int) ([]Hit, err
 	args := append([]any{match}, pargs...)
 	args = append(args, limit)
 	rows, err := s.db.Query(
-		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, `+fromFileSQL+`, bm25(fragments_fts) AS score
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, f.start_line, f.end_line, f.symbol, f.content_id, `+fromFileSQL+`, bm25(fragments_fts) AS score
 		 FROM fragments_fts
 		 JOIN fragments f ON f.id = fragments_fts.rowid
 		 JOIN documents d ON d.id = f.doc_id
@@ -919,7 +969,8 @@ func (s *Store) searchLocal(query string, f SearchFilter, limit int) ([]Hit, err
 		var h Hit
 		var bm25 float64
 		var spans string
-		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin, &h.fromFile, &bm25); err != nil {
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin,
+			&h.StartLine, &h.EndLine, &h.Symbol, &h.ContentID, &h.fromFile, &bm25); err != nil {
 			return nil, err
 		}
 		// A fragment can cross page boundaries; f.page is only where it started.
@@ -1011,7 +1062,7 @@ func (s *Store) vecSearchLocal(qv []float32, query string, f SearchFilter, limit
 		where = " WHERE " + pred
 	}
 	rows, err := s.db.Query(
-		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, `+fromFileSQL+`, fv.vec
+		`SELECT f.id, d.path, d.title, f.page, f.ord, f.text, f.page_spans, f.origin, f.start_line, f.end_line, f.symbol, f.content_id, `+fromFileSQL+`, fv.vec
 		 FROM fragment_vectors fv
 		 JOIN fragments f ON f.id = fv.fragment_id
 		 JOIN documents d ON d.id = f.doc_id`+where, pargs...)
@@ -1024,7 +1075,8 @@ func (s *Store) vecSearchLocal(qv []float32, query string, f SearchFilter, limit
 		var h Hit
 		var blob []byte
 		var spans string
-		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin, &h.fromFile, &blob); err != nil {
+		if err := rows.Scan(&h.ID, &h.Path, &h.Title, &h.Page, &h.Ord, &h.Text, &spans, &h.Origin,
+			&h.StartLine, &h.EndLine, &h.Symbol, &h.ContentID, &h.fromFile, &blob); err != nil {
 			return nil, err
 		}
 		// A vector hit has no literal terms to locate, so this usually falls back

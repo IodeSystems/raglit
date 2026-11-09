@@ -51,6 +51,11 @@ type PooledFragment struct {
 	// CEP0912" indexed with nothing to say a model made it up, quotable as the
 	// record. Empty for transcription, which is nearly everything.
 	Origin string `json:"origin,omitempty"`
+	// Line span and symbol path (Fragment), carried for the reason PageSpans
+	// is. Absent in payloads pooled before the fields existed: 0/0 and none.
+	StartLine int    `json:"start_line,omitempty"`
+	EndLine   int    `json:"end_line,omitempty"`
+	Symbol    string `json:"symbol,omitempty"`
 }
 
 // PooledPage is one cached page's provenance. Image is an absolute source path on
@@ -391,7 +396,7 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 	// travels in Identity instead. (Raw for the same reason TruePages is; see
 	// its comment on regenerating the sqlc layer.)
 	frows, err := s.db.QueryContext(ctx,
-		`SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, f.origin, COALESCE(fv.vec, x'')
+		`SELECT f.page, f.ord, f.text, f.start_off, f.end_off, f.page_spans, f.origin, f.start_line, f.end_line, f.symbol, COALESCE(fv.vec, x'')
 		   FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 		  WHERE f.doc_id = ? AND `+SQLOwnWordsF+` ORDER BY f.page, f.ord`, doc.ID)
 	if err != nil {
@@ -399,14 +404,15 @@ func (s *Store) ExportDoc(path string) (PooledDoc, error) {
 	}
 	defer frows.Close()
 	for frows.Next() {
-		var page, ord, startOff, endOff int64
-		var text, spans, origin string
+		var page, ord, startOff, endOff, startLine, endLine int64
+		var text, spans, origin, symbol string
 		var vec []byte
-		if err := frows.Scan(&page, &ord, &text, &startOff, &endOff, &spans, &origin, &vec); err != nil {
+		if err := frows.Scan(&page, &ord, &text, &startOff, &endOff, &spans, &origin, &startLine, &endLine, &symbol, &vec); err != nil {
 			return PooledDoc{}, err
 		}
 		pf := PooledFragment{Page: int(page), Ord: int(ord), StartOff: int(startOff),
-			EndOff: int(endOff), PageSpans: DecodePageSpans(spans), Text: text, Origin: origin}
+			EndOff: int(endOff), PageSpans: DecodePageSpans(spans), Text: text, Origin: origin,
+			StartLine: int(startLine), EndLine: int(endLine), Symbol: symbol}
 		if len(vec) > 0 {
 			pf.Vec = decodeVec(vec)
 		}
@@ -434,6 +440,7 @@ func (s *Store) IngestPooled(ctx context.Context, docPath, title string, doc Poo
 	vecs := map[int][]float32{}
 	for i, f := range doc.Fragments {
 		frags[i] = stagedFrag{page: f.Page, ord: f.Ord, startOff: f.StartOff, endOff: f.EndOff,
+			startLine: f.StartLine, endLine: f.EndLine, symbol: f.Symbol,
 			text: f.Text, pageSpans: f.PageSpans, origin: f.Origin}
 		if len(f.Vec) > 0 {
 			vecs[i] = f.Vec
