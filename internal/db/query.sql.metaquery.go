@@ -290,6 +290,39 @@ func WrapFailJob(arg FailJobParams) *metaquery.Builder {
 	return metaquery.Wrap(&MetaFailJob, arg.Error, arg.FinishedAt, arg.ID)
 }
 
+var MetaFindPathByHash = metaquery.Query{
+	Name:    "FindPathByHash",
+	Cmd:     ":one",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL: `SELECT path FROM documents
+WHERE content_hash = ? AND content_hash != '' AND path != ?
+ORDER BY id LIMIT 1`,
+	Columns: []metaquery.Column{
+		{Name: "path", OriginalName: "path", GoType: "string"},
+	},
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "content_hash", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "path", GoType: "string", DBType: "TEXT", NotNull: true},
+	},
+}
+
+// WARNING: FindPathByHash ends in a top-level ORDER BY. Wrapping re-applies
+// ordering at runtime, so .ApplyOrder(...) produces a doubled, nested sort
+// that can defeat index use. Drop ORDER BY from the query and order via
+// .ApplyOrder(...) instead. See benchmark/README.md.
+// WrapFindPathByHash returns a metaquery.Builder over MetaFindPathByHash, pre-bound with typed arguments.
+func WrapFindPathByHash(arg FindPathByHashParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaFindPathByHash, arg.ContentHash, arg.Path)
+}
+
+// FindPathByHashCols gives typed, name-safe access to FindPathByHash's output columns.
+var FindPathByHashCols = struct {
+	Path metaquery.TextCol
+}{
+	Path: metaquery.NewTextCol("path"),
+}
+
 var MetaGetDocumentByPath = metaquery.Query{
 	Name:    "GetDocumentByPath",
 	Cmd:     ":one",
@@ -1633,6 +1666,23 @@ var MetaSetJobRunning = metaquery.Query{
 // WrapSetJobRunning returns a metaquery.Builder over MetaSetJobRunning, pre-bound with typed arguments.
 func WrapSetJobRunning(arg SetJobRunningParams) *metaquery.Builder {
 	return metaquery.Wrap(&MetaSetJobRunning, arg.StartedAt, arg.OwnerPid, arg.ID)
+}
+
+var MetaSetJobURL = metaquery.Query{
+	Name:    "SetJobURL",
+	Cmd:     ":exec",
+	Source:  "query.sql",
+	Dialect: metaquery.DialectSQLite,
+	SQL:     `UPDATE ingest_jobs SET url = ? WHERE id = ?`,
+	Args: []metaquery.Arg{
+		{Position: 1, Name: "url", GoType: "string", DBType: "TEXT", NotNull: true},
+		{Position: 2, Name: "id", GoType: "int64", DBType: "INTEGER", NotNull: true},
+	},
+}
+
+// WrapSetJobURL returns a metaquery.Builder over MetaSetJobURL, pre-bound with typed arguments.
+func WrapSetJobURL(arg SetJobURLParams) *metaquery.Builder {
+	return metaquery.Wrap(&MetaSetJobURL, arg.Url, arg.ID)
 }
 
 var MetaUpsertDocument = metaquery.Query{

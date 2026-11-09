@@ -240,6 +240,11 @@ func (s *Store) DeleteDocument(path string) error {
 	if err := s.q.DeleteDocumentByPath(ctx, path); err != nil {
 		return err
 	}
+	// Tags held for a document that never committed go with it; the document's
+	// own tags went with its row.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM pending_tags WHERE path = ?`, path); err != nil {
+		return err
+	}
 	// Tombstone so a parent doc is hidden. Harmless on a non-branch store.
 	return s.q.InsertTombstone(ctx, path)
 }

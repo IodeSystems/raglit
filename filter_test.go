@@ -24,6 +24,7 @@ func filterFixture(t *testing.T, s *Store) {
 	}))
 	must(t, s.SetDocumentFields(ctx, "quiet.md", DocFields{Type: "inspection",
 		Fields: json.RawMessage(`{"county":"Kent","floors":5,"site.lot":"7a","rooms":["a"]}`)}))
+	must(t, s.SetTags("quiet.md", []string{"Kind:Strategy", "pinned"}))
 }
 
 func hitPaths(hs []Hit) []string {
@@ -48,6 +49,12 @@ var filterCases = []struct {
 	{"tags AND, one missing", SearchFilter{Tags: []string{"survey", "invoice"}}, false},
 	{"partial tag is not a tag", SearchFilter{Tags: []string{"paint"}}, false},
 	{"tag prefix is not a tag", SearchFilter{Tags: []string{"lead"}}, false},
+	{"caller tag", SearchFilter{Tags: []string{"kind:strategy"}}, true},
+	{"caller tag normalized", SearchFilter{Tags: []string{" KIND:Strategy "}}, true},
+	{"caller tag longer is not a tag", SearchFilter{Tags: []string{"kind:strategyx"}}, false},
+	{"caller tag prefix is not a tag", SearchFilter{Tags: []string{"kind"}}, false},
+	{"caller, content and role tags AND", SearchFilter{Tags: []string{"pinned", "survey", "reference"}}, true},
+	{"caller tag AND missing", SearchFilter{Tags: []string{"pinned", "invoice"}}, false},
 	{"empty tag ignored", SearchFilter{Tags: []string{"  "}}, true},
 	{"field equal", SearchFilter{Fields: map[string]string{"county": "Kent"}}, true},
 	{"field differs", SearchFilter{Fields: map[string]string{"county": "Essex"}}, false},
