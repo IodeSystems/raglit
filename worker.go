@@ -837,10 +837,11 @@ func (w *Worker) recordIngestReading(docPath, hash string, kind DocKind, sl *Sta
 // stored one. A worker is built once per runner and index and lives for the
 // daemon, so a limit another runner learned reaches it here, at its next job.
 func (w *Worker) applyStoredEmbedLimit() {
-	if w.Store.embedder == nil {
+	emb := w.Store.textEmbedder()
+	if emb == nil {
 		return
 	}
-	n := w.Store.LearnedEmbedLimitTokens(w.Store.embedder.Model)
+	n := w.Store.LearnedEmbedLimitTokens(emb.Model)
 	if n <= 0 || (w.Frag.EmbedLimitTokens > 0 && n >= w.Frag.EmbedLimitTokens) {
 		return
 	}
@@ -853,11 +854,12 @@ func (w *Worker) applyStoredEmbedLimit() {
 // relearnEmbedLimit reads a stated per-input limit out of a failed job's error
 // and reports whether it lowered this worker's limit.
 func (w *Worker) relearnEmbedLimit(err error) bool {
-	if w.Store.embedder == nil {
+	emb := w.Store.textEmbedder()
+	if emb == nil {
 		return false
 	}
 	before := w.Frag.EmbedLimitTokens
-	if _, ok := w.Store.LearnLimitFromError(w.Store.embedder.Model, err.Error()); !ok {
+	if _, ok := w.Store.LearnLimitFromError(emb.Model, err.Error()); !ok {
 		return false
 	}
 	w.applyStoredEmbedLimit()

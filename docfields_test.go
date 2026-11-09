@@ -603,7 +603,7 @@ func TestCommitDoc_ReArmsTheCaptionEvenAfterAnExtraction(t *testing.T) {
 	commit := func(text string) {
 		t.Helper()
 		if err := s.commitDoc(doc, "psa.pdf", "llm-seg", "r",
-			[]stagedFrag{{page: 1, ord: 0, text: text}}, nil, nil, nil, nil); err != nil {
+			[]stagedFrag{{page: 1, ord: 0, text: text}}, nil, nil, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -524,4 +524,4 @@ func (s *Store) LearnedEmbedLimitTokens(model string) int {
 
 // CanSearchByMeaning reports whether vector and hybrid search can run: an
 // embedder is set. Without one they fail on every call, so a UI hides them.
-func (s *Store) CanSearchByMeaning() bool { return s.embedder != nil }
+func (s *Store) CanSearchByMeaning() bool { return s.textEmbedder() != nil }

@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -58,7 +59,19 @@ type Store struct {
 	path     string
 	home     Home
 	withHome bool
-	embedder *Embedder // nil → lexical only; set for vector/hybrid search
+	// embedder, when set, embeds fragments on ingest and queries for vector and
+	// hybrid search; nil → lexical only. Atomic for the same reason as
+	// identifier: a reembed swaps it while an ingest or a search on another
+	// goroutine reads it. Read it once per operation (textEmbedder), so a swap
+	// mid-call cannot pair a nil check with another embedder's use.
+	embedder atomic.Pointer[Embedder]
+	// vecMu orders vector writes against vector drops. A write of vectors from
+	// the text embedder holds it shared, and checks under it that the embedder
+	// is still the one that made them (vectorsCurrent); SyncEmbedModel and
+	// DropVectors hold it exclusive. An ingest that embedded with the embedder
+	// a reembed has just replaced therefore either writes before the drop, and
+	// is dropped with the rest, or finds the swap and writes no vectors.
+	vecMu sync.RWMutex
 	// imageEmbedder, when set, embeds figure IMAGES (a CLIP-style tower) for
 	// figure search; nil → figures fall back to embedding their DESCRIPTION with
 	// the text embedder (same space as fragments, so text queries can match).
@@ -144,7 +157,26 @@ func (s *Store) SetJobURL(id int64, url string) error {
 
 // SetEmbedder enables vector search: fragments are embedded on Ingest and
 // VecSearch/HybridSearch become available. nil disables it.
-func (s *Store) SetEmbedder(e *Embedder) { s.embedder = e }
+//
+// A reembed of an index with ingests in flight is, in this order: SetEmbedder
+// with the new embedder, then SyncEmbedModel (or DropVectors), then
+// BackfillVectors until it returns 0. An in-flight ingest that embedded with
+// the old embedder then leaves no vectors behind (vecMu); its fragments are
+// missing a vector, and the backfill embeds them with the new one. The other
+// order (drop, then swap) leaves a window in which old vectors survive.
+func (s *Store) SetEmbedder(e *Embedder) { s.embedder.Store(e) }
+
+// textEmbedder returns the embedder SetEmbedder set, or nil.
+func (s *Store) textEmbedder() *Embedder { return s.embedder.Load() }
+
+// vectorsCurrent takes vecMu shared and reports whether emb, the embedder that
+// made the vectors about to be written, is still the store's. The caller
+// writes the vectors only when it is, and calls the returned unlock after the
+// write commits.
+func (s *Store) vectorsCurrent(emb *Embedder) (current bool, unlock func()) {
+	s.vecMu.RLock()
+	return s.textEmbedder() == emb, s.vecMu.RUnlock
+}
 
 // SetIdentifier enables document identity: each ingested document is captioned,
 // summarised and typed by the model (identity.go), and the summary is indexed.
@@ -605,14 +637,22 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 
 	// Vector tier (opt-in): embed the fresh fragments and store their vectors.
 	// Done AFTER commit so the network round-trip doesn't hold the write tx.
-	if s.embedder != nil && len(frags) > 0 {
+	if emb := s.textEmbedder(); emb != nil && len(frags) > 0 {
 		texts := make([]string, len(frags))
 		for i, f := range frags {
 			texts[i] = f.text
 		}
-		vecs, err := s.embedder.EmbedDocs(ctx, texts)
+		vecs, err := emb.EmbedDocs(ctx, texts)
 		if err != nil {
 			return fmt.Errorf("raglit: embed fragments: %w", err)
+		}
+		current, unlock := s.vectorsCurrent(emb)
+		defer unlock()
+		if !current {
+			// A reembed replaced the embedder during the call: these vectors
+			// are in the old space. The fragments stay without one, for the
+			// reembed's backfill.
+			return nil
 		}
 		vtx, err := s.db.Begin()
 		if err != nil {
@@ -897,7 +937,8 @@ func (s *Store) VecSearchPath(ctx context.Context, query, pathPrefix string, lim
 // VecSearchFiltered is VecSearchPath constrained by a SearchFilter, applied in
 // each layer's scan before the ranking and the limit.
 func (s *Store) VecSearchFiltered(ctx context.Context, query string, f SearchFilter, limit int) ([]Hit, error) {
-	if s.embedder == nil {
+	emb := s.textEmbedder()
+	if emb == nil {
 		return nil, fmt.Errorf("raglit: VecSearch needs an embedder (SetEmbedder)")
 	}
 	if strings.TrimSpace(query) == "" {
@@ -906,7 +947,7 @@ func (s *Store) VecSearchFiltered(ctx context.Context, query string, f SearchFil
 	if limit <= 0 {
 		limit = 10
 	}
-	qv, err := s.embedder.EmbedQuery(ctx, query)
+	qv, err := emb.EmbedQuery(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -1020,7 +1061,7 @@ func (s *Store) HybridSearchPath(ctx context.Context, query, pathPrefix string, 
 // sides filter before they rank, so the fusion only ever sees qualifying
 // fragments; RRF itself is unchanged.
 func (s *Store) HybridSearchFiltered(ctx context.Context, query string, f SearchFilter, limit int) ([]Hit, error) {
-	if s.embedder == nil {
+	if s.textEmbedder() == nil {
 		return nil, fmt.Errorf("raglit: HybridSearch needs an embedder (SetEmbedder)")
 	}
 	if limit <= 0 {

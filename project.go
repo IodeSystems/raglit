@@ -255,10 +255,11 @@ func (s *Store) SearchOwnLayer(ctx context.Context, query, mode, pathPrefix stri
 		return s.collapseReadings(hits, n), nil
 	}
 	vec := func(n int) ([]Hit, error) {
-		if s.embedder == nil {
+		emb := s.textEmbedder()
+		if emb == nil {
 			return nil, fmt.Errorf("raglit: vector search needs an embedder (SetEmbedder)")
 		}
-		qv, err := s.embedder.EmbedQuery(ctx, query)
+		qv, err := emb.EmbedQuery(ctx, query)
 		if err != nil {
 			return nil, err
 		}

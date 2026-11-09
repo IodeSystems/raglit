@@ -269,7 +269,7 @@ func TestCommitDoc_KeepsIdentityAndItsFragmentAcrossAReingest(t *testing.T) {
 	// so must the fragment that makes it searchable — columns saying one thing
 	// while nothing is indexed is the half-state to avoid.
 	if err := s.commitDoc(doc, "0428_001.pdf", "text-overlap", "r",
-		[]stagedFrag{{page: 1, ord: 0, text: "fresh text"}}, nil, nil, nil, nil); err != nil {
+		[]stagedFrag{{page: 1, ord: 0, text: "fresh text"}}, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	id, err := s.DocumentIdentity(doc)
@@ -295,7 +295,7 @@ func TestCommitDoc_APersonsCaptionOutranksTheMachines(t *testing.T) {
 	}
 	machine := machineIdentity()
 	if err := s.commitDoc("/corpus/0428_001.pdf", "0428_001.pdf", "text-overlap", "r",
-		[]stagedFrag{{page: 1, ord: 0, text: "fresh"}}, nil, nil, nil, &machine); err != nil {
+		[]stagedFrag{{page: 1, ord: 0, text: "fresh"}}, nil, nil, nil, nil, &machine); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.DocumentIdentity("/corpus/0428_001.pdf")

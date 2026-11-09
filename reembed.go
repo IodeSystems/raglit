@@ -2,7 +2,10 @@ package raglit
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -17,46 +20,135 @@ import (
 // re-embed; keyword search keeps working meanwhile). The rebuild embeds
 // whatever has no vector, so it resumes across restarts with nothing to track.
 
-const metaEmbedModel = "embed_model"
+const (
+	metaEmbedModel = "embed_model"
+	// metaEmbedDim is the length of the vectors embed_model returns. The same
+	// model id can come back with another dimension (a different quantisation
+	// or a server that truncates, under one name), and a vector of another
+	// length cannot be compared with the query at all.
+	metaEmbedDim = "embed_dim"
+)
 
-// SyncEmbedModel records model as the source of this index's vectors and
-// reports whether existing vectors were dropped because they came from another
-// model. An index with no record adopts model as-is: it is an index from before
-// the record existed, whose vectors are from the model configured when they
-// were made, and re-embedding every index on upgrade would cost the whole
-// corpus for nothing.
-func (s *Store) SyncEmbedModel(model string) (dropped bool, err error) {
+// SyncEmbedModel records model and dim as the source of this index's vectors
+// and reports whether existing vectors were dropped because they came from
+// another model or have another length. An index with no model record adopts
+// model as-is: it is an index from before the record existed, whose vectors
+// are from the model configured when they were made, and re-embedding every
+// index on upgrade would cost the whole corpus for nothing.
+//
+// dim 0 means the caller does not know it: the dimension is then neither
+// compared nor recorded. With no dim record, the length of a stored vector
+// stands in for one, so an index from before the record still drops vectors
+// that the configured model can no longer match.
+func (s *Store) SyncEmbedModel(model string, dim int) (dropped bool, err error) {
 	if model == "" {
 		return false, nil
 	}
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
 	cur, _ := s.Meta(metaEmbedModel)
-	if cur == model {
+	metaDim, curDim := s.embedDims()
+	modelChanged := cur != "" && cur != model
+	dimChanged := dim > 0 && curDim > 0 && curDim != dim
+	if cur == model && !dimChanged && (dim == 0 || dim == metaDim) {
 		return false, nil
 	}
+	drop := modelChanged || dimChanged
 	now := time.Now().Unix()
-	if cur == "" {
-		return false, s.SetMeta(metaEmbedModel, model, now)
-	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	if _, err := tx.Exec(`DELETE FROM fragment_vectors`); err != nil {
+	if drop {
+		if _, err := dropVectorsTx(tx); err != nil {
+			return false, err
+		}
+	}
+	set := func(key, value string) error {
+		_, err := tx.Exec(
+			`INSERT INTO index_meta (key, value, updated_at) VALUES (?, ?, ?)
+			 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+			key, value, now)
+		return err
+	}
+	if err := set(metaEmbedModel, model); err != nil {
 		return false, err
 	}
-	// Figure vectors in the text space came from the same model. Image-space
-	// ones did not, and stay.
-	if _, err := tx.Exec(`DELETE FROM media_vectors WHERE space IN (?, ?)`, spaceText, spaceImageAligned); err != nil {
-		return false, err
+	switch {
+	case dim > 0:
+		if err := set(metaEmbedDim, strconv.Itoa(dim)); err != nil {
+			return false, err
+		}
+	case drop:
+		// The recorded dim described the vectors just dropped. Kept, it would
+		// drop the new model's vectors the first time a caller passes their dim.
+		if _, err := tx.Exec(`DELETE FROM index_meta WHERE key = ?`, metaEmbedDim); err != nil {
+			return false, err
+		}
 	}
-	if _, err := tx.Exec(
-		`INSERT INTO index_meta (key, value, updated_at) VALUES (?, ?, ?)
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-		metaEmbedModel, model, now); err != nil {
-		return false, err
+	return drop, tx.Commit()
+}
+
+// embedDims returns the recorded vector length (0 when there is no record) and
+// the length to compare against: the record, else the length of a stored
+// fragment vector, else 0.
+func (s *Store) embedDims() (recorded, current int) {
+	if v, ok := s.Meta(metaEmbedDim); ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n, n
+		}
 	}
-	return true, tx.Commit()
+	var n int
+	if err := s.db.QueryRow(`SELECT dim FROM fragment_vectors LIMIT 1`).Scan(&n); err != nil {
+		return 0, 0
+	}
+	return 0, n
+}
+
+// DropVectors deletes every vector the text embedder made, so a forced
+// re-embed (BackfillVectors) rebuilds them all. Fragments, their FTS rows and
+// the model and dim records are untouched. Returns the number of vectors
+// deleted.
+func (s *Store) DropVectors() (int, error) {
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	n, err := dropVectorsTx(tx)
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
+}
+
+// dropVectorsTx deletes the fragment vectors, and the figure vectors that are
+// in the text query's space: the description vectors came from the text
+// model, and the aligned image vectors are only usable against that model's
+// queries. Image-space vectors came from the image embedder, and stay.
+func dropVectorsTx(tx *sql.Tx) (int, error) {
+	var n int64
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`DELETE FROM fragment_vectors`, nil},
+		{`DELETE FROM media_vectors WHERE space IN (?, ?)`, []any{spaceText, spaceImageAligned}},
+	} {
+		r, err := tx.Exec(q.sql, q.args...)
+		if err != nil {
+			return 0, err
+		}
+		k, err := r.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		n += k
+	}
+	return int(n), nil
 }
 
 // EmbedModel is the model this index's vectors are recorded as coming from, ""
@@ -84,14 +176,20 @@ func (s *Store) FragmentCount() (int, error) {
 	return n, err
 }
 
+// errEmbedderChanged is a backfill whose embedder SetEmbedder replaced while
+// it embedded. Its vectors are discarded; a backfill with the new embedder
+// fills the same fragments.
+var errEmbedderChanged = errors.New("raglit: re-embed: the embedder changed during the batch; its vectors were discarded")
+
 // BackfillVectors embeds up to batch fragments that have no vector, then figure
 // descriptions with no text-space vector, and returns how many it embedded. 0
 // means there is nothing left (or no embedder, or the index is paused).
 func (s *Store) BackfillVectors(ctx context.Context, batch int) (int, error) {
-	if s.embedder == nil || s.Paused() {
+	emb := s.textEmbedder()
+	if emb == nil || s.Paused() {
 		return 0, nil
 	}
-	n, err := s.backfill(ctx, batch,
+	n, err := s.backfill(ctx, emb, batch,
 		`SELECT f.id, f.text FROM fragments f
 		   LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
 		  WHERE fv.fragment_id IS NULL AND `+SQLOwnWordsF+` ORDER BY f.id LIMIT ?`,
@@ -99,14 +197,14 @@ func (s *Store) BackfillVectors(ctx context.Context, batch int) (int, error) {
 	if err != nil || n > 0 {
 		return n, err
 	}
-	return s.backfill(ctx, batch,
+	return s.backfill(ctx, emb, batch,
 		`SELECT m.id, m.description FROM media m
 		   LEFT JOIN media_vectors mv ON mv.media_id = m.id
 		  WHERE mv.media_id IS NULL AND TRIM(m.description) <> '' ORDER BY m.id LIMIT ?`,
 		`INSERT OR REPLACE INTO media_vectors (media_id, dim, vec, space) VALUES (?, ?, ?, '`+spaceText+`')`)
 }
 
-func (s *Store) backfill(ctx context.Context, batch int, sel, ins string) (int, error) {
+func (s *Store) backfill(ctx context.Context, emb *Embedder, batch int, sel, ins string) (int, error) {
 	rows, err := s.db.QueryContext(ctx, sel, batch)
 	if err != nil {
 		return 0, err
@@ -126,12 +224,17 @@ func (s *Store) backfill(ctx context.Context, batch int, sel, ins string) (int, 
 	if err := rows.Err(); err != nil || len(ids) == 0 {
 		return 0, err
 	}
-	vecs, err := s.embedder.EmbedDocs(ctx, texts)
+	vecs, err := emb.EmbedDocs(ctx, texts)
 	if err != nil {
 		return 0, fmt.Errorf("raglit: re-embed: %w", err)
 	}
 	if len(vecs) != len(ids) {
 		return 0, fmt.Errorf("raglit: re-embed: %d vectors for %d texts", len(vecs), len(ids))
+	}
+	current, unlock := s.vectorsCurrent(emb)
+	defer unlock()
+	if !current {
+		return 0, errEmbedderChanged
 	}
 	tx, err := s.db.Begin()
 	if err != nil {

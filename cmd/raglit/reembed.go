@@ -13,20 +13,32 @@ import (
 // embedder was configured. One index at a time, in the background; the embed
 // model's own channel bounds the load. A failure stops that index until the
 // next start, rather than retrying a refusal in a loop.
-func reembedIndexes(ctx context.Context, reg *raglit.Registry, model string) {
-	if model == "" {
+//
+// The model's vector length is learned from one probe embedding, so an index
+// whose vectors have another length is rebuilt even when the model id is the
+// same. A failed probe leaves the length unknown (0), and only the id is
+// compared.
+func reembedIndexes(ctx context.Context, reg *raglit.Registry, emb *raglit.Embedder) {
+	if emb == nil || emb.Model == "" {
 		return
+	}
+	model := emb.Model
+	dim := 0
+	if v, err := emb.EmbedQuery(ctx, "dimension probe"); err != nil {
+		log.Printf("raglit: embed model %s: dimension probe: %v (comparing the model id only)", model, err)
+	} else {
+		dim = len(v)
 	}
 	for _, name := range reg.Names() {
 		st, err := reg.Get(name)
 		if err != nil {
 			continue
 		}
-		if dropped, err := st.SyncEmbedModel(model); err != nil {
+		if dropped, err := st.SyncEmbedModel(model, dim); err != nil {
 			log.Printf("raglit: %s: embed model record: %v", name, err)
 			continue
 		} else if dropped {
-			log.Printf("raglit: %s: vectors were from another embed model — re-embedding with %s", name, model)
+			log.Printf("raglit: %s: vectors were from another embed model or of another length — re-embedding with %s", name, model)
 		}
 		total := 0
 		for ctx.Err() == nil {

@@ -100,8 +100,10 @@ func runHttpd(subcmd string, args []string) error {
 	lf.resolve(cfgHome) // daemon config (endpoint + models) from the home / root
 	// Embed automatically when the config has an embed model (so an auto-started
 	// daemon supports vector/hybrid search); --embed with no model is an error.
+	var emb *raglit.Embedder
 	if *lf.embedModel != "" {
-		reg.SetEmbedder(lf.embedder())
+		emb = lf.embedder()
+		reg.SetEmbedder(emb)
 	} else if *embed {
 		return lf.requireEmbed()
 	}
@@ -138,7 +140,7 @@ func runHttpd(subcmd string, args []string) error {
 	ctx, work := runner.Start(context.Background())
 	defer runner.CutOff()
 	// Vectors from another embed model are dropped and rebuilt (reembed.go).
-	go reembedIndexes(ctx, reg, *lf.embedModel)
+	go reembedIndexes(ctx, reg, emb)
 	go backfillSourceStats(ctx, reg)
 	go reapSessionBranches(ctx, reg, cfgHome)
 	// Stay on the current source. Rebuilds immediately, then drains the queue

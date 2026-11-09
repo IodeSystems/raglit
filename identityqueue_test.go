@@ -331,7 +331,7 @@ func TestCommitDoc_QueuesTheCaptionItNowOwes(t *testing.T) {
 	// First read: a scan whose text layer is a signature overlay. Nothing to
 	// caption, and the queue records that.
 	if err := s.commitDoc("/corpus/lead-paint.pdf", "lead-paint.pdf", "text-overlap", "r",
-		[]stagedFrag{{page: 1, ord: 0, text: "Authentisign ID: 2311E4FA X"}}, nil, nil, nil, nil); err != nil {
+		[]stagedFrag{{page: 1, ord: 0, text: "Authentisign ID: 2311E4FA X"}}, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
@@ -345,7 +345,7 @@ func TestCommitDoc_QueuesTheCaptionItNowOwes(t *testing.T) {
 	// caption on its own — nobody re-runs `identify`.
 	if err := s.commitDoc("/corpus/lead-paint.pdf", "lead-paint.pdf", "llm-seg", "r2",
 		[]stagedFrag{{page: 1, ord: 0, text: "Form 22J Lead Based Paint Disclosure, Rev. 3/21, page 2 of 2. Disclosure of information on lead-based paint and lead-based paint hazards, continued. Buyer's acknowledgment: the buyer has received copies of all information listed above, has received the pamphlet Protect Your Family from Lead in Your Home, and has waived the opportunity to conduct a risk assessment."}},
-		nil, nil, nil, nil); err != nil {
+		nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	q, err := s.IdentityQueue()
@@ -364,7 +364,7 @@ func TestCommitDoc_QueuesTheCaptionItNowOwes(t *testing.T) {
 	before := c.calls
 	if err := s.commitDoc("/corpus/lead-paint.pdf", "lead-paint.pdf", "llm-seg", "r3",
 		[]stagedFrag{{page: 1, ord: 0, text: "Form 22J Lead Based Paint Disclosure, re-read again with no change of substance."}},
-		nil, nil, nil, nil); err != nil {
+		nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (&IdentityWorker{Store: s, Slots: 2}).Drain(ctx); err != nil {
@@ -384,7 +384,7 @@ func TestCommitDoc_QueuesNothingWithoutAModel(t *testing.T) {
 	}
 	defer s.Close()
 	if err := s.commitDoc("/corpus/x.pdf", "x.pdf", "text-overlap", "r",
-		[]stagedFrag{{page: 1, ord: 0, text: "some text"}}, nil, nil, nil, nil); err != nil {
+		[]stagedFrag{{page: 1, ord: 0, text: "some text"}}, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if q, _ := s.IdentityQueue(); q.Pending != 0 {
@@ -412,7 +412,7 @@ func TestCommitDoc_ReArmsWhenTheTextChangesUnderACaption(t *testing.T) {
 	commit := func(text string) {
 		t.Helper()
 		if err := s.commitDoc(doc, "psa.pdf", "llm-seg", "r",
-			[]stagedFrag{{page: 1, ord: 0, text: text}}, nil, nil, nil, nil); err != nil {
+			[]stagedFrag{{page: 1, ord: 0, text: text}}, nil, nil, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
