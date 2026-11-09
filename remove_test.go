@@ -89,6 +89,7 @@ func TestRemoveDocument_LeavesNothingBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 	must(t, s.AddPageReading(ctx, PageReading{Doc: path, Page: 1, Text: "token refresh", Source: "machine"}))
+	exec(`INSERT INTO pending_tags(path, tags) VALUES(?, '["a"]')`, path)
 
 	// Per-document tables, and how to count a document's rows in each. FTS and
 	// the two vector tables have no doc column: they hang off fragments / media.
@@ -105,9 +106,10 @@ func TestRemoveDocument_LeavesNothingBehind(t *testing.T) {
 		"document_notes":   `SELECT COUNT(*) FROM document_notes WHERE doc_id = ?1`,
 		"documents":        `SELECT COUNT(*) FROM documents WHERE id = ?1`,
 	}
-	// page_readings counts by path.
+	// page_readings and pending_tags count by path.
 	pathCounts := map[string]string{
 		"page_readings": `SELECT COUNT(*) FROM page_readings WHERE doc = ?1`,
+		"pending_tags":  `SELECT COUNT(*) FROM pending_tags WHERE path = ?1`,
 	}
 	// Tables keyed on a document path that are not removed with the document,
 	// each on purpose and not checked here: audit and ruling history, the
