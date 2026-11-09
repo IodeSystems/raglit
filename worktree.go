@@ -245,6 +245,24 @@ func cleanRoot(name, r string) (string, error) {
 // not wire the parent's own parent. The returned store owns that handle: its
 // Close closes the parent too. Two branches of one parent each hold a handle.
 func OpenBranch(parent Home, branch Home, root, parentRoot string) (*Store, error) {
+	return openBranch(parent, nil, branch, root, parentRoot)
+}
+
+// OpenBranchOn is OpenBranch over parent, an index the caller has open
+// already, instead of a handle of its own. parent must be the default index
+// of its home (OpenHome); branch.json records that home, as OpenBranch does.
+// The returned store does not own parent: its Close leaves parent open, and
+// the caller must keep parent open until the branch is closed.
+func OpenBranchOn(parent *Store, branch Home, root, parentRoot string) (*Store, error) {
+	if parent == nil || !parent.withHome || parent.path != parent.home.IndexPath() {
+		return nil, fmt.Errorf("raglit: open branch: the parent must be a home's default index (OpenHome)")
+	}
+	return openBranch(parent.home, parent, branch, root, parentRoot)
+}
+
+// openBranch is OpenBranch and OpenBranchOn. With ps nil it opens its own
+// handle on parent and the branch owns it; otherwise ps is the parent.
+func openBranch(parent Home, ps *Store, branch Home, root, parentRoot string) (*Store, error) {
 	var err error
 	if (root == "") != (parentRoot == "") {
 		return nil, fmt.Errorf("raglit: open branch: root and parent root must both be set or both be empty")
@@ -296,17 +314,25 @@ func OpenBranch(parent Home, branch Home, root, parentRoot string) (*Store, erro
 			return nil, err
 		}
 	}
-	p, err := OpenHome(Home(pabs))
-	if err != nil {
-		return nil, err
+	p, owned := ps, false
+	if p == nil {
+		if p, err = OpenHome(Home(pabs)); err != nil {
+			return nil, err
+		}
+		owned = true
 	}
 	s, err := OpenHome(branch)
 	if err != nil {
-		_ = p.Close()
+		if owned {
+			_ = p.Close()
+		}
 		return nil, err
 	}
 	s.SetParent(p)
-	s.root, s.parentRoot, s.ownedParent = root, parentRoot, p
+	s.root, s.parentRoot = root, parentRoot
+	if owned {
+		s.ownedParent = p
+	}
 	return s, nil
 }
 
