@@ -55,6 +55,71 @@ type Models struct {
 	// to every index's worker. A registry per worker would split one server's
 	// capacity between controllers that each learn it alone.
 	Channels *Channels
+	// OnUsage, when set, is called once per completed model response with the
+	// role ("vision", "segment", "identity", "embed"), that role's model id and
+	// the tokens the endpoint reported, so a host can total or cap spend per
+	// role. It runs on the calling goroutine of the request, possibly from many
+	// at once: it must be safe for concurrent use and must not block. An
+	// OnUsage already on a client is chained, not replaced. nil → no change.
+	//
+	// Coverage: the four roles above only. STT, image embed and the OCR engine
+	// use plain HTTP clients and do not report usage. "embed" is an ESTIMATE,
+	// not a reported count: agentkit's Client.Embed discards the response's
+	// usage, so UsageVector reports about one token per four characters of
+	// input. It covers only a client passed through UsageVector; NewWorker
+	// wraps the embed client it builds for its own limit probes, but the
+	// Embedder a host sets on the Store or Registry is the host's to wrap.
+	OnUsage func(role, model string, u llm.Usage)
+}
+
+// usageHook points c.OnUsage at m.OnUsage for one role, after any hook the
+// client already has. No-op when m.OnUsage is nil.
+func (m Models) usageHook(c *llm.Client, role, model string) {
+	if m.OnUsage == nil {
+		return
+	}
+	prev, on := c.OnUsage, m.OnUsage
+	c.OnUsage = func(u llm.Usage) {
+		if prev != nil {
+			prev(u)
+		}
+		on(role, model, u)
+	}
+}
+
+// UsageVector wraps an embedding client so each successful call reports to
+// m.OnUsage as role "embed". Returns inner unchanged when OnUsage is nil.
+//
+// The token count is an estimate (see Models.OnUsage): ceil(chars/4) over the
+// inputs sent. The model id is the one the call names, else m.Embed.Model.
+func (m Models) UsageVector(inner VectorClient) VectorClient {
+	if inner == nil || m.OnUsage == nil {
+		return inner
+	}
+	return &usageVector{inner: inner, on: m.OnUsage, model: m.Embed.Model}
+}
+
+type usageVector struct {
+	inner VectorClient
+	on    func(role, model string, u llm.Usage)
+	model string
+}
+
+func (v *usageVector) Embed(ctx context.Context, model string, input []string) ([][]float32, error) {
+	out, err := v.inner.Embed(ctx, model, input)
+	if err != nil {
+		return out, err
+	}
+	chars := 0
+	for _, s := range input {
+		chars += len(s)
+	}
+	n := (chars + 3) / 4
+	if model == "" {
+		model = v.model
+	}
+	v.on("embed", model, llm.Usage{PromptTokens: n, TotalTokens: n})
+	return out, nil
 }
 
 // IngestRetry5xxAttempts rides out an upstream episode of roughly two minutes.
@@ -135,7 +200,9 @@ func (m Models) Identifier() *Identifier {
 		seg := m.segmentRole()
 		r.BaseURL, r.APIKey = seg.BaseURL, seg.APIKey
 	}
-	return NewIdentifier(gate(chans, ingestClient(r), r.Model), r.Model)
+	c := ingestClient(r)
+	m.usageHook(c, "identity", r.Model)
+	return NewIdentifier(gate(chans, c, r.Model), r.Model)
 }
 
 // AttachCheapOCR enables the cascade's cheap first-pass engine on an OCR, with
@@ -220,7 +287,7 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 	if m.Embed.Model != "" {
 		ec := ingestClient(m.Embed)
 		embedLimit = store.EmbedLimitChars(context.Background(),
-			NewEmbedder(ec, m.Embed.Model), m.EmbedLimitChars)
+			NewEmbedder(m.UsageVector(ec), m.Embed.Model), m.EmbedLimitChars)
 		// The character number above is a conversion; this is the limit itself.
 		// A fragment inside the character ceiling can still be past the token one
 		// — 16128 characters of a scanned brief is 10240 tokens against an 8192
@@ -247,6 +314,7 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 	cheapEngine := m.OCR.CheapEngine
 	if m.Vision.Model != "" {
 		client := ingestClient(m.Vision)
+		m.usageHook(client, "vision", m.Vision.Model)
 		// Every retry, recovery and give-up this client makes, attributed to the
 		// job in flight. The client has always reported them; nothing was
 		// listening, so a corpus took 244 upstream 5xx and 95 429s with no record
@@ -293,6 +361,7 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 		// over TEXT and the vision model is chosen for reading PIXELS.
 		seg := m.segmentRole()
 		segClient := ingestClient(seg)
+		m.usageHook(segClient, "segment", seg.Model)
 		// The tally is chained here too. It was only ever on the vision client,
 		// so a segmentation that fought the endpoint for two minutes contributed
 		// nothing to the job's retry record — and the 429s that must narrow the
