@@ -128,7 +128,10 @@ type Config struct {
 	// with its lines and symbol path. raglitd's segmenter is poly-lsp-mcp's
 	// tree-sitter segment package (cmd/raglit/codesegment.go). False → code
 	// and Markdown are read into windows, as before. Turning it on changes the
-	// KindCode pool key, so those files are cut again on their next ingest.
+	// KindCode pool key, so a changed file is cut again on its next ingest. An
+	// unchanged file is not: the unchanged-bytes check skips it before the pool
+	// key is looked at, so files indexed before the switch keep their windows
+	// until `raglit ingest --fresh` re-reads them.
 	// The daemon flag --code-segmenter turns it on as well.
 	CodeSegmenter bool `json:"code_segmenter,omitempty"`
 	// DefaultIndex is the index used when a command gives no --index. Empty →
