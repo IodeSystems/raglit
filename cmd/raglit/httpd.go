@@ -158,7 +158,13 @@ func runHttpd(subcmd string, args []string) error {
 	watch := newWatcher(reg, string(cfgHome), *watchInterval)
 	watch.load()
 	migrateScopes(reg, watch.registered())
-	go watch.run(ctx)
+	// Shutdown order: the watcher's hub stops and waits for its watchers and
+	// index runs before the registry closes (the deferred reg.Close runs after
+	// this wait).
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() { watch.run(watchCtx); close(watchDone) }()
+	defer func() { stopWatch(); <-watchDone }()
 
 	// Background pool GC: keep the pool within the (lax, size-based) budget hourly.
 	gcPol := raglit.GCPolicy{MaxBytes: *poolMaxBytes, MaxEntries: *poolMax, MaxAgeUnused: *poolTTL}

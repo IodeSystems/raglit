@@ -89,9 +89,12 @@ var (
 	_ func(*raglit.TreeWatcher)                                                                                                    = (*raglit.TreeWatcher).Rescan
 	_ func(*raglit.TreeWatcher)                                                                                                    = (*raglit.TreeWatcher).Touch
 	_ func(*raglit.TreeWatcher)                                                                                                    = (*raglit.TreeWatcher).Stop
+	_ func(*raglit.TreeWatcher)                                                                                                    = (*raglit.TreeWatcher).Wait
 	_ func(raglit.WatchOptions) *raglit.WatchHub                                                                                   = raglit.NewWatchHub
 	_ func(*raglit.WatchHub, string, raglit.TreeRules, func(raglit.Changes)) (func(), error)                                       = (*raglit.WatchHub).Subscribe
 	_ func(*raglit.WatchHub, context.Context, string, func(context.Context) (raglit.TreeResult, error)) (raglit.TreeResult, error) = (*raglit.WatchHub).Index
+	_ func(*raglit.WatchHub)                                                                                                       = (*raglit.WatchHub).Stop
+	_ func(*raglit.WatchHub)                                                                                                       = (*raglit.WatchHub).Wait
 	_ func(*raglit.Store, ...string) error                                                                                         = (*raglit.Store).ClearFailed
 	_ func(error) bool                                                                                                             = raglit.IsTransient
 )
@@ -408,6 +411,7 @@ func TestTreeSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	hub := raglit.NewWatchHub(raglit.WatchOptions{Quiet: 20 * time.Millisecond, MinInterval: -1})
+	defer func() { hub.Stop(); hub.Wait() }()
 	bursts := make(chan raglit.Changes, 4)
 	unsub, err := hub.Subscribe(root, raglit.TreeRules{}, func(c raglit.Changes) { bursts <- c })
 	if err != nil {

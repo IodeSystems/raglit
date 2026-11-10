@@ -343,7 +343,9 @@ func (w *watcher) List() []watchInfo {
 
 // run watches every registered home and directory until ctx is done. Each
 // interval it re-reads the configs (refresh) and polls the owners whose
-// watchers are Degraded.
+// watchers are Degraded. It returns once the hub's watchers, callbacks and
+// index runs have ended, so a caller that waits for run may then close the
+// registry.
 func (w *watcher) run(ctx context.Context) {
 	w.mu.Lock()
 	w.ctx = ctx
@@ -351,12 +353,13 @@ func (w *watcher) run(ctx context.Context) {
 	w.mu.Unlock()
 	defer func() {
 		w.refreshMu.Lock()
-		defer w.refreshMu.Unlock()
 		w.mu.Lock()
 		hub := w.hub
 		w.hub, w.subs = nil, nil
 		w.mu.Unlock()
 		hub.Stop()
+		w.refreshMu.Unlock()
+		hub.Wait() // outside refreshMu: nothing the hub runs may wait on it
 	}()
 	w.refresh()
 	interval := w.interval

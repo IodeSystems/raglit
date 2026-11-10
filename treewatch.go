@@ -7,12 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -84,8 +81,7 @@ type TreeWatcher struct {
 	stopC   chan struct{}
 	done    chan struct{}
 	once    sync.Once
-	loopG   atomic.Uint64 // the loop goroutine's id, which runs fn
-	onStop  func()        // WatchHub's hook, called once when the loop ends
+	onStop  func() // WatchHub's hook, called once when the loop ends
 }
 
 // watchAdd adds one directory watch. A test replaces it to simulate the OS
@@ -147,32 +143,17 @@ func (w *TreeWatcher) Touch() {
 	}
 }
 
-// Stop ends the watcher and waits for it, a callback in progress included,
-// so no callback runs once Stop returns. Stop from inside fn only signals:
-// the watcher ends when fn returns.
+// Stop ends the watcher. It only signals and never waits, so it is safe from
+// inside fn and from a goroutine fn waits on: the watcher ends once a
+// callback in progress returns, and calls fn no more. Wait waits for that.
 func (w *TreeWatcher) Stop() {
 	w.once.Do(func() { close(w.stopC) })
-	if !w.onLoop() {
-		<-w.done
-	}
 }
 
-// onLoop reports whether the caller is the watcher's own goroutine (inside
-// fn or onStop).
-func (w *TreeWatcher) onLoop() bool { return goid() == w.loopG.Load() }
-
-// goid is the calling goroutine's id, from its stack header
-// ("goroutine 123 [running]:"). Only compared with another goid.
-func goid() uint64 {
-	var b [64]byte
-	s := string(b[:runtime.Stack(b[:], false)])
-	s = strings.TrimPrefix(s, "goroutine ")
-	if i := strings.IndexByte(s, ' '); i > 0 {
-		s = s[:i]
-	}
-	id, _ := strconv.ParseUint(s, 10, 64)
-	return id
-}
+// Wait blocks until the watcher has ended (Stop, ctx's end, or Idle) and its
+// callback in progress, if any, has returned. Wait must not be called from
+// inside fn, or from a goroutine fn waits on: it would wait for itself.
+func (w *TreeWatcher) Wait() { <-w.done }
 
 // Root is the watched directory, absolute and clean.
 func (w *TreeWatcher) Root() string { return w.root }
@@ -293,13 +274,12 @@ func (w *TreeWatcher) event(ev fsnotify.Event) []string {
 }
 
 func (w *TreeWatcher) loop(ctx context.Context) {
-	w.loopG.Store(goid())
 	defer func() {
 		_ = w.fw.Close()
-		close(w.done)
 		if w.onStop != nil {
 			w.onStop()
 		}
+		close(w.done)
 	}()
 	o := w.opts
 	pending := map[string]bool{}

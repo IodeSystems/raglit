@@ -18,6 +18,9 @@ type WatchHub struct {
 	life context.Context
 	end  context.CancelFunc
 	runs sync.WaitGroup
+	// watchers counts the watchers the hub started that have not ended (their
+	// loop and callbacks included), for Wait.
+	watchers sync.WaitGroup
 
 	mu      sync.Mutex
 	stopped bool
@@ -36,16 +39,11 @@ type hubRoot struct {
 type hubSub struct {
 	rules TreeRules
 	fn    func(Changes)
-	// mu is held while fn runs; unsubscribe takes it to wait out a call in
-	// progress. dead: unsubscribed, deliver nothing more.
-	mu   sync.Mutex
-	dead atomic.Bool
+	dead  atomic.Bool // unsubscribed: deliver nothing more
 }
 
 // deliver calls fn unless s was unsubscribed.
 func (s *hubSub) deliver(c Changes) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.dead.Load() {
 		s.fn(c)
 	}
@@ -62,10 +60,11 @@ func NewWatchHub(o WatchOptions) *WatchHub {
 // that subscriber's Gitignore setting skip, and each subscriber's Ignore,
 // Include and Skip then filter the paths it is given (a burst left with no
 // paths is not delivered, unless it is a whole-tree or Degraded one). The
-// last unsubscribe stops the watcher. Once unsubscribe returns, fn is not
-// called again (unsubscribe from inside fn returns at once; fn gets no
-// later burst). A watcher that idles out (WatchOptions Idle) drops its
-// subscribers; the next Subscribe starts a new one.
+// last unsubscribe stops the watcher. unsubscribe only signals and never
+// waits, so it is safe from inside fn and from a goroutine fn waits on: once
+// it returns, no new call of fn starts, but a call in progress may still be
+// running (Stop and Wait wait for it). A watcher that idles out (WatchOptions
+// Idle) drops its subscribers; the next Subscribe starts a new one.
 func (h *WatchHub) Subscribe(root string, r TreeRules, fn func(Changes)) (unsubscribe func(), err error) {
 	key, err := filepath.Abs(root)
 	if err != nil {
@@ -80,10 +79,12 @@ func (h *WatchHub) Subscribe(root string, r TreeRules, fn func(Changes)) (unsubs
 	hr := h.roots[key]
 	if hr == nil {
 		hr = &hubRoot{subs: map[int]*hubSub{}}
+		h.watchers.Add(1)
 		w, err := watchTree(context.Background(), key, TreeRules{Gitignore: r.Gitignore}, h.opts,
 			func(c Changes) { h.fanout(key, hr, c) },
-			func() { h.dropRoot(key, hr) })
+			func() { h.dropRoot(key, hr); h.watchers.Done() })
 		if err != nil {
+			h.watchers.Done()
 			return nil, err
 		}
 		hr.w = w
@@ -107,10 +108,6 @@ func (h *WatchHub) Subscribe(root string, r TreeRules, fn func(Changes)) (unsubs
 			h.mu.Unlock()
 			if stop != nil {
 				stop.Stop()
-			}
-			if !hr.w.onLoop() {
-				sub.mu.Lock() // wait out a delivery in progress
-				sub.mu.Unlock()
 			}
 		})
 	}, nil
@@ -180,9 +177,10 @@ func (h *WatchHub) watcher(root string) *TreeWatcher {
 	return nil
 }
 
-// Stop stops every watcher, cancels the index runs in flight and waits for
-// them. Subscriptions end; a later Subscribe or Index fails. Stop must not be
-// called from inside an Index do.
+// Stop stops every watcher and cancels the index runs in flight.
+// Subscriptions end; a later Subscribe or Index fails. Stop only signals and
+// never waits, so it is safe from inside a callback or an Index do; Wait
+// waits.
 func (h *WatchHub) Stop() {
 	h.mu.Lock()
 	h.stopped = true
@@ -196,6 +194,15 @@ func (h *WatchHub) Stop() {
 	for _, w := range ws {
 		w.Stop()
 	}
+}
+
+// Wait blocks until every watcher the hub started has ended, with its
+// callback in progress, and every index run has returned. Call it after
+// Stop; before Stop it waits for watchers to idle out, and must not race a
+// Subscribe. Wait must not be called from inside a callback or an Index do,
+// or from a goroutine one waits on: it would wait for itself.
+func (h *WatchHub) Wait() {
+	h.watchers.Wait()
 	h.runs.Wait()
 }
 

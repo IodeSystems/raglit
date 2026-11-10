@@ -14,7 +14,7 @@ import (
 func TestWatchHubSharesOneWatcher(t *testing.T) {
 	root := t.TempDir()
 	h := NewWatchHub(fastWatch)
-	t.Cleanup(h.Stop)
+	t.Cleanup(func() { h.Stop(); h.Wait() })
 	a, b := newBurstLog(), newBurstLog()
 	ua, err := h.Subscribe(root, TreeRules{Include: []string{"*.md"}}, a.fn)
 	if err != nil {
@@ -112,8 +112,8 @@ func TestWatchHubIndexSingleFlight(t *testing.T) {
 	}
 }
 
-// A waiter that gives up does not cancel the run; Stop does, and waits for
-// it. After Stop, Index fails.
+// A waiter that gives up does not cancel the run; Stop does, and Wait waits
+// for it. After Stop, Index fails.
 func TestWatchHubStopCancelsRuns(t *testing.T) {
 	h := NewWatchHub(WatchOptions{})
 	started := make(chan struct{})
@@ -137,8 +137,9 @@ func TestWatchHubStopCancelsRuns(t *testing.T) {
 		t.Fatal("the waiter's cancel cancelled the run")
 	}
 	h.Stop()
+	h.Wait()
 	if !ended.Load() {
-		t.Fatal("Stop returned before the run ended")
+		t.Fatal("Wait returned before the run ended")
 	}
 	if _, err := h.Index(context.Background(), "root", do); err == nil {
 		t.Error("Index after Stop: want an error")
@@ -148,14 +149,14 @@ func TestWatchHubStopCancelsRuns(t *testing.T) {
 	}
 }
 
-// Once unsubscribe returns, the subscriber gets no callback, even with
-// another subscriber keeping the watcher going.
-func TestWatchHubUnsubscribeWaitsForDelivery(t *testing.T) {
+// unsubscribe only signals: during a delivery it returns at once, the
+// subscriber gets no later callback, even with another subscriber keeping the
+// watcher going, and Stop+Wait waits for the delivery in progress.
+func TestWatchHubUnsubscribeSignals(t *testing.T) {
 	root := t.TempDir()
 	h := NewWatchHub(fastWatch)
-	t.Cleanup(h.Stop)
 	in, release := make(chan struct{}, 10), make(chan struct{})
-	var after atomic.Bool
+	var after, ended atomic.Bool
 	var unsubbed atomic.Bool
 	ua, err := h.Subscribe(root, TreeRules{}, func(Changes) {
 		if unsubbed.Load() {
@@ -163,6 +164,7 @@ func TestWatchHubUnsubscribeWaitsForDelivery(t *testing.T) {
 		}
 		in <- struct{}{}
 		<-release
+		ended.Store(true)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -178,14 +180,73 @@ func TestWatchHubUnsubscribeWaitsForDelivery(t *testing.T) {
 	go func() { ua(); unsubbed.Store(true); close(done) }()
 	select {
 	case <-done:
-		t.Fatal("unsubscribe returned during a delivery")
+	case <-time.After(2 * time.Second):
+		t.Fatal("unsubscribe waited for the delivery")
+	}
+	h.Stop()
+	waited := make(chan struct{})
+	go func() { h.Wait(); close(waited) }()
+	select {
+	case <-waited:
+		t.Fatal("Wait returned during a delivery")
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(release)
-	<-done
-	writeFiles(t, root, map[string]string{"b.md": "b"})
-	time.Sleep(300 * time.Millisecond)
+	<-waited
+	if !ended.Load() {
+		t.Fatal("delivery not finished when Wait returned")
+	}
 	if after.Load() {
 		t.Fatal("callback after unsubscribe returned")
+	}
+}
+
+// The review's deadlock: the callback calls Index synchronously, and the do
+// unsubscribes and stops the watcher. Neither waits, so all of it returns,
+// and Stop+Wait then finishes.
+func TestWatchHubCallbackIndexUnsubscribeNoDeadlock(t *testing.T) {
+	root := t.TempDir()
+	h := NewWatchHub(fastWatch)
+	var unsub func()
+	ready := make(chan struct{})
+	finished := make(chan error, 1)
+	var once sync.Once
+	unsub, err := h.Subscribe(root, TreeRules{}, func(Changes) {
+		<-ready
+		_, err := h.Index(context.Background(), root, func(context.Context) (TreeResult, error) {
+			unsub()
+			if w := h.watcher(root); w != nil {
+				w.Stop()
+			}
+			return TreeResult{}, nil
+		})
+		once.Do(func() { finished <- err })
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := h.watcher(root)
+	close(ready)
+	writeFiles(t, root, map[string]string{"a.md": "a"})
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("Index: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: the callback's Index did not return")
+	}
+	select {
+	case <-w.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watcher did not end")
+	}
+	h.Stop()
+	waited := make(chan struct{})
+	go func() { h.Wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: Wait did not return")
 	}
 }
