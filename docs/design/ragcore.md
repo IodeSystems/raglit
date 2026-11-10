@@ -865,6 +865,25 @@ Investigate before committing to it.
      marked as pending vectors.
 4. **raglitd:** no gating by default. dund turns gating on from its config.
 
+### Decisions (Carl, 2026-11-10), from the v0.9.0 review
+
+1. **Failed sources:** a document error (extract or parse failure,
+   unsupported or unreadable content) is final until the file's bytes
+   change. Only a transient error backs off and retries, starting at 15 min
+   and doubling up to 24 h. Transient means context cancelled or timed out,
+   a dial or connection error, HTTP 5xx, or 429. (i_1m70ksc8309va5ek9cbj81)
+2. **Daemon start:** `IndexTree` skips hashing a file whose size and mtime
+   equal the stored source stat (`RecordSourceStat`). It hashes only files
+   whose stat changed. (i_1m70ktazhfvj4xhrq1d38f)
+3. **Watcher contract:** `TreeWatcher.Stop` and the hub's unsubscribe only
+   signal, and never wait. A new `Wait()` blocks until the watcher, and every
+   callback, has returned. The goroutine-id detection is removed.
+   (i_1m70kt1yb24q9bf2nna9mn)
+4. **Scope:** v0.9.0 is R12e plus R12a. R12g, R12b, R12c, R12d and `NotTags`
+   go in v0.10.0.
+5. **Packing (R12g):** at fragment level, as planned. A packed fragment is
+   still one embedding unit. There is no separate chunk table.
+
 ### R12g. Pack small pieces into fragments of a target size (Carl, 2026-11-09)
 
 Carl asked whether small pieces are merged so that damage is not fickle. The
