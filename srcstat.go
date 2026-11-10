@@ -79,17 +79,33 @@ func fileStamp(path string) (stamp, bool) {
 }
 
 // recordReadStat stores st, the stat of the file whose bytes the document at
-// path now holds. On a branch, a document only the parent holds is not
-// written (no row here); the file is hashed again next pass.
+// path now holds. On a branch, a document only the parent holds has no row
+// here: its stat goes to branch_stats, with the parent's hash it vouches for.
 func (s *Store) recordReadStat(path string, st srcStat) error {
-	_, err := s.db.Exec(`UPDATE documents SET src_size = ?, src_mtime = ?, src_mtime_ns = ? WHERE path IN (?, ?)`,
+	res, err := s.db.Exec(`UPDATE documents SET src_size = ?, src_mtime = ?, src_mtime_ns = ? WHERE path IN (?, ?)`,
 		st.size, st.mtime, st.mtimeNS, path, localSource(path))
+	if err != nil || !s.worktree() {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n > 0 {
+		return err
+	}
+	hash, err := s.DocumentHash(path)
+	if err != nil || hash == "" {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO branch_stats(path, hash, src_size, src_mtime_ns) VALUES (?, ?, ?, ?)
+		ON CONFLICT(path) DO UPDATE SET hash=excluded.hash, src_size=excluded.src_size, src_mtime_ns=excluded.src_mtime_ns`,
+		path, hash, st.size, st.mtimeNS)
 	return err
 }
 
 // readStat is the stat recorded for the document at path by recordReadStat,
-// false when there is none. A branch reads its parent's row for a document it
-// shows from the parent, with the path translated, as DocumentHash does.
+// false when there is none. On a branch, a document it shows from the parent
+// has the stat in branch_stats, valid while the parent's hash is the one it
+// was recorded with. The parent's own row is read only for a path outside
+// both roots, where the parent's file is this file: under the root, the
+// parent's row is the stat of the main checkout's copy.
 func (s *Store) readStat(path string) (srcStat, bool, error) {
 	var st srcStat
 	err := s.db.QueryRow(`SELECT src_size, src_mtime, src_mtime_ns FROM documents WHERE path = ?`, path).
@@ -100,7 +116,23 @@ func (s *Store) readStat(path string) (srcStat, bool, error) {
 			if terr != nil {
 				return srcStat{}, false, terr
 			}
-			if pp, ok := s.toParent(path); ok && !tomb {
+			pp, ok := s.toParent(path)
+			if !ok || tomb {
+				return srcStat{}, false, nil
+			}
+			var hash string
+			berr := s.db.QueryRow(`SELECT hash, src_size, src_mtime_ns FROM branch_stats WHERE path = ?`, path).
+				Scan(&hash, &st.size, &st.mtimeNS)
+			if berr == nil {
+				if now, herr := s.parent.DocumentHash(pp); herr != nil || now != hash {
+					return srcStat{}, false, herr
+				}
+				return st, st.mtimeNS != 0, nil
+			}
+			if !errors.Is(berr, sql.ErrNoRows) {
+				return srcStat{}, false, berr
+			}
+			if pp == path {
 				return s.parent.readStat(pp)
 			}
 		}

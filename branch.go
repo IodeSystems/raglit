@@ -308,7 +308,8 @@ func (s *Store) DeleteDocument(path string) error {
 	// its prepare connects fragments_fts, and FTS5 reads its config then (see
 	// Open). The write then failed with SQLITE_BUSY at once whenever an ingest
 	// worker held the write lock. Tags held for a document that never
-	// committed go with it (the document's own tags went with its row), and the
+	// committed go with it (the document's own tags went with its row), so does
+	// a branch's stat for a document it showed from the parent, and the
 	// tombstone hides a parent's version. The tombstone is harmless on a
 	// non-branch store.
 	return s.writeTx(ctx, func(tx *sql.Conn) error {
@@ -319,6 +320,9 @@ func (s *Store) DeleteDocument(path string) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM pending_tags WHERE path = ?`, path); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM branch_stats WHERE path = ?`, path); err != nil {
 			return err
 		}
 		return gq(tx).InsertTombstone(ctx, path)

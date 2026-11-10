@@ -148,25 +148,61 @@ func TestIndexTreeStatRacy(t *testing.T) {
 	}
 }
 
-// A branch reads its parent's stat through the overlay, with the path
-// translated into the parent's root.
+// A branch reads a file it shows from the parent once: the hash matches, and
+// the worktree copy's stat goes to branch_stats, so the next pass reads none.
+// The parent's row (the main checkout's copy, another mtime) vouches for
+// nothing here. A parent whose bytes change makes the branch read again.
 func TestIndexTreeStatSkipBranch(t *testing.T) {
 	f := newWorktreeFixture(t)
 	b := f.open(t, "wt", f.wtRoot)
 	when := time.Now().Add(-time.Hour)
 	for rel := range worktreeFiles {
 		age(t, when, f.wt(rel))
-		fi, err := os.Stat(f.wt(rel))
-		must(t, err)
-		if _, err := b.parent.db.Exec(`UPDATE documents SET src_size=?, src_mtime_ns=? WHERE path=?`,
-			fi.Size(), fi.ModTime().UnixNano(), f.main(rel)); err != nil {
-			t.Fatal(err)
-		}
 	}
 	scans := countScans(t)
-	wantCounts(t, "identical", indexTree(t, b, f.wtRoot, TreeOptions{}), 0, 3, 0, 0, 0)
+	wantCounts(t, "first", indexTree(t, b, f.wtRoot, TreeOptions{}), 0, 3, 0, 0, 0)
+	if *scans != 3 {
+		t.Errorf("first pass read %d file(s), want 3", *scans)
+	}
+	if own := ownPaths(t, b); len(own) != 0 {
+		t.Errorf("branch gained rows %v, want none", own)
+	}
+	*scans = 0
+	wantCounts(t, "again", indexTree(t, b, f.wtRoot, TreeOptions{}), 0, 3, 0, 0, 0)
 	if *scans != 0 {
-		t.Errorf("branch read %d file(s) whose parent stat matches, want 0", *scans)
+		t.Errorf("second pass read %d file(s), want 0", *scans)
+	}
+	if _, err := b.parent.db.Exec(`UPDATE documents SET content_hash='other' WHERE path=?`, f.main("a.md")); err != nil {
+		t.Fatal(err)
+	}
+	*scans = 0
+	wantCounts(t, "parent changed", indexTree(t, b, f.wtRoot, TreeOptions{}), 1, 2, 0, 0, 0)
+	if *scans != 1 {
+		t.Errorf("after the parent changed, read %d file(s), want 1", *scans)
+	}
+}
+
+// branch_stats is created in an index made before it existed.
+func TestBranchStatsMigratesOldIndex(t *testing.T) {
+	f := newWorktreeFixture(t)
+	home := Home(filepath.Join(f.base, "homes", "wt"))
+	b := f.open(t, "wt", f.wtRoot)
+	must(t, b.Close())
+	db, err := sql.Open("sqlite", home.IndexPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE branch_stats`); err != nil {
+		t.Fatal(err)
+	}
+	must(t, db.Close())
+	b = f.open(t, "wt", f.wtRoot)
+	age(t, time.Now().Add(-time.Hour), f.wt("a.md"))
+	fi, err := os.Stat(f.wt("a.md"))
+	must(t, err)
+	must(t, b.recordReadStat(f.wt("a.md"), statAt(fi, time.Now())))
+	if st, ok, err := b.readStat(f.wt("a.md")); err != nil || !ok || st.size != fi.Size() {
+		t.Errorf("stat after migration = %+v %v %v", st, ok, err)
 	}
 }
 

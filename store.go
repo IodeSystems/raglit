@@ -603,6 +603,16 @@ END;`); err != nil {
 	)`); err != nil {
 		return err
 	}
+	// A branch's stat for a document it shows from its parent (srcstat.go).
+	// Raw SQL, like the tables above.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS branch_stats (
+		path         TEXT PRIMARY KEY,
+		hash         TEXT NOT NULL,
+		src_size     INTEGER NOT NULL,
+		src_mtime_ns INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
 	// Files whose last ingest failed, with the hash of the bytes that failed
 	// (failedsources.go). Raw SQL, like the tables above.
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS failed_sources (
