@@ -513,6 +513,9 @@ func migrate(db *sql.DB) error {
 		// Documents tree. 0 is unknown: a URL, an upload, or a file gone.
 		{"documents", "src_size", "INTEGER NOT NULL DEFAULT 0"},
 		{"documents", "src_mtime", "INTEGER NOT NULL DEFAULT 0"},
+		// The modified time (ns) of the bytes last read, for IndexTree's stat
+		// skip (srcstat.go). 0 is "hash it".
+		{"documents", "src_mtime_ns", "INTEGER NOT NULL DEFAULT 0"},
 		// Caller-owned tags (tags.go). An index that predates the column has no
 		// caller tags, which is what '' says.
 		{"documents", "tags", "TEXT NOT NULL DEFAULT ''"},

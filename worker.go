@@ -102,6 +102,11 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 	// its own, and a tally that carries over blames the wrong document.
 	w.Retries.Take()
 	w.applyStoredEmbedLimit()
+	// The source's stat, taken BEFORE its bytes are read: a write during the
+	// ingest then leaves a stat that differs, and IndexTree hashes the file
+	// again (srcstat.go).
+	statURL := job.URL
+	pre, havePre := localStat(statURL)
 	n, mode, ierr := w.ingest(ctx, job, sl)
 	// Recorded LAST, so it covers the whole job, and on the failure path too —
 	// a job that died after forty minutes of backpressure is exactly the one
@@ -141,9 +146,15 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 		return w.Store.failJob(job.ID, ierr.Error())
 	}
 	w.Store.clearFailedSource(job.URL)
-	// The Documents tree's size and date (srcstat.go). Best-effort: a stat that
-	// fails leaves the document's size unknown, not the job failed.
-	_ = w.Store.RecordSourceStat(job.URL)
+	// The Documents tree's size and date, and IndexTree's stat skip
+	// (srcstat.go). Best-effort: a stat that fails leaves the document's size
+	// unknown, not the job failed. A job re-pointed to another path
+	// (reconcileMissingSource) gets a stat that does not vouch for its bytes.
+	if havePre && job.URL == statURL {
+		_ = w.Store.recordReadStat(job.URL, pre)
+	} else {
+		_ = w.Store.RecordSourceStat(job.URL)
+	}
 	return w.Store.completeJob(job.ID, n, mode)
 }
 

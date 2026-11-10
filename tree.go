@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Tree indexing (R10a): bring an index in step with a directory tree in one
@@ -60,6 +61,13 @@ type TreeOptions struct {
 	// Removed. For roots that overlap in one index, each with its own rules:
 	// Keep is "another root selects it".
 	Keep func(path string) bool
+	// Verify hashes every file. By default a file whose size and modified
+	// time (ns) equal the stat recorded when its bytes were last read is
+	// Current without being read (srcstat.go). The trade-off: a change that
+	// keeps both the size and the mtime (a tool that restores the mtime, a
+	// clock set back) is missed until the stat changes or a Verify pass. A
+	// file modified within 2 s of its stat is always hashed.
+	Verify bool
 }
 
 // TreeResult counts what IndexTree did per file. Errors are per-file
@@ -371,6 +379,9 @@ func treeSkipsBytes(path string, sc fileScan) bool {
 	return IsOpaque(sc.head) || sc.longest >= minifiedLineBytes
 }
 
+// treeScanHook, when set (tests), is called with each file IndexTree reads.
+var treeScanHook func(path string)
+
 // fileScanHead is how many leading bytes a fileScan keeps: more than
 // http.DetectContentType (512) and SniffBytes look at.
 const fileScanHead = 8 << 10
@@ -467,6 +478,19 @@ func indexTreeFiles(ctx context.Context, st *Store, root string, scopes []string
 			keep[f] = true
 			continue
 		}
+		now := statAt(fi, time.Now())
+		if !o.Verify {
+			if was, ok, _ := st.readStat(key); ok && was.size == now.size && was.mtimeNS == now.mtimeNS {
+				if prev, _ := st.DocumentHash(key); prev != "" {
+					res.Current++
+					keep[f] = true
+					continue
+				}
+			}
+		}
+		if treeScanHook != nil {
+			treeScanHook(f)
+		}
 		sc, err := scanFile(f)
 		if err != nil {
 			res.Errors = append(res.Errors, err)
@@ -475,6 +499,8 @@ func indexTreeFiles(ctx context.Context, st *Store, root string, scopes []string
 		}
 		hash := sc.hash
 		if prev, _ := st.DocumentHash(key); prev != "" && prev == hash {
+			// The bytes were read and match: the stat vouches for them now.
+			_ = st.recordReadStat(key, now)
 			res.Current++
 			keep[f] = true
 			continue
