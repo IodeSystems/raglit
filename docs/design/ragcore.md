@@ -872,6 +872,9 @@ Investigate before committing to it.
    change. Only a transient error backs off and retries, starting at 15 min
    and doubling up to 24 h. Transient means context cancelled or timed out,
    a dial or connection error, HTTP 5xx, or 429. (i_1m70ksc8309va5ek9cbj81)
+   Amended after review: 401, 403, 404 and 408 are also transient, because
+   they describe the endpoint (key, model, URL), not the document. 400 and 413
+   stay final. (i_1m73h5bee9xdr2ey4fxts1)
 2. **Daemon start:** `IndexTree` skips hashing a file whose size and mtime
    equal the stored source stat (`RecordSourceStat`). It hashes only files
    whose stat changed. (i_1m70ktazhfvj4xhrq1d38f)

@@ -34,7 +34,18 @@ func withStatus(status int, err error) error {
 	return &httpStatusError{status: status, err: err}
 }
 
-func transientStatus(code int) bool { return code == 429 || code >= 500 && code <= 599 }
+// transientStatus: 5xx and 429 (load), and 401, 403, 404 and 408 (Carl
+// 2026-11-10, i_1m73h5bee9xdr2ey4fxts1): a bad key, a wrong model or URL, or a
+// request timeout describe the endpoint, not the document, so the files an
+// operator ingests while it is misconfigured are retried once it is fixed. A
+// 400 or 413 stays final: it is the document's input.
+func transientStatus(code int) bool {
+	switch code {
+	case 401, 403, 404, 408, 429:
+		return true
+	}
+	return code >= 500 && code <= 599
+}
 
 // agentkit's llm client reports a status in text only: "llm: status 503",
 // "llm: tokenize <url>: status 502", "llm: retry budget 5m exhausted after 5m
@@ -42,9 +53,9 @@ func transientStatus(code int) bool { return code == 429 || code >= 500 && code 
 var llmStatusRE = regexp.MustCompile(`llm: [^\n]*?status (\d{3})\b`)
 
 // IsTransient reports whether err is a failure outside the document: the
-// context cancelled or timed out, a dial or connection error, an HTTP 5xx or
-// 429 from a model or fetch endpoint, or a spent model budget (402, which
-// refills). A document error (extract or parse failure, unsupported or
+// context cancelled or timed out, a dial or connection error, an HTTP 5xx,
+// 429, 401, 403, 404 or 408 from a model or fetch endpoint, or a spent model
+// budget (402, which refills). A document error (extract or parse failure, unsupported or
 // unreadable content) is not transient.
 func IsTransient(err error) bool {
 	if err == nil {
