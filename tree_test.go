@@ -132,6 +132,29 @@ func TestIndexTreeFailedNotRequeued(t *testing.T) {
 	wantCounts(t, "changed", indexTree(t, s, root, TreeOptions{}), 1, 1, 0, 0, 0)
 }
 
+// A file that changed while its ingest ran (still being copied in) records no
+// failure: the hash taken after the ingest is of bytes the worker never read,
+// and recording it final would leave the finished file Failed for good.
+func TestFailedSourceChangedDuringIngest(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"a.md": "alpha token"})
+	s := treeStore(t)
+	p := filepath.Join(root, "a.md")
+	w := &Worker{Store: s, Fetcher: func(context.Context, string) (Fetched, error) {
+		writeFiles(t, root, map[string]string{"a.md": "alpha token text, the rest of the copy"})
+		return Fetched{}, errors.New("raglit: parse: truncated")
+	}}
+	indexTree(t, s, root, TreeOptions{})
+	if _, err := w.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM failed_sources WHERE path=?`, p).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("failed_sources rows=%d err=%v, want 0", n, err)
+	}
+	wantCounts(t, "finished copy", indexTree(t, s, root, TreeOptions{}), 1, 0, 0, 0, 0)
+}
+
 // ClearFailed forgets a final failure, for one path or for all, so the same
 // bytes are queued again.
 func TestClearFailed(t *testing.T) {

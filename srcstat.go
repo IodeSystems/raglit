@@ -60,6 +60,24 @@ func localStat(path string) (srcStat, bool) {
 	return statAt(fi, time.Now()), true
 }
 
+// stamp is a file's size and full modified time (ns), with no racy-window
+// rule: it tells whether the file changed between two stats.
+type stamp struct{ size, mtimeNS int64 }
+
+// fileStamp is the stamp of the regular file behind a document path or job
+// url; the zero stamp and false for a URL, an upload, or a file not there.
+func fileStamp(path string) (stamp, bool) {
+	local := localSource(path)
+	if local == "" {
+		return stamp{}, false
+	}
+	fi, err := os.Stat(local)
+	if err != nil || !fi.Mode().IsRegular() {
+		return stamp{}, false
+	}
+	return stamp{fi.Size(), fi.ModTime().UnixNano()}, true
+}
+
 // recordReadStat stores st, the stat of the file whose bytes the document at
 // path now holds. On a branch, a document only the parent holds is not
 // written (no row here); the file is hashed again next pass.

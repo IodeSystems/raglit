@@ -107,6 +107,7 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 	// again (srcstat.go).
 	statURL := job.URL
 	pre, havePre := localStat(statURL)
+	preStamp, _ := fileStamp(statURL)
 	n, mode, ierr := w.ingest(ctx, job, sl)
 	// Recorded LAST, so it covers the whole job, and on the failure path too —
 	// a job that died after forty minutes of backpressure is exactly the one
@@ -141,8 +142,15 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 		}
 		// IndexTree does not queue these bytes again: a document error is final
 		// until they change, a transient one (IsTransient: an endpoint down, slow
-		// or refusing for load) waits out a backoff (failedsources.go).
-		w.Store.recordFailedSource(job.URL, sourceHash(job.URL), ierr.Error(), failKind(ierr))
+		// or refusing for load) waits out a backoff (failedsources.go). The hash
+		// is taken now, after the ingest, so it is of the bytes that failed only
+		// when the file did not change since the stat before the read. A file
+		// that did (still being copied in, written during the ingest) records
+		// nothing: the bytes that failed are gone, and IndexTree queues the new
+		// ones.
+		if post, _ := fileStamp(job.URL); job.URL != statURL || post == preStamp {
+			w.Store.recordFailedSource(job.URL, sourceHash(job.URL), ierr.Error(), failKind(ierr))
+		}
 		return w.Store.failJob(job.ID, ierr.Error())
 	}
 	w.Store.clearFailedSource(job.URL)
