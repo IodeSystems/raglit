@@ -238,7 +238,7 @@ func (e *PaddleEngine) OCRPage(ctx context.Context, img PageImage) (PageOCR, err
 		return PageOCR{}, fmt.Errorf("paddle: read body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return PageOCR{}, fmt.Errorf("paddle: sidecar status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return PageOCR{}, withStatus(resp.StatusCode, fmt.Errorf("paddle: sidecar status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
 	}
 	var pr paddleResponse
 	if err := json.Unmarshal(body, &pr); err != nil {

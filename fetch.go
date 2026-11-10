@@ -105,7 +105,7 @@ func fetchHTTP(ctx context.Context, rawURL string) (Fetched, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Fetched{}, fmt.Errorf("raglit: fetch %s: status %d", rawURL, resp.StatusCode)
+		return Fetched{}, withStatus(resp.StatusCode, fmt.Errorf("raglit: fetch %s: status %d", rawURL, resp.StatusCode))
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
 	if err != nil {

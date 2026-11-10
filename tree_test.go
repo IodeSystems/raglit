@@ -3,13 +3,18 @@ package raglit
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/iodesystems/agentkit/llm"
 	_ "modernc.org/sqlite"
 )
 
@@ -118,8 +123,30 @@ func TestIndexTreeFailedNotRequeued(t *testing.T) {
 	// A touch is not a change.
 	must(t, os.Chtimes(filepath.Join(root, "bad.pdf"), time.Now(), time.Now()))
 	wantCounts(t, "touched", indexTree(t, s, root, TreeOptions{}), 0, 1, 0, 1, 0)
+	// A document error is final: no backoff ever passes on the same bytes.
+	if _, err := s.db.Exec(`UPDATE failed_sources SET at=?`, time.Now().Add(-10*failRetryMax).UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	wantCounts(t, "long after", indexTree(t, s, root, TreeOptions{}), 0, 1, 0, 1, 0)
 	writeFiles(t, root, map[string]string{"bad.pdf": "still not a pdf, other bytes"})
 	wantCounts(t, "changed", indexTree(t, s, root, TreeOptions{}), 1, 1, 0, 0, 0)
+}
+
+// ClearFailed forgets a final failure, for one path or for all, so the same
+// bytes are queued again.
+func TestClearFailed(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"a.pdf": "not a pdf a", "b.pdf": "not a pdf b"})
+	s := treeStore(t)
+	indexTree(t, s, root, TreeOptions{})
+	drainStore(t, s)
+	wantCounts(t, "failed", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 2, 0)
+	must(t, s.ClearFailed("file://"+filepath.Join(root, "a.pdf")))
+	wantCounts(t, "one cleared", indexTree(t, s, root, TreeOptions{}), 1, 0, 0, 1, 0)
+	drainStore(t, s)
+	wantCounts(t, "failed again", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 2, 0)
+	must(t, s.ClearFailed())
+	wantCounts(t, "all cleared", indexTree(t, s, root, TreeOptions{}), 2, 0, 0, 0, 0)
 }
 
 // Paths checks only the paths named; a path that is gone is Removed.
@@ -214,7 +241,7 @@ func TestFailedSourcesMigratesOldIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	s.recordFailedSource("/x.md", "h", "boom")
+	s.recordFailedSource("/x.md", "h", "boom", failTransient)
 	if !s.failedOn("h", "/x.md") {
 		t.Error("failure not recorded after migration")
 	}
@@ -236,37 +263,89 @@ func TestIndexTreeOversizeKeepsDocument(t *testing.T) {
 	wantCounts(t, "no limit", indexTree(t, s, root, TreeOptions{Rules: TreeRules{MaxBytes: -1}}), 1, 0, 0, 0, 0)
 }
 
-// A failure is retried once its backoff passes, and the backoff doubles with
-// each failure on the same bytes: a transient outage does not lose the file.
+// A transient failure (an endpoint's 5xx, a timeout) is retried once its
+// backoff passes and not before, and the backoff doubles with each failure on
+// the same bytes: an outage does not lose the file.
 func TestIndexTreeFailedRetriedAfterBackoff(t *testing.T) {
-	root := t.TempDir()
-	writeFiles(t, root, map[string]string{"bad.pdf": "this is not a pdf"})
-	s := treeStore(t)
-	p := filepath.Join(root, "bad.pdf")
-	indexTree(t, s, root, TreeOptions{})
-	drainStore(t, s)
-	wantCounts(t, "fresh failure", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 1, 0)
-	age := func(d time.Duration) {
-		t.Helper()
-		if _, err := s.db.Exec(`UPDATE failed_sources SET at=? WHERE path=?`, time.Now().Add(-d).UnixNano(), p); err != nil {
-			t.Fatal(err)
-		}
+	for name, cause := range map[string]error{
+		"5xx":     withStatus(503, errors.New("raglit: fetch: status 503")),
+		"timeout": fmt.Errorf("raglit: embed: %w", context.DeadlineExceeded),
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{"a.md": "alpha token text"})
+			s := treeStore(t)
+			p := filepath.Join(root, "a.md")
+			w := &Worker{Store: s, Fetcher: func(context.Context, string) (Fetched, error) { return Fetched{}, cause }}
+			drain := func() {
+				t.Helper()
+				if _, err := w.Drain(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			indexTree(t, s, root, TreeOptions{})
+			drain()
+			var kind string
+			if err := s.db.QueryRow(`SELECT kind FROM failed_sources WHERE path=?`, p).Scan(&kind); err != nil || kind != failTransient {
+				t.Fatalf("kind=%q err=%v, want %q", kind, err, failTransient)
+			}
+			wantCounts(t, "fresh failure", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 1, 0)
+			age := func(d time.Duration) {
+				t.Helper()
+				if _, err := s.db.Exec(`UPDATE failed_sources SET at=? WHERE path=?`, time.Now().Add(-d).UnixNano(), p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			age(failRetryBase - time.Minute)
+			wantCounts(t, "inside backoff", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 1, 0)
+			age(failRetryBase + time.Minute)
+			wantCounts(t, "backoff passed", indexTree(t, s, root, TreeOptions{}), 1, 0, 0, 0, 0)
+			drain()
+			var attempts int
+			if err := s.db.QueryRow(`SELECT attempts FROM failed_sources WHERE path=?`, p).Scan(&attempts); err != nil || attempts != 2 {
+				t.Fatalf("attempts=%d err=%v, want 2", attempts, err)
+			}
+			age(failRetryBase + time.Minute) // past one backoff, inside the doubled one
+			wantCounts(t, "doubled", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 1, 0)
+			age(2*failRetryBase + time.Minute)
+			wantCounts(t, "doubled passed", indexTree(t, s, root, TreeOptions{}), 1, 0, 0, 0, 0)
+		})
 	}
-	age(failRetryBase + time.Minute)
-	wantCounts(t, "backoff passed", indexTree(t, s, root, TreeOptions{}), 1, 0, 0, 0, 0)
-	drainStore(t, s)
-	var attempts int
-	if err := s.db.QueryRow(`SELECT attempts FROM failed_sources WHERE path=?`, p).Scan(&attempts); err != nil || attempts != 2 {
-		t.Fatalf("attempts=%d err=%v, want 2", attempts, err)
-	}
-	age(failRetryBase + time.Minute) // past one backoff, inside the doubled one
-	wantCounts(t, "doubled", indexTree(t, s, root, TreeOptions{}), 0, 0, 0, 1, 0)
 	if failBackoff(1) != failRetryBase || failBackoff(2) != 2*failRetryBase || failBackoff(100) != failRetryMax {
 		t.Errorf("backoff 1=%v 2=%v 100=%v", failBackoff(1), failBackoff(2), failBackoff(100))
 	}
 }
 
-// failed_sources made before attempts existed gains the column.
+// IsTransient tells an endpoint or transport failure from a document's own.
+func TestIsTransient(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{context.Canceled, true},
+		{fmt.Errorf("x: %w", context.DeadlineExceeded), true},
+		{&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, true},
+		{fmt.Errorf("read: %w", syscall.ECONNRESET), true},
+		{withStatus(503, errors.New("raglit: stt: 503 Service Unavailable")), true},
+		{withStatus(429, errors.New("raglit: nomic-vision: 429")), true},
+		{withStatus(404, errors.New("raglit: fetch: status 404")), false},
+		{errors.New("llm: status 502: bad gateway"), true},
+		{errors.New("embed: llm: status 500 (after 4 retries): boom"), true},
+		{errors.New("llm: status 400: bad request"), false},
+		{errors.New("llm: retry budget 5m0s exhausted after 5m0s (last status 503)"), true},
+		{&llm.BudgetSpentError{Status: 402}, true},
+		{errors.New("pdftotext: exit status 1: Syntax Error"), false},
+		{errors.New("raglit: a.bin has no text or image representation to index"), false},
+	} {
+		if got := IsTransient(c.err); got != c.want {
+			t.Errorf("IsTransient(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
+
+// failed_sources made before attempts and kind existed gains the columns; an
+// old row is transient.
 func TestFailedSourcesMigratesAttempts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.sqlite")
 	s, err := Open(path)
@@ -296,7 +375,11 @@ func TestFailedSourcesMigratesAttempts(t *testing.T) {
 	if s.failedOn("h", "/x.md") {
 		t.Error("an old failure from 1970 is still inside its backoff")
 	}
-	s.recordFailedSource("/x.md", "h", "boom")
+	var kind string
+	if err := s.db.QueryRow(`SELECT kind FROM failed_sources WHERE path='/x.md'`).Scan(&kind); err != nil || kind != failTransient {
+		t.Errorf("old row kind=%q err=%v, want %q", kind, err, failTransient)
+	}
+	s.recordFailedSource("/x.md", "h", "boom", failTransient)
 	var attempts int
 	if err := s.db.QueryRow(`SELECT attempts FROM failed_sources WHERE path='/x.md'`).Scan(&attempts); err != nil || attempts != 2 {
 		t.Errorf("attempts=%d err=%v, want 2", attempts, err)

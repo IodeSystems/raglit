@@ -22,9 +22,11 @@ import (
 // the built-in ignores), plus a size limit and an up-front refusal of the
 // bytes the worker would refuse anyway (binary, minified). A file is Current
 // when its stored hash equals the hash of its bytes, Queued when it is new or
-// changed, Failed when its last ingest failed on these same bytes and its
-// retry backoff (failedsources.go) has not passed, and a
-// document under the root that is no longer selected is Removed.
+// changed, Failed when its last ingest failed on these same bytes and is not
+// to be retried yet (failedsources.go: a document error until the bytes
+// change, a transient one until its backoff passes; Store.ClearFailed
+// forgets both), and a document under the root that is no longer selected is
+// Removed.
 
 // TreeRules choose the files of a tree. IndexTree and WatchTree share them.
 type TreeRules struct {

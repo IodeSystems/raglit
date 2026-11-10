@@ -272,10 +272,10 @@ func (s *STT) transcribeOnce(ctx context.Context, name string, data []byte) (_ *
 		return nil, 0, 0, fmt.Errorf("raglit: stt: reading response: %w", err)
 	}
 	if wait := retryableAfter(resp.StatusCode, raw, resp.Header.Get("Retry-After"), s.GatewayBackoff); wait > 0 {
-		return nil, wait, resp.StatusCode, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
+		return nil, wait, resp.StatusCode, withStatus(resp.StatusCode, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw)))))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, 0, resp.StatusCode, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw))))
+		return nil, 0, resp.StatusCode, withStatus(resp.StatusCode, fmt.Errorf("raglit: stt: %s: %s", resp.Status, strings.TrimSpace(truncateForError(string(raw)))))
 	}
 	var out sttResponse
 	if err := json.Unmarshal(raw, &out); err != nil {

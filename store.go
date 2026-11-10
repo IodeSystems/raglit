@@ -607,7 +607,8 @@ END;`); err != nil {
 		hash  TEXT NOT NULL,
 		at    INTEGER NOT NULL,
 		error TEXT NOT NULL DEFAULT '',
-		attempts INTEGER NOT NULL DEFAULT 1
+		attempts INTEGER NOT NULL DEFAULT 1,
+		kind  TEXT NOT NULL DEFAULT 'transient'
 	)`); err != nil {
 		return err
 	}
@@ -615,6 +616,15 @@ END;`); err != nil {
 		return err
 	} else if !has {
 		if _, err := db.Exec(`ALTER TABLE failed_sources ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
+	// The failure's kind (failedsources.go). A row from before the column was
+	// recorded when no failure was final: transient.
+	if has, err := hasColumn(db, "failed_sources", "kind"); err != nil {
+		return err
+	} else if !has {
+		if _, err := db.Exec(`ALTER TABLE failed_sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'transient'`); err != nil {
 			return err
 		}
 	}

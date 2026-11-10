@@ -94,7 +94,7 @@ func (e *NomicVisionEmbedder) EmbedImage(ctx context.Context, mime string, data 
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("raglit: nomic-vision: %s: %s", resp.Status, bytes.TrimSpace(rb))
+		return nil, withStatus(resp.StatusCode, fmt.Errorf("raglit: nomic-vision: %s: %s", resp.Status, bytes.TrimSpace(rb)))
 	}
 	v, err := parseImageEmbedding(rb)
 	if err != nil {

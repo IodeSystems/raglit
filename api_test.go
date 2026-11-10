@@ -92,6 +92,8 @@ var (
 	_ func(raglit.WatchOptions) *raglit.WatchHub                                                                                   = raglit.NewWatchHub
 	_ func(*raglit.WatchHub, string, raglit.TreeRules, func(raglit.Changes)) (func(), error)                                       = (*raglit.WatchHub).Subscribe
 	_ func(*raglit.WatchHub, context.Context, string, func(context.Context) (raglit.TreeResult, error)) (raglit.TreeResult, error) = (*raglit.WatchHub).Index
+	_ func(*raglit.Store, ...string) error                                                                                         = (*raglit.Store).ClearFailed
+	_ func(error) bool                                                                                                             = raglit.IsTransient
 )
 
 // Types dund constructs or reads, named field by field so a rename fails here.

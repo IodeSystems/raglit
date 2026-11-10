@@ -134,9 +134,10 @@ func (w *Worker) ProcessJob(ctx context.Context, job *Job) error {
 				return nil
 			}
 		}
-		// IndexTree does not queue these bytes again until they change or a
-		// backoff passes (failedsources.go).
-		w.Store.recordFailedSource(job.URL, sourceHash(job.URL), ierr.Error())
+		// IndexTree does not queue these bytes again: a document error is final
+		// until they change, a transient one (IsTransient: an endpoint down, slow
+		// or refusing for load) waits out a backoff (failedsources.go).
+		w.Store.recordFailedSource(job.URL, sourceHash(job.URL), ierr.Error(), failKind(ierr))
 		return w.Store.failJob(job.ID, ierr.Error())
 	}
 	w.Store.clearFailedSource(job.URL)
