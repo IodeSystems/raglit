@@ -55,6 +55,8 @@ github.com/iodesystems/openai-claude-api-shim v0.5.0 h1:jXVz48LGnJ/fB9uf4GTM9JiP
 github.com/iodesystems/openai-claude-api-shim v0.5.0/go.mod h1:AyPLwyzGcME+wU6ggxHvDj8s0tek7NFx/vbZHhog0nM=
 github.com/iodesystems/poly-lsp-mcp v0.5.0 h1:bX3a8coU1E3Hj+aW8lCF8J2zxtZn4NRpFjvNigpk4Mw=
 github.com/iodesystems/poly-lsp-mcp v0.5.0/go.mod h1:27DJGTICYayBVJ+8073yhSz+lqisOQpRG2gnRlYQL/o=
+github.com/iodesystems/poly-lsp-mcp v0.5.1 h1:mk+ORl695YQXq2XQQHlxp/0/KU9/r7LcjkAaF38Ykdo=
+github.com/iodesystems/poly-lsp-mcp v0.5.1/go.mod h1:27DJGTICYayBVJ+8073yhSz+lqisOQpRG2gnRlYQL/o=
 github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0 h1:Hs4F5H+x/KWuX9N0/K1rQ812xYz8f4E+luXk1KtJQ4o=
 github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0/go.mod h1:wrk1YFVXQlFNMUsrBcn9sCWUiey1i4EdEMhR47+BU7I=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
