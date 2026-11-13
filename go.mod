@@ -10,7 +10,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/iodesystems/agentkit v0.25.0
 	github.com/iodesystems/gwag/v2 v2.11.0
-	github.com/iodesystems/poly-lsp-mcp v0.5.0
+	github.com/iodesystems/poly-lsp-mcp v0.5.1
 	github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0
 	github.com/mark3labs/mcp-go v1.5.0
 	github.com/pdfcpu/pdfcpu v0.16.4
