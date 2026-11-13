@@ -49,6 +49,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/iodesystems/agentkit v0.25.0 h1:SjP/4CyiSW2lf+sDgiWN6UNnYlBLu82qFxw4cCjyUSs=
 github.com/iodesystems/agentkit v0.25.0/go.mod h1:QknznlQRmU0Ywotk64RrZVAYKH+8HBw4Uhfg2HdQ8As=
+github.com/iodesystems/agentkit v0.29.0 h1:4pUfyq0SaFLb9aMi3ijyFd7bH96BPrYhpFtzfXmkPMs=
+github.com/iodesystems/agentkit v0.29.0/go.mod h1:QknznlQRmU0Ywotk64RrZVAYKH+8HBw4Uhfg2HdQ8As=
 github.com/iodesystems/gwag/v2 v2.11.0 h1:iKCeD+4n7sXDkdUnJRzZrPicc3mv/IjSbeuNa7oP24E=
 github.com/iodesystems/gwag/v2 v2.11.0/go.mod h1:SWXgRoavRjPPEiUUF3bxJ9KA/FKTeIZQR8KRTSSTUi4=
 github.com/iodesystems/openai-claude-api-shim v0.5.0 h1:jXVz48LGnJ/fB9uf4GTM9JiPL06d1IaQx6nQoovZ+ug=

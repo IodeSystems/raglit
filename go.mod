@@ -8,7 +8,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-jose/go-jose/v4 v4.1.9
-	github.com/iodesystems/agentkit v0.25.0
+	github.com/iodesystems/agentkit v0.29.0
 	github.com/iodesystems/gwag/v2 v2.11.0
 	github.com/iodesystems/poly-lsp-mcp v0.5.0
 	github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0
