@@ -18,7 +18,7 @@ require (
 	github.com/spf13/pflag v1.1.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.48.0
-	golang.org/x/oauth2 v0.37.0
+	golang.org/x/oauth2 v0.38.0
 	golang.org/x/text v0.44.0
 	modernc.org/sqlite v1.62.0
 )
