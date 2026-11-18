@@ -642,3 +642,19 @@ func daemonStatusPrint(base, index string) error {
 	renderStatus(st)
 	return nil
 }
+
+// daemonLiveStatusPrint prints the daemon's live status (GET /api/status) as
+// JSON, as the daemon sent it. index "" is every index the token may read.
+func daemonLiveStatusPrint(base, index string) error {
+	q := url.Values{}
+	if index != "" {
+		q.Set("index", index)
+	}
+	b, err := daemonGet(base, "/api/status", q)
+	if err != nil {
+		return err
+	}
+	os.Stdout.Write(bytes.TrimRight(b, "\n"))
+	fmt.Println()
+	return nil
+}

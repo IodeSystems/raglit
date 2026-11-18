@@ -317,6 +317,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("pageLayout", http.MethodGet, "/api/page-layout", "One page's layout blocks, raw transcription and indexed text."), pageLayoutOp(reg))
 	gat.Register(api, g, op("listIndexes", http.MethodGet, "/indexes", "List indexes with doc/fragment counts."), listIndexes(reg))
 	gat.Register(api, g, op("status", http.MethodGet, "/status", "Index + ingest-queue status (aggregate or one index)."), statusOp(reg))
+	gat.Register(api, g, op("liveStatus", http.MethodGet, "/api/status", "Live status per index the caller may read (state, queue, embed counters) and the daemon's version and embed backend."), liveStatusOp(reg, lf))
 	gat.Register(api, g, op("getFields", http.MethodGet, "/api/fields", "One document's extracted fields — its document type's schema, filled out."), getFieldsOp(reg))
 	gat.Register(api, g, op("listDocTypes", http.MethodGet, "/api/doc-types", "The index's registered document types: what a schemaed document of this corpus looks like."), listDocTypesOp(reg))
 	gat.Register(api, g, op("listProjects", http.MethodGet, "/api/projects", "Indexes grouped by the project namespace they carry, with branch lineage and watch state."), listProjectsOp(reg, watch))

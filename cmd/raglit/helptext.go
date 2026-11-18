@@ -32,7 +32,12 @@ raglit watch [start|list|stop]
               --mode: hybrid (default where the index has embeddings, else
               bm25) | bm25 (exact words) | vec (meaning). Each hit shows
               "sim" (cosine) and "N/M terms" (query words it contains).`},
-		{"status", "indexes and queue progress", `raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)`},
+		{"status", "indexes and queue progress", `raglit status [--home DIR]                 index + queue status (done/pending/rate/eta)
+raglit status --json [--all]                live status as JSON: per index state
+              (embedding|ingesting|backed-off|error|idle), queue, files,
+              chunks, last-minute and since-start embed counters, last error;
+              and the daemon's version and embed backend. --all: every index
+              the token may read, no --project needed.`},
 		{"index", "--list | NAME CMD — list indexes, or work on one", `raglit index --list [--json]
               every index: documents, state, scopes, and ✓ where a search from
               here with no --index reads it. --json: the daemon's fields per

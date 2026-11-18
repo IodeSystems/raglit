@@ -199,9 +199,27 @@ func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	homeOf, index := addHomeFlags(fs)
 	client := addClientFlags(fs) // --daemon + --project
+	asJSON := fs.Bool("json", false, "print the daemon's live status as JSON (GET /api/status)")
+	all := fs.Bool("all", false, "every index this token may read; no --project needed")
 	fs.Parse(args)
 	dURL, ns, err := client(homeOf)
+	if *all {
+		// No project: the daemon filters to what the token may read.
+		if dURL == "" {
+			return err
+		}
+		if *asJSON {
+			return daemonLiveStatusPrint(dURL, "")
+		}
+		return daemonStatusPrint(dURL, "")
+	}
+	if err == nil && *asJSON {
+		return daemonLiveStatusPrint(dURL, nsReadSelector(ns, projectShared(homeOf), *index))
+	}
 	if err != nil {
+		if *asJSON {
+			return err // JSON or nothing: the directory listing is for people
+		}
 		// No project to resolve. Show what EXISTS instead of only naming a file to
 		// edit — this is the command people run to find out where they are.
 		return printIndexDirectory(err)
