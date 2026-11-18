@@ -194,12 +194,20 @@ func (r *Registry) canReadAsOwner(ctx context.Context, name string) bool {
 }
 
 // layerReadable applies read to ONE layer: public, or owned by p, or owned by
-// a key under p (an ancestor reads its children's branches), or — for a
-// session key — readable by the key's issuer, which is what the key stands in
-// for.
+// a key under p (an ancestor reads its children's branches), or owned by a
+// key p issued, at any depth of child keys (a principal such as dun reads its
+// sessions' branches; Carl 2026-11-17), or — for a session key — readable by
+// the key's issuer, which is what the key stands in for.
+//
+// The issued-by rule applies to the CALLER only (depth 0). Through the
+// issuer step it would let a session key read every sibling key's branches,
+// since they share an issuer.
 func (r *Registry) layerReadable(ks *KeyStore, p, name string, depth int) bool {
 	a := r.ACLOf(name)
 	if a.Visibility == Public || a.Owner == p || ks.IsAncestor(p, a.Owner) {
+		return true
+	}
+	if depth == 0 && ks.IssuedBy(p, a.Owner) {
 		return true
 	}
 	if k, ok := ks.ByPrincipal(p); ok && depth < 8 {

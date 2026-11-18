@@ -359,6 +359,21 @@ func (ks *KeyStore) issuedUnder(by, id string) bool {
 	return false
 }
 
+// IssuedBy reports whether key principal owner ("key#<id>") was issued by p,
+// directly or through any number of child keys: the key itself or a key
+// above it names p as its issuer. Revocation is not checked: what a revoked
+// key wrote stays owned by it, and its issuer may still read that.
+func (ks *KeyStore) IssuedBy(p, owner string) bool {
+	if ks == nil || p == "" {
+		return false
+	}
+	id, ok := strings.CutPrefix(owner, KeyPrincipalPrefix)
+	if !ok {
+		return false
+	}
+	return ks.issuedUnder(p, id)
+}
+
 // Flush writes any pending last-use times.
 func (ks *KeyStore) Flush() error {
 	ks.mu.Lock()
