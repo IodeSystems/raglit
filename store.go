@@ -129,6 +129,8 @@ type Store struct {
 	// missing caches MissingCount (prune.go): counting stats every document,
 	// and status is polled.
 	missing missingCache
+	// act is the in-process counters LiveStatus reads (livestatus.go).
+	act activity
 }
 
 // SetAuthorityResolver supplies the person's ruling about which reading of a
@@ -840,7 +842,7 @@ func (s *Store) Ingest(ctx context.Context, doc Document) error {
 		for i, f := range frags {
 			texts[i] = f.text
 		}
-		vecs, _, _, err := embedMisses(ctx, emb, texts, have)
+		vecs, _, _, err := embedMisses(s.withActivity(ctx), emb, texts, have)
 		if err != nil {
 			return fmt.Errorf("raglit: embed fragments: %w", err)
 		}
@@ -1158,7 +1160,7 @@ func (s *Store) VecSearchFiltered(ctx context.Context, query string, f SearchFil
 	if limit <= 0 {
 		limit = 10
 	}
-	qv, err := emb.EmbedQuery(ctx, query)
+	qv, err := emb.EmbedQuery(s.withActivity(ctx), query)
 	if err != nil {
 		return nil, err
 	}

@@ -144,7 +144,7 @@ func (s *Store) embedReusing(ctx context.Context, emb *Embedder, texts []string)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	return embedMisses(ctx, emb, texts, have)
+	return embedMisses(s.withActivity(ctx), emb, texts, have)
 }
 
 func textKeys(texts []string) []string {

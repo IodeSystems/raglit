@@ -125,7 +125,7 @@ func (s *Store) embedMedia(ctx context.Context, emb *Embedder, media []stagedMed
 	for j, i := range descIdx {
 		texts[j] = media[i].description
 	}
-	vecs, err := emb.EmbedDocs(ctx, texts)
+	vecs, err := emb.EmbedDocs(s.withActivity(ctx), texts)
 	if err != nil {
 		return // best-effort
 	}
@@ -171,7 +171,7 @@ func (s *Store) SearchFiguresPath(ctx context.Context, query, pathPrefix string,
 	if limit <= 0 {
 		limit = 10
 	}
-	qv, err := emb.EmbedQuery(ctx, query)
+	qv, err := emb.EmbedQuery(s.withActivity(ctx), query)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func (s *Store) SearchFiguresOwnLayer(ctx context.Context, query, pathPrefix str
 	if limit <= 0 {
 		limit = 10
 	}
-	qv, err := emb.EmbedQuery(ctx, query)
+	qv, err := emb.EmbedQuery(s.withActivity(ctx), query)
 	if err != nil {
 		return nil, err
 	}

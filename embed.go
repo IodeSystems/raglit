@@ -106,7 +106,9 @@ func (e *Embedder) EmbedDocs(ctx context.Context, texts []string) ([][]float32, 
 			n += len(in[end])
 			end++
 		}
+		done := embedBegin(ctx)
 		vecs, err := e.Client.Embed(ctx, e.Model, in[start:end])
+		done(n)
 		if err != nil {
 			return nil, err
 		}
@@ -121,7 +123,10 @@ func (e *Embedder) EmbedDocs(ctx context.Context, texts []string) ([][]float32, 
 
 // EmbedQuery embeds a search query (QueryPrefix), normalized.
 func (e *Embedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	vecs, err := e.Client.Embed(ctx, e.Model, []string{e.QueryPrefix + text})
+	q := e.QueryPrefix + text
+	done := embedBegin(ctx)
+	vecs, err := e.Client.Embed(ctx, e.Model, []string{q})
+	done(len(q))
 	if err != nil {
 		return nil, err
 	}

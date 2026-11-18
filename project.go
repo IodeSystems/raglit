@@ -259,7 +259,7 @@ func (s *Store) SearchOwnLayer(ctx context.Context, query, mode, pathPrefix stri
 		if emb == nil {
 			return nil, fmt.Errorf("raglit: vector search needs an embedder (SetEmbedder)")
 		}
-		qv, err := emb.EmbedQuery(ctx, query)
+		qv, err := emb.EmbedQuery(s.withActivity(ctx), query)
 		if err != nil {
 			return nil, err
 		}

@@ -266,7 +266,7 @@ func (s *Store) backfill(ctx context.Context, st *embedStamp, batch int, reuse b
 	if reuse {
 		vecs, _, _, err = s.embedReusing(ctx, emb, texts)
 	} else {
-		vecs, err = emb.EmbedDocs(ctx, texts)
+		vecs, err = emb.EmbedDocs(s.withActivity(ctx), texts)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("raglit: re-embed: %w", err)
