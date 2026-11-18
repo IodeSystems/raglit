@@ -427,3 +427,18 @@ func (r *Registry) TransferOwnership(ctx context.Context, name, to string) error
 	a.Owner = to
 	return writeACL(r.indexHome(name), a)
 }
+
+// AnyUnreadable reports whether an index among names exists that the caller
+// may not read. It says nothing about which, how many, or what kind. False
+// with access control off, and for the admin, who reads every index.
+func (r *Registry) AnyUnreadable(ctx context.Context, names []string) bool {
+	if !r.ACLEnabled() || r.IsAdmin(ctx) {
+		return false
+	}
+	for _, n := range names {
+		if r.cachedOrExists(n) && !r.CanRead(ctx, n) {
+			return true
+		}
+	}
+	return false
+}

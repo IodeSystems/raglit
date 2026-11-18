@@ -12,6 +12,7 @@ import (
 
 type liveBody struct {
 	Version   string             `json:"version"`
+	Partial   *bool              `json:"partial"`
 	StartedAt string             `json:"started_at"`
 	Embed     liveEmbed          `json:"embed"`
 	Indexes   []raglit.IndexLive `json:"indexes"`

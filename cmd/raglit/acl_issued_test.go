@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/iodesystems/raglit"
 	"github.com/iodesystems/raglit/client"
 )
 
@@ -133,3 +135,63 @@ func TestStatusCmd_JSONAllAsPrincipal(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// partial says the daemon left something out under --all, and nothing more:
+// false for the admin, true for dun while the admin's private t__default
+// exists, false for a caller that reads every index there is.
+func TestLiveStatus_Partial(t *testing.T) {
+	f := newACLFixture(t)
+	partial := func(base, tok, q string) (bool, string) {
+		t.Helper()
+		code, b := doAs(t, "GET", base+"/api/status"+q, tok, "")
+		if code != http.StatusOK {
+			t.Fatalf("/api/status: %d %s", code, b)
+		}
+		var lb liveBody
+		if err := json.Unmarshal([]byte(b), &lb); err != nil {
+			t.Fatal(err)
+		}
+		if lb.Partial == nil {
+			t.Fatalf("partial missing: %s", b)
+		}
+		return *lb.Partial, b
+	}
+	if p, b := partial(f.base, testToken, ""); p {
+		t.Errorf("admin: partial true: %s", b)
+	}
+	p, b := partial(f.base, f.dun, "")
+	if !p {
+		t.Errorf("dun: partial false with t__default hidden: %s", b)
+	}
+	if strings.Contains(b, "t__default") {
+		t.Errorf("the hidden index is named: %s", b)
+	}
+	if p, _ := partial(f.base, f.dun, "?index=t__sessions@s1"); p {
+		t.Error("partial true for a selector")
+	}
+
+	// A daemon where every index is public: a principal reads them all.
+	base, reg, _ := testDaemon(t)
+	testIndex(t, reg)
+	admin := raglit.WithPrincipal(context.Background(), reg.Admin())
+	for _, n := range reg.Names() {
+		if _, err := reg.Existing(n); err == nil {
+			if err := reg.SetVisibility(admin, n, raglit.Public); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	code, mb := doAs(t, "POST", base+"/api/keys", testToken, `{"principal":"reader"}`)
+	if code != http.StatusOK {
+		t.Fatalf("mint: %d %s", code, mb)
+	}
+	var m struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(mb), &m); err != nil {
+		t.Fatal(err)
+	}
+	if p, b := partial(base, m.Token, ""); p || !strings.Contains(b, "t__default") {
+		t.Errorf("a caller that reads every index: partial %v: %s", p, b)
+	}
+}

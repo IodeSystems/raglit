@@ -43,7 +43,12 @@ type liveEmbed struct {
 
 type liveStatusOut struct {
 	Body struct {
-		Version   string             `json:"version"`
+		Version string `json:"version"`
+		// Partial is true when, with no index selector (--all), the daemon
+		// left out at least one index the caller may not read. It names none
+		// and counts none. Always false for the admin, and for a selector:
+		// saying a named index was hidden would say that it exists.
+		Partial   bool               `json:"partial"`
 		StartedAt string             `json:"started_at"` // RFC3339; the embed totals count from here
 		Embed     liveEmbed          `json:"embed"`
 		Indexes   []raglit.IndexLive `json:"indexes"`
@@ -70,8 +75,12 @@ func liveStatusOp(reg *raglit.Registry, lf *llmFlags) func(context.Context, *liv
 		}
 		out.Body.Embed = embedSummary(lf, chans)
 
+		selected := selectIndexes(ctx, reg, in.Index)
+		if strings.TrimSpace(in.Index) == "" {
+			out.Body.Partial = reg.AnyUnreadable(ctx, selected)
+		}
 		seen := map[string]bool{}
-		for _, name := range reg.Readable(ctx, selectIndexes(ctx, reg, in.Index)) {
+		for _, name := range reg.Readable(ctx, selected) {
 			if seen[name] {
 				continue
 			}
