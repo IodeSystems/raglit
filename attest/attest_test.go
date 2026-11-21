@@ -347,6 +347,46 @@ func TestSidecarRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteReadingRefusesGitTree(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	asset := filepath.Join(sub, "notes.md")
+	if root := GitRoot(sub); root != repo {
+		t.Fatalf("GitRoot(%s) = %q, want %q", sub, root, repo)
+	}
+	out, err := WriteReading(asset, &Reading{Units: []Unit{turn(0, 1, "A", "x")}})
+	if err == nil {
+		t.Fatalf("wrote into a git tree: %s", out)
+	}
+	if !strings.Contains(err.Error(), repo) || !strings.Contains(err.Error(), ReadingPath(asset)) {
+		t.Errorf("refusal must name the git root and the would-be sidecar: %v", err)
+	}
+	if _, err := os.Stat(ReadingPath(asset)); !os.IsNotExist(err) {
+		t.Errorf("sidecar must not exist after a refusal: %v", err)
+	}
+}
+
+func TestWriteReadingUnchangedOutsideGit(t *testing.T) {
+	dir := t.TempDir()
+	asset := filepath.Join(dir, "sheet.pdf")
+	if root := GitRoot(dir); root != "" {
+		t.Fatalf("temp dir is not in a git tree: got %q", root)
+	}
+	out, err := WriteReading(asset, &Reading{Units: []Unit{turn(0, 1, "A", "x")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != ReadingPath(asset) {
+		t.Errorf("sidecar path = %q, want %q", out, ReadingPath(asset))
+	}
+}
+
 func TestRefusesToReadItsOwnOutput(t *testing.T) {
 	dir := t.TempDir()
 	asset := filepath.Join(dir, "survey.pdf")

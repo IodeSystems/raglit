@@ -350,10 +350,34 @@ func ReadReading(assetPath string) (*Reading, bool, error) {
 // a separate file and are keyed by content, so the ones that still apply
 // survive and the ones that do not are reported as orphaned rather than
 // silently re-attached to a claim nobody ruled on.
+// GitRoot is the root of the git working tree containing dir: the nearest
+// directory at or above dir that holds a .git entry, or "" when there is
+// none. A .git file (a linked worktree) counts as a work tree root for its
+// own folder, so the walk stops there.
+func GitRoot(dir string) string {
+	for d := dir; ; d = filepath.Dir(d) {
+		if fi, err := os.Stat(filepath.Join(d, ".git")); err == nil && (fi.IsDir() || fi.Mode().IsRegular()) {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return ""
+		}
+	}
+}
+
 func WriteReading(assetPath string, r *Reading) (string, error) {
 	if IsReading(assetPath) || IsLog(assetPath) {
 		return "", fmt.Errorf("attest: %s is attest's own output; refusing to record a reading for it",
 			filepath.Base(assetPath))
+	}
+	// A sidecar beside the document is a stray untracked file inside a code
+	// repo — a sweep over an indexed checkout would litter it. Refuse, and
+	// name where the reading would have gone so the caller can say what it
+	// skipped and why.
+	if root := GitRoot(filepath.Dir(assetPath)); root != "" {
+		return "", fmt.Errorf("attest: %s is inside the git working tree %s; refusing to write %s",
+			filepath.Dir(assetPath), root, ReadingPath(assetPath))
 	}
 	if err := r.Seal(); err != nil {
 		return "", err
