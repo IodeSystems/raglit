@@ -152,6 +152,10 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 					"{index, queued, job_ids, ignored, missing} instead of one job")),
 			mcp.WithString("index", mcp.Description("target index (default \"default\")")),
 			mcp.WithString("title", mcp.Description("optional document title")),
+			mcp.WithBoolean("explain", mcp.Description(
+				"pre-flight: report what the ingest WOULD do (kind, lane, fragmenter, "+
+					"embedder, identity, index, doc identity, hash short-circuit) without "+
+					"writing anything")),
 		),
 		h.ingest,
 	)

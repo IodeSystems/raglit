@@ -83,7 +83,7 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 				r := batchResult{Index: nsStrip(ns, idx), JobIDs: []int64{}, Missing: missing}
 				if len(targets) > 0 {
 					b, err := daemonPostJSON(base, "/ingest", map[string]any{
-						"targets": targets, "index": idx, "title": req.GetString("title", ""), "scope": cv.claim,
+						"targets": targets, "index": idx, "title": req.GetString("title", ""), "scope": cv.claim, "explain": req.GetBool("explain", false),
 					})
 					if err != nil {
 						return mcp.NewToolResultErrorFromErr("ingest", err), nil
@@ -102,7 +102,7 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 				return batchText(r), nil
 			}
 			b, err := daemonPostJSON(base, "/ingest", map[string]any{
-				"targets": []string{u}, "index": idx, "title": req.GetString("title", ""), "scope": cv.claim,
+				"targets": []string{u}, "index": idx, "title": req.GetString("title", ""), "scope": cv.claim, "explain": req.GetBool("explain", false),
 			})
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("ingest", err), nil

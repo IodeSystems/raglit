@@ -65,7 +65,7 @@ func newMCPDaemon(t *testing.T) *mcpDaemon {
 		t.Fatal(err)
 	}
 	w := newWatcher(reg, root, 0)
-	h, err := buildGatHandler(reg, lf, raglit.Home(root), 8, pool, raglit.GCPolicy{}, w)
+	h, err := buildGatHandler(reg, lf, raglit.Home(root), 8, pool, raglit.GCPolicy{}, w, ingestFragParams{})
 	if err != nil {
 		t.Fatal(err)
 	}

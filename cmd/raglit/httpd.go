@@ -197,7 +197,7 @@ func runHttpd(subcmd string, args []string) error {
 		return err
 	}
 	adminTokenPath = tokenPath
-	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, gcPol, watch)
+	handler, err := buildGatHandler(reg, lf, cfgHome, *defLimit, pool, gcPol, watch, ingestFragParams{Window: runCfg.FragWindow, Stride: runCfg.FragStride, Floor: runCfg.FragFloor, EmbedLimit: runCfg.EmbedLimitChars})
 	if err != nil {
 		return err
 	}
@@ -298,7 +298,7 @@ func openDaemonRegistry(homeFlag, rootFlag string) (*raglit.Registry, raglit.Hom
 
 // buildGatHandler wires the chi router: humachi API + gat gateway (all JSON
 // operations), then the two plain routes (HTML UI at /, binary page-image).
-func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int, pool *raglit.Pool, defGC raglit.GCPolicy, watch *watcher) (http.Handler, error) {
+func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLimit int, pool *raglit.Pool, defGC raglit.GCPolicy, watch *watcher, fp ingestFragParams) (http.Handler, error) {
 	router := chi.NewRouter()
 	// Before any route: chi refuses middleware added after the first one.
 	router.Use(docPathMiddleware(reg))
@@ -325,7 +325,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("modelChannels", http.MethodGet, "/api/channels", "Per-model admission channels: the learned width, what is in flight, and how much backpressure taught it."), modelChannelsOp(lf))
 	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
 	gat.Register(api, g, op("searchFigures", http.MethodGet, "/search-figures", "Semantic search over figures (MCP search_figures)."), searchFiguresOp(reg, defLimit))
-	gat.Register(api, g, op("ingest", http.MethodPost, "/ingest", "Queue targets for lazy ingestion."), ingestOp(reg))
+	gat.Register(api, g, op("ingest", http.MethodPost, "/ingest", "Queue targets for lazy ingestion."), ingestOp(reg, fp))
 	gat.Register(api, g, op("syncProject", http.MethodPost, "/api/sync", "Bring a project's configured indexes in step with their roots: queue new and changed files, remove documents whose files are gone."), syncOp(reg))
 	uploadOperation := op("upload", http.MethodPost, "/api/upload", "Ingest a document sent in the request (text or base64), stored in the index's own home.")
 	uploadOperation.MaxBodyBytes = uploadMaxBytes
@@ -927,6 +927,9 @@ type ingestIn struct {
 		// Scope is the client's project directory: an index whose scopes
 		// were never set takes it (raglit/indexscope.go).
 		Scope string `json:"scope,omitempty"`
+		// Explain is a pre-flight report: compute every decision the real
+		// ingest would make and write nothing.
+		Explain bool `json:"explain,omitempty"`
 	}
 }
 type ingestOut struct {
@@ -936,10 +939,18 @@ type ingestOut struct {
 		// Ignored counts targets an ignore pattern refused (index Controls).
 		Ignored int    `json:"ignored,omitempty"`
 		Index   string `json:"index"`
+		// Explain carries the pre-flight reports when the explain flag is set.
+		Explain []raglit.ExplainReport `json:"explain,omitempty"`
 	}
 }
 
-func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut, error) {
+// ingestFragParams carries the resolved fragment parameters from the daemon's
+// config so explain can report what the real ingest would use.
+type ingestFragParams struct {
+	Window, Stride, Floor, EmbedLimit int
+}
+
+func ingestOp(reg *raglit.Registry, fp ingestFragParams) func(context.Context, *ingestIn) (*ingestOut, error) {
 	return func(ctx context.Context, in *ingestIn) (*ingestOut, error) {
 		if err := requireHostPaths(ctx, reg, in.Body.Targets); err != nil {
 			return nil, err
@@ -949,6 +960,28 @@ func ingestOp(reg *raglit.Registry) func(context.Context, *ingestIn) (*ingestOut
 		idx := in.Body.Index
 		if idx == "" {
 			idx = in.Index
+		}
+		// Explain: pre-flight report, writes nothing. Branch before writeIdx
+		// (which creates the index) so the tree is left exactly as it was found.
+		if in.Body.Explain {
+			st, err := reg.Existing(idx)
+			if err != nil {
+				// Index doesn't exist yet — that's fine: explain reports a fresh
+				// document into a new index.
+				st = nil
+			}
+			out := &ingestOut{}
+			out.Body.Index = defaultIndexName(idx)
+			reports := make([]raglit.ExplainReport, 0, len(in.Body.Targets))
+			for _, t := range in.Body.Targets {
+				rep, err := raglit.Explain(ctx, reg, st, raglit.ExplainInput{URL: t, Index: out.Body.Index, Window: fp.Window, Stride: fp.Stride, Floor: fp.Floor, EmbedLimit: fp.EmbedLimit})
+				if err != nil {
+					return nil, huma.Error500InternalServerError("explain", err)
+				}
+				reports = append(reports, *rep)
+			}
+			out.Body.Explain = reports
+			return out, nil
 		}
 		st, err := writeIdx(ctx, reg, idx)
 		if err != nil {

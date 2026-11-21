@@ -45,7 +45,7 @@ func gatTestServer(t *testing.T) (*httptest.Server, *raglit.Registry) {
 	lf := addLLMFlags(fs)
 	_ = fs.Parse(nil)
 	lf.resolve(home)
-	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{}, nil)
+	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{}, nil, ingestFragParams{})
 	if err != nil {
 		t.Fatalf("buildGatHandler: %v", err)
 	}

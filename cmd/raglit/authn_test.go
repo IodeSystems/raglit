@@ -186,7 +186,7 @@ func authTestServerWith(t *testing.T, web bool) (*httptest.Server, *fakeIssuer, 
 	lf := addLLMFlags(fs)
 	_ = fs.Parse(nil)
 	lf.resolve(raglit.Home(root))
-	h, err := buildGatHandler(reg, lf, raglit.Home(root), 8, nil, raglit.GCPolicy{}, nil)
+	h, err := buildGatHandler(reg, lf, raglit.Home(root), 8, nil, raglit.GCPolicy{}, nil, ingestFragParams{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -81,6 +81,7 @@ func runIngest(args []string) error {
 	fs.BoolVar(wait, "now", false, "old name of --wait")
 	_ = fs.MarkHidden("now")
 	fresh := fs.Bool("fresh", false, "re-read even if unchanged: skip the unchanged-bytes check AND the cross-index pool")
+	explain := fs.Bool("explain", false, "pre-flight report: compute every decision the real ingest would make and write nothing")
 	name := fs.String("name", "", "with --text-file: the document's name in the index (slash-separated)")
 	textFile := fs.String("text-file", "", "ingest this file's text as document --name, sent to the daemon (- reads stdin)")
 	identityFile := fs.String("identity", "", `with --text-file: a JSON file {"name","summary","kind"} recorded as the document's caption (gen_source "supplied"; no model call)`)
@@ -108,7 +109,7 @@ func runIngest(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := daemonIngest(dURL, targets, idx, *title, *fresh, projectDirOf(homeOf())); err != nil {
+		if err := daemonIngest(dURL, targets, idx, *title, *fresh, projectDirOf(homeOf()), *explain); err != nil {
 			return err
 		}
 	}
