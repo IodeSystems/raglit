@@ -329,8 +329,11 @@ func Open(path string) (*Store, error) {
 	// busy_timeout rides the same DSN, and for a related reason: the daemon now
 	// has more than one writer in the same index — the ingest worker and the
 	// captioning worker — and a writer that arrives while another holds the lock
-	// gets SQLITE_BUSY immediately unless told to wait. Ten seconds is far past
-	// any write here, all of which are short.
+	// gets SQLITE_BUSY immediately unless told to wait. Thirty seconds is far
+	// past any write here, all of which are short — a holder is only that long
+	// on the lock when the OS deschedules it under parallel load (the whole
+	// suite's tests running at once), and the stress tests at the tail of the
+	// package are exactly that.
 	//
 	// _txlock=immediate makes every db.Begin a BEGIN IMMEDIATE, which takes the
 	// write lock first and waits for it under busy_timeout. A deferred BEGIN
@@ -347,7 +350,7 @@ func Open(path string) (*Store, error) {
 	if strings.Contains(dsn, "?") {
 		sep = "&"
 	}
-	dsn += sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_txlock=immediate"
+	dsn += sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(30000)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
