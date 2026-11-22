@@ -173,3 +173,34 @@ func TestTagMergeProposal_RecordIsIdempotentPerPair(t *testing.T) {
 		t.Errorf("status = %q, want the existing 'rejected' kept", all[0].Status)
 	}
 }
+
+// TestTagMergeProposal_RecordEmptySlice: an empty proposal list is a no-op
+// that returns nil without touching the database.
+func TestTagMergeProposal_RecordEmptySlice(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	ctx := context.Background()
+
+	ids, err := s.RecordTagMergeProposals(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids != nil {
+		t.Errorf("RecordTagMergeProposals(nil) = %v, want nil", ids)
+	}
+
+	ids, err = s.RecordTagMergeProposals(ctx, []TagMergeProposal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids != nil {
+		t.Errorf("RecordTagMergeProposals(empty) = %v, want nil", ids)
+	}
+
+	all, err := s.ListTagMergeProposals(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Errorf("proposals after empty record = %d, want 0", len(all))
+	}
+}
