@@ -466,8 +466,8 @@ func addSharedFlag(fs *flag.FlagSet) func() []string {
 
 // daemonIngest queues targets. scope is the client's project directory (or
 // ""): an index whose scopes were never set takes it.
-func daemonIngest(base string, targets []string, index, title string, fresh bool, scope string, explain bool) error {
-	body, _ := json.Marshal(map[string]any{"targets": targets, "index": index, "title": title, "fresh": fresh, "scope": scope, "explain": explain})
+func daemonIngest(base string, targets []string, index, title string, fresh, explain, analyze bool, scope string) error {
+	body, _ := json.Marshal(map[string]any{"targets": targets, "index": index, "title": title, "fresh": fresh, "scope": scope, "explain": explain, "analyze": analyze})
 	resp, err := http.Post(strings.TrimRight(base, "/")+"/ingest", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err

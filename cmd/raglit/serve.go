@@ -156,6 +156,11 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 				"pre-flight: report what the ingest WOULD do (kind, lane, fragmenter, "+
 					"embedder, identity, index, doc identity, hash short-circuit) without "+
 					"writing anything")),
+			mcp.WithBoolean("analyze", mcp.Description(
+				"post-hoc: dump what is already STORED for the target — fragments as "+
+					"stored (text, ord, page, page_spans, origin) plus the identity "+
+					"caption/summary and the origin='identity' fragment. The target must "+
+					"be in the index. Mutually exclusive with explain")),
 		),
 		h.ingest,
 	)

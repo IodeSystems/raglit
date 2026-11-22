@@ -64,7 +64,7 @@ func runDemo(args []string) error {
 	fmt.Printf("raglit demo — %d docs into a throwaway daemon at %s\n\n", len(urls), base)
 
 	// LAZY: queue everything at once (instant); the daemon's worker drains it.
-	if err := daemonIngest(base, urls, index, "", false, "", false); err != nil {
+	if err := daemonIngest(base, urls, index, "", false, false, false, ""); err != nil {
 		return err
 	}
 	fmt.Print("\nworking the queue (status as it changes):\n\n")

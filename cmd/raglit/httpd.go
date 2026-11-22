@@ -930,6 +930,11 @@ type ingestIn struct {
 		// Explain is a pre-flight report: compute every decision the real
 		// ingest would make and write nothing.
 		Explain bool `json:"explain,omitempty"`
+		// Analyze is the post-hoc question: dump what is already STORED for
+		// each target (fragments as stored, identity caption/summary, the
+		// origin='identity' fragment). Read-only; an error when a target is not
+		// in the index.
+		Analyze bool `json:"analyze,omitempty"`
 	}
 }
 type ingestOut struct {
@@ -941,6 +946,8 @@ type ingestOut struct {
 		Index   string `json:"index"`
 		// Explain carries the pre-flight reports when the explain flag is set.
 		Explain []raglit.ExplainReport `json:"explain,omitempty"`
+		// Analyze carries the post-hoc dumps when the analyze flag is set.
+		Analyze []raglit.AnalyzeReport `json:"analyze,omitempty"`
 	}
 }
 
@@ -981,6 +988,29 @@ func ingestOp(reg *raglit.Registry, fp ingestFragParams) func(context.Context, *
 				reports = append(reports, *rep)
 			}
 			out.Body.Explain = reports
+			return out, nil
+		}
+		// Analyze: post-hoc dump of what is already stored. The index must
+		// exist — there is nothing to read about a document not in it — so
+		// branch after writeIdx (which creates it on demand) and before
+		// EnqueueFresh (which queues work). Read-only: it dumps, it writes no
+		// job and no fragment.
+		if in.Body.Analyze {
+			st, err := writeIdx(ctx, reg, idx)
+			if err != nil {
+				return nil, err
+			}
+			out := &ingestOut{}
+			out.Body.Index = defaultIndexName(idx)
+			reports := make([]raglit.AnalyzeReport, 0, len(in.Body.Targets))
+			for _, t := range in.Body.Targets {
+				rep, err := raglit.Analyze(ctx, st, t)
+				if err != nil {
+					return nil, huma.Error500InternalServerError("analyze", err)
+				}
+				reports = append(reports, *rep)
+			}
+			out.Body.Analyze = reports
 			return out, nil
 		}
 		st, err := writeIdx(ctx, reg, idx)

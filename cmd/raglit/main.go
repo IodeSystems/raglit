@@ -129,7 +129,7 @@ func runIndex(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := daemonIngest(t.base, files, t.index, "", false, projectDirOf(t.home), false); err != nil {
+	if err := daemonIngest(t.base, files, t.index, "", false, false, false, projectDirOf(t.home)); err != nil {
 		return err
 	}
 	return waitForQueue(t.base, t.index)

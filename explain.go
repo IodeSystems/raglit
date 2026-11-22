@@ -3,7 +3,9 @@ package raglit
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -212,4 +214,94 @@ func (r *Registry) HasEmbedder() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.embedder != nil
+}
+
+// AnalyzeFragment is one fragment of a stored document, exactly as stored:
+// what BM25 will actually rank.
+type AnalyzeFragment struct {
+	Page      int        `json:"page"`
+	Ord       int        `json:"ord"`
+	Text      string     `json:"text"`
+	PageSpans []PageSpan `json:"page_spans,omitempty"`
+	Origin    string     `json:"origin,omitempty"`
+}
+
+// AnalyzeReport is the post-hoc dump of what is already stored for a document:
+// its fragments as stored, plus the identity caption and summary, with the
+// origin='identity' fragment identified.
+type AnalyzeReport struct {
+	// DocIdentity is the document path under which it is stored.
+	DocIdentity string `json:"doc_identity"`
+	// Title is the stored document title.
+	Title string `json:"title,omitempty"`
+	// FragMode / FragRecipe are the stored fragmentation mode and recipe.
+	FragMode   string `json:"frag_mode,omitempty"`
+	FragRecipe string `json:"frag_recipe,omitempty"`
+	// Fragments are the document's OWN words as stored (origin '' and
+	// 'described'), in page/ord order.
+	Fragments []AnalyzeFragment `json:"fragments"`
+	// Identity is the stored caption/summary record, empty when the document
+	// has none.
+	Identity DocIdentity `json:"identity,omitempty"`
+	// IdentityFragment is the origin='identity' fragment, when one exists —
+	// the caption+summary indexed as one fragment so it is searchable.
+	IdentityFragment *AnalyzeFragment `json:"identity_fragment,omitempty"`
+	// IdentityEmbedded reports whether the identity fragment carries a vector.
+	// It is deliberately false: identity fragments are not embedded (the
+	// open question is settled by measuring on a corpus, not by argument).
+	IdentityEmbedded bool `json:"identity_embedded"`
+}
+
+// Analyze dumps what is already stored for a document in an index: its
+// fragments as stored (text, ord, page, page_spans, origin) and its identity
+// caption/summary, identifying the origin='identity' fragment. It reads via
+// Store.ExportDoc (which returns the document's own words + the identity
+// record, and deliberately excludes the identity fragment) and reads that
+// fragment's row separately. It writes nothing.
+//
+// It is an error when the document is not in the index.
+func Analyze(ctx context.Context, st *Store, path string) (*AnalyzeReport, error) {
+	doc, err := st.ExportDoc(path)
+	if err != nil {
+		return nil, err
+	}
+	rep := &AnalyzeReport{
+		DocIdentity: path,
+		Title:       doc.Title,
+		FragMode:    doc.FragMode,
+		FragRecipe:  doc.FragRecipe,
+	}
+	for _, f := range doc.Fragments {
+		rep.Fragments = append(rep.Fragments, AnalyzeFragment{
+			Page: f.Page, Ord: f.Ord, Text: f.Text,
+			PageSpans: f.PageSpans, Origin: f.Origin,
+		})
+	}
+	if doc.Identity != nil {
+		rep.Identity = *doc.Identity
+	}
+
+	// ExportDoc filters out the identity fragment (SQLOwnWordsF), so read the
+	// one row directly: the document's caption+summary, indexed so a query for
+	// it can rank the document.
+	var page, ord int64
+	var text, spans, origin string
+	var vec []byte
+	row := st.db.QueryRowContext(ctx,
+		`SELECT f.page, f.ord, f.text, f.page_spans, f.origin, COALESCE(fv.vec, x'')
+		   FROM fragments f LEFT JOIN fragment_vectors fv ON fv.fragment_id = f.id
+		  WHERE f.doc_id = (SELECT id FROM documents WHERE path=?) AND f.origin=?`,
+		path, fragOriginIdentity)
+	if err := row.Scan(&page, &ord, &text, &spans, &origin, &vec); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return rep, nil // no identity fragment: the report above is complete
+		}
+		return nil, err
+	}
+	rep.IdentityFragment = &AnalyzeFragment{
+		Page: int(page), Ord: int(ord), Text: text,
+		PageSpans: DecodePageSpans(spans), Origin: origin,
+	}
+	rep.IdentityEmbedded = len(vec) > 0
+	return rep, nil
 }

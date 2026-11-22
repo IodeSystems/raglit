@@ -82,6 +82,7 @@ func runIngest(args []string) error {
 	_ = fs.MarkHidden("now")
 	fresh := fs.Bool("fresh", false, "re-read even if unchanged: skip the unchanged-bytes check AND the cross-index pool")
 	explain := fs.Bool("explain", false, "pre-flight report: compute every decision the real ingest would make and write nothing")
+	analyze := fs.Bool("analyze", false, "post-hoc dump of what is already STORED for the target: fragments as stored (text, ord, page, page_spans, origin) plus the identity caption/summary and the origin='identity' fragment; the target must be in the index")
 	name := fs.String("name", "", "with --text-file: the document's name in the index (slash-separated)")
 	textFile := fs.String("text-file", "", "ingest this file's text as document --name, sent to the daemon (- reads stdin)")
 	identityFile := fs.String("identity", "", `with --text-file: a JSON file {"name","summary","kind"} recorded as the document's caption (gen_source "supplied"; no model call)`)
@@ -102,6 +103,9 @@ func runIngest(args []string) error {
 		if *identityFile != "" || *name != "" {
 			return fmt.Errorf("ingest: --name and --identity go with --text-file")
 		}
+		if *explain && *analyze {
+			return fmt.Errorf("ingest: --explain and --analyze are mutually exclusive (one asks what would happen, the other what is stored)")
+		}
 		if fs.NArg() == 0 {
 			return fmt.Errorf("ingest: nothing given (a folder, file, file://<path>, or http(s)://..., or --text-file)")
 		}
@@ -109,7 +113,7 @@ func runIngest(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := daemonIngest(dURL, targets, idx, *title, *fresh, projectDirOf(homeOf()), *explain); err != nil {
+		if err := daemonIngest(dURL, targets, idx, *title, *fresh, *explain, *analyze, projectDirOf(homeOf())); err != nil {
 			return err
 		}
 	}
