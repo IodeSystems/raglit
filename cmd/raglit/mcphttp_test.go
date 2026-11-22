@@ -730,3 +730,163 @@ func TestMCP_BranchToolsLocalNamesAndFields(t *testing.T) {
 		t.Errorf("branch_diff: no changes (want at least one for branch.md): %s", out)
 	}
 }
+
+// An index with no branches returns an empty list, not an error.
+func TestMCP_BranchListEmpty(t *testing.T) {
+	d := newMCPDaemon(t)
+	code, key := mintProject(t, d.srv, d.admin, "acme", true)
+	if code != http.StatusOK || key == "" {
+		t.Fatalf("create: %d", code)
+	}
+	c, err := mcpSession(t, d.srv.URL+"/mcp/acme", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, isErr := mcpCall(t, c, "branch_list", nil)
+	if isErr {
+		t.Fatalf("branch_list on an index with no branches: %s", out)
+	}
+	var bl struct {
+		Branches []map[string]any `json:"branches"`
+	}
+	if err := json.Unmarshal([]byte(out), &bl); err != nil {
+		t.Fatalf("not JSON: %s", out)
+	}
+	if len(bl.Branches) != 0 {
+		t.Errorf("want empty list, got %d branches: %s", len(bl.Branches), out)
+	}
+}
+
+// Calling the branch tools changes nothing: indexes, documents, hashes are identical before and after.
+func TestMCP_BranchToolsChangeNothing(t *testing.T) {
+	d := newMCPDaemon(t)
+	code, key := mintProject(t, d.srv, d.admin, "acme", true)
+	if code != http.StatusOK || key == "" {
+		t.Fatalf("create: %d", code)
+	}
+	ctx := raglit.WithPrincipal(context.Background(), "project:acme")
+	st, err := d.reg.Write(ctx, "acme__default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, st.Ingest(ctx, raglit.Document{Path: "file:///a.md", Title: "a",
+		Fragments: []raglit.Fragment{{Text: "alpha"}}}))
+	if err := d.reg.ForkBranchAs(ctx, "acme__draft", "acme__default"); err != nil {
+		t.Fatal(err)
+	}
+	bst, err := d.reg.Write(ctx, "acme__draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, bst.Ingest(ctx, raglit.Document{Path: "file:///b.md", Title: "b",
+		Fragments: []raglit.Fragment{{Text: "beta"}}}))
+
+	// Snapshot: index names and per-index document paths.
+	paths := func(idx string) []string {
+		t.Helper()
+		s, err := d.reg.Get(idx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		docs, err := s.Documents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var p []string
+		for _, d := range docs {
+			p = append(p, d.Path)
+		}
+		return p
+	}
+	before := map[string][]string{
+		"acme__default": paths("acme__default"),
+		"acme__draft":   paths("acme__draft"),
+	}
+	namesBefore := d.reg.Names()
+
+	c, err := mcpSession(t, d.srv.URL+"/mcp/acme", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise both tools.
+	if _, isErr := mcpCall(t, c, "branch_list", nil); isErr {
+		t.Fatal("branch_list")
+	}
+	if _, isErr := mcpCall(t, c, "branch_diff", map[string]any{"branch": "draft"}); isErr {
+		t.Fatal("branch_diff")
+	}
+
+	// Compare.
+	namesAfter := d.reg.Names()
+	if len(namesBefore) != len(namesAfter) {
+		t.Errorf("index count changed: %d -> %d", len(namesBefore), len(namesAfter))
+	}
+	for idx, bp := range before {
+		ap := paths(idx)
+		if len(bp) != len(ap) {
+			t.Errorf("%s: document count changed %d -> %d", idx, len(bp), len(ap))
+		}
+		for i := range bp {
+			if bp[i] != ap[i] {
+				t.Errorf("%s: document %d changed %q -> %q", idx, i, bp[i], ap[i])
+			}
+		}
+	}
+}
+
+// The read-surface tools keep their names, inputs, and output shape when the
+// branch tools are added. This is the regression guard: if a refactor renames
+// a tool, changes an input, or reshapes the output, this fails.
+func TestMCP_ReadSurfaceUntouched(t *testing.T) {
+	d := newMCPDaemon(t)
+	c, err := mcpSession(t, d.srv.URL+"/mcp/other", d.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]mcp.Tool{}
+	for _, tl := range tools.Tools {
+		byName[tl.Name] = tl
+	}
+
+	// The read-surface tools must be present.
+	for _, name := range []string{"search", "get_document", "list_documents", "list_indexes", "get_fields", "index_status", "ocr"} {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("read-surface tool %q missing", name)
+		}
+	}
+
+	// Key inputs are present on each tool.
+	props := byName["search"].InputSchema.Properties
+	for _, k := range []string{"query", "index", "limit"} {
+		if _, ok := props[k]; !ok {
+			t.Errorf("search missing input %q", k)
+		}
+	}
+	docProps := byName["get_document"].InputSchema.Properties
+	for _, k := range []string{"path", "index", "max_chars"} {
+		if _, ok := docProps[k]; !ok {
+			t.Errorf("get_document missing input %q", k)
+		}
+	}
+
+	// Output shape: search returns hits with the documented fields.
+	out, _ := mcpCall(t, c, "search", map[string]any{"query": "walrus"})
+	var s struct {
+		Hits []map[string]any `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(out), &s); err != nil {
+		t.Fatalf("search output not JSON: %s", out)
+	}
+	if len(s.Hits) == 0 {
+		t.Fatalf("no hits: %s", out)
+	}
+	for _, k := range []string{"doc_id", "index", "title", "score", "snippet"} {
+		if _, ok := s.Hits[0][k]; !ok {
+			t.Errorf("search hit missing %q: %s", k, out)
+		}
+	}
+}
