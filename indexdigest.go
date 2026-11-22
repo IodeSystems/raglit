@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -63,6 +64,11 @@ type IndexDigest struct {
 	// present so a caller can show it AND say it is behind, rather than
 	// choosing between a stale summary and none.
 	AboutStale bool `json:"about_stale,omitempty"`
+	// AboutDocs is the document count the stored About was written from — 0
+	// when none has been written. The number a regeneration's report wants:
+	// "rewritten from 12, now 40" is the sentence, and the digest is the one
+	// place a caller has both.
+	AboutDocs int `json:"about_docs,omitempty"`
 }
 
 // Empty reports whether there is nothing to say about this index.
@@ -187,8 +193,8 @@ func (s *Store) IndexDigest() (IndexDigest, error) {
 		d.Content = d.Content[:indexDigestTopTags]
 	}
 	d.Types, _ = s.FieldsCoverage()
-	about, stale, _ := s.indexAboutStored(d.Documents)
-	d.About, d.AboutStale = about, stale
+	about, stale, _, was := s.indexAboutStored(d.Documents)
+	d.About, d.AboutStale, d.AboutDocs = about, stale, was
 	return d, nil
 }
 
@@ -242,11 +248,12 @@ const (
 const indexAboutStaleRatio = 0.2
 
 // indexAboutStored reads the stored paragraph and says whether the corpus has
-// moved out from under it.
-func (s *Store) indexAboutStored(docs int) (about string, stale bool, model string) {
+// moved out from under it. wasDocs is the document count it was written from —
+// 0 when none has been written.
+func (s *Store) indexAboutStored(docs int) (about string, stale bool, model string, wasDocs int) {
 	about, ok := s.Meta(metaIndexAbout)
 	if !ok || strings.TrimSpace(about) == "" {
-		return "", false, ""
+		return "", false, "", 0
 	}
 	model, _ = s.Meta(metaIndexAboutModel)
 	was := 0
@@ -254,13 +261,13 @@ func (s *Store) indexAboutStored(docs int) (about string, stale bool, model stri
 		fmt.Sscanf(v, "%d", &was)
 	}
 	if was <= 0 {
-		return about, true, model
+		return about, true, model, was
 	}
 	drift := float64(docs-was) / float64(was)
 	if drift < 0 {
 		drift = -drift
 	}
-	return about, drift > indexAboutStaleRatio, model
+	return about, drift > indexAboutStaleRatio, model, was
 }
 
 // IndexAbout is the stored paragraph and whether it is behind the corpus.
@@ -270,7 +277,7 @@ func (s *Store) IndexAbout() (about string, stale bool, err error) {
 	if err != nil {
 		return "", false, err
 	}
-	about, stale, _ = s.indexAboutStored(d.Documents)
+	about, stale, _, _ = s.indexAboutStored(d.Documents)
 	return about, stale, nil
 }
 
@@ -297,6 +304,12 @@ Output the paragraph only, with no preamble and no heading.`
 // hundreds is described as well by a broad sample as by all of it, and the
 // whole list would not fit.
 const indexAboutMaxCaptions = 120
+
+// ErrAboutNotReady is returned by WriteIndexAbout when a paragraph is owed but
+// cannot be written yet: the index holds documents, but none of them has a
+// caption. The corpus will be captioned by the very drain that is about to ask,
+// so this is a state, not a fault — the caller reports it and moves on.
+var ErrAboutNotReady = errors.New("raglit: no document in this index has a caption yet — run `raglit identify` first")
 
 // WriteIndexAbout asks the model what this index is and stores the answer.
 //
@@ -345,7 +358,7 @@ func (s *Store) WriteIndexAbout(ctx context.Context) (string, error) {
 		n++
 	}
 	if n == 0 {
-		return "", fmt.Errorf("raglit: no document in this index has a caption yet — run `raglit identify` first")
+		return "", ErrAboutNotReady
 	}
 
 	msgs := []llm.Message{{Role: "user", Parts: []llm.ContentPart{llm.TextPart(b.String())}}}

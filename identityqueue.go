@@ -574,6 +574,13 @@ type IdentityWorker struct {
 	// of a Drain. Worth saying out loud: those documents are about to be redone,
 	// so a count that does not match what was asked for has an explanation.
 	OnReclaim func(n int)
+	// OnAbout, when set, is called after a Drain that ends cleanly, to report the
+	// index About: stale is whether it was behind the corpus, wrote whether a
+	// regeneration happened, and notice is set (not an error) when a
+	// regeneration was owed and skipped — no identifier configured, or no
+	// captioned document yet. Such outcomes are a line worth printing, not a
+	// failed drain.
+	OnAbout func(stale, wrote bool, notice string)
 }
 
 // identityTask is one job in flight between the pipeline's stages.
@@ -701,7 +708,64 @@ func (w *IdentityWorker) Drain(ctx context.Context) (int, error) {
 		n, err := w.run(ctx, false)
 		total += n
 		if err != nil || n == 0 || ctx.Err() != nil {
+			// A clean exit is n == 0 with no error and no cancelled ctx — the
+			// loop's own stop condition with nothing in the other two. The hook
+			// runs only then: an interrupted sweep leaves a corpus mid-write,
+			// and that is not the corpus an About should be written from.
+			if n == 0 && err == nil && ctx.Err() == nil {
+				w.refreshAbout(ctx)
+			}
 			return total, err
+		}
+	}
+}
+
+// refreshAbout rewrites the index About when the corpus has moved past the
+// digest threshold. It sits at the end of a clean Drain, not at each call
+// site, for the same reason the orphan reclamation does: the CLI and the
+// daemon both drain through here, and whoever adds the next caller cannot
+// forget it. The sweep just finished, so a stale About now describes a corpus
+// that no longer exists, and the rewrite is the same kind of model pass the
+// sweep just paid, one level up.
+//
+// An About that is owed and cannot be written — no identifier configured, no
+// captioned document yet, a failed model call — is a notice, reported to
+// OnAbout, not a failure: the drain itself is done, and the About stays
+// exactly as stale as it was, which the pane already says.
+func (w *IdentityWorker) refreshAbout(ctx context.Context) {
+	if w.Store == nil {
+		return
+	}
+	d, err := w.Store.IndexDigest()
+	if err != nil {
+		if w.OnAbout != nil {
+			w.OnAbout(false, false, "the index digest will not read: "+err.Error())
+		}
+		return
+	}
+	if !d.AboutStale {
+		if w.OnAbout != nil {
+			w.OnAbout(false, false, "")
+		}
+		return
+	}
+	_, werr := w.Store.WriteIndexAbout(ctx)
+	switch {
+	case werr == nil:
+		if w.OnAbout != nil {
+			w.OnAbout(true, true, fmt.Sprintf("regenerated the index About (written from %d documents, now %d)", d.AboutDocs, d.Documents))
+		}
+	case errors.Is(werr, ErrNoIdentifier):
+		if w.OnAbout != nil {
+			w.OnAbout(true, false, "the index About is stale, but no identifier is configured to rewrite it")
+		}
+	case errors.Is(werr, ErrAboutNotReady):
+		if w.OnAbout != nil {
+			w.OnAbout(true, false, "the index About is stale, but "+strings.TrimPrefix(ErrAboutNotReady.Error(), "raglit: "))
+		}
+	default:
+		if w.OnAbout != nil {
+			w.OnAbout(true, false, "the index About is stale and the rewrite failed: "+werr.Error())
 		}
 	}
 }
