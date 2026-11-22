@@ -56,6 +56,43 @@ function toRow(d: DocumentRow, root?: string): Row {
 
 const dateFmt = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" });
 
+// The five coverage marks, in the order they are read: captioned, tagged,
+// typed, extracted, attested. Only the ones set are shown; an all-fresh
+// document shows none.
+type CoverageKey = "captioned" | "tagged" | "typed" | "extracted" | "attested";
+const COVERAGE_MARKS: { key: CoverageKey; label: string }[] = [
+  { key: "captioned", label: "captioned" },
+  { key: "tagged", label: "tagged" },
+  { key: "typed", label: "typed" },
+  { key: "extracted", label: "extracted" },
+  { key: "attested", label: "attested" },
+];
+
+// A row shows at most this many tags of each kind; the rest collapse into +N
+// with the full list in the title, so a heavily tagged document does not take
+// over the row.
+const MAX_TAGS = 3;
+
+function TagChips({ label, tags }: { label: string; tags: string[] }) {
+  if (!tags.length) return null;
+  const shown = tags.slice(0, MAX_TAGS);
+  const rest = tags.length - shown.length;
+  return (
+    <>
+      {shown.map((t) => (
+        <span key={t} className="badge dl-tag" title={`${label} tag`}>
+          {t}
+        </span>
+      ))}
+      {rest > 0 && (
+        <span className="badge dl-tag muted" title={tags.join(", ")}>
+          +{rest}
+        </span>
+      )}
+    </>
+  );
+}
+
 function compare(a: Row, b: Row, key: SortKey): number {
   const byTitle = a.title.localeCompare(b.title, undefined, { sensitivity: "base", numeric: true });
   switch (key) {
@@ -291,6 +328,18 @@ export function DocumentList() {
                 </div>
                 <div className="dl-meta">
                   {r.kind && <span className="badge dl-kind">{kindLabel(r.kind)}</span>}
+                  {r.doc.gen_doc_type && (
+                    <span className="badge dl-doctype" title="Resolved document type">
+                      {r.doc.gen_doc_type}
+                    </span>
+                  )}
+                  <TagChips label="content" tags={r.doc.gen_content_tags ?? []} />
+                  <TagChips label="role" tags={r.doc.gen_role_tags ?? []} />
+                  {COVERAGE_MARKS.filter((m) => r.doc.coverage?.[m.key]).map((m) => (
+                    <span key={m.key} className="badge dl-cov" title={`Coverage: ${m.label}`}>
+                      {m.label}
+                    </span>
+                  ))}
                   {!!r.doc.vision && <span className="badge vision">{scannedPages(r.doc.vision)}</span>}
                   {operator && <span className="muted dl-num">{passages(r.doc.fragments ?? 0)}</span>}
                   {r.added && (

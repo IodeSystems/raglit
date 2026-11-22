@@ -241,6 +241,15 @@ export type DocumentRow = {
   gen_model?: string; // model that wrote it; empty for a person's
   gen_content_tags?: string[];
   gen_role_tags?: string[];
+  gen_doc_type?: string; // the index's registered doc type this resolved as; "" for none
+  coverage?: {
+    // Presence marks, each independent of the rest (review.go DocCoverage).
+    captioned: boolean;
+    tagged: boolean;
+    typed: boolean;
+    extracted: boolean;
+    attested: boolean;
+  };
   // gen_name / gen_kind again, under the names a search Hit uses.
   name?: string;
   kind?: string;
