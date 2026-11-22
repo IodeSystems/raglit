@@ -60,6 +60,7 @@ var commands = map[string]func([]string) error{
 	"readings":            runReadings,
 	"identify":            runIdentify,
 	"audit-tags":          runAuditTags,
+	"tag-merge":           runTagMerge,
 	"about":               runAbout,
 	"hint":                runHint,
 	"caption-profile":     runCaptionProfile,

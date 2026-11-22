@@ -243,6 +243,19 @@ raglit audit-tags --merge "old,other=>new"
               sharing a word — a PROPOSAL. Whether two terms mean the same
               thing is not something spelling establishes, so --merge applies
               only what a person named.`},
+		{"tag-merge", "model-pass tag merges, reviewed by a person", `raglit tag-merge propose
+raglit tag-merge list [status]
+raglit tag-merge accept ID
+raglit tag-merge reject ID
+              the model pass over the tag corpus: it proposes merges the lexical
+              path cannot see (two tags that name the same thing and share no
+              word), records each as a proposal for a person to rule on, and the
+              person accepts (the merge is applied through the existing mechanism
+              and the proposal is marked accepted) or rejects (both tags remain
+              unchanged, the proposal is marked rejected). With no identity model
+              configured the pass is skipped and the lexical path is the sole
+              mechanism. list shows proposals and their rulings; --json for
+              machine-readable output.`},
 	}},
 	{"provenance", "duplicates, versions, readings, withdrawals, slices", []helpEntry{
 		{"similar", "near-duplicates and containment, at page grain", `raglit similar [--build|--rebuild|--status|--all] [--json] FILE|DOCPATH...

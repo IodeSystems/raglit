@@ -79,6 +79,14 @@ func registerCorpusRoutes(api huma.API, g *gat.Gateway, reg *raglit.Registry, lf
 		"The index's whole tag vocabulary, with tags sharing a word proposed as near-duplicates."), tagAuditOp(reg))
 	gat.Register(api, g, op("mergeTags", http.MethodPost, "/api/tags/merge",
 		"Collapse tags a person named, in order: \"old,other=>new\"."), mergeTagsOp(reg))
+	gat.Register(api, g, op("proposeTagMerges", http.MethodPost, "/api/tags/propose",
+		"Run the model pass over the tag corpus and record its proposals for review."), proposeTagMergesOp(reg))
+	gat.Register(api, g, op("listTagMergeProposals", http.MethodGet, "/api/tags/proposals",
+		"Recorded tag-merge proposals and their rulings; ?status filters."), listTagMergeProposalsOp(reg))
+	gat.Register(api, g, op("acceptTagMergeProposal", http.MethodPost, "/api/tags/proposals/accept",
+		"Accept a proposal: runs the existing tag merge and marks it accepted."), acceptTagMergeProposalOp(reg))
+	gat.Register(api, g, op("rejectTagMergeProposal", http.MethodPost, "/api/tags/proposals/reject",
+		"Reject a proposal: marks it rejected, touches no tags."), rejectTagMergeProposalOp(reg))
 	gat.Register(api, g, op("truePages", http.MethodGet, "/api/true-pages",
 		"A document's pages as read, in order, with the engine and any per-page failure (exact path)."),
 		truePagesOp(reg))
@@ -488,6 +496,104 @@ func mergeTagsOp(reg *raglit.Registry) func(context.Context, *mergeTagsIn) (*mer
 			js.Close()
 		}
 		return out, nil
+	}
+}
+
+type proposeTagMergesOut struct {
+	Body struct {
+		Proposals []raglit.TagMergeProposalRecord `json:"proposals"`
+	}
+}
+
+func proposeTagMergesOp(reg *raglit.Registry) func(context.Context, *indexOnlyIn) (*proposeTagMergesOut, error) {
+	return func(ctx context.Context, in *indexOnlyIn) (*proposeTagMergesOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		ps, err := st.ProposeTagMerges(ctx)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("propose tag merges", err)
+		}
+		ids, err := st.RecordTagMergeProposals(ctx, ps)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("record proposals", err)
+		}
+		_ = ids
+		out := &proposeTagMergesOut{}
+		if recs, err := st.ListTagMergeProposals(ctx, "pending"); err == nil {
+			out.Body.Proposals = recs
+		}
+		return out, nil
+	}
+}
+
+type listProposalsIn struct {
+	Index  string `query:"index"`
+	Status string `query:"status"`
+}
+
+type listProposalsOut struct {
+	Body struct {
+		Proposals []raglit.TagMergeProposalRecord `json:"proposals"`
+	}
+}
+
+func listTagMergeProposalsOp(reg *raglit.Registry) func(context.Context, *listProposalsIn) (*listProposalsOut, error) {
+	return func(ctx context.Context, in *listProposalsIn) (*listProposalsOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		out := &listProposalsOut{}
+		out.Body.Proposals = []raglit.TagMergeProposalRecord{}
+		recs, err := st.ListTagMergeProposals(ctx, in.Status)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("list proposals", err)
+		}
+		out.Body.Proposals = recs
+		return out, nil
+	}
+}
+
+type proposalIDIn struct {
+	Index string `query:"index"`
+	Body  struct {
+		ID int64 `json:"id"`
+	}
+}
+
+type proposalOut struct {
+	Body struct {
+		Proposal raglit.TagMergeProposalRecord `json:"proposal"`
+	}
+}
+
+func acceptTagMergeProposalOp(reg *raglit.Registry) func(context.Context, *proposalIDIn) (*proposalOut, error) {
+	return func(ctx context.Context, in *proposalIDIn) (*proposalOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		r, err := st.AcceptTagMergeProposal(ctx, in.Body.ID)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		return &proposalOut{Body: struct{ Proposal raglit.TagMergeProposalRecord `json:"proposal"` }{r}}, nil
+	}
+}
+
+func rejectTagMergeProposalOp(reg *raglit.Registry) func(context.Context, *proposalIDIn) (*proposalOut, error) {
+	return func(ctx context.Context, in *proposalIDIn) (*proposalOut, error) {
+		st, err := writeIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		r, err := st.RejectTagMergeProposal(ctx, in.Body.ID)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		return &proposalOut{Body: struct{ Proposal raglit.TagMergeProposalRecord `json:"proposal"` }{r}}, nil
 	}
 }
 

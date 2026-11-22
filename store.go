@@ -651,6 +651,21 @@ END;`); err != nil {
 	)`); err != nil {
 		return err
 	}
+	// A proposed content-tag merge awaiting a person's ruling (tagproposals.go).
+	// Raw SQL, like the tables above.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS tag_merge_proposals (
+		id        INTEGER PRIMARY KEY,
+		a         TEXT NOT NULL,
+		b         TEXT NOT NULL,
+		rationale TEXT NOT NULL DEFAULT '',
+		source    TEXT NOT NULL DEFAULT '',
+		status    TEXT NOT NULL DEFAULT 'pending',
+		at        INTEGER NOT NULL,
+		result    TEXT NOT NULL DEFAULT '',
+		UNIQUE(a, b)
+	)`); err != nil {
+		return err
+	}
 	// Files whose last ingest failed, with the hash of the bytes that failed
 	// (failedsources.go). Raw SQL, like the tables above.
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS failed_sources (
