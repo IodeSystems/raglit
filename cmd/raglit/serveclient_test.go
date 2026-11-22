@@ -108,3 +108,28 @@ func TestServeClient_BatchIngestAndForget(t *testing.T) {
 		t.Fatalf("file:///notes.md survived a forget of /notes.md: %s", out)
 	}
 }
+
+// TestServeClient_IngestExplainAndAnalyze proves the MCP ingest tool passes
+// explain/analyze through to the daemon and returns the reports.
+func TestServeClient_IngestExplainAndAnalyze(t *testing.T) {
+	srv, _ := gatTestServer(t)
+	h := daemonToolHandlers(srv.URL, 8, "", nil)
+
+	// explain: returns the pre-flight report, not a job.
+	out := callTool(t, h.ingest, map[string]any{"url": "file:///notes.md", "explain": true})
+	if !strings.Contains(out, "explain") {
+		t.Fatalf("explain not in MCP response: %s", out)
+	}
+	if !strings.Contains(out, "doc_identity") {
+		t.Fatalf("explain report missing doc_identity: %s", out)
+	}
+
+	// analyze: returns the stored fragments.
+	out = callTool(t, h.ingest, map[string]any{"url": "file:///notes.md", "analyze": true})
+	if !strings.Contains(out, "analyze") {
+		t.Fatalf("analyze not in MCP response: %s", out)
+	}
+	if !strings.Contains(out, "fragments") {
+		t.Fatalf("analyze response missing fragments: %s", out)
+	}
+}

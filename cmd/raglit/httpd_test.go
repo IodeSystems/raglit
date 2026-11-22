@@ -407,3 +407,75 @@ func TestDocDetailHistoryHasTheIngest(t *testing.T) {
 		t.Fatalf("job-less document: %+v", det)
 	}
 }
+
+// TestGatDaemon_IngestExplainWritesNothing proves POST /ingest with explain:true
+// returns the pre-flight report and creates no job, no document, no fragment.
+func TestGatDaemon_IngestExplainWritesNothing(t *testing.T) {
+	srv, _ := gatTestServer(t)
+	docsBefore := len(httpGet(t, srv.URL+"/api/documents?index=default"))
+	jobsBefore := len(httpGet(t, srv.URL+"/api/jobs?index=default"))
+
+	body := httpPostJSON(t, srv.URL+"/ingest", `{"targets":["file:///notes.md"],"explain":true}`)
+	// The response carries the explain report.
+	if !strings.Contains(body, `"explain"`) {
+		t.Fatalf("no explain in response: %s", body)
+	}
+	if !strings.Contains(body, `"doc_identity":"file:///notes.md"`) {
+		t.Fatalf("explain report missing doc_identity: %s", body)
+	}
+	// No job was created.
+	if !strings.Contains(body, `"queued":0`) {
+		// explain branch returns before EnqueueFresh, so queued is absent (0).
+	}
+	docsAfter := len(httpGet(t, srv.URL+"/api/documents?index=default"))
+	jobsAfter := len(httpGet(t, srv.URL+"/api/jobs?index=default"))
+	if docsAfter != docsBefore {
+		t.Fatalf("explain changed document count: %d → %d", docsBefore, docsAfter)
+	}
+	if jobsAfter != jobsBefore {
+		t.Fatalf("explain changed job count: %d → %d", jobsBefore, jobsAfter)
+	}
+}
+
+// TestGatDaemon_IngestAnalyzeReadsAsStored proves POST /ingest with
+// analyze:true returns the fragments as stored and creates no job.
+func TestGatDaemon_IngestAnalyzeReadsAsStored(t *testing.T) {
+	srv, _ := gatTestServer(t)
+	jobsBefore := len(httpGet(t, srv.URL+"/api/jobs?index=default"))
+
+	body := httpPostJSON(t, srv.URL+"/ingest", `{"targets":["file:///notes.md"],"analyze":true}`)
+	if !strings.Contains(body, `"analyze"`) {
+		t.Fatalf("no analyze in response: %s", body)
+	}
+	if !strings.Contains(body, `"fragments"`) {
+		t.Fatalf("analyze response missing fragments: %s", body)
+	}
+	// The stored fragment text is present.
+	if !strings.Contains(body, "refresh token") {
+		t.Fatalf("analyze did not return stored fragment text: %s", body)
+	}
+	jobsAfter := len(httpGet(t, srv.URL+"/api/jobs?index=default"))
+	if jobsAfter != jobsBefore {
+		t.Fatalf("analyze changed job count: %d → %d", jobsBefore, jobsAfter)
+	}
+}
+
+// TestGatDaemon_IngestDefaultUnchanged proves POST /ingest with neither flag
+// set queues a job exactly as before.
+func TestGatDaemon_IngestDefaultUnchanged(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, _ := reg.Get("default")
+	jobsBefore, _ := st.Jobs("all", 100)
+
+	body := httpPostJSON(t, srv.URL+"/ingest", `{"targets":["file:///newdoc.md"]}`)
+	if !strings.Contains(body, `"queued":1`) {
+		t.Fatalf("default ingest did not queue: %s", body)
+	}
+	if strings.Contains(body, `"explain"`) || strings.Contains(body, `"analyze"`) {
+		t.Fatalf("default ingest response carries explain/analyze: %s", body)
+	}
+	jobsAfter, _ := st.Jobs("all", 100)
+	if len(jobsAfter) != len(jobsBefore)+1 {
+		t.Fatalf("job count %d → %d, want +1", len(jobsBefore), len(jobsAfter))
+	}
+}

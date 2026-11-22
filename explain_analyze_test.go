@@ -2,8 +2,93 @@ package raglit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// TestExplain_WritesNothing proves Explain computes the full pre-flight report
+// and leaves the store exactly as it found it: no new document, fragment, job,
+// job stage, or identity queue item. The report is complete (it made the
+// decisions the real ingest would make) and the index is untouched.
+func TestExplain_WritesNothing(t *testing.T) {
+	s := storeWithDoc(t)
+	const path = "/corpus/0428_001.pdf"
+	if err := s.SetDocumentHash(path, "stored-hash"); err != nil {
+		t.Fatal(err)
+	}
+	reg := &Registry{} // no embedder, no identifier configured
+
+	counts := func() (docs, frags, jobs, stages, idq int) {
+		for _, sc := range []struct {
+			table string
+			n     *int
+		}{
+			{"documents", &docs}, {"fragments", &frags}, {"ingest_jobs", &jobs},
+			{"job_stages", &stages}, {"identity_jobs", &idq},
+		} {
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM ` + sc.table).Scan(sc.n); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	bDocs, bFrags, bJobs, bStages, bIDQ := counts()
+
+	rep, err := Explain(context.Background(), reg, s, ExplainInput{URL: path, Index: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The report made the decisions: kind, lane, fragmenter, doc identity.
+	if rep.Kind == "" || rep.Lane == "" || rep.Fragmenter == "" || rep.DocIdentity != path {
+		t.Fatalf("incomplete report: %+v", rep)
+	}
+	if !rep.DocExists {
+		t.Error("report does not see the stored document's identity")
+	}
+	// And it wrote nothing.
+	aDocs, aFrags, aJobs, aStages, aIDQ := counts()
+	if aDocs != bDocs || aFrags != bFrags || aJobs != bJobs || aStages != bStages || aIDQ != bIDQ {
+		t.Fatalf("Explain changed the store: docs %d→%d frags %d→%d jobs %d→%d stages %d→%d idq %d→%d",
+			bDocs, aDocs, bFrags, aFrags, bJobs, aJobs, bStages, aStages, bIDQ, aIDQ)
+	}
+}
+
+// TestExplain_HashShortCircuits proves the report says when a stored document's
+// content hash matches its source file: the real ingest would skip it.
+func TestExplain_HashShortCircuits(t *testing.T) {
+	reg := &Registry{}
+	f := filepath.Join(t.TempDir(), "doc.pdf")
+	if err := os.WriteFile(f, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.Ingest(context.Background(), Document{
+		Path: f, Fragments: []Fragment{{Page: 1, Ord: 0, Text: "content"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("content"))
+	if err := s.SetDocumentHash(f, hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Explain(context.Background(), reg, s, ExplainInput{URL: f, Index: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.DocExists {
+		t.Error("DocExists false for a stored document")
+	}
+	if !rep.HashShortCircuits {
+		t.Error("HashShortCircuits false when the stored hash matches the source file")
+	}
+}
 
 // TestAnalyze_DumpsFragmentsAsStored proves that Analyze returns the
 // document's own fragments with their stored fields (text, ord, page,

@@ -110,10 +110,25 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 			// Reshape the daemon's {queued,job_ids,index} into the MCP tool's
 			// {job_id,index,state,url} contract.
 			var r struct {
-				JobIDs []int64 `json:"job_ids"`
-				Index  string  `json:"index"`
+				JobIDs  []int64         `json:"job_ids"`
+				Index   string          `json:"index"`
+				Explain json.RawMessage `json:"explain"`
+				Analyze json.RawMessage `json:"analyze"`
 			}
 			_ = json.Unmarshal(b, &r)
+			// Explain and analyze return reports, not a job: pass them through
+			// verbatim so the caller sees what the daemon computed.
+			if len(r.Explain) > 0 || len(r.Analyze) > 0 {
+				out := map[string]any{"index": nsStrip(ns, r.Index), "url": u}
+				if len(r.Explain) > 0 {
+					out["explain"] = r.Explain
+				}
+				if len(r.Analyze) > 0 {
+					out["analyze"] = r.Analyze
+				}
+				ob, _ := json.Marshal(out)
+				return mcp.NewToolResultText(string(ob)), nil
+			}
 			var jobID int64
 			if len(r.JobIDs) > 0 {
 				jobID = r.JobIDs[0]
