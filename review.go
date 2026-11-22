@@ -88,6 +88,25 @@ type DocSummary struct {
 	// what it is about, and what job it does in the corpus.
 	GenContentTags []string `json:"gen_content_tags,omitempty"`
 	GenRoleTags    []string `json:"gen_role_tags,omitempty"`
+	// GenDocType is the index's registered document type this document resolved
+	// as (identity.go), "" for none. Carried like GenKind so a list can show the
+	// resolved type without a request per row.
+	GenDocType string `json:"gen_doc_type,omitempty"`
+	// Coverage is the document's five coverage marks, each read straight from the
+	// row's own columns or a one-row existence check (see documentsLocal).
+	Coverage DocCoverage `json:"coverage"`
+}
+
+// DocCoverage is the five per-document marks the document list shows as chips:
+// has a caption, has tags, resolved a doc type, has extracted fields, has been
+// attested. Each is a presence question about what is already stored — none of
+// them implies the rest is present, so they are reported separately.
+type DocCoverage struct {
+	Captioned bool `json:"captioned"`
+	Tagged    bool `json:"tagged"`
+	Typed     bool `json:"typed"`
+	Extracted bool `json:"extracted"`
+	Attested  bool `json:"attested"`
 }
 
 // Documents lists indexed documents with fragment/page/engine counts, newest
@@ -110,6 +129,9 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.id, d.path, d.title, d.added_at, d.content_hash, d.frag_mode, d.gen_name, d.gen_kind, d.gen_source,
 		        d.gen_content_tags, d.gen_role_tags, d.gen_summary, d.gen_model, d.src_size, d.src_mtime,
+		        d.gen_doc_type,
+		        (SELECT EXISTS(SELECT 1 FROM doc_fields f WHERE f.doc_id = d.id)) AS extracted,
+		        (SELECT EXISTS(SELECT 1 FROM attestations a WHERE a.doc = d.path)) AS attested,
 		        (SELECT COUNT(*) FROM fragments f WHERE f.doc_id = d.id AND `+SQLOwnWordsF+`) AS fragments
 		   FROM documents d ORDER BY d.added_at DESC`)
 	if err != nil {
@@ -122,16 +144,28 @@ func (s *Store) documentsLocal() ([]DocSummary, error) {
 	var out []DocSummary
 	var ids []int64
 	for rows.Next() {
-		var id, addedAt, frags, srcSize, srcMtime int64
-		var path, title, contentHash, fragMode, genName, genKind, genSource, ctStr, rtStr, genSummary, genModel string
-		if err := rows.Scan(&id, &path, &title, &addedAt, &contentHash, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &genSummary, &genModel, &srcSize, &srcMtime, &frags); err != nil {
+		var id, addedAt, frags, srcSize, srcMtime, extracted, attested int64
+		var path, title, contentHash, fragMode, genName, genKind, genSource, ctStr, rtStr, genSummary, genModel, genDocType string
+		if err := rows.Scan(&id, &path, &title, &addedAt, &contentHash, &fragMode, &genName, &genKind, &genSource, &ctStr, &rtStr, &genSummary, &genModel, &srcSize, &srcMtime, &genDocType, &extracted, &attested, &frags); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		// captioned: a name was written (machine or person); tagged: any content
+		// or role tag; typed: a registered doc type resolved; extracted / attested:
+		// straight from the two existence subqueries above.
+		ct := splitTagList(ctStr)
+		rt := splitTagList(rtStr)
 		out = append(out, DocSummary{Path: path, Title: title, Fragments: int(frags), FragMode: fragMode,
 			AddedAt: addedAt, ContentHash: contentHash, SrcSize: srcSize, SrcMtime: srcMtime, Engines: map[string]int{},
 			GenName: genName, GenKind: genKind, GenSource: genSource, GenSummary: genSummary, GenModel: genModel,
-			GenContentTags: splitTagList(ctStr), GenRoleTags: splitTagList(rtStr)})
+			GenContentTags: ct, GenRoleTags: rt, GenDocType: genDocType,
+			Coverage: DocCoverage{
+				Captioned: genName != "" || genSummary != "",
+				Tagged:    len(ct) > 0 || len(rt) > 0,
+				Typed:     genDocType != "",
+				Extracted: extracted != 0,
+				Attested:  attested != 0,
+			}})
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {

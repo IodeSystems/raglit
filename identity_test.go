@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/iodesystems/agentkit/llm"
+	"github.com/iodesystems/raglit/attest"
 )
 
 // identityChatter answers with the next canned reply per call, so a fix loop can
@@ -631,5 +632,92 @@ func TestValidateIdentity_StripsHeadingMarks(t *testing.T) {
 	}
 	if d.Name != "Intake checklist for new calls" {
 		t.Fatalf("name = %q", d.Name)
+	}
+}
+
+func TestDocuments_CarriesCoverageMarksAndDocType(t *testing.T) {
+	s := storeWithDoc(t)
+	ctx := context.Background()
+	docPath := "/corpus/0428_001.pdf"
+
+	// Before any identity, fields, or attestation: nothing is set.
+	docs, err := s.Documents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("docs = %d, want 1", len(docs))
+	}
+	d := docs[0]
+	if d.Coverage.Captioned || d.Coverage.Tagged || d.Coverage.Typed || d.Coverage.Extracted || d.Coverage.Attested {
+		t.Fatalf("fresh doc coverage = %+v, want all false", d.Coverage)
+	}
+	if d.GenDocType != "" {
+		t.Fatalf("fresh doc gen_doc_type = %q, want empty", d.GenDocType)
+	}
+
+	// Set identity: caption + tags become visible.
+	if err := s.SetDocumentIdentity(ctx, docPath, machineIdentity()); err != nil {
+		t.Fatal(err)
+	}
+	docs, err = s.Documents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d = docs[0]
+	if !d.Coverage.Captioned {
+		t.Error("after identity: Captioned = false, want true")
+	}
+	if !d.Coverage.Tagged {
+		t.Error("after identity: Tagged = false, want true")
+	}
+	if d.Coverage.Typed {
+		t.Error("after identity: Typed = true, want false (no doc type set)")
+	}
+	if d.Coverage.Extracted {
+		t.Error("after identity: Extracted = true, want false")
+	}
+	if d.Coverage.Attested {
+		t.Error("after identity: Attested = true, want false")
+	}
+
+	// Set fields: typed + extracted become visible, and gen_doc_type is populated.
+	if err := s.SetDocumentFields(ctx, docPath, DocFields{
+		Type:   "agreement",
+		Fields: json.RawMessage(`{"parties": ["Ardley", "Brannock"]}`),
+		Source: IdentityByMachine,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	docs, err = s.Documents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d = docs[0]
+	if d.GenDocType != "agreement" {
+		t.Fatalf("after fields: gen_doc_type = %q, want agreement", d.GenDocType)
+	}
+	if !d.Coverage.Typed {
+		t.Error("after fields: Typed = false, want true")
+	}
+	if !d.Coverage.Extracted {
+		t.Error("after fields: Extracted = false, want true")
+	}
+
+	// Put an attestation: attested becomes visible.
+	if err := s.PutAttestations(docPath, []attest.Entry{{Kind: attest.Affirmed, Unit: "page 1"}}); err != nil {
+		t.Fatal(err)
+	}
+	docs, err = s.Documents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d = docs[0]
+	if !d.Coverage.Attested {
+		t.Error("after attestation: Attested = false, want true")
+	}
+	// All five marks are now true.
+	if !d.Coverage.Captioned || !d.Coverage.Tagged || !d.Coverage.Typed || !d.Coverage.Extracted || !d.Coverage.Attested {
+		t.Fatalf("final coverage = %+v, want all true", d.Coverage)
 	}
 }
