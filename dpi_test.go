@@ -130,6 +130,55 @@ func TestTilesNeededCoversEveryPixel(t *testing.T) {
 	}
 }
 
+// The descent gate, tested against the same numbers as the cap tests: descent
+// only pays when the source holds more resolution than one canvas can show.
+// A scan-bound page (96 DPI, cap 127 at the same area) must NOT descend — that
+// is the case measured at 1.3-1.8x wall clock for zero gain on olmOCR-bench.
+// An E-size survey sheet (200 DPI, cap 119) and the ROS (960 DPI, cap 390)
+// both do.
+func TestShouldDescend(t *testing.T) {
+	// Scan-bound: 96 DPI against a 127 cap (27.5x32in, 880 in²).
+	boundArea := 27.5 * 32
+	if cap := DPICapForArea(boundArea, DefaultMaxImageTokens); cap != 127 {
+		t.Fatalf("fixture drifted: cap at %.1f in² = %d, want 127", boundArea, cap)
+	}
+	if ShouldDescend(96, boundArea) {
+		t.Errorf("a scan-bound page (96 dpi, cap 127) must not descend")
+	}
+	// E-size survey: 200 DPI against a 119 cap.
+	esize := 27 * 36.7
+	if cap := DPICapForArea(esize, DefaultMaxImageTokens); cap != 119 {
+		t.Fatalf("fixture drifted: cap at %.1f in² = %d, want 119", esize, cap)
+	}
+	if !ShouldDescend(200, esize) {
+		t.Errorf("an E-size page (200 dpi, cap 119) must descend")
+	}
+	// ROS: 960 DPI against a 390 cap (letter, 93.5 in²).
+	letter := 8.5 * 11
+	if cap := DPICapForArea(letter, DefaultMaxImageTokens); cap != 390 {
+		t.Fatalf("fixture drifted: cap at %.1f in² = %d, want 390", letter, cap)
+	}
+	if !ShouldDescend(960, letter) {
+		t.Errorf("a ROS page (960 dpi, cap 390) must descend")
+	}
+	// Unknown native: no evidence the source holds more than the canvas shows.
+	if ShouldDescend(0, letter) {
+		t.Errorf("an unknown native resolution must not descend")
+	}
+	// Exactly at the cap: one canvas already shows every pixel the source holds.
+	if ShouldDescend(capAt(boundArea), boundArea) {
+		t.Errorf("native exactly at the cap must not descend")
+	}
+	// One above it: that is the first pixel the canvas cannot show.
+	if !ShouldDescend(capAt(boundArea)+1, boundArea) {
+		t.Errorf("native one above the cap must descend")
+	}
+}
+
+// capAt keeps the boundary test from hard-coding a second copy of the cap,
+// which is exactly the drift the gate exists to prevent.
+func capAt(area float64) int { return DPICapForArea(area, DefaultMaxImageTokens) }
+
 // Each tile is its own canvas, so cutting a sheet RAISES the resolution ceiling.
 // That is the entire mechanism — not more pixels, a smaller canvas.
 func TestTilingRaisesTheCeiling(t *testing.T) {

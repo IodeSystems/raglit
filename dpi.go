@@ -63,6 +63,31 @@ func DPICapForArea(areaSqIn float64, maxTokens int) int {
 	return int(math.Sqrt(pxPerToken * capHeadroom * float64(maxTokens) / areaSqIn))
 }
 
+// ShouldDescend answers the only question that separates a descent that helps
+// from one that costs: does the source hold MORE resolution than one canvas can
+// show? Descent only pays when nativeDPI exceeds what the encoder can deliver
+// at the sheet's area — a 960 DPI scan of a letter sheet (cap 423) holds it, a
+// 96 DPI scan (cap 127 at the same area) does not, and cutting the second is
+// pure wall clock with no glyph to show for it. Measured on olmOCR-bench
+// old_scans, descent tied plain reading at 1.3-1.8x exactly on these
+// scan-bound pages.
+//
+// nativeDPI of 0 means unknown (born-digital, or no poppler): there is no
+// evidence the source holds more than the canvas shows, so the answer is no.
+// Strictly greater, like every other bound here: at exactly the cap one
+// canvas already shows every pixel the source holds, and the second canvas
+// has nothing to add.
+//
+// This is the single point of truth for the descent decision. The ingest read
+// path and `raglit regions` both consult it; a second copy of the comparison
+// in either is how the two surfaces would drift.
+func ShouldDescend(nativeDPI int, areaSqIn float64) bool {
+	if nativeDPI <= 0 {
+		return false
+	}
+	return nativeDPI > DPICapForArea(areaSqIn, DefaultMaxImageTokens)
+}
+
 // TilesNeeded is how many equal pieces a sheet must be cut into for every pixel
 // to reach the model at dpi. Ceil, because a fractional tile still costs a call
 // and a sheet 1.1x over the cap still loses a tenth of itself.
