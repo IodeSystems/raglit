@@ -81,13 +81,23 @@ func runRegions(args []string) error {
 	// sq in survey is 38,740 image tokens, the server crushes it to fit 16,384,
 	// and every halving costs detail. Rendering it LOWER reads better — 130 DPI
 	// is 16,351 tokens, fits whole, and delivers 16.5 t/in².
+	nativeDPI := raglit.NativeDPI(context.Background(), path, *page)
 	if *dpi <= 0 {
-		d := raglit.ChooseDPI(0, wIn*hIn, raglit.NativeDPI(context.Background(), path, *page),
+		d := raglit.ChooseDPI(0, wIn*hIn, nativeDPI,
 			raglit.DefaultMaxImageTokens, raglit.RenderPolicy{})
 		*dpi = d.DPI
 		if *verbose {
 			fmt.Fprintf(os.Stderr, "  regions | render %s\n", d.String())
 		}
+	}
+	// The gate: descent only pays when the source holds more resolution than
+	// one canvas can show. When it does not, refuse to descend and say so —
+	// the read proceeds whole at the DPI the decision picked.
+	if *depth > 0 && !raglit.ShouldDescend(nativeDPI, wIn*hIn) {
+		cap := raglit.DPICapForArea(wIn*hIn, raglit.DefaultMaxImageTokens)
+		fmt.Fprintf(os.Stderr, "  gate: descent refused (native %d dpi ≤ cap %d at %.1f sq in) — reading whole\n",
+			nativeDPI, cap, wIn*hIn)
+		*depth = 0
 	}
 	img, err := renderPage(path, *page, *dpi)
 	if err != nil {
