@@ -183,6 +183,78 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 			}
 			return mcp.NewToolResultText(string(stripSchema(b))), nil
 		},
+
+		branchList: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// The daemon lists ALL readable branches; `index` narrows to one
+			// parent. A branch the caller cannot read never reaches here: the
+			// daemon already filtered it, and the ns strip keeps names local.
+			parent := req.GetString("index", "")
+			b, err := daemonGet(base, "/api/branches", nil)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("branch_list", err), nil
+			}
+			var out struct {
+				Branches []struct {
+					Name           string `json:"name"`
+					Parent         string `json:"parent"`
+					CreatedAt      int64  `json:"created_at"`
+					LastAccessedAt int64  `json:"last_accessed_at"`
+					Documents      int    `json:"documents"`
+				} `json:"branches"`
+			}
+			if err := json.Unmarshal(b, &out); err != nil {
+				return mcp.NewToolResultText(string(stripSchema(b))), nil
+			}
+			for i := range out.Branches {
+				out.Branches[i].Name = nsStrip(ns, out.Branches[i].Name)
+				out.Branches[i].Parent = nsStrip(ns, out.Branches[i].Parent)
+				if parent != "" && out.Branches[i].Parent != parent {
+					out.Branches[i].Name = ""
+				}
+			}
+			kept := out.Branches[:0]
+			for _, br := range out.Branches {
+				if br.Name != "" {
+					kept = append(kept, br)
+				}
+			}
+			out.Branches = kept
+			res, _ := json.Marshal(out)
+			return mcp.NewToolResultText(string(res)), nil
+		},
+
+		branchDiff: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			branch, err := req.RequireString("branch")
+			if err != nil {
+				return mcp.NewToolResultError("branch is required"), nil
+			}
+			v := url.Values{"name": {cv.read(branch)}}
+			b, err := daemonGet(base, "/api/branches/diff", v)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("branch_diff", err), nil
+			}
+			// Unmarshal and nsStrip name+parent: stripNSJSON (proxyGet) rewrites
+			// only "index" fields, leaving name/parent namespaced — the two tools
+			// would disagree on the name contract.
+			var out struct {
+				Name    string `json:"name"`
+				Parent  string `json:"parent"`
+				Changes []struct {
+					Path       string `json:"path"`
+					Change     string `json:"change"`
+					Hash       string `json:"hash,omitempty"`
+					ParentHash string `json:"parent_hash,omitempty"`
+					Title      string `json:"title,omitempty"`
+				} `json:"changes"`
+			}
+			if err := json.Unmarshal(stripSchema(b), &out); err != nil {
+				return mcp.NewToolResultText(string(stripSchema(b))), nil
+			}
+			out.Name = nsStrip(ns, out.Name)
+			out.Parent = nsStrip(ns, out.Parent)
+			res, _ := json.Marshal(out)
+			return mcp.NewToolResultText(string(res)), nil
+		},
 	}
 }
 

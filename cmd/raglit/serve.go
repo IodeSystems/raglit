@@ -84,6 +84,8 @@ type toolHandlers struct {
 	ocr           server.ToolHandlerFunc
 	manageIndex   server.ToolHandlerFunc
 	forget        server.ToolHandlerFunc
+	branchList    server.ToolHandlerFunc
+	branchDiff    server.ToolHandlerFunc
 }
 
 // addRaglitTools registers the tool definitions once, backed by the given
@@ -259,6 +261,34 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 		),
 		h.ocr,
 	)
+	if h.branchList != nil {
+		s.AddTool(
+			mcp.NewTool("branch_list",
+				mcp.WithDescription(
+					"List the BRANCH indexes (read-only; changes nothing). Each entry is "+
+						"{name, parent, created_at, last_accessed_at, documents} where documents is "+
+						"the branch's OWN local diff count, not the overlaid total. `index` restricts "+
+						"the list to the branches of that parent index; omit it for all readable "+
+						"branches. An index with no branches returns an empty list, not an error."),
+				mcp.WithString("index", mcp.Description("parent index whose branches to list; empty = all readable branches")),
+			),
+			h.branchList,
+		)
+	}
+	if h.branchDiff != nil {
+		s.AddTool(
+			mcp.NewTool("branch_diff",
+				mcp.WithDescription(
+					"What a branch index changed against its parent (read-only; changes nothing). "+
+						"Returns {name, parent, changes:[{path, change, title}]} where change is "+
+						"\"added\" (new on the branch), \"changed\" (a different copy), \"same\" (a "+
+						"byte-identical copy) or \"deleted\" (removed in the branch). `branch` names "+
+						"the branch index."),
+				mcp.WithString("branch", mcp.Required(), mcp.Description("branch index name")),
+			),
+			h.branchDiff,
+		)
+	}
 }
 
 // selectIndexes resolves the `index` argument to a concrete set of names: empty

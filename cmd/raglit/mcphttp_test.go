@@ -647,3 +647,86 @@ func TestListProjects_ProjectIndexIsListedAsMetadataToOthers(t *testing.T) {
 		t.Error("another key opened the index it may only see as metadata")
 	}
 }
+
+// branch_list and branch_diff return local (un-namespaced) names and the
+// fields their tool descriptions promise. Fails against the pre-fix code:
+// branch_list dropped created_at/last_accessed_at/documents, and branch_diff
+// leaked the acme__ prefix in name and parent.
+func TestMCP_BranchToolsLocalNamesAndFields(t *testing.T) {
+	d := newMCPDaemon(t)
+	code, key := mintProject(t, d.srv, d.admin, "acme", true)
+	if code != http.StatusOK || key == "" {
+		t.Fatalf("create: %d", code)
+	}
+	ctx := raglit.WithPrincipal(context.Background(), "project:acme")
+	st, err := d.reg.Write(ctx, "acme__default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, st.Ingest(ctx, raglit.Document{Path: "file:///base.md", Title: "base",
+		Fragments: []raglit.Fragment{{Text: "walrus base"}}}))
+	if err := d.reg.ForkBranchAs(ctx, "acme__draft", "acme__default"); err != nil {
+		t.Fatal(err)
+	}
+	bst, err := d.reg.Write(ctx, "acme__draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, bst.Ingest(ctx, raglit.Document{Path: "file:///branch.md", Title: "branch",
+		Fragments: []raglit.Fragment{{Text: "walrus branch"}}}))
+
+	c, err := mcpSession(t, d.srv.URL+"/mcp/acme", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// branch_list: local names, all five advertised fields present.
+	out, isErr := mcpCall(t, c, "branch_list", nil)
+	if isErr {
+		t.Fatalf("branch_list: %s", out)
+	}
+	var bl struct {
+		Branches []map[string]any `json:"branches"`
+	}
+	if err := json.Unmarshal([]byte(out), &bl); err != nil {
+		t.Fatalf("branch_list not JSON: %s", out)
+	}
+	if len(bl.Branches) != 1 {
+		t.Fatalf("want 1 branch, got %d: %s", len(bl.Branches), out)
+	}
+	b := bl.Branches[0]
+	if b["name"] != "draft" {
+		t.Errorf("branch_list name not local: %v (want \"draft\")", b["name"])
+	}
+	if b["parent"] != "default" {
+		t.Errorf("branch_list parent not local: %v (want \"default\")", b["parent"])
+	}
+	for _, k := range []string{"created_at", "last_accessed_at", "documents"} {
+		if _, ok := b[k]; !ok {
+			t.Errorf("branch_list missing %q: %s", k, out)
+		}
+	}
+
+	// branch_diff: local names, non-empty changes for the document added on the branch.
+	out, isErr = mcpCall(t, c, "branch_diff", map[string]any{"branch": "draft"})
+	if isErr {
+		t.Fatalf("branch_diff: %s", out)
+	}
+	var bd struct {
+		Name    string           `json:"name"`
+		Parent  string           `json:"parent"`
+		Changes []map[string]any `json:"changes"`
+	}
+	if err := json.Unmarshal([]byte(out), &bd); err != nil {
+		t.Fatalf("branch_diff not JSON: %s", out)
+	}
+	if bd.Name != "draft" {
+		t.Errorf("branch_diff name not local: %q (want \"draft\")", bd.Name)
+	}
+	if bd.Parent != "default" {
+		t.Errorf("branch_diff parent not local: %q (want \"default\")", bd.Parent)
+	}
+	if len(bd.Changes) == 0 {
+		t.Errorf("branch_diff: no changes (want at least one for branch.md): %s", out)
+	}
+}
