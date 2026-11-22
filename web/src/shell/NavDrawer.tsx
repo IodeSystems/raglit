@@ -86,6 +86,7 @@ export function indexSections(index: string, problems?: number, operator = true)
       heading: "Index",
       items: [
         { label: "Controls", to: `${root}/controls` },
+        { label: "Hint", to: `${root}/hint` },
         { label: "Branches", to: `${root}/branches` },
       ],
     },

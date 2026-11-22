@@ -39,6 +39,7 @@ const Email = lazyRouteComponent(() => import("./panes/Email"), "Email");
 const Attest = lazyRouteComponent(() => import("./panes/Attest"), "Attest");
 const AttestAsset = lazyRouteComponent(() => import("./panes/AttestAsset"), "AttestAsset");
 const ModelSettings = lazyRouteComponent(() => import("./panes/ModelSettings"), "ModelSettings");
+const Hint = lazyRouteComponent(() => import("./panes/Hint"), "Hint");
 
 // The document path is ONE encoded segment, and the router already does that.
 //
@@ -276,6 +277,14 @@ const branchesRoute = createRoute({
   component: Branches,
 });
 
+// The owner hint, editable: prose about the corpus the models read with, and
+// the warning that editing it changes how documents are read.
+const hintRoute = createRoute({
+  getParentRoute: () => indexRoute,
+  path: "hint",
+  component: Hint,
+});
+
 // Two surfaces the daemon has served for a while and the UI did not read at
 // all — see docs/design/ui-redesign.md §1.
 const typesRoute = createRoute({
@@ -338,6 +347,7 @@ const routeTree = rootRoute.addChildren([
     typesRoute,
     activityRoute,
     branchesRoute,
+    hintRoute,
     attestRoute,
     attestAssetRoute,
   ]),

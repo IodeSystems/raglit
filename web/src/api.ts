@@ -377,6 +377,22 @@ export type PurgeResult = {
 export const purgeIndex = (index: string, pattern: string, dryRun: boolean) =>
   postJSON<PurgeResult>("/api/index/purge", { index }, { pattern, dry_run: dryRun });
 
+// The owner hint: prose a person writes about the corpus, threaded into page
+// transcription, segmentation and search. GET returns the stored text; PUT
+// records (or, empty, clears) it.
+export const getIndexHint = (index: string) =>
+  getJSON<{ hint: string }>("/api/index-hint", { index });
+
+export async function putIndexHint(index: string, hint: string): Promise<{ hint: string }> {
+  const r = await fetch(`/api/index-hint?${new URLSearchParams({ index }).toString()}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hint }),
+  });
+  if (!r.ok) return fail(r);
+  return (await r.json()) as { hint: string };
+}
+
 export const getStatus = (index: string) => getJSON<StatusSnapshot>("/status", { index });
 
 export const listJobs = (index: string, limit = 200) =>
