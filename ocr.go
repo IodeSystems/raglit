@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	xdraw "golang.org/x/image/draw"
+	"math"
 	"regexp"
 	"strings"
 	"unicode"
@@ -89,11 +90,17 @@ type OCR struct {
 	TraceCtx map[string]any
 	Cheap    PageEngine      // optional cheap first pass; nil → VLM-only
 	Gate     GibberishConfig // when the cheap pass escalates to the VLM (zero → defaults)
-	// DescribeFigures is the FIGURE gate (§3a): a born-digital PDF page carrying an
-	// embedded image is rasterized to the VLM even when its text layer is clean, so
-	// its diagrams get described. Orthogonal to the gibberish gate (which judges
-	// TEXT quality); OFF by default because it flips such pages to the (costly)
-	// vision path and thus to llm-seg.
+	// DescribeFigures is the FIGURE gate (§3a), covering both halves of a page:
+	//   - SCANNED: a raster page whose image the heuristic (figureLikeImage)
+	//     flags as figure-like — enough ink, concentrated in a large block — is
+	//     escalated to the VLM even when the cheap read is clean, so the diagram
+	//     gets described inline. Wired in the cascade (PageAsSeen).
+	//   - BORN-DIGITAL: a PDF page carrying an embedded image XObject — the
+	//     detection (pagesWithImages) exists but is not wired into a call path
+	//     yet; when it is, this flag covers it the same way.
+	// Orthogonal to the gibberish gate (which judges TEXT quality); OFF by
+	// default because it flips such pages to the (costly) vision path and thus
+	// to llm-seg, and false positives cost one vision call each.
 	DescribeFigures bool
 
 	// MaxTokens caps one page transcription; 0 → defaultOCRMaxTokens. See
@@ -176,7 +183,31 @@ func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine strin
 				o.tracef("cheap only: no vision model — %s read accepted as is", o.Cheap.Name())
 				return strings.TrimSpace(po.Text), o.Cheap.Name(), 0, nil
 			}
-			if o.Assist {
+			escalate := false
+			// The figure gate (§3a, scanned half): a cheap read that is CLEAN
+			// can still be sitting on a diagram the cheap engine never saw.
+			// When the flag is on and the raster heuristic says the page
+			// carries a figure, pay the VLM so figureInstruction describes it
+			// inline — the description is the whole point of the call.
+			// The flag is OFF by default, so every page the gate does not flag
+			// is handled exactly as before.
+			if o.DescribeFigures {
+				if fig, inkFrac, block := figureLikeImage(img.Data); fig {
+					o.tracef("cascade: figure gate — ink %.0f%%, %d-row block — VLM called for figure description",
+						inkFrac*100, block)
+					o.event("figure.gate", map[string]any{
+						"img_sha": sha, "ink_pct": math.Round(inkFrac*10000) / 100, "block_rows": block,
+					})
+					escalate = true
+					if o.Assist {
+						assist = spellingAssist(po.Text)
+						o.tracef("assist: ON — %d chars of digit-masked words appended to the prompt", len(assist))
+					}
+				}
+			}
+			if escalate {
+				// figure gate: fall through to the VLM for the description.
+			} else if o.Assist {
 				assist = spellingAssist(po.Text)
 				o.tracef("assist: ON — %d chars of digit-masked words appended to the prompt", len(assist))
 			} else if gib, _ := o.Gate.IsGibberish(po); !gib {

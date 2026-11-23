@@ -387,9 +387,17 @@ type OCRConfig struct {
 	TesseractBin  string          `json:"tesseract_bin,omitempty"`  // tesseract binary; "" → "tesseract"
 	TesseractLang string          `json:"tesseract_lang,omitempty"` // -l language; "" → "eng"
 	Gibberish     GibberishConfig `json:"gibberish,omitempty"`      // gate overrides; zero → precision-biased defaults
-	// DescribeFigures escalates born-digital PDF pages that carry an embedded image
-	// to the VLM so their figures are described inline (§3a figure gate). OFF by
-	// default: it forces those pages onto the vision/llm-seg path (costly).
+	// DescribeFigures is the §3a figure gate. It escalates pages whose figures
+	// would otherwise be invisible to the cheap engine:
+	//   - SCANNED pages now: the raster heuristic (figureLikeImage) flags a
+	//     page with a large concentrated block of ink, and a clean cheap read
+	//     of such a page goes to the VLM, which describes the figure inline.
+	//   - BORN-DIGITAL pages: a page carrying an embedded image XObject
+	//     (pagesWithImages) is covered the same way once that detection is
+	//     wired into a call path — the flag is set from this config on both
+	//     paths via AttachCheapOCR.
+	// OFF by default: it forces flagged pages onto the vision/llm-seg path
+	// (costly), and a false positive costs one vision call each.
 	DescribeFigures bool `json:"describe_figures,omitempty"`
 	// Mode decides what the cheap engine is for.
 	//
