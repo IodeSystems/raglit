@@ -1,0 +1,59 @@
+#!/bin/sh
+# Pre-commit gate for the sqlc rule in the Makefile: the staged internal/db
+# must match what `make generate` produces. Upstream sqlc (the one on PATH)
+# silently corrupts the generated files when a query comment holds a
+# multibyte char and exits zero, so a hand-typed `sqlc generate` can stage a
+# corrupted tree that ~40 tests then fail with a message that says nothing
+# about the comment.
+#
+# The hook runs `make generate` (which builds OUR fork, never the PATH sqlc)
+# and compares the STAGED internal/db against the tree it produced. It blocks
+# the commit if they differ — this catches a staged corruption, not just an
+# unstaged edit. It does not clobber the working tree: the generated output
+# is diffed in place, the staging area is untouched, and the developer re-runs
+# `make generate` and re-stages.
+#
+# It is a local convenience, not the gate: it only fires where it is
+# installed (scripts/dev-setup.sh sets core.hooksPath) and skips with a
+# warning when the ../sqlc sibling checkout is missing. CI is the
+# authoritative check.
+
+set -u
+
+SQLC_SRC="$(git rev-parse --show-toplevel)/../sqlc"
+
+if [ ! -d "$SQLC_SRC" ]; then
+    echo "pre-commit: skipping internal/db check — sibling checkout $SQLC_SRC is missing."
+    echo "             CI runs the same check and is the authoritative gate."
+    exit 0
+fi
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+if ! make generate > "$TMP/gen.log" 2>&1; then
+    echo "pre-commit: 'make generate' failed — run it by hand and fix the error before committing." >&2
+    cat "$TMP/gen.log" >&2
+    exit 1
+fi
+
+# Materialise the STAGED internal/db from the index (not the working tree,
+# not HEAD) and diff it against what make generate just produced. `git show
+# :<path>` is the index's content; `--cached` lists the staged paths.
+STAGED="$TMP/staged"
+mkdir -p "$STAGED"
+git ls-files --cached -- internal/db | while read -r f; do
+    mkdir -p "$STAGED/$(dirname "$f")"
+    git show ":$f" > "$STAGED/$f"
+done
+
+# A staged tree with no internal/db at all is a difference (generate made
+# files), so the diff below catches it.
+if ! diff -r "$STAGED/internal" internal > "$TMP/db.diff" 2>&1; then
+    echo "pre-commit: staged internal/db does not match 'make generate' output." >&2
+    echo "             Run 'make generate' (never a PATH 'sqlc generate'), review the diff, re-stage, and commit again." >&2
+    head -40 "$TMP/db.diff" >&2
+    exit 1
+fi
+
+exit 0

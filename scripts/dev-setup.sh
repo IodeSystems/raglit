@@ -112,6 +112,7 @@ else
 	say "core.hooksPath -> scripts/hooks"
 fi
 [ -x scripts/hooks/pre-push ] || { [ "$check_only" = 1 ] && { warn "scripts/hooks/pre-push not executable"; missing=1; } || chmod +x scripts/hooks/pre-push; }
+[ -x scripts/hooks/pre-commit ] || { [ "$check_only" = 1 ] && { warn "scripts/hooks/pre-commit not executable"; missing=1; } || chmod +x scripts/hooks/pre-commit; }
 
 echo "==> go.mod"
 if leaked=$(grep -nE '=>[[:space:]]*(/|\.\.?/)' go.mod); then
