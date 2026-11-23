@@ -105,3 +105,42 @@ func TestIndexAbout_IsStaleWhenTheCorpusMovesUnderIt(t *testing.T) {
 		t.Error("an About written from half the documents is not reported stale")
 	}
 }
+
+// TestIndexDigest_TypesListsTheRegisteredDocTypes proves the digest carries
+// the index's registered doc types (gen_doc_type) with their resolved counts,
+// so a pane reading the digest can show them without a second call.
+func TestIndexDigest_TypesListsTheRegisteredDocTypes(t *testing.T) {
+	s := storeWithDocs(t, 3)
+	// Two documents resolve as "work_order", one as "invoice".
+	for _, p := range []string{"/corpus/scan_000.pdf", "/corpus/scan_001.pdf"} {
+		if err := s.SetDocumentIdentity(context.Background(), p, DocIdentity{
+			Name: "A caption", Summary: "A document held in this corpus, summarised at sufficient length to be real.",
+			Kind: "analysis", Source: IdentityByMachine, Model: "m", At: 1,
+			DocType: "work_order",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetDocumentIdentity(context.Background(), "/corpus/scan_002.pdf", DocIdentity{
+		Name: "A caption", Summary: "A document held in this corpus, summarised at sufficient length to be real.",
+		Kind: "analysis", Source: IdentityByMachine, Model: "m", At: 1,
+		DocType: "invoice",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := s.IndexDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Types) != 2 {
+		t.Fatalf("digest.Types = %d entries, want 2: %+v", len(d.Types), d.Types)
+	}
+	// Most-resolved first: work_order(2) before invoice(1).
+	if d.Types[0].Type != "work_order" || d.Types[0].Resolved != 2 {
+		t.Errorf("first type = %+v, want work_order(2)", d.Types[0])
+	}
+	if d.Types[1].Type != "invoice" || d.Types[1].Resolved != 1 {
+		t.Errorf("second type = %+v, want invoice(1)", d.Types[1])
+	}
+}

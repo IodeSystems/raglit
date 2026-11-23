@@ -479,3 +479,143 @@ func TestGatDaemon_IngestDefaultUnchanged(t *testing.T) {
 		t.Fatalf("job count %d → %d, want +1", len(jobsBefore), len(jobsAfter))
 	}
 }
+
+// TestIndexesReturnsTypes proves the /indexes endpoint carries the index's
+// registered doc types (gen_doc_type) in the row, so the About pane's "What it
+// holds" panel can render them from the digest without a second call.
+func TestIndexesReturnsTypes(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Resolve the ingested document as a registered doc type.
+	if err := st.SetDocumentIdentity(context.Background(), "file:///notes.md", raglit.DocIdentity{
+		Name: "Notes", Summary: "A document held in this corpus, summarised at sufficient length to be real.",
+		Kind: "notes", Source: raglit.IdentityByMachine, Model: "m", At: 1,
+		DocType: "work_order",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out struct {
+		Indexes []struct {
+			Name  string                     `json:"name"`
+			Types []raglit.FieldsCoverage    `json:"types"`
+		}
+	}
+	if err := json.Unmarshal([]byte(httpGet(t, srv.URL+"/indexes")), &out); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	for _, idx := range out.Indexes {
+		if idx.Name != "default" {
+			continue
+		}
+		if len(idx.Types) == 0 {
+			t.Fatal("default index has no types in /indexes — the About pane cannot show registered doc types")
+		}
+		if idx.Types[0].Type != "work_order" || idx.Types[0].Resolved != 1 {
+			t.Errorf("types[0] = %+v, want work_order(1)", idx.Types[0])
+		}
+		return
+	}
+	t.Fatal("default index not in /indexes response")
+}
+
+// TestIndexesReturnsBytes proves /indexes carries the on-disk size (Bytes) so
+// the About pane can show corpus size without a separate call. Uses a scoped
+// registry because reg.Meta (which populates Bytes) only works in scoped mode.
+func TestIndexesReturnsBytes(t *testing.T) {
+	home := raglit.Home(t.TempDir())
+	root := t.TempDir()
+	reg, err := raglit.OpenScopedRegistry(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Ingest(context.Background(), raglit.Document{
+		Path: "file:///notes.md", Title: "Notes",
+		Fragments: []raglit.Fragment{{Text: "a document in the corpus"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	lf := addLLMFlags(fs)
+	_ = fs.Parse(nil)
+	lf.resolve(home)
+	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{}, nil, ingestFragParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	body := httpGet(t, srv.URL+"/indexes")
+	var out struct {
+		Indexes []struct {
+			Name  string `json:"name"`
+			Bytes int64  `json:"bytes"`
+		}
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	for _, idx := range out.Indexes {
+		if idx.Name != "default" {
+			continue
+		}
+		if idx.Bytes <= 0 {
+			t.Fatalf("default index bytes = %d, want > 0 (corpus size for the About pane)", idx.Bytes)
+		}
+		return
+	}
+	t.Fatal("default index not in /indexes response")
+}
+
+// TestStatusReturnsLastIngestAt proves /status carries last_ingest_at after a
+// job completes, so the About pane can show "last import N ago".
+func TestStatusReturnsLastIngestAt(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Enqueue a file that exists so the worker can complete it.
+	dir := t.TempDir()
+	p := filepath.Join(dir, "real.md")
+	if err := os.WriteFile(p, []byte("# Hello\n\nA real document.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Enqueue("file://"+p, "Real"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drain all pending jobs (the fixture's phantom + our real one) using
+	// Worker.ProcessOne, the same pattern as TestDocDetailHistoryHasTheIngest.
+	w := &raglit.Worker{Store: st, Fetcher: raglit.Fetch}
+	for {
+		did, err := w.ProcessOne(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !did {
+			break
+		}
+	}
+
+	// After all jobs are done, /status must carry last_ingest_at.
+	var snap struct {
+		LastIngestAt int64 `json:"last_ingest_at"`
+	}
+	if err := json.Unmarshal([]byte(httpGet(t, srv.URL+"/status?index=default")), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap.LastIngestAt <= 0 {
+		t.Fatal("last_ingest_at = 0, want > 0 after job completion")
+	}
+}

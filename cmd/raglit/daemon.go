@@ -124,6 +124,9 @@ func aggregateStatus(reg *raglit.Registry, names []string) raglit.Status {
 		if s.RatePerMin > agg.RatePerMin {
 			agg.RatePerMin = s.RatePerMin
 		}
+		if s.LastIngestAt > agg.LastIngestAt {
+			agg.LastIngestAt = s.LastIngestAt
+		}
 		agg.Items = append(agg.Items, s.Items...)
 		// Lanes are summed across indexes because the LANE is the shared thing:
 		// there is one heavy slot for the whole daemon, not one per index, so

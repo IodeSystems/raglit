@@ -554,6 +554,12 @@ type idxRow struct {
 	// Prunable: documents whose source file is gone (raglit/prune.go). Out of
 	// search already; POST /api/index/prune removes them. Up to a minute stale.
 	Prunable int `json:"prunable,omitempty"`
+	// Bytes: on-disk size of the index directory (IndexMeta.Bytes).
+	Bytes int64 `json:"bytes,omitempty"`
+	// Types: the index's registered document types and how many documents
+	// resolved as each (IndexDigest.Types). The "What it holds" panel shows
+	// these alongside kinds, content, and roles.
+	Types []raglit.FieldsCoverage `json:"types,omitempty"`
 }
 type listIndexesOut struct {
 	Body struct {
@@ -578,6 +584,10 @@ func listIndexes(reg *raglit.Registry) func(context.Context, *struct{}) (*listIn
 			if d, err := st.IndexDigest(); err == nil {
 				row.About, row.AboutStale = d.About, d.AboutStale
 				row.Kinds, row.Content, row.Roles = d.Kinds, d.Content, d.Roles
+				row.Types = d.Types
+			}
+			if m, ok := reg.Meta(name); ok {
+				row.Bytes = m.Bytes
 			}
 			out.Body.Indexes = append(out.Body.Indexes, row)
 		}

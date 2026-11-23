@@ -559,6 +559,9 @@ type Status struct {
 	// Prunable is how many documents' source files are gone (prune.go): out of
 	// search already, removed by `raglit prune`. Up to a minute stale.
 	Prunable int `json:"prunable,omitempty"`
+	// LastIngestAt is the finished_at of the most recent completed ingest job,
+	// unix nanoseconds. Zero when no job has completed.
+	LastIngestAt int64 `json:"last_ingest_at,omitempty"`
 }
 
 // LaneStatus is one lane's share of the queue.
@@ -644,6 +647,9 @@ func (s *Store) IndexStatus() (Status, error) {
 	avgSec := s.recentAvgSeconds()
 	if avgSec > 0 {
 		st.RatePerMin = 60.0 / avgSec
+	}
+	if rows, err := s.q.RecentDoneDurations(ctx); err == nil && len(rows) > 0 {
+		st.LastIngestAt = rows[0].FinishedAt
 	}
 
 	active, err := s.q.ListActiveJobs(ctx)

@@ -251,6 +251,20 @@ function Holds({ index, info }: { index: string; info?: IndexInfo }) {
       )}
       <Tags title="Topics" tags={info?.content} />
       <Tags title="Roles" tags={info?.roles} />
+      {info?.types?.length ? (
+        <div style={{ marginTop: 16 }}>
+          <div className="muted small" style={{ marginBottom: 4 }}>
+            Document types
+          </div>
+          <div className="tagchips">
+            {info.types.map((tc) => (
+              <span className="kindchip" key={tc.type} title={`${tc.extracted}/${tc.resolved} extracted`}>
+                {tc.type} <span className="muted">{tc.resolved.toLocaleString()}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <p className="small" style={{ marginBottom: 0 }}>
         <Link className="scopelink" to="/i/$index/d" params={{ index }}>
           All documents →

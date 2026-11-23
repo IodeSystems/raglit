@@ -97,6 +97,10 @@ export type IndexInfo = {
   meaning?: boolean;
   // The index runs no work; jobs queue and run on resume.
   paused?: boolean;
+  // On-disk size of the index directory, bytes.
+  bytes?: number;
+  // The index's registered document types and how many documents resolved as each.
+  types?: FieldsCoverage[];
 };
 
 // One scheduling lane's share of the queue. Lanes no longer SCHEDULE anything —
@@ -177,6 +181,8 @@ export type StatusSnapshot = {
   failed?: number;
   jobs_per_min?: number;
   lanes?: Record<string, LaneStatus>;
+  // finished_at of the most recent completed ingest job, unix nanoseconds.
+  last_ingest_at?: number;
 };
 
 // One stage of an ingest, as the pipeline recorded it: fetch → extract → ocr →
