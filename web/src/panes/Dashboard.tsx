@@ -1,11 +1,13 @@
 import { Link, useParams } from "@tanstack/react-router";
 
 import {
+  getCoverage,
   getJSON,
   getStatus,
   listChannels,
   listIdentityJobs,
   listJobs,
+  type Coverage,
   type IdentityQueueStatus,
   type IndexInfo,
   type Job,
@@ -17,7 +19,7 @@ import {
 import { usePoll } from "../usePoll";
 import { ErrorText, Details } from "../ui/Details";
 import { AISummaryLabel } from "../ui/Label";
-import { displayPath, documents, kindLabel, laneLabel, passages } from "../ui/display";
+import { displayPath, kindLabel, laneLabel } from "../ui/display";
 import { splitName } from "../ui/display";
 import { useIndexInfo } from "./IndexRows";
 import "./scope.css";
@@ -32,11 +34,24 @@ import { useOperator } from "../ui/operator";
 // role tags) answers the first; /api/problems and the two job queues the
 // second and third.
 //
+// The five coverage segments, in the order the band reads them. A shortfall
+// renders its count as a link to the document list filtered to the documents
+// missing that mark (?cov_missing=<key>), so the operator lands directly on
+// the work that closes the gap.
+const COVERAGE_SEGMENTS = [
+  { key: "captioned" as const, label: "Captioned" },
+  { key: "tagged" as const,    label: "Tagged" },
+  { key: "typed" as const,     label: "Typed" },
+  { key: "extracted" as const, label: "Extracted" },
+  { key: "attested" as const,  label: "Attested" },
+];
+
 // Polled rather than pushed. An import run is the thing people sit in front of
 // this for, and a static snapshot of a queue that is draining tells them nothing.
 export function Dashboard() {
   const { index } = useParams({ from: "/i/$index" });
   const { data, error } = usePoll<StatusSnapshot>(() => getStatus(index), 3000, [index]);
+  const { data: cov, error: covErr } = usePoll<Coverage>(() => getCoverage(index), 10000, [index]);
   const info = useIndexInfo().get(index);
   const operator = useOperator();
 
@@ -50,7 +65,6 @@ export function Dashboard() {
   if (!data) return <div className="empty">Loading…</div>;
 
   const { project, local } = splitName(index);
-  const busy = (data.pending ?? 0) + (data.running ?? 0);
 
   return (
     <>
@@ -59,20 +73,18 @@ export function Dashboard() {
           {local}
           {project && <span className="muted"> · {project}</span>}
         </h1>
-        <div className="facts">
-          {documents(data.documents ?? 0)}
-          <span className="sep">·</span>
-          {operator && (
-            <>
-              {passages(data.fragments ?? 0)}
-              <span className="sep">·</span>
-            </>
-          )}
-          {busy > 0
-            ? `importing: ${(data.running ?? 0).toLocaleString()} in progress, ${(
-                data.pending ?? 0
-              ).toLocaleString()} waiting`
-            : "no imports running"}
+        {/* Three bands, three facts: how big this corpus is, how much of it is
+            described, and what it is doing now. They were one line before, which
+            mixed a size and a queue state that answer different questions. */}
+        <div className="bands">
+          <SizeBand docs={data.documents ?? 0} frags={data.fragments ?? 0} operator={operator} />
+          <CoverageBand cov={cov} err={covErr} index={index} />
+          <WorkBand
+            pending={data.pending ?? 0}
+            running={data.running ?? 0}
+            failed={data.failed ?? 0}
+            index={index}
+          />
         </div>
         {info?.about && (
           <div className="about">
@@ -96,6 +108,124 @@ export function Dashboard() {
       <Lanes lanes={data.lanes} />
       <Channels />
     </>
+  );
+}
+
+// ── the three bands ─────────────────────────────────────────────────────────
+
+// Size: how big the corpus is. Nothing to do here — the numbers read as they
+// are, because there is no work that makes a corpus bigger or smaller on
+// purpose.
+function SizeBand({ docs, frags, operator }: { docs: number; frags: number; operator: boolean }) {
+  return (
+    <div className="band">
+      <div className="bandhead muted small">Size</div>
+      <div className="banditems">
+        <span title="Documents">{docs.toLocaleString()} <span className="muted small">docs</span></span>
+        {operator && (
+          <span title="Passages">{frags.toLocaleString()} <span className="muted small">passages</span></span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Coverage: the five segments, each a proportional bar. A shortfall renders its
+// count as a link to the page that closes it — a number without a next step is
+// a statistic, and this band is about what to do about the corpus.
+//
+// A daemon older than this bundle answers 404. Say so, the way Types.tsx does:
+// "the server is old" is a different fact from "this index has no coverage",
+// and only one of them is about the corpus.
+function CoverageBand({ cov, err, index }: { cov: Coverage | null; err: string; index: string }) {
+  if (err) {
+    return (
+      <div className="band">
+        <div className="bandhead muted small">Coverage</div>
+        <p className="muted small bandnote">
+          Coverage needs a newer daemon; the running one predates this page.
+        </p>
+      </div>
+    );
+  }
+  if (!cov) {
+    return (
+      <div className="band">
+        <div className="bandhead muted small">Coverage</div>
+        <p className="muted small bandnote">Loading…</p>
+      </div>
+    );
+  }
+  const total = cov.total;
+  return (
+    <div className="band">
+      <div className="bandhead muted small">Coverage</div>
+      <div className="bandbars">
+        {COVERAGE_SEGMENTS.map((seg) => {
+          const n = cov[seg.key];
+          const pct = total ? Math.round((100 * n) / total) : 0;
+          const short = total > 0 && n < total;
+          return (
+            <div key={seg.key} className="bandbar">
+              <span className="label" title={`${n.toLocaleString()} of ${total.toLocaleString()}`}>
+                {seg.label}
+              </span>
+              <span className="bar" aria-hidden>
+                <span style={{ width: `${pct}%` }} />
+              </span>
+              {short ? (
+                <Link
+                  className="n scopelink short"
+                  to="/i/$index/d"
+                  params={{ index }}
+                  search={{ cov_missing: seg.key }}
+                  title={`${(total - n).toLocaleString()} missing — ${seg.label.toLowerCase()} work`}
+                >
+                  {n.toLocaleString()}
+                  <span className="muted">/{total.toLocaleString()}</span>
+                </Link>
+              ) : (
+                <span className="n">{n.toLocaleString()}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Work: what the import queue is doing now. Failed is rendered as a FAILURE —
+// red, with a link to the jobs that failed — never as a neutral count beside
+// pending and running, which is how "22 failed" comes to read like a document
+// count.
+function WorkBand({
+  pending,
+  running,
+  failed,
+  index,
+}: {
+  pending: number;
+  running: number;
+  failed: number;
+  index: string;
+}) {
+  return (
+    <div className="band">
+      <div className="bandhead muted small">Work</div>
+      <div className="banditems">
+        {running > 0 && <span>{running.toLocaleString()} <span className="muted small">running</span></span>}
+        {pending > 0 && <span>{pending.toLocaleString()} <span className="muted small">waiting</span></span>}
+        {running === 0 && pending === 0 && <span className="muted small">idle</span>}
+        {failed > 0 && (
+          <span className="bad">
+            <Link to="/i/$index/jobs" params={{ index }}>
+              {failed.toLocaleString()} failed
+            </Link>
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 

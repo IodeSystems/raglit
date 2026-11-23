@@ -175,11 +175,15 @@ const searchRoute = createRoute({
 // the URL so a filtered list is a link; the text filter, kind and sort stay
 // local state — they are a way to find a row on this screen, not something
 // worth sending.
-function docsSearch(s: Record<string, unknown>): { type?: string; tag?: string; cov?: string } {
+function docsSearch(s: Record<string, unknown>): { type?: string; tag?: string; cov?: string; cov_missing?: string } {
   return {
     ...(typeof s.type === "string" && s.type ? { type: s.type } : {}),
     ...(typeof s.tag === "string" && s.tag ? { tag: s.tag } : {}),
     ...(typeof s.cov === "string" && s.cov ? { cov: s.cov } : {}),
+    // Filters to documents MISSING this coverage mark — the inverse of cov.
+    // Used by the dashboard coverage band: a shortfall in a segment links
+    // here, so the operator lands on the documents that close it.
+    ...(typeof s.cov_missing === "string" && s.cov_missing ? { cov_missing: s.cov_missing } : {}),
   };
 }
 

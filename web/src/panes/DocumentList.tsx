@@ -125,7 +125,7 @@ export function DocumentList() {
   // clicking a facet chip, and cleared by clicking it again. One value per
   // facet at a time — a facet row is a choice, and ANDing within a facet has
   // no meaning (a document carries one doc type).
-  const { type: typeSel, tag: tagSel, cov: covSel } = useSearch({ from: "/i/$index/d" });
+  const { type: typeSel, tag: tagSel, cov: covSel, cov_missing: covMissingSel } = useSearch({ from: "/i/$index/d" });
   const navigate = useNavigate();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState("");
@@ -153,7 +153,7 @@ export function DocumentList() {
     void navigate({
       to: "/i/$index/d",
       params: { index },
-      search: (s) => ({ ...s, type: undefined, tag: undefined, cov: undefined }),
+      search: (s) => ({ ...s, type: undefined, tag: undefined, cov: undefined, cov_missing: undefined }),
       replace: true,
     });
   }
@@ -239,12 +239,13 @@ export function DocumentList() {
         (!tagSel ||
           (r.doc.gen_content_tags ?? []).includes(tagSel) ||
           (r.doc.gen_role_tags ?? []).includes(tagSel)) &&
-        (!covSel || !!r.doc.coverage?.[covSel as CoverageKey]),
+        (!covSel || !!r.doc.coverage?.[covSel as CoverageKey]) &&
+        (!covMissingSel || !r.doc.coverage?.[covMissingSel as CoverageKey]),
     );
     return out.sort((a, b) => compare(a, b, sort));
-  }, [matched, kind, sort, typeSel, tagSel, covSel]);
+  }, [matched, kind, sort, typeSel, tagSel, covSel, covMissingSel]);
 
-  const anyFacet = !!(typeSel || tagSel || covSel);
+  const anyFacet = !!(typeSel || tagSel || covSel || covMissingSel);
 
   // Arrow keys move between rows; Home/End jump; "/" goes back to the filter.
   function onListKey(e: KeyboardEvent<HTMLDivElement>) {
@@ -351,7 +352,7 @@ export function DocumentList() {
           is in the URL (?type= ?tag= ?cov=), so this row is what a shared link
           restores. A row is hidden until at least one of its values is
           present, so a fresh index shows only the kind row. */}
-      {(facets.types.length > 0 || facets.tags.length > 0 || facets.covs.length > 0) && (
+      {(facets.types.length > 0 || facets.tags.length > 0 || facets.covs.length > 0 || covMissingSel) && (
         <div className="dl-facets">
           {anyFacet && (
             <button type="button" className="dl-clear" onClick={clearFacets}>
@@ -396,11 +397,51 @@ export function DocumentList() {
                   {covSel} <span className="dl-count">×</span>
                 </button>
               )}
+              {covMissingSel && (
+                <button
+                  type="button"
+                  className="dl-chip on"
+                  aria-pressed
+                  onClick={() =>
+                    void navigate({
+                      to: "/i/$index/d",
+                      params: { index },
+                      search: (s) => ({ ...s, cov_missing: undefined }),
+                      replace: true,
+                    })
+                  }
+                >
+                  missing {covMissingSel} <span className="dl-count">×</span>
+                </button>
+              )}
               {facets.covs.map(([c, n]) => (
                 <button type="button" key={c} className="dl-chip" onClick={() => setFacet("cov", c)}>
                   {c} <span className="dl-count">{n.toLocaleString()}</span>
                 </button>
               ))}
+            </div>
+          )}
+          {/* Show the cov_missing filter even when no coverage marks exist yet
+              (a fresh index): the user landed here from a dashboard shortfall
+              link and needs to see what is being filtered. */}
+          {covMissingSel && facets.covs.length === 0 && (
+            <div className="dl-facet">
+              <span className="muted dl-facet-label">Coverage</span>
+              <button
+                type="button"
+                className="dl-chip on"
+                aria-pressed
+                onClick={() =>
+                  void navigate({
+                    to: "/i/$index/d",
+                    params: { index },
+                    search: (s) => ({ ...s, cov_missing: undefined }),
+                    replace: true,
+                  })
+                }
+              >
+                missing {covMissingSel} <span className="dl-count">×</span>
+              </button>
             </div>
           )}
         </div>

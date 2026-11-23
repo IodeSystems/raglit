@@ -623,6 +623,22 @@ export type FieldsCoverage = {
 export const listDocTypes = (index: string) =>
   getJSON<{ types: DocTypeInfo[]; coverage?: FieldsCoverage[] }>("/api/doc-types", { index });
 
+// Whole-corpus coverage (cmd/raglit/coverageapi.go, raglit.CorpusCoverage): how
+// many documents carry each of the five marks, out of total. The dashboard's
+// coverage band is built from this; a daemon older than the bundle answers 404,
+// which the band must say rather than render as an index with no coverage.
+export type Coverage = {
+  total: number;
+  captioned: number;
+  tagged: number;
+  typed: number;
+  extracted: number;
+  attested: number;
+};
+
+export const getCoverage = (index: string) =>
+  getJSON<{ coverage: Coverage }>("/api/coverage", { index }).then((r) => r.coverage);
+
 // One document's record: the type's schema, filled out. `source` is "person"
 // when somebody ruled on it, and a person's is never regenerated over.
 export type DocFields = {
