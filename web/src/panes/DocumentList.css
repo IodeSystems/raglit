@@ -15,6 +15,16 @@
 .dl-chip:disabled:hover { border-color:var(--line); }
 .dl-count { font-variant-numeric:tabular-nums; opacity:.75; }
 
+/* Facet rows (document type, tag, coverage mark). The selection lives in the
+   URL (?type= ?tag= ?cov=), so a shared link restores the filtered list. */
+.dl-facets { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--sp-2) var(--sp-3);
+  padding:var(--sp-2) 14px var(--sp-3); border-bottom:1px solid var(--line); }
+.dl-facet { display:inline-flex; align-items:baseline; flex-wrap:wrap; gap:var(--sp-2); }
+.dl-facet-label { font-size:var(--fs-sm); text-transform:uppercase; letter-spacing:.04em; }
+.dl-clear { font-size:var(--fs-sm); background:none; border:none; color:var(--accent);
+  cursor:pointer; padding:0; margin-left:auto; }
+.dl-clear:hover { text-decoration:underline; }
+
 .dl-summary { padding:var(--sp-2) 14px; font-size:var(--fs-sm); border-bottom:1px solid var(--line); }
 
 .dl-row { display:flex; align-items:center; gap:var(--sp-3); padding:9px 14px;

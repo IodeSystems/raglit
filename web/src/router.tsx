@@ -171,10 +171,23 @@ const searchRoute = createRoute({
   validateSearch: searchParams,
 });
 
+// The facet filter's selection (document type, tag, coverage mark) lives in
+// the URL so a filtered list is a link; the text filter, kind and sort stay
+// local state — they are a way to find a row on this screen, not something
+// worth sending.
+function docsSearch(s: Record<string, unknown>): { type?: string; tag?: string; cov?: string } {
+  return {
+    ...(typeof s.type === "string" && s.type ? { type: s.type } : {}),
+    ...(typeof s.tag === "string" && s.tag ? { tag: s.tag } : {}),
+    ...(typeof s.cov === "string" && s.cov ? { cov: s.cov } : {}),
+  };
+}
+
 const docsRoute = createRoute({
   getParentRoute: () => indexRoute,
   path: "d",
   component: DocumentList,
+  validateSearch: docsSearch,
 });
 
 // The document segment is the DISPLAY path, relative to the index root

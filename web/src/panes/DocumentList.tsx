@@ -1,4 +1,4 @@
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { listDocuments, type DocumentRow } from "../api";
@@ -6,14 +6,14 @@ import { aiTitleTooltip, displayPath, displayTitle, documents, fileName, kindLab
 import { ErrorText } from "../ui/Details";
 import { DocTree } from "./DocTree";
 import "./DocumentList.css";
-import { useResetOn } from "../useResetOn";
 import { useOperator } from "../ui/operator";
 
 // Every document in the index.
 //
-// The filter, kind and sort are local state, not URL params, and that is
-// deliberate: they are a way to find a row on this screen, not a thing worth
-// sending anybody. The search route is what you send.
+// The text filter, kind and sort are local state: a way to find a row on this
+// screen, not a thing worth sending. The facet selection (document type, tag,
+// coverage mark) is the exception — it is in the URL's search params, so a
+// filtered list is a link.
 
 type SortKey = "title" | "added" | "kind";
 
@@ -121,6 +121,12 @@ function compare(a: Row, b: Row, key: SortKey): number {
 export function DocumentList() {
   const { index } = useParams({ from: "/i/$index" });
   const operator = useOperator();
+  // Facet selection lives in the URL: ?type=, ?tag= and ?cov= are set by
+  // clicking a facet chip, and cleared by clicking it again. One value per
+  // facet at a time — a facet row is a choice, and ANDing within a facet has
+  // no meaning (a document carries one doc type).
+  const { type: typeSel, tag: tagSel, cov: covSel } = useSearch({ from: "/i/$index/d" });
+  const navigate = useNavigate();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
@@ -131,11 +137,27 @@ export function DocumentList() {
   const listRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
 
-  useResetOn([index], () => {
-    setRows(null);
-    setError("");
-    setKind(null);
-  });
+  // Every facet change replaces: the row is a control, and a shared link is
+  // one URL, not a trail of toggles. `to` is the current route, which also
+  // pins the search type to this route's params.
+  function setFacet(key: "type" | "tag" | "cov", value: string | null) {
+    void navigate({
+      to: "/i/$index/d",
+      params: { index },
+      search: (s) => ({ ...s, [key]: value ? value : undefined }),
+      replace: true,
+    });
+  }
+
+  function clearFacets() {
+    void navigate({
+      to: "/i/$index/d",
+      params: { index },
+      search: (s) => ({ ...s, type: undefined, tag: undefined, cov: undefined }),
+      replace: true,
+    });
+  }
+
   useEffect(() => {
     let live = true;
     listDocuments(index)
@@ -174,11 +196,55 @@ export function DocumentList() {
     });
   }, [rows, matched]);
 
+  // The three facet rows. Counts come from the text-filtered rows, so a chip's
+  // number is what clicking it would show. Doc type is what identity resolved
+  // the document as; tags are the content and role tags together (tag values
+  // are unique across the two); coverage marks are the five presence marks.
+  // A tag index with hundreds of values would not fit the screen, so the row
+  // shows the most common ones.
+  const MAX_TAGS_FACET = 12;
+  const facets = useMemo(() => {
+    if (!rows) return { types: [] as [string, number][], tags: [] as [string, number][], covs: [] as [string, number][] };
+    const typeCounts = new Map<string, number>();
+    const tagCounts = new Map<string, number>();
+    const covCounts = new Map<string, number>();
+    for (const r of matched ?? []) {
+      // The type facet is a choice among RESOLVED types; "no type" is not a
+      // type, so it gets no chip (unlike the kind row, where unclassified is a
+      // state worth filtering to).
+      const t = r.doc.gen_doc_type;
+      if (t) typeCounts.set(t, (typeCounts.get(t) ?? 0) + 1);
+      for (const tag of [...(r.doc.gen_content_tags ?? []), ...(r.doc.gen_role_tags ?? [])]) {
+        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+      }
+      for (const m of COVERAGE_MARKS) {
+        if (r.doc.coverage?.[m.key]) covCounts.set(m.key, (covCounts.get(m.key) ?? 0) + 1);
+      }
+    }
+    const byCount = (a: [string, number], b: [string, number]) => b[1] - a[1] || a[0].localeCompare(b[0]);
+    const types = [...typeCounts.entries()].sort(byCount);
+    const tags = [...tagCounts.entries()].sort(byCount).slice(0, MAX_TAGS_FACET);
+    const covs = COVERAGE_MARKS.map((m) => [m.key, covCounts.get(m.key) ?? 0] as [string, number]).filter(
+      ([, n]) => n > 0,
+    );
+    return { types, tags, covs };
+  }, [matched]);
+
   const shown = useMemo(() => {
     if (!matched) return null;
-    const out = kind === null ? [...matched] : matched.filter((r) => r.kind === kind);
+    const out = matched.filter(
+      (r) =>
+        (kind === null || r.kind === kind) &&
+        (!typeSel || (r.doc.gen_doc_type || "") === typeSel) &&
+        (!tagSel ||
+          (r.doc.gen_content_tags ?? []).includes(tagSel) ||
+          (r.doc.gen_role_tags ?? []).includes(tagSel)) &&
+        (!covSel || !!r.doc.coverage?.[covSel as CoverageKey]),
+    );
     return out.sort((a, b) => compare(a, b, sort));
-  }, [matched, kind, sort]);
+  }, [matched, kind, sort, typeSel, tagSel, covSel]);
+
+  const anyFacet = !!(typeSel || tagSel || covSel);
 
   // Arrow keys move between rows; Home/End jump; "/" goes back to the filter.
   function onListKey(e: KeyboardEvent<HTMLDivElement>) {
@@ -278,6 +344,65 @@ export function DocumentList() {
               {k ? kindLabel(k) : "Not classified"} <span className="dl-count">{n.toLocaleString()}</span>
             </button>
           ))}
+        </div>
+      )}
+
+      {/* The facet rows: document type, tag and coverage mark. The selection
+          is in the URL (?type= ?tag= ?cov=), so this row is what a shared link
+          restores. A row is hidden until at least one of its values is
+          present, so a fresh index shows only the kind row. */}
+      {(facets.types.length > 0 || facets.tags.length > 0 || facets.covs.length > 0) && (
+        <div className="dl-facets">
+          {anyFacet && (
+            <button type="button" className="dl-clear" onClick={clearFacets}>
+              Clear
+            </button>
+          )}
+          {facets.types.length > 0 && (
+            <div className="dl-facet">
+              <span className="muted dl-facet-label">Type</span>
+              {typeSel && (
+                <button type="button" className="dl-chip on" aria-pressed onClick={() => setFacet("type", null)}>
+                  {typeSel} <span className="dl-count">×</span>
+                </button>
+              )}
+              {facets.types.map(([t, n]) => (
+                <button type="button" key={t} className="dl-chip" onClick={() => setFacet("type", t)}>
+                  {t} <span className="dl-count">{n.toLocaleString()}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {facets.tags.length > 0 && (
+            <div className="dl-facet">
+              <span className="muted dl-facet-label">Tag</span>
+              {tagSel && (
+                <button type="button" className="dl-chip on" aria-pressed onClick={() => setFacet("tag", null)}>
+                  {tagSel} <span className="dl-count">×</span>
+                </button>
+              )}
+              {facets.tags.map(([t, n]) => (
+                <button type="button" key={t} className="dl-chip" onClick={() => setFacet("tag", t)}>
+                  {t} <span className="dl-count">{n.toLocaleString()}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {facets.covs.length > 0 && (
+            <div className="dl-facet">
+              <span className="muted dl-facet-label">Coverage</span>
+              {covSel && (
+                <button type="button" className="dl-chip on" aria-pressed onClick={() => setFacet("cov", null)}>
+                  {covSel} <span className="dl-count">×</span>
+                </button>
+              )}
+              {facets.covs.map(([c, n]) => (
+                <button type="button" key={c} className="dl-chip" onClick={() => setFacet("cov", c)}>
+                  {c} <span className="dl-count">{n.toLocaleString()}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
