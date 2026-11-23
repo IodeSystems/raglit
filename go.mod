@@ -12,7 +12,7 @@ require (
 	github.com/iodesystems/gwag/v2 v2.11.0
 	github.com/iodesystems/poly-lsp-mcp v0.5.4
 	github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0
-	github.com/mark3labs/mcp-go v1.5.0
+	github.com/mark3labs/mcp-go v1.6.0
 	github.com/pdfcpu/pdfcpu v0.16.4
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
