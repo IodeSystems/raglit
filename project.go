@@ -283,6 +283,15 @@ func (s *Store) SearchOwnLayer(ctx context.Context, query, mode, pathPrefix stri
 	}
 }
 
+// FacetCountsOwnLayer is FacetCountsMode restricted to this layer's OWN
+// documents — the facet counterpart of SearchOwnLayer, for the same sibling
+// fan-out reason. pathPrefix scopes the way SearchOwnLayer's does; the rest
+// of the arguments are FacetCountsMode's.
+func (s *Store) FacetCountsOwnLayer(ctx context.Context, query, mode, pathPrefix string, f SearchFilter, limit int) ([]Facet, error) {
+	f.PathPrefix = pathPrefix
+	return s.facetCountsOwnLayer(ctx, query, f, mode, limit)
+}
+
 // ProjectIDOf is the project id a base index was registered under, "" when it
 // is not a project base.
 func (r *Registry) ProjectIDOf(base string) string {
