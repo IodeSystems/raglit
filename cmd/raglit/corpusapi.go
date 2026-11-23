@@ -95,6 +95,9 @@ func registerCorpusRoutes(api huma.API, g *gat.Gateway, reg *raglit.Registry, lf
 	gat.Register(api, g, op("importReadings", http.MethodPost, "/api/import-readings",
 		"Record verified transcripts as attested readings of the recordings they match (apply; else a dry run)."),
 		importReadingsOp(reg))
+	gat.Register(api, g, op("coverage", http.MethodGet, "/api/coverage",
+		"Corpus coverage: how many documents are captioned, tagged, typed, extracted, attested."),
+		coverageOp(reg))
 }
 
 type applyIn struct {
