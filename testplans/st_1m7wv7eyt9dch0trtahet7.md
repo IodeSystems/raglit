@@ -38,6 +38,10 @@ must survive that to assert on the rc.
 produces=hook-stub-e2e.log inputs=scripts/hooks/pre-commit
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
+# Truncate the artifact: it is appended per run, so without this the log
+# accumulates one section per run and the rendered output shows the older
+# (pre-fix) runs' failures alongside the current one.
+: > "$OUT/hook-stub-e2e.log"
 REPO="$T/repo"
 mkdir -p "$REPO/hooks" "$REPO/bin" "$REPO/internal" "$T/sqlc" "$T/clean-internal/db"
 # $T/sqlc is the repo's ../sqlc (passes the hook's sibling check).
