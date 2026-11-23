@@ -259,10 +259,18 @@ func (s *Store) MatchDocuments(ref string) ([]DocRef, error) {
 	return local, nil
 }
 
-// DocText overlays: the branch's copy if present, else (unless tombstoned) the
-// parent's.
+// DocText returns a document's indexed text with no offset or query. It is the
+// long-standing read and is exactly DocTextOpts with zero options.
 func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, error) {
-	local, err := s.docTextLocal(exactPath, from, to, maxChars)
+	return s.DocTextOpts(exactPath, from, to, maxChars, DocContentOpts{})
+}
+
+// DocTextOpts is DocText with the optional read modifiers: a character offset
+// into the joined text (Offset) and a query-within-document (Query). It overlays
+// the same way as DocText: the branch's copy if present, else (unless
+// tombstoned) the parent's.
+func (s *Store) DocTextOpts(exactPath string, from, to, maxChars int, opts DocContentOpts) (DocContent, error) {
+	local, err := s.docTextLocal(exactPath, from, to, maxChars, opts)
 	if err == nil || s.parent == nil {
 		return local, err
 	}
@@ -277,7 +285,7 @@ func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, e
 		}
 	}
 	if !s.worktree() {
-		return s.parent.DocText(exactPath, from, to, maxChars)
+		return s.parent.DocTextOpts(exactPath, from, to, maxChars, opts)
 	}
 	pp, ok := s.toParent(exactPath)
 	if !ok {
@@ -286,7 +294,7 @@ func (s *Store) DocText(exactPath string, from, to, maxChars int) (DocContent, e
 	if _, shown := s.parent.viewHash(pp); !shown {
 		return DocContent{}, err // the error names the branch path, not the parent's
 	}
-	out, err := s.parent.DocText(pp, from, to, maxChars)
+	out, err := s.parent.DocTextOpts(pp, from, to, maxChars, opts)
 	if err != nil {
 		return out, err
 	}

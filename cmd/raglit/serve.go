@@ -231,12 +231,18 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 					"return an error listing the candidates. Optional `page` (single) or `from`/`to` "+
 					"(inclusive page range); `max_chars` caps the WHOLE response — `text` and the "+
 					"`pages` array are cut at the same offset, so it bounds what you take back. "+
-					"`index` restricts the lookup; omit to resolve across all indexes."),
+					"`offset` starts `text` at a character offset into the page-range text, to page "+
+					"into a long single-page document without re-fetching the head. `query` returns "+
+					"only the fragments of this document whose text contains it, in document order — "+
+					"where a term appears, without the full text. `index` restricts the lookup; "+
+					"omit to resolve across all indexes. Omit `offset` and `query` for the plain read."),
 			mcp.WithString("path", mcp.Required(), mcp.Description("document path or a unique filename substring")),
 			mcp.WithNumber("page", mcp.Description("single page to return (overrides from/to)")),
 			mcp.WithNumber("from", mcp.Description("first page of an inclusive range")),
 			mcp.WithNumber("to", mcp.Description("last page of an inclusive range")),
 			mcp.WithNumber("max_chars", mcp.Description("cap on the returned text, pages included (0 = uncapped)")),
+			mcp.WithNumber("offset", mcp.Description("start `text` at this character offset into the page-range text (0 = from the start)")),
+			mcp.WithString("query", mcp.Description("return only this document's fragments whose text contains this (case-insensitive), in document order; empty = no filter")),
 			mcp.WithString("index", mcp.Description("restrict lookup to this index (or comma-separated set); empty = all")),
 		),
 		h.getDocument,

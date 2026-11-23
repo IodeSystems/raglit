@@ -185,6 +185,8 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 			setIntIf(v, "from", req.GetInt("from", 0))
 			setIntIf(v, "to", req.GetInt("to", 0))
 			setIntIf(v, "max_chars", req.GetInt("max_chars", 0))
+			setIntIf(v, "offset", req.GetInt("offset", 0))
+			setIf(v, "query", req.GetString("query", ""))
 			v.Set("index", cv.read(req.GetString("index", "")))
 			return proxyGet(base, "/api/get-document", v, ns)
 		},

@@ -1311,6 +1311,8 @@ type getDocumentIn struct {
 	From     int    `query:"from"`
 	To       int    `query:"to"`
 	MaxChars int    `query:"max_chars"`
+	Offset   int    `query:"offset"`
+	Query    string `query:"query"`
 	Index    string `query:"index"`
 }
 type getDocumentOut struct {
@@ -1354,7 +1356,10 @@ func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (
 		if err != nil {
 			return nil, err
 		}
-		content, err := st.DocText(cands[0].path, from, to, in.MaxChars)
+		content, err := st.DocTextOpts(cands[0].path, from, to, in.MaxChars, raglit.DocContentOpts{
+			Offset: in.Offset,
+			Query:  in.Query,
+		})
 		if err != nil {
 			return nil, huma.Error500InternalServerError("get_document", err)
 		}

@@ -11,6 +11,22 @@ import (
 	gen "github.com/iodesystems/raglit/internal/db"
 )
 
+// DocContentOpts are the optional read modifiers for DocTextOpts: a character
+// offset into the joined text and a query-within-document. Both zero (Offset 0,
+// Query "") mean "read exactly as DocText does today".
+type DocContentOpts struct {
+	// Offset starts the joined Text at this character offset into the
+	// page-range text, so a caller pages into a long single-page document
+	// without re-fetching the head. 0 (the zero value) returns the text from
+	// the start. The existing maxChars cap still bounds the result.
+	Offset int
+	// Query returns only this document's fragments whose text contains it
+	// (case-insensitive substring), in document order — a caller asking where a
+	// term appears in one long document gets the matching spans, not the full
+	// text. "" (the zero value) applies no filter.
+	Query string
+}
+
 // Document content retrieval — the read side for an agent that has a search hit
 // (or a filename) and wants the actual indexed text back, not a snippet. Text is
 // reassembled from the stored fragments in page/ord order, so it reflects what
@@ -66,6 +82,17 @@ type DocContent struct {
 	Text      string        `json:"text"`
 	Truncated bool          `json:"truncated"`
 	Figures   []FigureRef   `json:"figures,omitempty"`
+	// Match holds the document-order spans of the fragments that matched a
+	// query-within-document (DocContentOpts.Query): each is the matching
+	// fragment's text with its page. Nil (omitted) when no query was given.
+	Match []DocQueryMatch `json:"match,omitempty"`
+}
+
+// DocQueryMatch is one fragment that matched a query-within-document: its page
+// and text, in the document's page/ord order.
+type DocQueryMatch struct {
+	Page int    `json:"page"`
+	Text string `json:"text"`
 }
 
 // FigureRef is one figure attached to a document (or a search hit): its
@@ -87,7 +114,12 @@ const pageSep = "\n\n"
 // end); maxChars caps the WHOLE result (≤0 = uncapped) — both the joined Text
 // blob and the Pages array, cut at the same offsets — setting Truncated when it
 // bites. Returns (‑, false, nil) via a zero DocContent when the path is unknown.
-func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocContent, error) {
+//
+// The options are applied after reassembly. Query returns only the matching
+// fragment spans in document order (Text and Pages carry the matched fragments,
+// and Match names them); Offset starts the joined Text at a character offset.
+// With both zero the behaviour is exactly the read described above.
+func (s *Store) docTextLocal(exactPath string, from, to, maxChars int, opts DocContentOpts) (DocContent, error) {
 	ctx := context.Background()
 	var out DocContent
 	doc, err := s.q.GetDocumentByPath(ctx, exactPath)
@@ -135,41 +167,34 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 		return DocContent{}, err
 	}
 
-	// text-overlap documents have overlapping fragments (a plain join would repeat
-	// every overlap region), so reassemble from their [start,end) spans; llm-seg /
-	// synthetic documents have no spans (0/0) and join directly.
-	offsetMode := false
-	for _, r := range frags {
-		if r.EndOff > r.StartOff {
-			offsetMode = true
-			break
-		}
-	}
-	if offsetMode {
-		out.Pages, out.Text = reassembleOffsets(frags)
-	} else {
-		// Group fragments into pages, preserving order; join with pageSep.
-		curPage := int64(-1)
-		var buf []string
-		flush := func() {
-			if curPage >= 0 {
-				out.Pages = append(out.Pages, DocPageText{Page: int(curPage), Text: strings.Join(buf, pageSep)})
-			}
-			buf = nil
-		}
+	out.Pages, out.Text = assembleFrags(frags)
+
+	// Query-within-document: keep only the fragments whose text contains the
+	// query (case-insensitive), in document order. The matched fragments
+	// replace the document's text and pages, and Match names each one with its
+	// page — a caller asking where a term appears gets the spans, not the blob.
+	if q := strings.TrimSpace(opts.Query); q != "" {
+		lq := strings.ToLower(q)
+		kept := make([]gen.ListFragmentsForDocRow, 0, len(frags))
+		out.Match = make([]DocQueryMatch, 0, len(frags))
 		for _, r := range frags {
-			if r.Page != curPage {
-				flush()
-				curPage = r.Page
+			if !strings.Contains(strings.ToLower(r.Text), lq) {
+				continue
 			}
-			buf = append(buf, r.Text)
+			kept = append(kept, r)
+			out.Match = append(out.Match, DocQueryMatch{Page: int(r.Page), Text: r.Text})
 		}
-		flush()
-		parts := make([]string, len(out.Pages))
-		for i, p := range out.Pages {
-			parts[i] = p.Text
+		frags = kept
+		out.Pages, out.Text = assembleFrags(frags)
+	}
+
+	// Offset paging: start the joined text at a character offset. The offset is
+	// into the page-range text (before the cap), so it composes with maxChars.
+	if opts.Offset > 0 {
+		if opts.Offset > len(out.Text) {
+			opts.Offset = len(out.Text)
 		}
-		out.Text = strings.Join(parts, pageSep)
+		out.Text = out.Text[opts.Offset:]
 	}
 	if maxChars > 0 && len(out.Text) > maxChars {
 		out.Text = out.Text[:maxChars]
@@ -189,6 +214,50 @@ func (s *Store) docTextLocal(exactPath string, from, to, maxChars int) (DocConte
 		}
 	}
 	return out, nil
+}
+
+// assembleFrags reassembles fragments into their per-page texts and joined blob.
+// It is the assembly body of docTextLocal, factored out so a query can reassemble
+// a filtered fragment set with the identical rules. text-overlap documents have
+// overlapping fragments (a plain join would repeat every overlap region), so they
+// reassemble from their [start,end) spans; llm-seg / synthetic documents have no
+// spans (0/0) and join directly.
+func assembleFrags(frags []gen.ListFragmentsForDocRow) ([]DocPageText, string) {
+	var pages []DocPageText
+	var text string
+	offsetMode := false
+	for _, r := range frags {
+		if r.EndOff > r.StartOff {
+			offsetMode = true
+			break
+		}
+	}
+	if offsetMode {
+		pages, text = reassembleOffsets(frags)
+		return pages, text
+	}
+	// Group fragments into pages, preserving order; join with pageSep.
+	curPage := int64(-1)
+	var buf []string
+	flush := func() {
+		if curPage >= 0 {
+			pages = append(pages, DocPageText{Page: int(curPage), Text: strings.Join(buf, pageSep)})
+		}
+		buf = nil
+	}
+	for _, r := range frags {
+		if r.Page != curPage {
+			flush()
+			curPage = r.Page
+		}
+		buf = append(buf, r.Text)
+	}
+	flush()
+	parts := make([]string, len(pages))
+	for i, p := range pages {
+		parts[i] = p.Text
+	}
+	return pages, strings.Join(parts, pageSep)
 }
 
 // reassembleOffsets reconstructs an overlapping-window document exactly ONCE from

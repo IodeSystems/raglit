@@ -240,6 +240,12 @@ func (c *Client) Documents(ctx context.Context, index string) ([]DocSummary, err
 }
 
 // Page is one page of a document, as raglit read it.
+// DocQueryMatch is one matching fragment from a query-within-document read.
+type DocQueryMatch struct {
+	Page int    `json:"page"`
+	Text string `json:"text"`
+}
+
 type Page struct {
 	Page int    `json:"page"`
 	Text string `json:"text"`
@@ -256,6 +262,35 @@ type Doc struct {
 	// whether a quotation appears MUST NOT read a miss as absence when this is
 	// set: the passage may be in the part that was cut.
 	Truncated bool `json:"truncated,omitempty"`
+	// Match is populated only when a query-within-document was given: the
+	// fragments matching the query, in document order. Nil when no query.
+	Match []DocQueryMatch `json:"match,omitempty"`
+}
+
+// DocumentOpts is Document with offset and query-within-document parameters.
+// offset is a character offset into the joined text, bounded by maxChars (0 = no cap).
+// query is a case-insensitive substring; when non-empty, only matching fragments
+// are returned in document order and Text is their concatenation.
+// Zero-value opts (offset 0, empty query) returns exactly what Document returns.
+func (c *Client) DocumentOpts(ctx context.Context, index, path string, offset int, query string) (Doc, error) {
+	var out Doc
+	if strings.TrimSpace(path) == "" {
+		return out, nil
+	}
+	v := url.Values{"path": {path}}
+	if index != "" {
+		v.Set("index", index)
+	}
+	if offset > 0 {
+		v.Set("offset", strconv.Itoa(offset))
+	}
+	if query != "" {
+		v.Set("query", query)
+	}
+	if err := c.get(ctx, "/api/get-document", v, &out); err != nil {
+		return Doc{}, err
+	}
+	return out, nil
 }
 
 // Document returns one document's text, per page where raglit knows the pages.
