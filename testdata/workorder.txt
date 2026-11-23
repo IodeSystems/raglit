@@ -1,0 +1,36 @@
+HANOVER AUTO SERVICE
+Repair Order
+
+RO Number: RO-04471
+Date: 2026-03-14
+
+CUSTOMER: Doreen Voss
+VEHICLE: 2019 blue hatchback, 62,114 km
+
+REPAIR REQUESTED
+Front brakes squealing on hard stops. Owner reports the noise started a
+week ago, worse in cold weather.
+
+WORK PERFORMED
+- Replaced front brake pads (both corners)
+- Resurfaced front rotors
+- Replaced brake hardware and clips
+- Topped up brake fluid
+
+PARTS
+- Front brake pads, OEM: 214.00
+- Hardware kit: 12.40
+- Brake fluid, 500 ml: 9.00
+
+LABOUR
+- 1.6 hours at 45.00: 72.00
+
+Total Charge: 318.40
+
+The vehicle was returned to the customer after 16:05.
+
+Warranty: all work is covered by the shop's 12-month warranty on parts and
+labour. This warranty does not cover brake wear, fluid contamination, or
+components adjusted or replaced by anyone other than this shop. Vehicles
+returned to the shop without the repair order number will not be
+accepted for warranty work.

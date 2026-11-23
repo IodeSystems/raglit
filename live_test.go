@@ -2,12 +2,15 @@ package raglit
 
 import (
 	"context"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -154,6 +157,145 @@ func renderTextPDF(t *testing.T, dir, phrase string) string {
 		t.Fatal(err)
 	}
 	return pdfPath
+}
+
+// TestLive_WorkOrderDocType is the live half of the schemaed-documents story:
+// a real model proposes a doc_type from a gold document, identity resolves a
+// document to that type, and the extraction comes back with the VALUES the
+// document states — not merely well-shaped ones. The fixtures under testdrive
+// cover the plumbing with a canned chatter; this measures the behaviour the
+// plumbing exists for.
+//
+// Guarded on RAGLIT_LIVE, so CI (and the default suite) is unaffected: a
+// model-dependent test is a measuring tool, and its value is in what it
+// prints, not in gating.
+//
+//	RAGLIT_LIVE=1 RAGLIT_LLM_URL=… RAGLIT_LLM_KEY=… go test -run TestLive ./...
+func TestLive_WorkOrderDocType(t *testing.T) {
+	if os.Getenv("RAGLIT_LIVE") == "" {
+		t.Skip("set RAGLIT_LIVE=1, RAGLIT_LLM_URL and RAGLIT_LLM_KEY to run the live doc-type test")
+	}
+	// NO BAKED DEFAULT. A library that ships somebody's private endpoint as its
+	// fallback publishes that endpoint to everyone who reads it, and quietly
+	// points a stranger's test run at it.
+	base := os.Getenv("RAGLIT_LLM_URL")
+	if base == "" {
+		t.Skip("set RAGLIT_LLM_URL to the model gateway to run this")
+	}
+	modelID := envOr("RAGLIT_LLM_MODEL", "gemma-4-12b")
+	client := llm.NewClient(base, os.Getenv("RAGLIT_LLM_KEY"), modelID)
+
+	raw, err := os.ReadFile("testdata/workorder.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const docPath = "/corpus/workorder.txt"
+
+	dir := t.TempDir()
+	s, err := OpenHome(Home(filepath.Join(dir, "home")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Ingest(context.Background(), Document{
+		Path:      docPath,
+		Title:     "workorder.txt",
+		Fragments: []Fragment{{Page: 0, Ord: 0, Text: string(raw)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.SetIdentifier(NewIdentifier(client, modelID))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	// 1. Propose: a real model reads the gold document and proposes the type.
+	// The proposal is returned, not stored — registration is the author's act.
+	proposal, err := s.ProposeDocType(ctx, "Work Order", []string{docPath})
+	if err != nil {
+		t.Fatalf("ProposeDocType: %v", err)
+	}
+	if proposal.Name != "work order" {
+		t.Errorf("proposal name = %q, want the normalised name", proposal.Name)
+	}
+	if strings.TrimSpace(proposal.Description) == "" {
+		t.Error("the proposal carries no description — identity would have nothing to recognise the type by")
+	}
+	if err := ValidateFieldSchema(proposal.Schema); err != nil {
+		t.Fatalf("the proposed schema is not a usable field schema: %v", err)
+	}
+	if n := len(proposal.FieldNames()); n == 0 {
+		t.Error("the proposal declares no fields")
+	}
+	t.Logf("proposed type %q: %s", proposal.Name, proposal.Description)
+	t.Logf("schema fields: %v", proposal.FieldNames())
+
+	if err := s.SetDocType(proposal); err != nil {
+		t.Fatalf("SetDocType: %v", err)
+	}
+
+	// 2. Resolve: the identity pass asks the model what the document is, with
+	// the registered type in its vocabulary. This is where a document that IS
+	// a registered type must resolve to it, so an extraction can chain.
+	id, err := s.IdentifyDocument(ctx, docPath, false)
+	if err != nil {
+		t.Fatalf("IdentifyDocument: %v", err)
+	}
+	if id.DocType != "work order" {
+		// One more ask, forced: the first pass can miss a recognition and the
+		// second is the fair measurement of "can this model resolve it at all".
+		id, err = s.IdentifyDocument(ctx, docPath, true)
+		if err != nil {
+			t.Fatalf("IdentifyDocument (forced): %v", err)
+		}
+	}
+	t.Logf("caption: %s — doc_type: %q", id.Name, id.DocType)
+	if id.DocType != "work order" {
+		t.Fatalf("identity did not resolve the work order to its registered type (doc_type = %q); extraction cannot chain from it", id.DocType)
+	}
+
+	// 3. Extract: the F3 promise — the values, not the shape.
+	got, err := s.ExtractFields(ctx, docPath, false)
+	if err != nil {
+		t.Fatalf("ExtractFields: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(got.Fields, &fields); err != nil {
+		t.Fatalf("extracted fields are not an object: %v", err)
+	}
+	t.Logf("extracted: %s", string(got.Fields))
+
+	// The three values the fixture states. The exact ones are the strong
+	// assertion; on model drift these are the measurements to read, and the
+	// strongest assertion that stays stable is the right one to keep.
+	if v := strings.TrimSpace(asString(fields["order_number"])); v != "RO-04471" {
+		t.Errorf("order_number = %q, want \"RO-04471\" (copied exactly as printed)", v)
+	}
+	if v := strings.TrimSpace(asString(fields["customer"])); v != "Doreen Voss" {
+		t.Errorf("customer = %q, want \"Doreen Voss\"", v)
+	}
+	total, ok := asNumber(fields["total"])
+	if !ok {
+		t.Errorf("total = %v, want a number near 318.40", fields["total"])
+	} else if math.Abs(total-318.40) > 0.01 {
+		t.Errorf("total = %v, want 318.40", total)
+	}
+}
+
+func asString(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func asNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f, err == nil
+	}
+	return 0, false
 }
 
 func envOr(k, def string) string {

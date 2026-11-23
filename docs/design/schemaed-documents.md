@@ -263,8 +263,15 @@ usable schema, whether `doc_type` resolution is accurate enough to act on, and
 whether extractions come back correct rather than merely well-shaped.
 
 `document-identity.md` has a "Live, against the configured endpoint" section for
-exactly this reason. This feature has no equivalent yet. Until it does, the
-plumbing is proven and the feature is not.
+exactly this reason. `TestLive_WorkOrderDocType` in `live_test.go` is this
+feature's equivalent: guarded on `RAGLIT_LIVE`, it proposes a doc_type from a
+public work-order fixture (`testdata/workorder.txt`), resolves it at identity
+time, and asserts the extracted field values — `order_number`, `customer`, and
+`total` — against the fixture's stated numbers. Run it with:
+
+```
+RAGLIT_LIVE=1 RAGLIT_LLM_URL=… RAGLIT_LLM_KEY=… go test -run TestLive_WorkOrderDocType ./...
+```
 
 ## Open / not done
 
