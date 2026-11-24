@@ -152,6 +152,10 @@ export function DocShell() {
                 activeProps={{ className: "on" }}>
             Similar{count(detail?.seen_in?.length)}
           </Link>
+          <Link to="/i/$index/d/$doc/relations" params={{ index, doc }}
+                activeProps={{ className: "on" }}>
+            Relations
+          </Link>
           <Link to="/i/$index/d/$doc/history" params={{ index, doc }}
                 activeProps={{ className: "on" }}>
             History{count(detail?.history?.length)}

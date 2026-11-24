@@ -160,6 +160,7 @@ var docPathQueryRoutes = map[string]bool{
 	"/api/fields": true, "/api/notes": true,
 	"/api/identify": true, "/api/identify/queue": true,
 	"/api/reread": true, "/api/restore": true, "/api/withdraw": true, "/api/forget": true,
+	"/api/doc-relations": true,
 }
 
 // docPathBodyRoutes take the document as a top-level `path` in a JSON body.

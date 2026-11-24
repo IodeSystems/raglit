@@ -33,6 +33,7 @@ const Pages = lazyRouteComponent(() => import("./panes/Pages"), "Pages");
 const PageDetail = lazyRouteComponent(() => import("./panes/Pages"), "PageDetail");
 const Transcript = lazyRouteComponent(() => import("./panes/Transcript"), "Transcript");
 const SeenIn = lazyRouteComponent(() => import("./panes/SeenIn"), "SeenIn");
+const Relations = lazyRouteComponent(() => import("./panes/Relations"), "Relations");
 const History = lazyRouteComponent(() => import("./panes/History"), "History");
 const Notes = lazyRouteComponent(() => import("./panes/Notes"), "Notes");
 const Email = lazyRouteComponent(() => import("./panes/Email"), "Email");
@@ -264,6 +265,12 @@ const seenRoute = createRoute({
   component: SeenIn,
 });
 
+const relationsRoute = createRoute({
+  getParentRoute: () => docRoute,
+  path: "relations",
+  component: Relations,
+});
+
 const historyRoute = createRoute({
   getParentRoute: () => docRoute,
   path: "history",
@@ -357,6 +364,7 @@ const routeTree = rootRoute.addChildren([
       pageRoute,
       transcriptRoute,
       seenRoute,
+      relationsRoute,
       historyRoute,
       notesRoute,
       emailRoute,

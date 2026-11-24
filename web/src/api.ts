@@ -790,3 +790,34 @@ export function reembedImpact(embedModel: string) {
     embed_model: embedModel,
   });
 }
+
+// ── doc relations & slices (cmd/raglit/docrelations.go) ──────────────────
+
+export type DocRelation = {
+  a: string;
+  b: string;
+  kind: string;
+  supersedes?: string;
+  note?: string;
+  by?: string;
+  at?: string;
+  relation?: string;
+  coverage?: number;
+};
+
+export type DocSlice = {
+  id: string;
+  parent: string;
+  from: number;
+  to: number;
+  title?: string;
+  note?: string;
+  by?: string;
+  at?: string;
+};
+
+export const fetchDocRelations = (index: string, path: string) =>
+  getJSON<{ relations: DocRelation[]; slices: DocSlice[] }>("/api/doc-relations", {
+    index,
+    path,
+  });

@@ -395,6 +395,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("deleteNote", http.MethodPost, "/api/notes/delete", "Remove a note."), deleteNoteOp(reg))
 
 	gat.Register(api, g, op("docDetail", http.MethodGet, "/api/doc-detail", "Everything known about one document: pages, transcript, where else it is seen, and how far its review has got."), docDetailOp(reg))
+	gat.Register(api, g, op("docRelations", http.MethodGet, "/api/doc-relations", "Relations and slices for one document: judgements that link it to other documents, and declared sub-documents."), docRelationsHandler(reg))
 	gat.Register(api, g, op("attestWriteReadings", http.MethodPost, "/api/attest/readings", "Write readings across an index so its documents can be reviewed."), attestWriteReadingsOp(reg))
 
 	// The review workbench, per index. Registered BEFORE RegisterHuma so its
