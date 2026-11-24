@@ -19,7 +19,7 @@ import {
 import { usePoll } from "../usePoll";
 import { ErrorText, Details } from "../ui/Details";
 import { AISummaryLabel } from "../ui/Label";
-import { displayPath, kindLabel, laneLabel } from "../ui/display";
+import { displayPath, diskSize, kindLabel, laneLabel } from "../ui/display";
 import { splitName } from "../ui/display";
 import { useIndexInfo } from "./IndexRows";
 import "./scope.css";
@@ -77,12 +77,13 @@ export function Dashboard() {
             described, and what it is doing now. They were one line before, which
             mixed a size and a queue state that answer different questions. */}
         <div className="bands">
-          <SizeBand docs={data.documents ?? 0} frags={data.fragments ?? 0} operator={operator} />
+          <SizeBand docs={data.documents ?? 0} frags={data.fragments ?? 0} bytes={info?.bytes} operator={operator} />
           <CoverageBand cov={cov} err={covErr} index={index} />
           <WorkBand
             pending={data.pending ?? 0}
             running={data.running ?? 0}
             failed={data.failed ?? 0}
+            lastIngestAt={data.last_ingest_at}
             index={index}
           />
         </div>
@@ -116,7 +117,7 @@ export function Dashboard() {
 // Size: how big the corpus is. Nothing to do here — the numbers read as they
 // are, because there is no work that makes a corpus bigger or smaller on
 // purpose.
-function SizeBand({ docs, frags, operator }: { docs: number; frags: number; operator: boolean }) {
+function SizeBand({ docs, frags, bytes, operator }: { docs: number; frags: number; bytes?: number; operator: boolean }) {
   return (
     <div className="band">
       <div className="bandhead muted small">Size</div>
@@ -124,6 +125,9 @@ function SizeBand({ docs, frags, operator }: { docs: number; frags: number; oper
         <span title="Documents">{docs.toLocaleString()} <span className="muted small">docs</span></span>
         {operator && (
           <span title="Passages">{frags.toLocaleString()} <span className="muted small">passages</span></span>
+        )}
+        {bytes != null && (
+          <span title="Corpus size on disk">{diskSize(bytes)}</span>
         )}
       </div>
     </div>
@@ -203,11 +207,13 @@ function WorkBand({
   pending,
   running,
   failed,
+  lastIngestAt,
   index,
 }: {
   pending: number;
   running: number;
   failed: number;
+  lastIngestAt?: number;
   index: string;
 }) {
   return (
@@ -224,6 +230,9 @@ function WorkBand({
             </Link>
           </span>
         )}
+        {lastIngestAt ? (
+          <span className="muted small" title="Last import">last import {ago(lastIngestAt)}</span>
+        ) : null}
       </div>
     </div>
   );
