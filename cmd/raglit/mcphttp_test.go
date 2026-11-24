@@ -867,7 +867,7 @@ func TestMCP_ReadSurfaceUntouched(t *testing.T) {
 		}
 	}
 	docProps := byName["get_document"].InputSchema.Properties
-	for _, k := range []string{"path", "index", "max_chars"} {
+	for _, k := range []string{"path", "index", "max_chars", "offset", "query"} {
 		if _, ok := docProps[k]; !ok {
 			t.Errorf("get_document missing input %q", k)
 		}

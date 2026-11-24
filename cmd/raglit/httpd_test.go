@@ -54,6 +54,106 @@ func gatTestServer(t *testing.T) (*httptest.Server, *raglit.Registry) {
 	return srv, reg
 }
 
+// docOptsServer seeds one index with a single-page document whose joined text
+// is "alpha beta gamma\n\ndelta" (page 0: two fragments joined by the page
+// separator). Enough for offset paging and query-within-document to be
+// observable over the wire.
+func docOptsServer(t *testing.T) (*httptest.Server, *raglit.Registry) {
+	t.Helper()
+	home := raglit.Home(t.TempDir())
+	reg, err := raglit.OpenRegistry(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Ingest(context.Background(), raglit.Document{
+		Path: "file:///opts.md", Title: "Opts",
+		Fragments: []raglit.Fragment{
+			{Page: 0, Ord: 0, Text: "alpha beta gamma"},
+			{Page: 0, Ord: 1, Text: "delta"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	lf := addLLMFlags(fs)
+	_ = fs.Parse(nil)
+	lf.resolve(home)
+	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{}, nil, ingestFragParams{})
+	if err != nil {
+		t.Fatalf("buildGatHandler: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(func() { srv.Close(); reg.Close() })
+	return srv, reg
+}
+
+// TestGatDaemon_GetDocumentOffsetAndQuery proves the offset and query-within-
+// document parameters reach the store over the wire: /api/get-document?offset=
+// pages into the joined text, ?query= returns only the matching fragment spans,
+// and omitting both returns the plain read.
+func TestGatDaemon_GetDocumentOffsetAndQuery(t *testing.T) {
+	srv, _ := docOptsServer(t)
+	full := "alpha beta gamma\n\ndelta"
+	base := srv.URL + "/api/get-document?index=default&path=opts"
+
+	type out struct {
+		Text      string
+		Truncated bool
+		Match     []struct {
+			Page int
+			Text string
+		}
+	}
+	get := func(qs string) out {
+		var o out
+		b := httpGet(t, base+qs)
+		if err := json.Unmarshal([]byte(b), &o); err != nil {
+			t.Fatalf("unmarshal %q: %v\n%s", qs, err, clip(b, 300))
+		}
+		return o
+	}
+
+	// No params: the plain read, no match, untruncated.
+	o := get("")
+	if o.Text != full || o.Truncated || o.Match != nil {
+		t.Fatalf("no params = %+v, want text %q untruncated, nil match", o, full)
+	}
+
+	// offset=11 starts mid-fragment; the text is full[11:].
+	o = get("&offset=11")
+	if o.Text != full[11:] {
+		t.Fatalf("offset 11 = %q, want %q", o.Text, full[11:])
+	}
+	if o.Match != nil {
+		t.Fatalf("offset should not populate match: %+v", o.Match)
+	}
+
+	// offset + max_chars compose: offset 11, cap 3 -> full[11:14].
+	o = get("&offset=11&max_chars=3")
+	if !o.Truncated || o.Text != full[11:14] {
+		t.Fatalf("offset 11 cap 3 = %q trunc=%v, want %q", o.Text, o.Truncated, full[11:14])
+	}
+
+	// query returns only the matching fragment span, in the document's text.
+	o = get("&query=delta")
+	if len(o.Match) != 1 || o.Match[0].Page != 0 || o.Match[0].Text != "delta" {
+		t.Fatalf("query delta match = %+v, want one page-0 span", o.Match)
+	}
+	if o.Text != "delta" {
+		t.Fatalf("query delta text = %q, want %q", o.Text, "delta")
+	}
+
+	// A query matching nothing returns an empty read, not an error.
+	o = get("&query=zebra")
+	if o.Text != "" || len(o.Match) != 0 {
+		t.Fatalf("query zebra = %+v, want empty text and no match", o)
+	}
+}
+
 func TestGatDaemon_Surface(t *testing.T) {
 	srv, _ := gatTestServer(t)
 	cases := []struct{ name, url, want string }{
