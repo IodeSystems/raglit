@@ -65,6 +65,9 @@ func registerCorpusRoutes(api huma.API, g *gat.Gateway, reg *raglit.Registry, lf
 	gat.Register(api, g, op("fieldsStatus", http.MethodGet, "/api/fields/status",
 		"Extraction coverage per document type, and every extraction that is not current, with the reason."),
 		fieldsStatusOp(reg))
+	gat.Register(api, g, op("fieldsQuery", http.MethodPost, "/api/fields/query",
+		"An aggregate query over extracted document fields: constraints select documents, the result is the documents with their field values."),
+		fieldsQueryOp(reg))
 	gat.Register(api, g, op("readings", http.MethodGet, "/api/readings",
 		"Every recorded reading of a page (page 0: of every page of the document that has a superseded one)."),
 		readingsOp(reg))
@@ -591,6 +594,71 @@ func fieldsStatusOp(reg *raglit.Registry) func(context.Context, *indexOnlyIn) (*
 		}
 		if out.Body.Stale == nil {
 			out.Body.Stale = []raglit.StaleFields{}
+		}
+		return out, nil
+	}
+}
+
+// fieldsQueryIn is the aggregate field query. The JSON shape is the contract
+// the CLI and MCP pass through: constraints are {field, op, value}, op is one
+// of eq|gt|gte|lt|lte, and sort/dir/limit shape the result. A bad op is a 400:
+// the store is the one place that knows the operator set, so the surface
+// validates before it hands the query over rather than trusting the store's
+// error message to be stable.
+type fieldsQueryIn struct {
+	Index string `query:"index"`
+	Body  struct {
+		Constraints []struct {
+			Field string `json:"field" doc:"the field to constrain"`
+			Op    string `json:"op" doc:"eq | gt | gte | lt | lte"`
+			Value string `json:"value" doc:"the comparison value"`
+		} `json:"constraints,omitempty" doc:"field constraints; ANDed; empty returns every extracted document"`
+		Sort  *string `json:"sort,omitempty" doc:"field to order the result by; empty: path order"`
+		Dir   *string `json:"dir,omitempty" doc:"asc (default) | desc"`
+		Limit *int    `json:"limit,omitempty" doc:"at most this many documents"`
+	}
+}
+
+type fieldsQueryOut struct {
+	Body struct {
+		Documents []raglit.FieldDoc `json:"documents"`
+	}
+}
+
+func fieldsQueryOp(reg *raglit.Registry) func(context.Context, *fieldsQueryIn) (*fieldsQueryOut, error) {
+	return func(ctx context.Context, in *fieldsQueryIn) (*fieldsQueryOut, error) {
+		q := raglit.FieldQuery{}
+		if in.Body.Sort != nil {
+			q.SortField = *in.Body.Sort
+		}
+		if in.Body.Dir != nil {
+			q.Dir = *in.Body.Dir
+		}
+		if in.Body.Limit != nil {
+			q.Limit = *in.Body.Limit
+		}
+		for _, c := range in.Body.Constraints {
+			// Validate the operator here so a bad op is a clean 400 the surfaces
+			// can rely on, not a store error string.
+			switch raglit.FieldOp(c.Op) {
+			case raglit.FieldEq, raglit.FieldGt, raglit.FieldGte, raglit.FieldLt, raglit.FieldLte:
+			default:
+				return nil, huma.Error400BadRequest(fmt.Sprintf("unknown field operator %q", c.Op))
+			}
+			q.Constraints = append(q.Constraints, raglit.FieldConstraint{Field: c.Field, Op: raglit.FieldOp(c.Op), Value: c.Value})
+		}
+		st, err := readIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		docs, err := st.FieldQueryDocs(q)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		out := &fieldsQueryOut{}
+		out.Body.Documents = docs
+		if out.Body.Documents == nil {
+			out.Body.Documents = []raglit.FieldDoc{}
 		}
 		return out, nil
 	}

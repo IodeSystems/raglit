@@ -232,3 +232,64 @@ func httpGetStatus(t *testing.T, url string) int {
 	defer resp.Body.Close()
 	return resp.StatusCode
 }
+
+// F3: the aggregate field query over the HTTP surface. The store contract is
+// fixed; this test pins the three things the spec names for HTTP: a match, a
+// no-match, and a bad op returning 400.
+func TestGatDaemon_FieldsQuery(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	seedFields(t, reg)
+
+	// Match: equality on order_number = RO-04471, which is what seedFields stored.
+	body := httpPostJSON(t, srv.URL+"/api/fields/query?index=default",
+		`{"constraints":[{"field":"order_number","op":"eq","value":"RO-04471"}]}`)
+	var out struct {
+		Documents []struct {
+			Path   string `json:"path"`
+			Type   string `json:"type"`
+			Fields string `json:"fields"`
+		} `json:"documents"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode /api/fields/query: %v: %s", err, clip(body, 400))
+	}
+	if len(out.Documents) != 1 {
+		t.Fatalf("match: got %d documents, want 1: %s", len(out.Documents), clip(body, 400))
+	}
+	if out.Documents[0].Path != "file:///notes.md" {
+		t.Errorf("match: path = %q, want file:///notes.md", out.Documents[0].Path)
+	}
+	if !strings.Contains(out.Documents[0].Fields, "RO-04471") {
+		t.Errorf("match: fields = %q, want it to contain RO-04471", out.Documents[0].Fields)
+	}
+
+	// No-match: equality on a value that is not in the index.
+	nobody := httpPostJSON(t, srv.URL+"/api/fields/query?index=default",
+		`{"constraints":[{"field":"order_number","op":"eq","value":"RO-00000"}]}`)
+	var nout struct {
+		Documents []struct{ Path string `json:"path"` } `json:"documents"`
+	}
+	if err := json.Unmarshal([]byte(nobody), &nout); err != nil {
+		t.Fatalf("decode no-match: %v: %s", err, clip(nobody, 400))
+	}
+	if len(nout.Documents) != 0 {
+		t.Fatalf("no-match: got %d documents, want 0: %s", len(nout.Documents), clip(nobody, 400))
+	}
+
+	// Bad op: the operator set is eq|gt|gte|lt|lte; anything else is a 400.
+	if resp := httpPostStatus(t, srv.URL+"/api/fields/query?index=default",
+		`{"constraints":[{"field":"order_number","op":"neq","value":"RO-04471"}]}`); resp != http.StatusBadRequest {
+		t.Fatalf("bad op: got HTTP %d, want 400", resp)
+	}
+}
+
+// httpPostStatus is httpPostJSON for the cases where the STATUS is the assertion.
+func httpPostStatus(t *testing.T, url, body string) int {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
