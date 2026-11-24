@@ -857,7 +857,7 @@ func TestATileIsToldItIsOneAndAnOrdinaryRegionIsNot(t *testing.T) {
 		MaxDepth: 1, MaxCalls: 40, Tile: true}
 	// Not a blank page: every tile of one renders to identical bytes, and the
 	// cycle detector then suppresses fifteen of the sixteen before they are read.
-	root, err := rr.Read(context.Background(), speckledPage(5401, 7345), 1)
+	root, err := rr.Read(context.Background(), speckledPage(1080, 1468), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -935,7 +935,7 @@ func TestTilingIsGatedOnArithmeticNotOnWhatTheModelCallsIt(t *testing.T) {
 		}
 		rr := &RegionReader{Ask: ask, PageWIn: 27, PageHIn: 36.7, DPI: 200,
 			MaxDepth: 1, MaxCalls: 40, Tile: true}
-		root, err := rr.Read(context.Background(), speckledPage(5401, 7345), 1)
+		root, err := rr.Read(context.Background(), speckledPage(1080, 1468), 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1143,7 +1143,7 @@ func TestStoppingAtMaxDepthIsNotABudgetFailure(t *testing.T) {
 	}
 	rr := &RegionReader{Ask: ask, PageWIn: 27, PageHIn: 36.7, DPI: 200,
 		MaxDepth: 1, MaxCalls: 100, Tile: true}
-	root, err := rr.Read(context.Background(), speckledPage(5401, 7345), 1)
+	root, err := rr.Read(context.Background(), speckledPage(1080, 1468), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1216,7 +1216,7 @@ func TestATransformCandidateDoesNotDescend(t *testing.T) {
 	}
 	rr := &RegionReader{Ask: ask, PageWIn: 27, PageHIn: 36.7, DPI: 200,
 		MaxDepth: 1, MaxCalls: 100, Tile: true, MaxTransforms: 2}
-	root, err := rr.Read(context.Background(), speckledPage(5401, 7345), 1)
+	root, err := rr.Read(context.Background(), speckledPage(1080, 1468), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
