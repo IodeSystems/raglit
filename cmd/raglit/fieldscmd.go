@@ -18,6 +18,33 @@ import (
 // records the work durably and gets out of the way. It is the same queue and
 // the same rows — a fields job is an identity job with a different ask.
 func runFields(args []string) error {
+	// Aggregate field query dispatches before the top-level parse: its flags
+	// (--eq, --gt, …) are not in the top-level set and would be rejected.
+	// "query" appears as a positional arg after the target flags.
+	for i, a := range args {
+		if a == "query" {
+			tfs := flag.NewFlagSet("fields query", flag.ContinueOnError)
+			resolve := addTargetFlags(tfs)
+			if err := tfs.Parse(args[:i]); err != nil {
+				return err
+			}
+			t, err := resolve()
+			if err != nil {
+				return err
+			}
+			asJSON := false
+			queryArgs := []string{}
+			for _, q := range args[i+1:] {
+				if q == "--json" {
+					asJSON = true
+				} else {
+					queryArgs = append(queryArgs, q)
+				}
+			}
+			return runFieldsQuery(t, queryArgs, asJSON)
+		}
+	}
+
 	fs := flag.NewFlagSet("fields", flag.ContinueOnError)
 	resolve := addTargetFlags(fs)
 	list := fs.Bool("list", false, "coverage per document type (no model calls)")
@@ -247,5 +274,96 @@ func printFields(path string, f raglit.DocFields, asJSON bool) error {
 		who = "recorded by " + f.Model
 	}
 	fmt.Printf("%s\n    %s  ·  %s\n%s\n", path, f.Type, who, indentJSON(f.Fields))
+	return nil
+}
+
+// runFieldsQuery is `raglit fields query`: an aggregate query over extracted
+// document fields. Constraints on field values select documents; the result is
+// the matching documents with their field values, not fragments.
+func runFieldsQuery(t target, args []string, asJSON bool) error {
+	fs := flag.NewFlagSet("fields query", flag.ContinueOnError)
+	eq := fs.StringArray("eq", nil, "equality constraint: field=value (repeatable)")
+	gt := fs.StringArray("gt", nil, "numeric constraint: field=value (repeatable)")
+	gte := fs.StringArray("gte", nil, "numeric constraint: field=value (repeatable)")
+	lt := fs.StringArray("lt", nil, "numeric constraint: field=value (repeatable)")
+	lte := fs.StringArray("lte", nil, "numeric constraint: field=value (repeatable)")
+	sortField := fs.String("sort", "", "field to order the result by")
+	dir := fs.String("dir", "asc", "asc | desc")
+	limit := fs.Int("limit", 0, "at most this many documents (0 = all)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	type fconstraint struct {
+		Field string `json:"field"`
+		Op    string `json:"op"`
+		Value string `json:"value"`
+	}
+	var constraints []fconstraint
+	add := func(arr []string, op string) error {
+		for _, s := range arr {
+			f, v, ok := strings.Cut(s, "=")
+			if !ok || f == "" {
+				return fmt.Errorf("fields query: %s: expected field=value, got %q", op, s)
+			}
+			constraints = append(constraints, fconstraint{f, op, v})
+		}
+		return nil
+	}
+	if err := add(*eq, "eq"); err != nil {
+		return err
+	}
+	if err := add(*gt, "gt"); err != nil {
+		return err
+	}
+	if err := add(*gte, "gte"); err != nil {
+		return err
+	}
+	if err := add(*lt, "lt"); err != nil {
+		return err
+	}
+	if err := add(*lte, "lte"); err != nil {
+		return err
+	}
+
+	body := struct {
+		Constraints []fconstraint `json:"constraints"`
+		Sort        *string       `json:"sort,omitempty"`
+		Dir         *string       `json:"dir,omitempty"`
+		Limit       *int          `json:"limit,omitempty"`
+	}{}
+	body.Constraints = constraints
+	if *sortField != "" {
+		body.Sort = sortField
+	}
+	if *dir != "" {
+		body.Dir = dir
+	}
+	if *limit > 0 {
+		body.Limit = limit
+	}
+
+	var out struct {
+		Documents []struct {
+			Path   string `json:"path"`
+			Type   string `json:"type"`
+			Fields string `json:"fields"`
+		} `json:"documents"`
+	}
+	if err := t.send(http.MethodPost, "/api/fields/query", body, &out); err != nil {
+		return err
+	}
+
+	if asJSON {
+		return printJSON(out)
+	}
+	if len(out.Documents) == 0 {
+		fmt.Println("no documents matched")
+		return nil
+	}
+	for _, d := range out.Documents {
+		fmt.Printf("%s\n    %s\n%s\n", d.Path, d.Type, indentJSON(json.RawMessage(d.Fields)))
+	}
+	fmt.Printf("%d document(s)\n", len(out.Documents))
 	return nil
 }

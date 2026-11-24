@@ -168,6 +168,42 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 			return proxyGet(base, "/api/fields", v, ns)
 		},
 
+		queryFields: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			body := struct {
+				Constraints []struct {
+					Field string `json:"field"`
+					Op    string `json:"op"`
+					Value string `json:"value"`
+				} `json:"constraints"`
+				Sort  *string `json:"sort,omitempty"`
+				Dir   *string `json:"dir,omitempty"`
+				Limit *int    `json:"limit,omitempty"`
+			}{}
+			if cs := req.GetString("constraints", ""); cs != "" {
+				// The tool takes `constraints` as a JSON string so the MCP
+				// contract is flat strings; decode it here.
+				if err := json.Unmarshal([]byte(cs), &body.Constraints); err != nil {
+					return mcp.NewToolResultError("constraints must be a JSON array of {field, op, value}"), nil
+				}
+			}
+			if s := req.GetString("sort", ""); s != "" {
+				body.Sort = &s
+			}
+			if d := req.GetString("dir", ""); d != "" {
+				body.Dir = &d
+			}
+			if n := req.GetInt("limit", 0); n > 0 {
+				body.Limit = &n
+			}
+			v := url.Values{}
+			v.Set("index", cv.read(req.GetString("index", "")))
+			b, err := daemonDo(base, "POST", "/api/fields/query?"+v.Encode(), body)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("query_fields", err), nil
+			}
+			return mcp.NewToolResultText(string(stripNSJSON(stripSchema(b), ns))), nil
+		},
+
 		listDocuments: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v := url.Values{}
 			setIf(v, "name", req.GetString("name", ""))

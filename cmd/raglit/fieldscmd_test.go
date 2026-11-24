@@ -192,3 +192,48 @@ func TestFieldsList_SaysSoWhenNoDocumentResolvedAsAType(t *testing.T) {
 		t.Errorf("an index with no types did not say so:\n%s", out)
 	}
 }
+
+func TestFieldsQuery_MatchesByEquality(t *testing.T) {
+	db := indexWithAWorkOrder(t)
+	currentExtraction(t, db, "/c/ro-4471.pdf", `{"order_number":"RO-04471","amount":500}`)
+
+	out := captureStdout(t, func() {
+		if err := runFields(db.with("query", "--eq", "order_number=RO-04471")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "RO-04471") {
+		t.Errorf("equality match missing from output:\n%s", out)
+	}
+	if !strings.Contains(out, "1 document") {
+		t.Errorf("expected 1 document:\n%s", out)
+	}
+}
+
+func TestFieldsQuery_ComparisonOperator(t *testing.T) {
+	db := indexWithAWorkOrder(t)
+	currentExtraction(t, db, "/c/ro-4471.pdf", `{"order_number":"RO-04471","amount":500}`)
+
+	// gt=300 matches (amount=500).
+	out := captureStdout(t, func() {
+		if err := runFields(db.with("query", "--gt", "amount=300")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "RO-04471") {
+		t.Errorf("gt=300 should match amount=500:\n%s", out)
+	}
+
+	// gt=600 does not match.
+	out = captureStdout(t, func() {
+		if err := runFields(db.with("query", "--gt", "amount=600")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "RO-04471") {
+		t.Errorf("gt=600 should not match amount=500:\n%s", out)
+	}
+	if !strings.Contains(out, "no documents matched") {
+		t.Errorf("expected no match:\n%s", out)
+	}
+}

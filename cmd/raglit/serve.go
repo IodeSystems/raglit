@@ -81,6 +81,7 @@ type toolHandlers struct {
 	listDocuments server.ToolHandlerFunc
 	getDocument   server.ToolHandlerFunc
 	getFields     server.ToolHandlerFunc
+	queryFields   server.ToolHandlerFunc
 	ocr           server.ToolHandlerFunc
 	manageIndex   server.ToolHandlerFunc
 	forget        server.ToolHandlerFunc
@@ -195,6 +196,28 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 			mcp.WithString("index", mcp.Description("index name; empty = the default index")),
 		),
 		h.getFields,
+	)
+	s.AddTool(
+		mcp.NewTool("query_fields",
+			mcp.WithDescription(
+				"Query extracted document fields as a RECORDS query (not a fragment search): "+
+					"constraints on field values select documents, and the result is the matching "+
+					"documents with their field values. Equality (eq) applies to any stored value; "+
+					"comparisons (gt, gte, lt, lte) apply where the stored value is "+
+					"numeric-coercible. `constraints` is a JSON array of {field, op, value} objects; "+
+					"constraints AND, and an empty array returns every extracted document in path "+
+					"order. `sort` orders by a field value (non-coercible values sort last); `dir` "+
+					"is asc (default) or desc; `limit` caps the result. "+
+					"Returns {documents:[{path, type, fields}]} where fields is the extracted JSON record."),
+			mcp.WithString("constraints", mcp.Description(
+				`JSON array of constraints, e.g. [{"field":"total","op":"gt","value":"500"}]. `+
+					`op is one of eq|gt|gte|lt|lte. An empty array returns every extracted document.`)),
+			mcp.WithString("sort", mcp.Description("field to order the result by; empty = path order")),
+			mcp.WithString("dir", mcp.Description("asc (default) | desc")),
+			mcp.WithNumber("limit", mcp.Description("at most this many documents; 0 = all")),
+			mcp.WithString("index", mcp.Description("index name; empty = the default index")),
+		),
+		h.queryFields,
 	)
 	s.AddTool(
 		mcp.NewTool("list_indexes",

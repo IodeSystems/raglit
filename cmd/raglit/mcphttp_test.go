@@ -853,7 +853,7 @@ func TestMCP_ReadSurfaceUntouched(t *testing.T) {
 	}
 
 	// The read-surface tools must be present.
-	for _, name := range []string{"search", "get_document", "list_documents", "list_indexes", "get_fields", "index_status", "ocr"} {
+	for _, name := range []string{"search", "get_document", "list_documents", "list_indexes", "get_fields", "query_fields", "index_status", "ocr"} {
 		if _, ok := byName[name]; !ok {
 			t.Errorf("read-surface tool %q missing", name)
 		}
@@ -888,5 +888,57 @@ func TestMCP_ReadSurfaceUntouched(t *testing.T) {
 		if _, ok := s.Hits[0][k]; !ok {
 			t.Errorf("search hit missing %q: %s", k, out)
 		}
+	}
+}
+
+func TestMCP_QueryFields_ReturnsDocumentsWithFields(t *testing.T) {
+	d := newMCPDaemon(t)
+	// Seed fields on the other__secret index (served at /mcp/other).
+	st, err := d.reg.Get("other__secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := st.SetDocType(raglit.DocType{
+		Name: "work order", Description: "a garage repair order",
+		Prompt: "The RO number is top right.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"order_number":{"type":"string"}},"required":["order_number"]}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	docPath := "file:///other__secret.md"
+	if err := st.SetDocumentIdentity(ctx, docPath, raglit.DocIdentity{
+		Name: "Other doc", Summary: "A test document.",
+		Kind: "commercial", Source: "machine", Model: "m", At: 1,
+		DocType: "work order",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := st.DocText(docPath, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dt, _ := st.DocTypeByName("work order")
+	if err := st.SetDocumentFields(ctx, docPath, raglit.DocFields{
+		Type: "work order", Source: "machine", Model: "m", At: 1,
+		Fields:   json.RawMessage(`{"order_number":"RO-99999"}`),
+		TypeHash: dt.Hash(), TextHash: raglit.IdentityTextHash(c.Text),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mc, err := mcpSession(t, d.srv.URL+"/mcp/other", d.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, isErr := mcpCall(t, mc, "query_fields", map[string]any{
+		"constraints": `[{"field":"order_number","op":"eq","value":"RO-99999"}]`,
+		"index":       "secret",
+	})
+	if isErr {
+		t.Fatalf("query_fields call failed: %s", out)
+	}
+	if !strings.Contains(out, "RO-99999") {
+		t.Errorf("query_fields: %s", out)
 	}
 }

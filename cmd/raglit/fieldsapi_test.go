@@ -205,6 +205,22 @@ func TestServeClient_ProxiesGetFields(t *testing.T) {
 	}
 }
 
+func TestServeClient_ProxiesQueryFields(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	seedFields(t, reg)
+	h := daemonToolHandlers(srv.URL, 8, "", nil)
+
+	if h.queryFields == nil {
+		t.Fatal("client mode registers query_fields with no handler — it would panic on first call")
+	}
+	out := callTool(t, h.queryFields, map[string]any{
+		"constraints": `[{"field":"order_number","op":"eq","value":"RO-04471"}]`,
+	})
+	if !strings.Contains(out, "RO-04471") {
+		t.Fatalf("query_fields: %s", out)
+	}
+}
+
 // Every tool the server registers must have a handler in BOTH backings. The
 // contract is one; the backing is not.
 func TestToolHandlers_ClientModeFillsEveryTool(t *testing.T) {
@@ -214,7 +230,7 @@ func TestToolHandlers_ClientModeFillsEveryTool(t *testing.T) {
 		"search": h.search, "search_figures": h.searchFigures, "ingest": h.ingest,
 		"index_status": h.status, "list_indexes": h.listIndexes,
 		"list_documents": h.listDocuments, "get_document": h.getDocument,
-		"get_fields": h.getFields, "ocr": h.ocr,
+		"get_fields": h.getFields, "query_fields": h.queryFields, "ocr": h.ocr,
 	} {
 		if fn == nil {
 			t.Errorf("client mode has no handler for %s", name)
