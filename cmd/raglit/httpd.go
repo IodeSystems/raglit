@@ -752,6 +752,15 @@ type searchOut struct {
 		// search because they have no embedding model.
 		Searched []string `json:"searched"`
 		Skipped  []string `json:"skipped,omitempty"`
+		// Facets are the per-facet-value counts over the FULL set the search
+		// would rank, not the truncated page returned here — the server-side
+		// number a UI rail shows, so a truncated page cannot under-count. In
+		// bm25 that is the whole FTS matching set; in vec/hybrid it is the
+		// candidate pool the mode itself ranks before the page limit (the
+		// limit*4 pool hybrid over-fetches by), with hybrid's bm25 side still
+		// over its full FTS set. Empty (omitted) when no index was searched
+		// or none of the matching documents carries a facet value.
+		Facets []raglit.Facet `json:"facets,omitempty"`
 	}
 }
 
@@ -772,6 +781,11 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		byMeaning := in.Mode == "vec" || in.Mode == "hybrid"
 		meaningful := 0
 		searched, skipped := []string{}, []string(nil)
+		// Facets summed across every searched index, by (key, value). Each
+		// index's counts are over its own full matching set, so a corpus split
+		// across indexes reports the total: the count a facet value has across
+		// the whole search, not the max of the indexes' halves.
+		facetSum := map[string]int{}
 		for _, name := range plan.names {
 			st, err := reg.Read(ctx, name)
 			if err != nil {
@@ -796,6 +810,22 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 				return nil, huma.Error500InternalServerError("search", err)
 			}
 			lists[name] = hits
+			// Facets over the same set the search ranks, in the same mode and
+			// path scope: bm25 over its full FTS set, vec/hybrid over the
+			// candidate pool the mode itself ranks. The page limit is what the
+			// pool is relative to. Facet counting is a read of the same index
+			// the search just ran on; a failure here would make the whole
+			// search return nothing for a missing facet count, so it is
+			// tolerated — the facets come back absent and the hits stand.
+			var fs []raglit.Facet
+			if plan.own[name] {
+				fs, _ = st.FacetCountsOwnLayer(ctx, in.Query, mode, in.Path, raglit.SearchFilter{}, limit)
+			} else {
+				fs, _ = st.FacetCountsMode(ctx, in.Query, raglit.SearchFilter{PathPrefix: in.Path}, mode, limit)
+			}
+			if len(fs) > 0 {
+				facetSum = mergeFacetSum(facetSum, fs)
+			}
 		}
 		if byMeaning && meaningful == 0 && len(plan.names) > 0 {
 			return nil, huma.Error400BadRequest("search by meaning is not set up here (no embedding model); use exact-word search")
@@ -803,6 +833,7 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		out := &searchOut{}
 		out.Body.Hits = []hitRow{}
 		out.Body.Searched, out.Body.Skipped = searched, skipped
+		out.Body.Facets = facetSumList(facetSum)
 		// Per index and per document, once: a page of hits is mostly a few
 		// documents several times over.
 		views := map[string]*docView{}
@@ -848,6 +879,32 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		}
 		return out, nil
 	}
+}
+
+// mergeFacetSum folds one index's facet rows into the cross-index sum, keyed
+// by (facet key, value): the same kind=guide in two indexes is two documents,
+// not one. The order of the keys in the input is preserved by facetSumList.
+func mergeFacetSum(sum map[string]int, fs []raglit.Facet) map[string]int {
+	for _, f := range fs {
+		sum[f.Key+"="+f.Value] += f.Count
+	}
+	return sum
+}
+
+// facetSumList renders the summed facets as the []Facet the endpoint returns,
+// sorted by key then value so the output is deterministic.
+func facetSumList(sum map[string]int) []raglit.Facet {
+	keys := make([]string, 0, len(sum))
+	for k := range sum {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]raglit.Facet, 0, len(keys))
+	for _, k := range keys {
+		i := strings.IndexByte(k, '=')
+		out = append(out, raglit.Facet{Key: k[:i], Value: k[i+1:], Count: sum[k]})
+	}
+	return out
 }
 
 type figureRow struct {

@@ -438,6 +438,116 @@ func TestPruneEndpoint(t *testing.T) {
 	}
 }
 
+// facetServer seeds one index with three documents that all match "token",
+// carrying distinct identity facets, so /search's facets field is observable
+// over the wire:
+//  - kind:        guide (a.md), reference (b.md), "" (c.md)
+//  - role_tag:    documentation (a.md), reference (b.md), "" (c.md)
+//  - content_tag: deploy (a.md), rollback (b.md), "" (c.md)
+//  - doc_type:    runbook (a.md), "" (b.md and c.md)
+func facetServer(t *testing.T) (*httptest.Server, *raglit.Registry) {
+	t.Helper()
+	home := raglit.Home(t.TempDir())
+	reg, err := raglit.OpenRegistry(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, d := range []struct {
+		path string
+		kind string
+		role string
+		tag  string
+		typ  string
+	}{
+		{"file:///a.md", "guide", "documentation", "deploy", "runbook"},
+		{"file:///b.md", "reference", "reference", "rollback", ""},
+		{"file:///c.md", "", "", "", ""},
+	} {
+		if err := st.Ingest(ctx, raglit.Document{Path: d.path, Fragments: []raglit.Fragment{{Text: "token"}}}); err != nil {
+			t.Fatal(err)
+		}
+		id := raglit.DocIdentity{Kind: d.kind, DocType: d.typ}
+		if d.role != "" {
+			id.RoleTags = []string{d.role}
+		}
+		if d.tag != "" {
+			id.ContentTags = []string{d.tag}
+		}
+		if err := st.SetDocumentIdentity(ctx, d.path, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	lf := addLLMFlags(fs)
+	_ = fs.Parse(nil)
+	lf.resolve(home)
+	h, err := buildGatHandler(reg, lf, home, 8, nil, raglit.GCPolicy{}, nil, ingestFragParams{})
+	if err != nil {
+		t.Fatalf("buildGatHandler: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(func() { srv.Close(); reg.Close() })
+	return srv, reg
+}
+
+// TestSearchReturnsFacets proves /search returns the per-facet-value counts
+// alongside the hits: for kind, role tag, content tag and doc type, the count
+// of matching documents per value. The page is truncated to one hit, but the
+// counts cover all three matching documents — the server-side number, not a
+// count of the returned page.
+func TestSearchReturnsFacets(t *testing.T) {
+	srv, _ := facetServer(t)
+	var out struct {
+		Hits   []struct{ Path string }
+		Facets []struct {
+			Key   string
+			Value string
+			Count int
+		}
+	}
+	b := httpGet(t, srv.URL+"/search?index=default&q=token&n=1")
+	if err := json.Unmarshal([]byte(b), &out); err != nil {
+		t.Fatalf("unmarshal:\n%s", clip(b, 400))
+	}
+	// The page is truncated to one hit; the facets are not.
+	if len(out.Hits) != 1 {
+		t.Fatalf("hits = %d, want 1 (n=1)", len(out.Hits))
+	}
+	got := map[string]int{}
+	for _, f := range out.Facets {
+		got[f.Key+"="+f.Value] = f.Count
+	}
+	for k, want := range map[string]int{
+		"kind=guide":             1,
+		"kind=reference":         1,
+		"role_tag=documentation": 1,
+		"role_tag=reference":     1,
+		"content_tag=deploy":     1,
+		"content_tag=rollback":   1,
+		"doc_type=runbook":       1,
+	} {
+		if got[k] != want {
+			t.Errorf("facet %s = %d, want %d (all: %v)", k, got[k], want, got)
+		}
+	}
+}
+
+// TestSearchFacetsOmittedWhenEmpty proves a search that matches no document
+// returns no facets (the field is omitted, not an empty array): there is
+// nothing to facet.
+func TestSearchFacetsOmittedWhenEmpty(t *testing.T) {
+	srv, _ := facetServer(t)
+	b := httpGet(t, srv.URL+"/search?index=default&q=zzznomatch&n=1")
+	if strings.Contains(b, `"facets"`) {
+		t.Fatalf("facets present for an empty result:\n%s", clip(b, 400))
+	}
+}
+
 // A search says which indexes it read, so "N results from M indexes" counts
 // what was searched and not only the indexes that happened to have hits.
 func TestSearchReportsSearchedIndexes(t *testing.T) {
