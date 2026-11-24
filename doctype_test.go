@@ -3,6 +3,7 @@ package raglit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -110,6 +111,103 @@ func TestIdentify_ResolvesADocumentTypeOrNone(t *testing.T) {
 	if strings.Contains(c3.prompts[0], "doc_type") {
 		t.Errorf("an index with no types was asked for one:\n%s", c3.prompts[0])
 	}
+}
+
+// Canned-model half of TestLive_WorkOrderDocType: a document that IS an
+// instance of a registered doc_type resolves to it at identity time, and the
+// extraction CHAINS from that resolution — the live test measures the same
+// chain with a real model, and is env-gated, so CI proves nothing without this.
+// The canned identifier answers the type's name and then fills its schema, and
+// the test asserts the values come back, not merely that the plumbing ran.
+func TestIdentifyDoc_ResolvesAndExtractionChains(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	registerWorkOrder(t, s)
+	p := "/corpus/scan_000.pdf"
+
+	// Two calls on one chatter: the identity ask (which is shown the registered
+	// type and answers its normalised name) and the extraction ask (which fills
+	// the type's schema). The order is the chain: extraction runs because
+	// identity resolved.
+	c := &identityChatter{replies: []string{
+		`{"name":"2021-05-25 repair order 4471 (Ardley)","summary":"A repair order for the vehicle, dated May 2021, listing parts and labour at sufficient length.","kind":"commercial","content_tags":["repair order","vehicle service","parts billing"],"role_tags":["reference"],"doc_type":"Work Order"}`,
+		`{"order_number":"RO-04471","customer":"Ardley","total":318.4}`,
+	}}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+
+	id, err := s.IdentifyDocument(context.Background(), p, false)
+	if err != nil {
+		t.Fatalf("IdentifyDocument: %v", err)
+	}
+	if id.DocType != "work order" {
+		t.Fatalf("resolved doc_type = %q — want the registered type normalised on, so extraction has a schema to chain from", id.DocType)
+	}
+
+	fields, err := s.ExtractFields(context.Background(), p, false)
+	if err != nil {
+		t.Fatalf("ExtractFields after a resolved type: %v", err)
+	}
+	var extracted map[string]any
+	if err := json.Unmarshal(fields.Fields, &extracted); err != nil {
+		t.Fatalf("stored fields are not JSON: %v", err)
+	}
+	if v, _ := extracted["order_number"].(string); v != "RO-04471" {
+		t.Errorf("order_number = %q, want \"RO-04471\" (the extraction chained from the resolved type)", v)
+	}
+	if v, _ := extracted["customer"].(string); v != "Ardley" {
+		t.Errorf("customer = %q, want \"Ardley\"", v)
+	}
+	// The extraction must answer the type's CURRENT schema: a TypeHash on the
+	// stored fields is the marker that it was extracted against this type.
+	if fields.TypeHash != registerWorkOrderHash(t, s) {
+		t.Errorf("TypeHash = %q, want the registered type's hash (extraction chained from it)", fields.TypeHash)
+	}
+}
+
+// Canned-model half of the near-miss guard: a document that resembles a
+// registered type but is NOT one stays typeless. The identity call is shown the
+// registered type's names (so it COULD over-claim) and answers the empty enum
+// member; the extraction must then decline with ErrNoDocType. A fix that
+// over-claims would flip the first assertion; a fix that dropped the decline
+// guard would let the second run.
+func TestIdentifyDoc_NearMissStaysTypeless(t *testing.T) {
+	s := storeWithDocs(t, 1)
+	registerWorkOrder(t, s)
+	p := "/corpus/scan_000.pdf"
+
+	// The identity ask is shown the registered type (its description is in the
+	// prompt) and declines it: doc_type is the empty member. One reply is
+	// enough — if the decline guard is broken and an extraction runs, the test
+	// fails on the ErrNoDocType assertion, not by consuming a second reply.
+	c := &identityChatter{replies: []string{
+		`{"name":"2021-05-25 purchase and sale agreement (Ardley/Brannock)","summary":"The buyer's signed offer for a parcel of land, dated May 2021, between the buyer and the seller, closing in July.","kind":"agreement","content_tags":["purchase agreement","property transfer","escrow closing"],"role_tags":["reference"],"doc_type":""}`,
+	}}
+	s.SetIdentifier(NewIdentifier(c, "m"))
+
+	id, err := s.IdentifyDocument(context.Background(), p, false)
+	if err != nil {
+		t.Fatalf("IdentifyDocument: %v", err)
+	}
+	if id.DocType != "" {
+		t.Fatalf("doc_type = %q — want the empty member: a near-miss is declined, not over-claimed", id.DocType)
+	}
+	// The registered type's description reached the prompt, so the decline is a
+	// choice made with the vocabulary in hand, not a default from an empty ask.
+	if !strings.Contains(c.prompts[0], "a garage's repair order") {
+		t.Errorf("the registered type was not in the identity prompt:\n%s", c.prompts[0])
+	}
+
+	if _, err := s.ExtractFields(context.Background(), p, false); !errors.Is(err, ErrNoDocType) {
+		t.Errorf("ExtractFields on a typeless document = %v, want ErrNoDocType (no extraction from a type that was never resolved)", err)
+	}
+}
+
+func registerWorkOrderHash(t *testing.T, s *Store) string {
+	t.Helper()
+	dt, err := s.DocTypeByName("work order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dt.Hash()
 }
 
 // The hint is the corpus owner's account of how to read the collection. It must
