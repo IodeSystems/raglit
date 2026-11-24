@@ -267,3 +267,242 @@ func TestSearchFiltered_RawTagsNormalizedOnWrite(t *testing.T) {
 		}
 	}
 }
+
+// fieldQueryFixture covers every coercion case under one field, "amount": a
+// JSON number (a.md), a numeric string (c.md), a non-numeric string (d.md), a
+// string that begins with a number (e.md) and an array (f.md) — with "county"
+// as the equality field. b.md has no extraction at all.
+func fieldQueryFixture(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+	for _, p := range []string{"a.md", "b.md", "c.md", "d.md", "e.md", "f.md"} {
+		must(t, s.Ingest(ctx, Document{Path: p, Title: p, Fragments: []Fragment{{Text: "token"}}}))
+	}
+	must(t, s.SetDocumentFields(ctx, "a.md", DocFields{Type: "workorder",
+		Fields: json.RawMessage(`{"amount":500,"county":"Kent"}`)}))
+	must(t, s.SetDocumentFields(ctx, "c.md", DocFields{Type: "workorder",
+		Fields: json.RawMessage(`{"amount":"750.5","county":"Kent"}`)}))
+	must(t, s.SetDocumentFields(ctx, "d.md", DocFields{Type: "workorder",
+		Fields: json.RawMessage(`{"amount":"over five hundred","county":"Essex"}`)}))
+	must(t, s.SetDocumentFields(ctx, "e.md", DocFields{Type: "workorder",
+		Fields: json.RawMessage(`{"amount":"5 apples","county":"Essex"}`)}))
+	must(t, s.SetDocumentFields(ctx, "f.md", DocFields{Type: "workorder",
+		Fields: json.RawMessage(`{"amount":[1,2],"county":"Kent"}`)}))
+}
+
+func fieldDocPaths(ds []FieldDoc) []string {
+	var out []string
+	for _, d := range ds {
+		out = append(out, d.Path)
+	}
+	return out
+}
+
+func TestFieldQueryDocs_Equality(t *testing.T) {
+	s := openMem(t)
+	fieldQueryFixture(t, s)
+	ds, err := s.FieldQueryDocs(FieldQuery{Constraints: []FieldConstraint{
+		{Field: "county", Op: FieldEq, Value: "Kent"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Path order: a, c, f. b has no extraction and d, e have a different county.
+	if got, want := fieldDocPaths(ds), []string{"a.md", "c.md", "f.md"}; !stringsEqual(got, want) {
+		t.Fatalf("eq county=Kent = %v, want %v", got, want)
+	}
+	// A stored JSON number is not equal to its spelling: the equality rule is
+	// the SearchFilter rule — only a stored string matches.
+	ds, err = s.FieldQueryDocs(FieldQuery{Constraints: []FieldConstraint{
+		{Field: "amount", Op: FieldEq, Value: "500"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fieldDocPaths(ds); len(got) != 0 {
+		t.Fatalf("eq amount=500 (a stored number) = %v, want nothing", got)
+	}
+	// A stored string equals its value.
+	ds, err = s.FieldQueryDocs(FieldQuery{Constraints: []FieldConstraint{
+		{Field: "amount", Op: FieldEq, Value: "over five hundred"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fieldDocPaths(ds); !stringsEqual(got, []string{"d.md"}) {
+		t.Fatalf("eq amount=over five hundred = %v, want [d.md]", got)
+	}
+}
+
+func TestFieldQueryDocs_Comparisons(t *testing.T) {
+	s := openMem(t)
+	fieldQueryFixture(t, s)
+	cases := []struct {
+		op   FieldOp
+		want []string
+	}{
+		{FieldGt, []string{"c.md"}},          // 750.5 > 500; 500 is not
+		{FieldGte, []string{"a.md", "c.md"}}, // 500 and 750.5
+		{FieldLt, []string{}},                // 500 < 500 is false
+		{FieldLte, []string{"a.md"}},         // 500 <= 500
+	}
+	for _, c := range cases {
+		ds, err := s.FieldQueryDocs(FieldQuery{Constraints: []FieldConstraint{
+			{Field: "amount", Op: c.op, Value: "500"},
+			{Field: "amount", Op: FieldLt, Value: "750.5"},
+		}})
+		// The second constraint ANDs in: drop c.md from each expectation.
+		want := []string{}
+		for _, p := range c.want {
+			if p != "c.md" {
+				want = append(want, p)
+			}
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", c.op, err)
+		}
+		if got := fieldDocPaths(ds); !stringsEqual(got, want) {
+			t.Errorf("%s AND lt 750.5 = %v, want %v", c.op, got, want)
+		}
+	}
+	// A non-numeric string, a number-leading string and an array are all not
+	// coercible: only a.md (500) and c.md (750.5) match.
+	ds, err := s.FieldQueryDocs(FieldQuery{Constraints: []FieldConstraint{
+		{Field: "amount", Op: FieldGt, Value: "0"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fieldDocPaths(ds); !stringsEqual(got, []string{"a.md", "c.md"}) {
+		t.Fatalf("gt 0 = %v, want [a.md c.md] (d, e, f non-coercible out)", got)
+	}
+	// An absent key matches no comparison: b.md has no extraction, and a.md's
+	// "county" is absent from the amount comparison below.
+	ds, err = s.FieldQueryDocs(FieldQuery{Constraints: []FieldConstraint{
+		{Field: "missing", Op: FieldGt, Value: "0"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fieldDocPaths(ds); len(got) != 0 {
+		t.Fatalf("gt 0 on an absent key = %v, want nothing", got)
+	}
+	// A string that begins with a number is not coercible: "over five hundred"
+	// must not compare as 0 (SQLite CAST would read the leading words as 0).
+	ds, err = s.FieldQueryDocs(FieldQuery{Constraints: []FieldConstraint{
+		{Field: "amount", Op: FieldLte, Value: "0"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fieldDocPaths(ds); len(got) != 0 {
+		t.Fatalf("lte 0 = %v, want nothing (a non-numeric string is not 0)", got)
+	}
+}
+
+func TestFieldQueryDocs_SortAndLimit(t *testing.T) {
+	s := openMem(t)
+	fieldQueryFixture(t, s)
+	// Ascending: the coercible values in order, then the non-coercible
+	// documents last, in path order.
+	ds, err := s.FieldQueryDocs(FieldQuery{SortField: "amount"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fieldDocPaths(ds), []string{"a.md", "c.md", "d.md", "e.md", "f.md"}; !stringsEqual(got, want) {
+		t.Fatalf("asc = %v, want %v (b.md has no extraction; d, e, f non-coercible last)", got, want)
+	}
+	// Descending: the coercible values reversed, absent-last kept.
+	ds, err = s.FieldQueryDocs(FieldQuery{SortField: "amount", Dir: "desc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fieldDocPaths(ds), []string{"c.md", "a.md", "d.md", "e.md", "f.md"}; !stringsEqual(got, want) {
+		t.Fatalf("desc = %v, want %v (d, e, f non-coercible last in path order)", got, want)
+	}
+	// A sort on a field that is absent for every extracted document: all last,
+	// path order.
+	ds, err = s.FieldQueryDocs(FieldQuery{SortField: "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fieldDocPaths(ds), []string{"a.md", "c.md", "d.md", "e.md", "f.md"}; !stringsEqual(got, want) {
+		t.Fatalf("sort on an absent field = %v, want %v", got, want)
+	}
+	// Limit cuts the ordered result.
+	ds, err = s.FieldQueryDocs(FieldQuery{SortField: "amount", Dir: "desc", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fieldDocPaths(ds), []string{"c.md", "a.md"}; !stringsEqual(got, want) {
+		t.Fatalf("desc limit 2 = %v, want %v", got, want)
+	}
+}
+
+func TestFieldQueryDocs_EmptyConstraints(t *testing.T) {
+	s := openMem(t)
+	fieldQueryFixture(t, s)
+	ds, err := s.FieldQueryDocs(FieldQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every extracted document, in path order — b.md, which has no extraction,
+	// is not in the result.
+	if got, want := fieldDocPaths(ds), []string{"a.md", "c.md", "d.md", "e.md", "f.md"}; !stringsEqual(got, want) {
+		t.Fatalf("empty = %v, want %v", got, want)
+	}
+}
+
+func TestFieldQueryDocs_ResultCarriesFieldValues(t *testing.T) {
+	s := openMem(t)
+	fieldQueryFixture(t, s)
+	ds, err := s.FieldQueryDocs(FieldQuery{Constraints: []FieldConstraint{
+		{Field: "county", Op: FieldEq, Value: "Kent"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 3 {
+		t.Fatalf("got %d docs", len(ds))
+	}
+	for _, d := range ds {
+		if d.Type != "workorder" {
+			t.Errorf("%s: type = %q, want workorder", d.Path, d.Type)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(d.Fields), &m); err != nil {
+			t.Fatalf("%s: fields not JSON: %v", d.Path, err)
+		}
+		if m["county"] != "Kent" {
+			t.Errorf("%s: fields.county = %v, want Kent", d.Path, m["county"])
+		}
+	}
+}
+
+func TestFieldQueryDocs_BadInput(t *testing.T) {
+	s := openMem(t)
+	fieldQueryFixture(t, s)
+	bad := []FieldQuery{
+		{Constraints: []FieldConstraint{{Field: "", Op: FieldEq, Value: "x"}}},
+		{Constraints: []FieldConstraint{{Field: `a"b`, Op: FieldEq, Value: "x"}}},
+		{Constraints: []FieldConstraint{{Field: "county", Op: "bogus", Value: "x"}}},
+		{SortField: `a"b`},
+	}
+	for i, q := range bad {
+		if _, err := s.FieldQueryDocs(q); err == nil {
+			t.Errorf("#%d: want an error", i)
+		}
+	}
+}
+
+func stringsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

@@ -670,6 +670,191 @@ func (s *Store) ExtractableMissing() ([]string, error) {
 	return missing, nil
 }
 
+// The aggregate field query.
+//
+// SearchFilter.Fields is the search-side of the same data: it keeps the
+// FRAGMENTS of documents whose fields qualify, so a filtered search still
+// returns fragments. This is the other shape the data supports — a query that
+// returns the DOCUMENTS and their field values, "every work order over $500",
+// with comparison over the values that can be read as numbers. A separate
+// operation on purpose: it sorts and limits over doc_fields, and its result is
+// records, not ranked fragments.
+
+// FieldOp is one constraint operator. Equality applies to any stored value;
+// the comparisons apply where the stored value is numeric-coercible.
+type FieldOp string
+
+const (
+	FieldEq  FieldOp = "eq"  // the stored value equals value
+	FieldGt  FieldOp = "gt"  // numeric-coercible, > value
+	FieldGte FieldOp = "gte" // numeric-coercible, >= value
+	FieldLt  FieldOp = "lt"  // numeric-coercible, < value
+	FieldLte FieldOp = "lte" // numeric-coercible, <= value
+)
+
+// FieldConstraint is one constraint on a field value. Value is the comparison
+// value as the caller gives it; equality compares it to a stored string, a
+// comparison parses it as a number.
+type FieldConstraint struct {
+	Field string
+	Op    FieldOp
+	Value string
+}
+
+// FieldQuery is an aggregate query over extracted document fields. The
+// constraints AND; an empty set returns every extracted document, in path
+// order. SortField and Limit shape the result; Dir is 'asc' or 'desc' and
+// empty means asc.
+type FieldQuery struct {
+	Constraints []FieldConstraint
+	SortField   string
+	Dir         string
+	Limit       int
+}
+
+// FieldDoc is one answer: a document with its extracted field values. The
+// result is records, not fragments. Fields is the raw JSON of the extraction's
+// fields object; the caller decodes it.
+type FieldDoc struct {
+	Path   string `json:"path"`
+	Type   string `json:"type"`
+	Fields string `json:"fields"`
+}
+
+// numberCharsExpr returns the SQL expression that strips every valid number
+// character (0-9, ., e, E, +, -) from expr via a chain of replace() calls.
+// length(numberCharsExpr(x)) = 0 means x contains ONLY valid number
+// characters. Combined with x GLOB '*[0-9]*' (at least one digit) this is the
+// string half of the coercion rule: x is a number iff both hold.
+//
+// SQLite's CAST cannot do this alone: it reads the numeric PREFIX of a string,
+// so CAST('over five hundred' AS REAL) is 0.0 and a "lte 0" constraint would
+// match it, and CAST('5 apples' AS REAL) is 5.0.
+func numberCharsExpr(expr string) string {
+	s := expr
+	for _, c := range "0123456789.eE+-" {
+		s = "replace(" + s + ",'" + string(c) + "','')"
+	}
+	return s
+}
+
+// fieldConstraintSQL renders one constraint as a predicate over a doc_fields
+// row named df, and its args. The coercion rule: a stored JSON number is
+// coercible; a string is coercible iff it is spelled as a number (numberGlob);
+// bool, null, object and array have json_type other than text/integer/real and
+// never reach the test. A document with no extraction, a missing key, or a
+// non-coercible value fails a comparison constraint — json_extract of an
+// absent key is NULL, and NULL fails every comparison.
+func fieldConstraintSQL(c FieldConstraint) (string, []any, error) {
+	if c.Field == "" || strings.Contains(c.Field, `"`) {
+		return "", nil, fmt.Errorf("raglit: field query: field %q: empty or contains a double quote", c.Field)
+	}
+	path := `$."` + c.Field + `"`
+	switch c.Op {
+	case FieldEq:
+		// Only a stored JSON STRING matches, as SearchFilter.Fields decides:
+		// a number in the record is not equal to its spelling, and json_type
+		// keeps an object or array from equalling its own serialization.
+		return `EXISTS (SELECT 1 FROM doc_fields df WHERE df.doc_id = d.id
+		  AND CASE WHEN json_valid(df.fields) THEN
+		        CASE WHEN json_type(df.fields, ?) = 'text' THEN json_extract(df.fields, ?) END
+		      END = ?)`, []any{path, path, c.Value}, nil
+	case FieldGt, FieldGte, FieldLt, FieldLte:
+		op := map[FieldOp]string{FieldGt: ">", FieldGte: ">=", FieldLt: "<", FieldLte: "<="}[c.Op]
+		// A stored number, or a stored string spelled as a number: the
+		// numberChars check strips every valid digit/sign/decimal/exponent
+		// character and the result must be empty, plus a GLOB clause to ensure
+		// at least one digit is present (rejects "+", ".", "e" alone).
+		p := fmt.Sprintf(`EXISTS (SELECT 1 FROM doc_fields df WHERE df.doc_id = d.id
+		  AND json_valid(df.fields)
+		  AND ( json_type(df.fields, ?) IN ('integer','real')
+		       OR (json_type(df.fields, ?) = 'text'
+		           AND length(%s) = 0
+		           AND json_extract(df.fields, ?) GLOB '*[0-9]*') )
+		  AND CAST(json_extract(df.fields, ?) AS REAL) `+op+` ?)`, numberCharsExpr("json_extract(df.fields, ?)"))
+		return p, []any{path, path, path, path, path, c.Value}, nil
+	default:
+		return "", nil, fmt.Errorf("raglit: field query: unknown operator %q", c.Op)
+	}
+}
+
+// FieldQueryDocs runs the aggregate field query: the documents whose extracted
+// field values satisfy every constraint, with their field values, ordered by
+// SortField (path order when empty) and cut at Limit. A document with no
+// extraction is not in the result at all — the query is over extracted fields,
+// and the empty constraint set means "every extracted document", in path
+// order. A non-coercible sort value sorts last in both directions: a field
+// somebody did not state, or stated as a non-number, is not part of an
+// ordering by number, and mixing it in first would read as a zero.
+func (s *Store) FieldQueryDocs(q FieldQuery) ([]FieldDoc, error) {
+	where := ""
+	var args []any
+	for _, c := range q.Constraints {
+		p, a, err := fieldConstraintSQL(c)
+		if err != nil {
+			return nil, err
+		}
+		if where != "" {
+			where += " AND "
+		}
+		where += p
+		args = append(args, a...)
+	}
+	if where != "" {
+		where = " WHERE " + where
+	}
+	order := `ORDER BY d.path`
+	if q.SortField != "" {
+		if strings.Contains(q.SortField, `"`) {
+			return nil, fmt.Errorf("raglit: field query: sort field %q: empty or contains a double quote", q.SortField)
+		}
+		dir := "ASC"
+		if strings.EqualFold(q.Dir, "desc") {
+			dir = "DESC"
+		}
+		// The sort key is the same coercion rule the comparisons use: a stored
+		// number, or a stored string spelled as a number (numberChars), sorts
+		// by value; everything else sorts last, in path order, in both
+		// directions. `path` is bound as `?` throughout.
+		path := `$."` + q.SortField + `"`
+		// coer uses `?` for path 4 times. The ORDER BY uses coer twice, so 8
+		// path args, plus 1 for the CAST in the value key = 9 total.
+		coer := `json_valid(f.fields) AND ( json_type(f.fields, ?) IN ('integer','real')` +
+			` OR (json_type(f.fields, ?) = 'text'` +
+			` AND length(` + numberCharsExpr("json_extract(f.fields, ?)") + `) = 0` +
+			` AND json_extract(f.fields, ?) GLOB '*[0-9]*') )`
+		// The coercible flag is always ASC: coercible (0) before non-coercible
+		// (1) in both directions. Only the value key uses dir.
+		order = fmt.Sprintf(`ORDER BY
+		  (CASE WHEN %s THEN 0 ELSE 1 END) ASC,
+		  (CASE WHEN %s THEN CAST(json_extract(f.fields, ?) AS REAL) END) %s,
+		  d.path`, coer, coer, dir)
+		for i := 0; i < 9; i++ {
+			args = append(args, path)
+		}
+	}
+	sqlq := `SELECT d.path, f.type, f.fields FROM documents d
+		  JOIN doc_fields f ON f.doc_id = d.id` + where + " " + order
+	if q.Limit > 0 {
+		sqlq += " LIMIT ?"
+		args = append(args, q.Limit)
+	}
+	rows, err := s.db.Query(sqlq, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FieldDoc
+	for rows.Next() {
+		var d FieldDoc
+		if err := rows.Scan(&d.Path, &d.Type, &d.Fields); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // owesFields reports whether a document has resolved as a registered type and
 // its extraction is missing or no longer current.
 //
