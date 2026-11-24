@@ -112,12 +112,28 @@ const (
 	// matters. Usually a broken copy or a truncated export, and the document it
 	// should have carried is absent from the record.
 	ProblemEmptySource ProblemKind = "empty-source"
+	// ProblemUnresolvedType — a document that looks like a registered doc type
+	// and carries none.
+	//
+	// The coverage warning from the near-miss work: on a 50-document corpus, 16
+	// of 40 genuine forms resolved no type, and the only way to find out was to
+	// re-run the corpus. One row per (type, count) makes the backlog visible
+	// without touching identity: the documents are captioned and look like the
+	// type, and the empty enum member is the correct answer for them — until a
+	// person says otherwise.
+	//
+	// It is a WORK LIST, not a fault. A corpus with no registered types has no
+	// unresolved documents, and one in which every captioned document either
+	// resolved or genuinely is not a form has none; both report clean.
+	ProblemUnresolvedType ProblemKind = "unresolved-type"
 )
 
 // Problem is one thing worth a person's attention.
 type Problem struct {
 	Kind ProblemKind `json:"kind"`
-	// Subject is the document path, or the job's target when no document exists.
+	// Subject is the document path, the job's target when no document exists,
+	// or — for ProblemUnresolvedType — the registered type the near-misses
+	// resemble, because there is one row per type, not per document.
 	Subject string `json:"subject"`
 	JobID   int64  `json:"job_id,omitempty"`
 	// Stage is where it went wrong, when a stage recorded it.
@@ -164,6 +180,26 @@ func (s *Store) Problems(ctx context.Context) ([]Problem, error) {
 				continue
 			}
 			out = append(out, p)
+		}
+	}
+	// The near-miss rows are computed, not scanned: the test is a keyword match
+	// of a caption against the type's description, and it is not in the
+	// database. They are the last group because they are the weakest claim in
+	// the report — "looks like", never "is" — and the kinds above lose data in
+	// a way this one only withholds it.
+	//
+	// Withdrawn is not filtered against here: there is no document path to
+	// match, and a withdrawal of one of the near-miss documents is recorded as
+	// its own row under ProblemWithdrawn.
+	if ms, err := s.DocTypeNearMisses(); err != nil {
+		return nil, fmt.Errorf("raglit: problems (%s): %w", ProblemUnresolvedType, err)
+	} else {
+		for _, m := range ms {
+			out = append(out, Problem{
+				Kind:   ProblemUnresolvedType,
+				Subject: m.TypeName,
+				Detail: fmt.Sprintf("%d document(s) look like %s and carry no doc type", m.Count, m.TypeName),
+			})
 		}
 	}
 	return out, nil

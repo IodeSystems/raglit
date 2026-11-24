@@ -515,7 +515,7 @@ func withdrawalsOp(reg *raglit.Registry) func(context.Context, *withdrawalsIn) (
 
 type problemsIn struct {
 	Index string `query:"index" doc:"index name (default: the default index)"`
-	Kind  string `query:"kind" doc:"only this kind (no-fragments, no-pages, job-failed, segment-degraded, llm-retries, withdrawn)"`
+	Kind  string `query:"kind" doc:"only this kind (no-fragments, no-pages, job-failed, segment-degraded, llm-retries, withdrawn, unresolved-type)"`
 }
 
 type problemsOut struct {

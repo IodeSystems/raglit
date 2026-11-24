@@ -19,7 +19,7 @@ import (
 func runHealth(args []string) error {
 	fs := flag.NewFlagSet("health", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "machine-readable")
-	kind := fs.String("kind", "", "only this kind (no-fragments, no-pages, job-failed, segment-degraded, llm-retries, withdrawn)")
+	kind := fs.String("kind", "", "only this kind (no-fragments, no-pages, job-failed, segment-degraded, llm-retries, withdrawn, unresolved-type)")
 	quiet := fs.Bool("quiet", false, "print nothing; exit non-zero if anything is wrong")
 	resolve := addTargetFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -117,7 +117,10 @@ func exitIfBroken(ps []raglit.Problem) error {
 	n := 0
 	for _, p := range ps {
 		switch p.Kind {
-		case raglit.ProblemWithdrawn, raglit.ProblemRetries:
+		case raglit.ProblemWithdrawn, raglit.ProblemRetries, raglit.ProblemUnresolvedType:
+			// A withdrawal is a decision, a retried job completed, and an
+			// unresolved type is a work list — none of them is a fault, and a
+			// check that goes red on any of them stays red and stops being read.
 		default:
 			n++
 		}
@@ -144,4 +147,6 @@ var healthOrder = []struct {
 		"completed, but only after retrying — the earliest warning of a failure to come"},
 	{raglit.ProblemWithdrawn, "Withdrawn on purpose",
 		"absent by decision, with grounds — not by accident"},
+	{raglit.ProblemUnresolvedType, "Documents that look like a registered type",
+		"captioned, resembling a registered doc type by keyword, and carrying no doc type"},
 }

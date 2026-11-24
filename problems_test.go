@@ -2,8 +2,11 @@ package raglit
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -601,6 +604,127 @@ func TestProblemsDropsEmptySourceForWithdrawnDocuments(t *testing.T) {
 	}
 	if k[ProblemWithdrawn] != 1 {
 		t.Errorf("the withdrawal itself went missing (%d)", k[ProblemWithdrawn])
+	}
+}
+
+// The coverage warning as a problem group: one row per (type, count) of
+// captioned documents that look like a registered type and carry none. The
+// keyword match is deliberately loose — a caption mentioning both types counts
+// under both, because a near-miss for one is often a near-miss for the other,
+// and the point of the row is the backlog, not the classification.
+func TestProblemsSurfacesUnresolvedTypes(t *testing.T) {
+	s := testStore(t)
+	dir := t.TempDir()
+	pdf := func(i int) string {
+		t.Helper()
+		f := filepath.Join(dir, fmt.Sprintf("scan_%02d.pdf", i))
+		if err := os.WriteFile(f, []byte("%PDF"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	if err := s.SetDocType(DocType{
+		Name:        "work order",
+		Description: "A work order issued by a garage, listing parts and labour",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"parts":{"type":"string"}}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDocType(DocType{
+		Name:        "survey",
+		Description: "A boundary survey report with lot and parcel descriptions",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"lot":{"type":"string"}}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := func(name, summary, docType string) DocIdentity {
+		return DocIdentity{Name: name, Summary: summary, DocType: docType, Source: IdentityByMachine}
+	}
+	// p0, p1 match one type each; p2 matches both; p3 is typed and must not
+	// count under any type; p4 is untyped but matches no description.
+	docs := []struct{ path string; id DocIdentity }{
+		{pdf(0), id("Work order for the shop", "A work order listing parts and labour.", "")},
+		{pdf(1), id("Boundary survey", "A survey report with lot descriptions.", "")},
+		{pdf(2), id("Work order referencing a survey", "A work order and a boundary survey.", "")},
+		{pdf(3), id("Work order", "A work order.", "work order")},
+		{pdf(4), id("A letter", "A personal letter.", "")},
+	}
+	ctx := context.Background()
+	for _, d := range docs {
+		if err := s.Ingest(ctx, Document{Path: d.path, Fragments: []Fragment{{Text: "text"}}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetDocumentIdentity(ctx, d.path, d.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows []Problem
+	for _, p := range mustProblems(t, s) {
+		if p.Kind == ProblemUnresolvedType {
+			rows = append(rows, p)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("unresolved-type rows = %d, want 2: %+v", len(rows), rows)
+	}
+	got := map[string]int{}
+	for _, r := range rows {
+		n, err := strconv.Atoi(strings.Fields(r.Detail)[0])
+		if err != nil {
+			t.Fatalf("detail %q does not lead with a count", r.Detail)
+		}
+		got[r.Subject] = n
+		if !strings.Contains(r.Detail, "carry no doc type") {
+			t.Errorf("detail does not say what is missing: %q", r.Detail)
+		}
+	}
+	// work order: p0 and p2. survey: p1 and p2. The typed p3 is in neither.
+	if got["work order"] != 2 || got["survey"] != 2 {
+		t.Errorf("counts = %v, want work order 2, survey 2", got)
+	}
+}
+
+// No registered type, no unresolved documents: an index whose corpus was never
+// given a vocabulary is not one with a backlog. The row must not invent a type
+// the person did not register.
+func TestProblemsUnresolvedTypeNeedsARegisteredType(t *testing.T) {
+	s := testStore(t)
+	f := existingFile(t, "scan.pdf")
+	if err := s.Ingest(context.Background(), Document{Path: f, Fragments: []Fragment{{Text: "a work order"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDocumentIdentity(context.Background(), f, DocIdentity{
+		Name: "A work order", Summary: "A work order.", Source: IdentityByMachine,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if k := kinds(mustProblems(t, s)); k[ProblemUnresolvedType] != 0 {
+		t.Errorf("no registered types, yet an unresolved-type row appeared: %d", k[ProblemUnresolvedType])
+	}
+}
+
+// A type with no description has no recognition text, so nothing can look like
+// it by keyword. The near-miss count for it is zero by construction, and the
+// row must not appear for a count of zero.
+func TestProblemsUnresolvedTypeSkipsTypeWithoutDescription(t *testing.T) {
+	s := testStore(t)
+	f := existingFile(t, "scan.pdf")
+	if err := s.SetDocType(DocType{
+		Name:   "work order",
+		Schema: json.RawMessage(`{"type":"object","properties":{"parts":{"type":"string"}}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest(context.Background(), Document{Path: f, Fragments: []Fragment{{Text: "a work order"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDocumentIdentity(context.Background(), f, DocIdentity{
+		Name: "A work order", Summary: "A work order.", Source: IdentityByMachine,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if k := kinds(mustProblems(t, s)); k[ProblemUnresolvedType] != 0 {
+		t.Errorf("a type with no description cannot be matched, and its row must not appear: %d", k[ProblemUnresolvedType])
 	}
 }
 

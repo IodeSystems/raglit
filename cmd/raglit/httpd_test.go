@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -914,5 +915,83 @@ func TestStatusReturnsLastIngestAt(t *testing.T) {
 	}
 	if snap.LastIngestAt <= 0 {
 		t.Fatal("last_ingest_at = 0, want > 0 after job completion")
+	}
+}
+
+// TestProblemsReportsUnresolvedType verifies the coverage warning is visible
+// over the wire as one row per (type, N) under kind=unresolved-type, so a
+// person can see the unresolved near-matches in Health/problems without
+// re-running the corpus.
+func TestProblemsReportsUnresolvedType(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	pdf := func(i int) string {
+		t.Helper()
+		f := filepath.Join(dir, fmt.Sprintf("scan_%02d.pdf", i))
+		if err := os.WriteFile(f, []byte("%PDF"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	if err := st.SetDocType(raglit.DocType{
+		Name:        "work order",
+		Description: "A work order issued by a garage, listing parts and labour",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"parts":{"type":"string"}}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Two documents captioned as work orders, no doc type: a backlog of 2.
+	for i := 0; i < 2; i++ {
+		f := pdf(i)
+		if err := st.Ingest(context.Background(), raglit.Document{
+			Path: f, Fragments: []raglit.Fragment{{Text: "work order"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetDocumentIdentity(context.Background(), f, raglit.DocIdentity{
+			Name: "A work order", Summary: "A work order listing parts and labour.",
+			Source: raglit.IdentityByMachine,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out struct {
+		Problems []struct {
+			Kind    string `json:"kind"`
+			Subject string `json:"subject"`
+			Detail  string `json:"detail"`
+		} `json:"problems"`
+	}
+	body := httpGet(t, srv.URL+"/api/problems?index=default&kind=unresolved-type")
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Problems) != 1 {
+		t.Fatalf("unresolved-type rows over the wire = %d, want 1: %s", len(out.Problems), body)
+	}
+	p := out.Problems[0]
+	if p.Kind != "unresolved-type" {
+		t.Errorf("kind = %q, want unresolved-type", p.Kind)
+	}
+	if p.Subject != "work order" {
+		t.Errorf("subject = %q, want the registered type name", p.Subject)
+	}
+	if !strings.Contains(p.Detail, "2") {
+		t.Errorf("detail does not carry the count: %q", p.Detail)
+	}
+
+	// The default (no kind filter) also carries the row, so the Health pane
+	// sees it without a query.
+	body = httpGet(t, srv.URL+"/api/problems?index=default")
+	if !strings.Contains(body, `"kind":"unresolved-type"`) {
+		t.Errorf("default /api/problems does not list the unresolved-type row:\n%s", clip(body, 400))
+	}
+	if !strings.Contains(body, `"subject":"work order"`) {
+		t.Errorf("default /api/problems does not name the type:\n%s", clip(body, 400))
 	}
 }

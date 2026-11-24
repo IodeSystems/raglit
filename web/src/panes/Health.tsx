@@ -79,6 +79,11 @@ const KINDS: [kind: string, title: string, why: string][] = [
     "Withdrawn",
     "Removed from search on purpose, with a recorded reason.",
   ],
+  [
+    "unresolved-type",
+    "Documents that look like a registered type",
+    "These documents are captioned and resemble a registered doc type by keyword, but carry no doc type. They were not extracted. A person decides what each one is — the empty type is the correct answer for a document that is not a form.",
+  ],
 ];
 
 export function Health() {
