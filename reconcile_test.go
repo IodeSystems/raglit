@@ -91,6 +91,141 @@ func TestReconcile_SourceDeletedCompletesWithoutFetching(t *testing.T) {
 	}
 }
 
+// Spec 3: a source-deleted job lands in a terminal state distinct from
+// 'error'. RetryJob on a done job whose source is gone does not re-open the
+// dead path: the gate re-fires, the job completes as source-deleted again,
+// with no fetch and no extraction/OCR error.
+func TestReconcile_SourceDeletedJobIsTerminalNotError(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "gone.md")
+	if err := os.WriteFile(src, []byte("alpha bravo\n\ncharlie delta"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	url := "file://" + src
+	s := testStore(t)
+	fetchAttempts := 0
+	w := &Worker{Store: s, Fetcher: func(ctx context.Context, u string) (Fetched, error) {
+		fetchAttempts++
+		return Fetch(ctx, u)
+	}}
+
+	j1 := reconcileIngest(t, s, w, url, "")
+	if j1.State != "done" {
+		t.Fatalf("initial ingest = %+v, want done", j1)
+	}
+
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+
+	// RetryJob requeues the done job; the worker picks it up and the gate
+	// re-fires on the missing path.
+	if err := s.RetryJob(j1.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := fetchAttempts
+	if _, err := w.ProcessOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	j2, err := s.Job(j1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j2.State != "done" {
+		t.Fatalf("source-deleted job state = %q, want done (terminal, not error): %+v", j2.State, j2)
+	}
+	if j2.Mode != "source-deleted" {
+		t.Fatalf("source-deleted job mode = %q, want source-deleted", j2.Mode)
+	}
+	if j2.Error != "" {
+		t.Fatalf("source-deleted job carries an error: %q", j2.Error)
+	}
+	if j2.Fragments != 0 {
+		t.Fatalf("source-deleted job indexed %d fragments, want 0", j2.Fragments)
+	}
+	if fetchAttempts > before {
+		t.Fatalf("fetch was attempted on a path that no longer resolves (%d → %d attempts)", before, fetchAttempts)
+	}
+}
+
+// Spec 4: a source-deleted job is distinguishable from an extraction failure
+// in any listing or query of ingest_jobs. Jobs("all") shows the mode
+// "source-deleted"; Jobs("error") does not include it; Job(id) returns the
+// mode. An extraction failure (state error, non-empty Error) is a different
+// row, and a reader can tell them apart without opening the file.
+func TestReconcile_SourceDeletedDistinguishableFromExtractionFailure(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "gone.md")
+	if err := os.WriteFile(src, []byte("alpha bravo\n\ncharlie delta"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	url := "file://" + src
+	s := testStore(t)
+	w := &Worker{Store: s}
+
+	j1 := reconcileIngest(t, s, w, url, "")
+	if j1.State != "done" {
+		t.Fatalf("initial ingest = %+v, want done", j1)
+	}
+
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetryJob(j1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ProcessOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Distinguishable in Jobs("all"): the mode column says source-deleted.
+	all, err := s.Jobs("all", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *JobInfo
+	for i := range all {
+		if all[i].ID == j1.ID {
+			found = &all[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("source-deleted job not in Jobs(\"all\")")
+	}
+	if found.Mode != "source-deleted" {
+		t.Fatalf("Jobs(\"all\") shows mode %q, want source-deleted", found.Mode)
+	}
+	if found.State != "done" {
+		t.Fatalf("Jobs(\"all\") shows state %q, want done", found.State)
+	}
+
+	// Not in the error listing: a missing source is not a failed import.
+	bad, err := s.Jobs("error", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range bad {
+		if b.ID == j1.ID {
+			t.Fatalf("source-deleted job appears in Jobs(\"error\"): %+v", b)
+		}
+	}
+
+	// Job(id) returns the mode, so a citation by id resolves to the same
+	// distinguishable state.
+	byID, err := s.Job(j1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byID.Mode != "source-deleted" {
+		t.Fatalf("Job(id) shows mode %q, want source-deleted", byID.Mode)
+	}
+	if byID.Error != "" {
+		t.Fatalf("Job(id) carries an error on a source-deleted job: %q", byID.Error)
+	}
+}
+
 // Spec 2: MOVED. When a file with the same DocumentHash exists at another
 // path, reconciliation re-points the job to the new path and a subsequent
 // retry ingests it successfully — the content lands in the index under the
