@@ -146,6 +146,24 @@ func TestGatDaemon_DocTypesReportsUnresolvedTypeBacklog(t *testing.T) {
 	}
 }
 
+// With no typeless captioned documents in the index, the backlog is zero — the
+// field is a real count, not a constant the API always reports.
+func TestGatDaemon_DocTypesBacklogIsZeroWhenNone(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	seedFields(t, reg) // one resolved "work order" document, no typeless captioned docs
+
+	types := httpGet(t, srv.URL+"/api/doc-types?index=default")
+	var out struct {
+		Backlog int `json:"unresolved_type_backlog"`
+	}
+	if err := json.Unmarshal([]byte(types), &out); err != nil {
+		t.Fatalf("decode /api/doc-types: %v: %s", err, clip(types, 400))
+	}
+	if out.Backlog != 0 {
+		t.Fatalf("unresolved_type_backlog = %d, want 0 (no typeless captioned docs): %s", out.Backlog, clip(types, 400))
+	}
+}
+
 // A document with no extraction answers with an empty record, and an unknown one
 // is an error — the same two cases the library distinguishes.
 func TestGatDaemon_FieldsForADocumentThatIsNotAForm(t *testing.T) {
