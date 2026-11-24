@@ -134,16 +134,19 @@ func runDocType(args []string) error {
 	}
 }
 
-// docTypes fetches the index's registered types and their coverage.
-func docTypes(t target) ([]raglit.DocType, []raglit.FieldsCoverage, error) {
+// docTypes fetches the index's registered types, their coverage, and the
+// unresolved-type backlog: documents captioned by the machine that carry no
+// registered doc_type, counted as one total.
+func docTypes(t target) ([]raglit.DocType, []raglit.FieldsCoverage, int, error) {
 	var out struct {
-		Types    []raglit.DocType        `json:"types"`
-		Coverage []raglit.FieldsCoverage `json:"coverage"`
+		Types            []raglit.DocType        `json:"types"`
+		Coverage         []raglit.FieldsCoverage `json:"coverage"`
+		UntypedCaptioned int                     `json:"unresolved_type_backlog"`
 	}
 	if err := t.get("/api/doc-types", nil, &out); err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
-	return out.Types, out.Coverage, nil
+	return out.Types, out.Coverage, out.UntypedCaptioned, nil
 }
 
 func docTypeList(args []string) error {
@@ -157,7 +160,7 @@ func docTypeList(args []string) error {
 	if err != nil {
 		return err
 	}
-	types, cov, err := docTypes(tg)
+	types, cov, backlog, err := docTypes(tg)
 	if err != nil {
 		return err
 	}
@@ -188,6 +191,9 @@ func docTypeList(args []string) error {
 			fmt.Printf("    fields: %s\n", strings.Join(f, ", "))
 		}
 	}
+	if backlog > 0 {
+		fmt.Printf("\n%d captioned, typeless — no registered doc_type on them (`raglit identify --force` re-runs identity)\n", backlog)
+	}
 	return nil
 }
 
@@ -205,7 +211,7 @@ func docTypeShow(args []string) error {
 	if err != nil {
 		return err
 	}
-	types, _, err := docTypes(tg)
+	types, _, _, err := docTypes(tg)
 	if err != nil {
 		return err
 	}

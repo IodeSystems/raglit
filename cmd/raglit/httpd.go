@@ -656,6 +656,11 @@ type listDocTypesOut struct {
 	Body struct {
 		Types    []raglit.DocType        `json:"types"`
 		Coverage []raglit.FieldsCoverage `json:"coverage,omitempty"`
+		// UntypedCaptioned is the unresolved-type backlog: documents captioned by
+		// the machine that carry no registered doc_type, as one total. It is a
+		// count, not a coverage row, so it cannot be mistaken for a per-type
+		// resolved count.
+		UntypedCaptioned int `json:"unresolved_type_backlog"`
 	}
 }
 
@@ -673,8 +678,13 @@ func listDocTypesOp(reg *raglit.Registry) func(context.Context, *listDocTypesIn)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("coverage", err)
 		}
+		backlog, err := st.UntypedCaptionedCount()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("unresolved type backlog", err)
+		}
 		out := &listDocTypesOut{}
 		out.Body.Types, out.Body.Coverage = types, cov
+		out.Body.UntypedCaptioned = backlog
 		if out.Body.Types == nil {
 			out.Body.Types = []raglit.DocType{}
 		}

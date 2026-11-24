@@ -25,6 +25,7 @@ export function Types() {
   const { index } = useParams({ from: "/i/$index" });
   const [types, setTypes] = useState<DocTypeInfo[]>([]);
   const [cov, setCov] = useState<FieldsCoverage[]>([]);
+  const [backlog, setBacklog] = useState<number>(0);
   const [err, setErr] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
@@ -34,6 +35,7 @@ export function Types() {
       .then((got) => {
         setTypes(got.types ?? []);
         setCov(got.coverage ?? []);
+        setBacklog(got.unresolved_type_backlog ?? 0);
         setErr("");
       })
       // A daemon older than this bundle answers 404 here. Say that, rather than
@@ -98,6 +100,27 @@ raglit doctype add --file lab.json "lab report"`}
           <TypeCard key={t.name} type={t} coverage={byType.get(t.name)} />
         ))}
       </Stack>
+
+      {/* The unresolved-type backlog: documents captioned by the machine that
+          carry no registered doc_type. A single total, deliberately not a card
+          — it is a count of documents awaiting a type, not a type's own
+          coverage, so it sits below the per-type rows. */}
+      {backlog > 0 && (
+        <Paper variant="outlined" sx={{ p: 1.5, mt: 0.5 }}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+            <Typography sx={{ fontWeight: 600, fontSize: 15 }}>Unresolved type</Typography>
+            <Box sx={{ flex: 1 }} />
+            <Typography variant="body2" color="text.secondary">
+              {backlog.toLocaleString()} captioned, typeless
+            </Typography>
+          </Stack>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+            Described by the machine, but matched to no registered type — for
+            example, described before the type existed. They are matched when
+            described again.
+          </Typography>
+        </Paper>
+      )}
     </Box>
   );
 }

@@ -70,6 +70,82 @@ func TestGatDaemon_FieldsSurface(t *testing.T) {
 
 }
 
+// F23: a document the machine captioned before its type was registered keeps
+// doc_type='' until identity re-runs, and the surface must report how many such
+// documents exist. The count is a single unresolved-type backlog, structurally
+// distinct from the per-type resolved counts in the coverage rows.
+func TestGatDaemon_DocTypesReportsUnresolvedTypeBacklog(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	seedFields(t, reg) // one resolved "work order" document
+	st, err := reg.Get("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Captioned by the machine, no registered type: the unresolved backlog.
+	// Ingest first so the document exists, then set identity with no type.
+	if err := st.Ingest(ctx, raglit.Document{
+		Path: "file:///orphan.md", Title: "Orphan",
+		Fragments: []raglit.Fragment{{Text: "a note on the fence line"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetDocumentIdentity(ctx, "file:///orphan.md", raglit.DocIdentity{
+		Name: "Fence line note", Summary: "A note on the fence line.",
+		Kind: "analysis", Source: "machine", Model: "m", At: 2,
+		DocType: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A person's caption is excluded: it is a person's reading, not a type to
+	// resolve, so it must not count toward the backlog.
+	if err := st.Ingest(ctx, raglit.Document{
+		Path: "file:///personnote.md", Title: "Person note",
+		Fragments: []raglit.Fragment{{Text: "a note I wrote"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetDocumentIdentity(ctx, "file:///personnote.md", raglit.DocIdentity{
+		Name: "My own note", Summary: "A note I wrote.",
+		Kind: "analysis", Source: "person", Model: "m", At: 3,
+		DocType: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	types := httpGet(t, srv.URL+"/api/doc-types?index=default")
+	var out struct {
+		Coverage   []struct {
+			Type     string `json:"type"`
+			Resolved int    `json:"resolved"`
+		} `json:"coverage"`
+		Backlog int `json:"unresolved_type_backlog"`
+	}
+	if err := json.Unmarshal([]byte(types), &out); err != nil {
+		t.Fatalf("decode /api/doc-types: %v: %s", err, clip(types, 400))
+	}
+	// Exactly the one machine captioned document counts. The person's caption
+	// is excluded, and the resolved work order is a per-type count, not the
+	// backlog.
+	if out.Backlog != 1 {
+		t.Fatalf("unresolved_type_backlog = %d, want 1 (one machine captioned typeless doc, person excluded): %s", out.Backlog, clip(types, 400))
+	}
+	// It is distinct from the resolved count: the work order row reports its
+	// own resolved figure and is not the backlog.
+	found := false
+	for _, c := range out.Coverage {
+		if c.Type == "work order" {
+			found = true
+			if c.Resolved != 1 {
+				t.Errorf("work order resolved = %d, want 1", c.Resolved)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("coverage has no work order row: %s", clip(types, 400))
+	}
+}
+
 // A document with no extraction answers with an empty record, and an unknown one
 // is an error — the same two cases the library distinguishes.
 func TestGatDaemon_FieldsForADocumentThatIsNotAForm(t *testing.T) {

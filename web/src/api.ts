@@ -665,7 +665,14 @@ export type FieldsCoverage = {
 };
 
 export const listDocTypes = (index: string) =>
-  getJSON<{ types: DocTypeInfo[]; coverage?: FieldsCoverage[] }>("/api/doc-types", { index });
+  getJSON<{
+    types: DocTypeInfo[];
+    coverage?: FieldsCoverage[];
+    // The unresolved-type backlog: documents captioned by the machine that
+    // carry no registered doc_type, as one total — distinct from the per-type
+    // resolved counts in `coverage`.
+    unresolved_type_backlog?: number;
+  }>("/api/doc-types", { index });
 
 // Whole-corpus coverage (cmd/raglit/coverageapi.go, raglit.CorpusCoverage): how
 // many documents carry each of the five marks, out of total. The dashboard's

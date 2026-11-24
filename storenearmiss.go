@@ -85,6 +85,25 @@ func (s *Store) DocTypeNearMisses() ([]DocTypeNearMiss, error) {
 	return out, nil
 }
 
+// UntypedCaptionedCount is the total number of documents that are captioned
+// (gen_name or gen_summary set), carry no registered doc_type, and were
+// captioned by the machine rather than a person. It is the unresolved-type
+// backlog the doctype surface reports: a document captioned before its
+// type was registered stays typeless until identity re-runs, and this count
+// is how many of those exist, as a single number distinct from the per-type
+// resolved counts FieldsCoverage reports.
+//
+// Branch-aware: it counts exactly the rows nearMissRows returns — the
+// branch's own rows plus the admitted, unshadowed parent rows — so it cannot
+// drift from the per-type near-miss counts that draw on the same set.
+func (s *Store) UntypedCaptionedCount() (int, error) {
+	rows, err := s.nearMissRows("")
+	if err != nil {
+		return 0, err
+	}
+	return len(rows), nil
+}
+
 // nearMissRow is one captioned, untyped document: just the two text columns
 // the keyword test reads.
 type nearMissRow struct {
