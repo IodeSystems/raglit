@@ -413,6 +413,44 @@ export const getStatus = (index: string) => getJSON<StatusSnapshot>("/status", {
 export const listJobs = (index: string, limit = 200) =>
   getJSON<{ jobs: Job[] }>("/api/jobs", { index, limit });
 
+// One row of the merged activity feed: an ingest_jobs row or an identity_jobs
+// row, newest first by enqueued_at. Kind names the queue (and, for identity,
+// the mode): ingest | caption | tags | extract.
+export type ActivityItem = {
+  id: number;
+  kind: "ingest" | "caption" | "tags" | "extract";
+  state: string;
+  error?: string;
+  enqueued_at: number;
+  started_at?: number;
+  finished_at?: number;
+  // Ingest rows.
+  url?: string;
+  title?: string;
+  lane?: string;
+  fragments?: number;
+  // Identity rows. mode is the ask as stored (identity|tags|fields).
+  path?: string;
+  mode?: string;
+  force?: boolean;
+};
+
+// The merged feed: both job tables as one ordered timeline (raglit.Store.
+// Activity), so an index working through captions does not look idle next to
+// its ingest queue. kind and state filter server-side and compose.
+export const listActivity = (
+  index: string,
+  kind?: string,
+  state?: string,
+  limit = 100,
+) =>
+  getJSON<{ items: ActivityItem[] }>("/api/activity", {
+    index,
+    kind,
+    state,
+    limit,
+  });
+
 // One job by id, however old. listJobs answers "the newest N", which is the
 // wrong shape for a citation: the health report links AT job 927 while the
 // newest is 1467, so the row the link is about is not in the window at all.

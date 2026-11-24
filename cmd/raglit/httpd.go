@@ -333,6 +333,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	registerCorpusRoutes(api, g, reg, lf, home)
 	registerKeyRoutes(api, g, reg)
 	gat.Register(api, g, op("listJobs", http.MethodGet, "/api/jobs", "List ingest jobs (all states) with stages + ETA."), listJobs(reg))
+	gat.Register(api, g, op("listActivity", http.MethodGet, "/api/activity", "The merged activity feed: ingest_jobs and identity_jobs as one ordered timeline, filterable by kind and state."), listActivity(reg))
 	gat.Register(api, g, op("retryJob", http.MethodPost, "/api/jobs/retry", "Requeue an errored/done job."), jobAction(reg, (*raglit.Store).RetryJob))
 	gat.Register(api, g, op("cancelJob", http.MethodPost, "/api/jobs/cancel", "Cancel a pending job."), jobAction(reg, (*raglit.Store).CancelJob))
 	gat.Register(api, g, op("forgetJob", http.MethodPost, "/api/jobs/forget", "Delete a terminal job row: that attempt is not coming back."), jobAction(reg, (*raglit.Store).ForgetJob))
@@ -1165,6 +1166,43 @@ func listJobs(reg *raglit.Registry) func(context.Context, *jobsIn) (*jobsOut, er
 				stages = []raglit.JobStage{}
 			}
 			out.Body.Jobs = append(out.Body.Jobs, jobOut{JobInfo: j, ETASeconds: eta[j.ID], Stages: stages})
+		}
+		return out, nil
+	}
+}
+
+// The merged feed: ingest_jobs and identity_jobs as one timeline (Store.Activity).
+// Kind and state compose; the store answers the union in one query, newest
+// enqueued_at first. The Activity pane (web/src/panes/Activity.tsx) is the
+// consumer: it shows BOTH queues, so an index captioning fifty documents does
+// not read as idle on the jobs view.
+type activityIn struct {
+	Index string `query:"index" doc:"index name (default: the default index)"`
+	Kind  string `query:"kind" doc:"ingest|caption|tags|extract; empty = both queues"`
+	State string `query:"state" doc:"pending|running|done|error|skipped; empty = all"`
+	Limit int    `query:"limit" doc:"max rows (default 100)"`
+}
+
+type activityOut struct {
+	Body struct {
+		Items []raglit.ActivityItem `json:"items"`
+	}
+}
+
+func listActivity(reg *raglit.Registry) func(context.Context, *activityIn) (*activityOut, error) {
+	return func(ctx context.Context, in *activityIn) (*activityOut, error) {
+		st, err := readIdx(ctx, reg, in.Index)
+		if err != nil {
+			return nil, err
+		}
+		items, err := st.Activity(in.Kind, in.State, in.Limit)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("activity", err)
+		}
+		out := &activityOut{}
+		out.Body.Items = items
+		if out.Body.Items == nil {
+			out.Body.Items = []raglit.ActivityItem{}
 		}
 		return out, nil
 	}

@@ -302,6 +302,52 @@ func TestGatDaemon_CancelIdentityJobPOST(t *testing.T) {
 	}
 }
 
+// TestGatDaemon_ListActivity pins the merged feed: one endpoint answering for
+// BOTH job tables, newest enqueued_at first, and the kind filter narrowing it
+// to one table. gatTestServer seeds one indexed document (file:///notes.md),
+// so the identity job can be enqueued for it; the ingest job is the pending
+// file:///queued.md row.
+func TestGatDaemon_ListActivity(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, _ := reg.Get("default")
+	if _, err := st.EnqueueIdentity("file:///notes.md", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both queues, one feed.
+	got := httpGet(t, srv.URL+"/api/activity?index=default")
+	var feed struct {
+		Items []raglit.ActivityItem `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(got), &feed); err != nil {
+		t.Fatalf("unmarshal %q: %v", got, err)
+	}
+	if len(feed.Items) != 2 {
+		t.Fatalf("activity = %d items, want 2 (one ingest + one identity)\n%s", len(feed.Items), got)
+	}
+	kinds := map[raglit.ActivityKind]bool{}
+	for _, it := range feed.Items {
+		kinds[it.Kind] = true
+	}
+	if !kinds[raglit.ActivityIngest] || !kinds[raglit.ActivityCaption] {
+		t.Fatalf("activity missing a queue: %v", kinds)
+	}
+	if feed.Items[0].EnqueuedAt < feed.Items[1].EnqueuedAt {
+		t.Errorf("not enqueued_at DESC: %d before %d", feed.Items[0].EnqueuedAt, feed.Items[1].EnqueuedAt)
+	}
+
+	// kind=ingest narrows to the ingest table; the identity row is gone.
+	got = httpGet(t, srv.URL+"/api/activity?index=default&kind=ingest")
+	if !strings.Contains(got, "queued.md") || strings.Contains(got, "notes.md") {
+		t.Fatalf("kind=ingest: %s", got)
+	}
+	// kind=caption narrows to the identity table.
+	got = httpGet(t, srv.URL+"/api/activity?index=default&kind=caption")
+	if !strings.Contains(got, "notes.md") || strings.Contains(got, "queued.md") {
+		t.Fatalf("kind=caption: %s", got)
+	}
+}
+
 // TestGatDaemon_JobByID pins the citation path: a job named by a health row must
 // answer no matter how far back it is.
 //
