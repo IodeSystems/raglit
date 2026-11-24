@@ -65,6 +65,7 @@ func surveyReader(ask func(context.Context, PageImage, RegionAbout) (RegionReadi
 // inch against a letter page's 39. That is knowable before the model is called,
 // and on its own it means the transcription cannot be trusted.
 func TestRootOfAnOversizeSheetIsFlaggedLowResolutionBeforeAnyCall(t *testing.T) {
+	t.Parallel()
 	ask, calls := scriptedAsk(RegionReading{Description: "a survey"})
 	rr := surveyReader(ask)
 	root, err := rr.Read(context.Background(), blankPage(400, 540), 1)
@@ -84,6 +85,7 @@ func TestRootOfAnOversizeSheetIsFlaggedLowResolutionBeforeAnyCall(t *testing.T) 
 
 // A letter page is the baseline and must NOT be flagged.
 func TestLetterPageIsNotFlaggedLowResolution(t *testing.T) {
+	t.Parallel()
 	ask, _ := scriptedAsk(RegionReading{Description: "a deed"})
 	rr := &RegionReader{Ask: ask, PageWIn: 8.5, PageHIn: 11, DPI: 200, MaxDepth: 3}
 	root, err := rr.Read(context.Background(), blankPage(1700, 2200), 1)
@@ -99,6 +101,7 @@ func TestLetterPageIsNotFlaggedLowResolution(t *testing.T) {
 // Descending into a quarter of the sheet must actually buy resolution — that is
 // the whole mechanism.
 func TestDescentRaisesResolution(t *testing.T) {
+	t.Parallel()
 	ask, _ := scriptedAsk(
 		RegionReading{Description: "whole sheet", Kind: "drawing", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 0.25, H: 0.25, Kind: "text-block"},
@@ -127,6 +130,7 @@ func TestDescentRaisesResolution(t *testing.T) {
 // just given. Routing is by GEOMETRY, so a full-area proposal at the same
 // rotation is neither a descent nor a transform and is dropped.
 func TestAFullAreaProposalAtTheSameRotationIsRefused(t *testing.T) {
+	t.Parallel()
 	ask, calls := scriptedAsk(
 		RegionReading{Description: "whole sheet", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 1, H: 1, Rotation: 0, Reason: "look again"},
@@ -149,6 +153,7 @@ func TestAFullAreaProposalAtTheSameRotationIsRefused(t *testing.T) {
 // running sideways genuinely needs re-rotating — and is routed as a transform,
 // not as a child.
 func TestAFullAreaProposalAtANewRotationIsATransform(t *testing.T) {
+	t.Parallel()
 	ask, calls := scriptedAsk(
 		RegionReading{Description: "sideways text", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 1, H: 1, Rotation: 90, Reason: "text runs sideways"},
@@ -178,6 +183,7 @@ func TestAFullAreaProposalAtANewRotationIsATransform(t *testing.T) {
 // region by 360 returns the original SHA. A transform that renders to bytes
 // already seen is refused rather than recursed into.
 func TestATransformRenderingToSeenBytesIsRefused(t *testing.T) {
+	t.Parallel()
 	// Every reading asks to be re-shown at 0 degrees, forever.
 	ask := func(_ context.Context, _ PageImage, _ RegionAbout) (RegionReading, error) {
 		return RegionReading{Description: "same again", Regions: []RegionProposal{
@@ -201,6 +207,7 @@ func TestATransformRenderingToSeenBytesIsRefused(t *testing.T) {
 // A model that proposes children forever must still terminate, and the record
 // must say it stopped for budget rather than because it finished.
 func TestDescentIsBoundedByDepthAndCalls(t *testing.T) {
+	t.Parallel()
 	ask := func(_ context.Context, _ PageImage, _ RegionAbout) (RegionReading, error) {
 		return RegionReading{Description: "more", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 0.5, H: 0.5}, {X: 0.5, Y: 0, W: 0.5, H: 0.5},
@@ -254,6 +261,7 @@ func TestDescentIsBoundedByDepthAndCalls(t *testing.T) {
 // A region too small to gain from another look is not descended into: the pixels
 // are already all there.
 func TestTinyProposalsAreNotDescendedInto(t *testing.T) {
+	t.Parallel()
 	ask, calls := scriptedAsk(
 		RegionReading{Description: "sheet", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 0.01, H: 0.01, Reason: "a monument marker"},
@@ -272,6 +280,7 @@ func TestTinyProposalsAreNotDescendedInto(t *testing.T) {
 // Coordinates come back in the region's own frame and must be lifted to the
 // page, or a grandchild points at the wrong part of the sheet.
 func TestChildCoordinatesAreLiftedIntoPageSpace(t *testing.T) {
+	t.Parallel()
 	ask, _ := scriptedAsk(
 		RegionReading{Description: "sheet", Regions: []RegionProposal{{X: 0.5, Y: 0.5, W: 0.5, H: 0.5}}},
 		RegionReading{Description: "quadrant", Regions: []RegionProposal{{X: 0.5, Y: 0.5, W: 0.5, H: 0.5}}},
@@ -308,6 +317,7 @@ func TestChildCoordinatesAreLiftedIntoPageSpace(t *testing.T) {
 // A malformed reply must not lose the transcription — that is the part that
 // matters, and JSON is only the wrapper.
 func TestParseRegionReadingKeepsTextWhenJSONIsUnusable(t *testing.T) {
+	t.Parallel()
 	got := ParseRegionReading("I could not produce JSON. PARCEL A: THE EASTERLY 25 FEET")
 	if !strings.Contains(got.Description, "EASTERLY") {
 		t.Errorf("the reading was discarded with the JSON: %q", got.Description)
@@ -321,6 +331,7 @@ func TestParseRegionReadingKeepsTextWhenJSONIsUnusable(t *testing.T) {
 // Leaves are what get embedded; interior nodes stay searchable through their own
 // overview text, which is what makes a bad region set cost detail not coverage.
 func TestLeavesAndFlattenAgree(t *testing.T) {
+	t.Parallel()
 	ask, _ := scriptedAsk(
 		RegionReading{Description: "sheet", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 0.4, H: 0.4}, {X: 0.5, Y: 0.5, W: 0.4, H: 0.4},
@@ -348,6 +359,7 @@ func TestLeavesAndFlattenAgree(t *testing.T) {
 // margin. The first verification tile cut mid-word ("REPLAT OF BLO"), so
 // descents are grown to overlap their neighbours.
 func TestDescentsArePaddedToAvoidCuttingText(t *testing.T) {
+	t.Parallel()
 	ask, _ := scriptedAsk(
 		RegionReading{Description: "sheet", Regions: []RegionProposal{
 			{X: 0.25, Y: 0.25, W: 0.25, H: 0.25, Kind: "text-block"},
@@ -368,6 +380,7 @@ func TestDescentsArePaddedToAvoidCuttingText(t *testing.T) {
 // The model names the same block twice under different reasons, and each
 // proposal costs a model call.
 func TestOverlappingProposalsAreDeduped(t *testing.T) {
+	t.Parallel()
 	ask, calls := scriptedAsk(
 		RegionReading{Description: "sheet", Regions: []RegionProposal{
 			{X: 0.1, Y: 0.1, W: 0.3, H: 0.3, Reason: "text block"},
@@ -395,6 +408,7 @@ func TestOverlappingProposalsAreDeduped(t *testing.T) {
 // what it was rendered from — and the descent already computed the digest, for
 // the cycle detector, and threw it away.
 func TestEveryRegionRecordsWhatItWasReadFrom(t *testing.T) {
+	t.Parallel()
 	ask, _ := scriptedAsk(
 		RegionReading{Description: "sheet", Regions: []RegionProposal{
 			{X: 0, Y: 0, W: 0.4, H: 0.4}, {X: 0.5, Y: 0.5, W: 0.4, H: 0.4},
@@ -433,6 +447,7 @@ func TestEveryRegionRecordsWhatItWasReadFrom(t *testing.T) {
 // from, so what a human is shown is the artifact and not something that merely
 // has the same coordinates.
 func TestRerenderReproducesTheBytesTheRegionWasReadFrom(t *testing.T) {
+	t.Parallel()
 	page := blankPage(800, 1080)
 	ask, _ := scriptedAsk(
 		RegionReading{Description: "sheet", Regions: []RegionProposal{
@@ -469,6 +484,7 @@ func TestRerenderReproducesTheBytesTheRegionWasReadFrom(t *testing.T) {
 // nothing about the crop geometry records that. Unrecorded, the diagnostic
 // question — could this have been read at all — has no answer.
 func TestTheContextDownscalesAreRecordedAndReplayable(t *testing.T) {
+	t.Parallel()
 	page := blankPage(400, 540)
 	ask := func(_ context.Context, _ PageImage, _ RegionAbout) (RegionReading, error) {
 		return RegionReading{Description: "shrunk twice", Downscales: 2}, nil
@@ -508,6 +524,7 @@ func TestTheContextDownscalesAreRecordedAndReplayable(t *testing.T) {
 // would leave the region claiming its words were read off the image it replaced
 // — a false attestation, reached without anyone editing anything.
 func TestATransformCarriesItsRenderRecordOntoTheRegion(t *testing.T) {
+	t.Parallel()
 	page := blankPage(400, 540)
 	ask, _ := scriptedAsk(
 		RegionReading{Description: "sideways", Regions: []RegionProposal{
@@ -542,6 +559,7 @@ func TestATransformCarriesItsRenderRecordOntoTheRegion(t *testing.T) {
 // Same walk, different question, and the difference is what stops a plan sheet
 // coming back described as the one inset somebody's eye landed on.
 func TestTheRootIsAskedADifferentQuestionThanACrop(t *testing.T) {
+	t.Parallel()
 	var asked []string
 	rr := &RegionReader{
 		PageWIn: 27, PageHIn: 36.7, DPI: 200, MaxDepth: 1,
@@ -568,6 +586,7 @@ func TestTheRootIsAskedADifferentQuestionThanACrop(t *testing.T) {
 // Descent is opt-in. A page that is read and understood should not pay for
 // crops nobody asked for — the root reading is written to stand on its own.
 func TestDescentIsOptIn(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	rr := &RegionReader{
 		PageWIn: 27, PageHIn: 36.7, DPI: 200, // MaxDepth left at 0
@@ -603,6 +622,7 @@ func TestDescentIsOptIn(t *testing.T) {
 // this replaces was "more text wins", which prefers exactly the render that got
 // two bearings wrong.
 func TestALongerTransformThatIsMostlyRepetitionIsRefused(t *testing.T) {
+	t.Parallel()
 	looped := "FOUND 1/2 RB/CAP SUMMIT 0.2 N OF CALC\n" +
 		strings.Repeat("FOUND 5/8 RB/CAP MOWRER 0.4 S OF CALC\n", 40)
 	upright := "EXISTING CORNERS\nA = FOUND 1/2 RB/CP SUMMIT\n" +
@@ -626,6 +646,7 @@ func TestALongerTransformThatIsMostlyRepetitionIsRefused(t *testing.T) {
 // With nothing else to separate them the old rule still applies, corrected: more
 // DISTINCT content, so a re-render that only repeats itself more cannot win.
 func TestATransformWinsOnDistinctContentWhenNothingElseSeparatesThem(t *testing.T) {
+	t.Parallel()
 	orig := &Region{Text: "sideways"}
 	alt := &Region{Text: "PARCEL A: THE EASTERLY 25 FEET OF LOT 1\nBLOCK 10, MONTBORNE"}
 	if !transformHelped(orig, alt, "") {
@@ -640,6 +661,7 @@ func TestATransformWinsOnDistinctContentWhenNothingElseSeparatesThem(t *testing.
 // The parent's account is the only description of a region not produced by the
 // render under judgement, which is what makes it usable as a tiebreak.
 func TestATransformIsJudgedAgainstWhatTheParentSaidIsThere(t *testing.T) {
+	t.Parallel()
 	expect := "a monument table listing found rebar and caps with offsets from calculated position"
 	about := &Region{Text: "FOUND 5/8 RB/CAP MOWRER 0.4 S OF CALCULATED POSITION\n" +
 		"FOUND REBAR AND CAP DACE PER PREVIOUS SURVEY\n"}
@@ -657,6 +679,7 @@ func TestATransformIsJudgedAgainstWhatTheParentSaidIsThere(t *testing.T) {
 // reading about a different part of the sheet. That is a claim about the
 // TRANSFORM, and the region says so rather than adopting it silently.
 func TestAChildThatSharesNothingWithItsParentFlagsTheTransform(t *testing.T) {
+	t.Parallel()
 	page := blankPage(400, 540)
 	ask, _ := scriptedAsk(
 		RegionReading{
@@ -684,6 +707,7 @@ func TestAChildThatSharesNothingWithItsParentFlagsTheTransform(t *testing.T) {
 // The flag is about disagreement, not about a child saying MORE than its parent
 // could see — which is the entire point of descending.
 func TestAChildThatElaboratesOnItsParentIsNotFlagged(t *testing.T) {
+	t.Parallel()
 	page := blankPage(400, 540)
 	ask, _ := scriptedAsk(
 		RegionReading{
@@ -710,6 +734,7 @@ func TestAChildThatElaboratesOnItsParentIsNotFlagged(t *testing.T) {
 // remedy — so it fixes itself instead of asking a parent that cannot see its
 // six-point text to adjudicate.
 func TestARegionRefinesItsOwnFrameWithoutItsParent(t *testing.T) {
+	t.Parallel()
 	page := blankPage(1700, 2200) // 8.5x11 at 200dpi
 	ask, calls := scriptedAsk(
 		// The root names a block; the child then finds its own edge cut.
@@ -761,6 +786,7 @@ func TestARegionRefinesItsOwnFrameWithoutItsParent(t *testing.T) {
 // The margin is INCHES, so it means the same thing at every depth — the reason
 // descentPadIn is a length and not a fraction.
 func TestMarginIsInchesOfPaperNotAFractionOfTheRegion(t *testing.T) {
+	t.Parallel()
 	small := Rect{X: 0.4, Y: 0.4, W: 0.02, H: 0.02}
 	big := Rect{X: 0.1, Y: 0.1, W: 0.8, H: 0.8}
 	const wIn, hIn = 27.0, 36.7
@@ -780,6 +806,7 @@ func TestMarginIsInchesOfPaperNotAFractionOfTheRegion(t *testing.T) {
 // A region asking for the whole sheet back is escalating in a refinement's
 // clothes. The ask is legitimate; the size is not.
 func TestAnOversizedMarginIsCappedRatherThanRefused(t *testing.T) {
+	t.Parallel()
 	page := blankPage(1700, 2200)
 	ask, calls := scriptedAsk(
 		RegionReading{Description: "a sheet", Regions: []RegionProposal{
@@ -814,6 +841,7 @@ func TestAnOversizedMarginIsCappedRatherThanRefused(t *testing.T) {
 
 // Refinement must not become a way to spend the whole budget on one region.
 func TestRefinementIsBoundedByTheTransformBudget(t *testing.T) {
+	t.Parallel()
 	page := blankPage(1700, 2200)
 	readings := []RegionReading{
 		{Description: "a sheet", Regions: []RegionProposal{
@@ -843,6 +871,7 @@ func TestRefinementIsBoundedByTheTransformBudget(t *testing.T) {
 // A tile cannot see its neighbours and overlaps them, so it has to be told it is
 // one — otherwise both sides of a seam guess at the same half-visible item.
 func TestATileIsToldItIsOneAndAnOrdinaryRegionIsNot(t *testing.T) {
+	t.Parallel()
 	var about []RegionAbout
 	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
 		about = append(about, a)
@@ -891,6 +920,7 @@ func TestATileIsToldItIsOneAndAnOrdinaryRegionIsNot(t *testing.T) {
 // 45% nothing can be dropped by geometry, because a cell holding less than 45%
 // of an item implies its neighbour holds more than 55%.
 func TestTheGridThresholdCannotDropAnItem(t *testing.T) {
+	t.Parallel()
 	const thresh = 0.45
 	dropped, duped := 0, 0
 	for i := 0; i <= 1000; i++ {
@@ -925,6 +955,7 @@ func TestTheGridThresholdCannotDropAnItem(t *testing.T) {
 // "drawing". Four 27x36in recorded surveys came back "overview", which is a
 // compliant answer from the prompt's own list, and none of them ever tiled.
 func TestTilingIsGatedOnArithmeticNotOnWhatTheModelCallsIt(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"drawing", "overview", "text-block", "table", ""} {
 		var tiles int
 		ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
@@ -957,6 +988,7 @@ func TestTilingIsGatedOnArithmeticNotOnWhatTheModelCallsIt(t *testing.T) {
 // And it still refuses where tiling buys nothing, so dropping the kind check did
 // not turn tiling on for every page in the corpus.
 func TestALetterPageStillDoesNotTile(t *testing.T) {
+	t.Parallel()
 	ask, _ := scriptedAsk(
 		RegionReading{Description: "an ordinary page", Kind: "text-block"},
 		RegionReading{Description: "unused"},
@@ -980,6 +1012,7 @@ func TestALetterPageStillDoesNotTile(t *testing.T) {
 // A child that says its frame is broken gets its parent asked — the one thing it
 // cannot do for itself, because the box and the rotation came from up there.
 func TestAnEscalatingChildGetsItsParentAsked(t *testing.T) {
+	t.Parallel()
 	var asked []RegionAbout
 	n := 0
 	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
@@ -1030,6 +1063,7 @@ func TestAnEscalatingChildGetsItsParentAsked(t *testing.T) {
 // transform-suspect is the silent case: a child that confidently reads the wrong
 // thing and reports nothing. It must escalate too, or the flag means nothing.
 func TestASilentlyWrongChildEscalatesOnTheFlagAlone(t *testing.T) {
+	t.Parallel()
 	n := 0
 	sawTurn3 := false
 	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
@@ -1066,6 +1100,7 @@ func TestASilentlyWrongChildEscalatesOnTheFlagAlone(t *testing.T) {
 // resolution, the worst per-token value anywhere in the descent. It has its own
 // budget so a page of unhappy children cannot spend the document.
 func TestEscalationHasItsOwnBudget(t *testing.T) {
+	t.Parallel()
 	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
 		if a.Escalation != "" {
 			return RegionReading{Action: ActionKeep}, nil
@@ -1103,6 +1138,7 @@ func TestEscalationHasItsOwnBudget(t *testing.T) {
 // A parent may decide nothing is there. The region keeps what its PARENT said
 // was in it — a region nobody could read is not a region nobody described.
 func TestAbandonKeepsTheParentsAccount(t *testing.T) {
+	t.Parallel()
 	n := 0
 	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
 		n++
@@ -1135,6 +1171,7 @@ func TestAbandonKeepsTheParentsAccount(t *testing.T) {
 // FlagClipped was removed — and it made a truncated read indistinguishable from
 // a complete one on the sheets where the difference matters most.
 func TestStoppingAtMaxDepthIsNotABudgetFailure(t *testing.T) {
+	t.Parallel()
 	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
 		if a.Depth == 0 {
 			return RegionReading{Description: "an oversize sheet"}, nil
@@ -1167,6 +1204,7 @@ func TestStoppingAtMaxDepthIsNotABudgetFailure(t *testing.T) {
 // Measured: asked for read/escalate/illegible, it also returned "pass" and
 // "accepted".
 func TestAnInventedVerdictIsRecordedNotSwallowed(t *testing.T) {
+	t.Parallel()
 	for _, v := range []string{"pass", "accepted", "looks-fine"} {
 		ask, _ := scriptedAsk(
 			RegionReading{Description: "a sheet full of small print that a closer look would help with",
@@ -1203,6 +1241,7 @@ func TestAnInventedVerdictIsRecordedNotSwallowed(t *testing.T) {
 // descent out of budget after four tiles of sixteen, and those three are the
 // only pages where tiling did worse than not tiling.
 func TestATransformCandidateDoesNotDescend(t *testing.T) {
+	t.Parallel()
 	var reads int
 	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
 		reads++
@@ -1241,6 +1280,7 @@ func TestATransformCandidateDoesNotDescend(t *testing.T) {
 // than tall by construction. Cutting a 2:1 sheet into n x n leaves every tile
 // still 2:1 — the wrong shape sixteen times over.
 func TestTheGridTakesItsShapeFromThePage(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		want   float64
@@ -1286,6 +1326,7 @@ func TestTheGridTakesItsShapeFromThePage(t *testing.T) {
 // renders to 147 megapixels at 200 dpi and the transport refuses the request
 // with an error naming the wrong cause.
 func TestAnOversizeRenderIsCappedNotSentWhole(t *testing.T) {
+	t.Parallel()
 	// 6000x5000 = 30 MP, above the cap; and 3000x2000 = 6 MP, below it.
 	for _, c := range []struct {
 		w, h   int
@@ -1316,6 +1357,7 @@ func TestAnOversizeRenderIsCappedNotSentWhole(t *testing.T) {
 // The failure this whole set exists for: the descent must read a region before
 // it tiles, so a region too big to READ took the tiles down with it.
 func TestAFailedReadStillTiles(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	ask := func(_ context.Context, _ PageImage, a RegionAbout) (RegionReading, error) {
 		calls++
