@@ -7,6 +7,7 @@ import (
 	"fmt"
 	agent "github.com/iodesystems/agentkit/agent"
 	"github.com/iodesystems/agentkit/llm"
+	"log"
 	"math"
 	"regexp"
 	"strconv"
@@ -44,6 +45,8 @@ type Embedder struct {
 	// default. The server's limit applies to the whole request, so this bounds
 	// the batch, not the individual fragment.
 	BatchLimitChars int
+	// probeHost names the endpoint in the DiscoverEmbedLimit log line. Host only.
+	probeHost string
 }
 
 // NewEmbedder builds an Embedder with the nomic prefixes.
@@ -221,6 +224,11 @@ func TokensToChars(tokens int) int {
 // 429 when a model's slots are full, the client waits out its retry budget, and
 // the probe then read the give-up as a refusal of that length.
 func (e *Embedder) DiscoverEmbedLimit(ctx context.Context) (int, error) {
+	host := e.probeHost
+	if host == "" {
+		host = "unknown host"
+	}
+	log.Printf("raglit: probing embed input limit for %s at %s (growing-input probe, O(log N) requests; an over-long input is the expected answer)", e.Model, host)
 	accepts := func(n int) (bool, error) {
 		_, err := e.EmbedDocs(ctx, []string{strings.Repeat("a ", n/2+1)[:n]})
 		switch {

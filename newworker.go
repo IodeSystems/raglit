@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -77,7 +78,40 @@ type Models struct {
 	// headings (KindCode, codesegment.go). nil → both are read into windows,
 	// as before. Its Runtime() is in the KindCode pool key (poolRecipe).
 	Code CodeSegmenter
+	// Configure, when set, is called once on every llm.Client NewWorker,
+	// Embedder and Identifier build, right after the client is built and before
+	// raglit sets its own hooks (OnUsage, OnRetry) on it. role is "vision",
+	// "segment", "identity" or "embed". A host uses it to set Client.Header
+	// (agentkit sends it on chat, embed and probe requests) or any other field.
+	// Audio is not a role here: STT uses a plain HTTP client, not an llm.Client.
+	// Configure runs on the building goroutine; c is not yet shared. nil → no-op.
+	Configure func(role string, c *llm.Client)
 }
+
+// client builds the llm.Client for one role and passes it through Configure.
+func (m Models) client(role string, r ModelRole) *llm.Client {
+	c := ingestClient(r)
+	if m.Configure != nil {
+		m.Configure(role, c)
+	}
+	return c
+}
+
+// probeHost is the host of a base URL, for log lines: never the path or a key.
+func probeHost(baseURL string) string {
+	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "unknown host"
+}
+
+// hostProber carries the endpoint host to ChatInputLimitTokens for its log line.
+type hostProber struct {
+	ContextProber
+	host string
+}
+
+func (h hostProber) ProbeHost() string { return h.host }
 
 // usageHook points c.OnUsage at m.OnUsage for one role, after any hook the
 // client already has. No-op when m.OnUsage is nil.
@@ -188,7 +222,7 @@ func (m Models) Embedder() *Embedder {
 		return nil
 	}
 	chans := m.channels()
-	c := ingestClient(m.Embed)
+	c := m.client("embed", m.Embed)
 	c.OnRetry = chans.Observe(m.Embed.Model, c.OnRetry)
 	return NewEmbedder(m.UsageVector(chans.GateVector(c, m.Embed.Model)), m.Embed.Model)
 }
@@ -221,7 +255,7 @@ func (m Models) Identifier() *Identifier {
 		seg := m.segmentRole()
 		r.BaseURL, r.APIKey = seg.BaseURL, seg.APIKey
 	}
-	c := ingestClient(r)
+	c := m.client("identity", r)
 	m.usageHook(c, "identity", r.Model)
 	return NewIdentifier(gate(chans, c, r.Model), r.Model)
 }
@@ -306,9 +340,11 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 	embedLimit := m.EmbedLimitChars
 	embedLimitTokens, embedCounter := 0, TokenCounter(nil)
 	if m.Embed.Model != "" {
-		ec := ingestClient(m.Embed)
+		ec := m.client("embed", m.Embed)
+		probeEmbedder := NewEmbedder(ec, m.Embed.Model)
+		probeEmbedder.probeHost = probeHost(m.Embed.BaseURL)
 		embedLimit = store.EmbedLimitChars(context.Background(),
-			NewEmbedder(ec, m.Embed.Model), m.EmbedLimitChars)
+			probeEmbedder, m.EmbedLimitChars)
 		// The character number above is a conversion; this is the limit itself.
 		// A fragment inside the character ceiling can still be past the token one
 		// — 16128 characters of a scanned brief is 10240 tokens against an 8192
@@ -334,7 +370,7 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 	}
 	cheapEngine := m.OCR.CheapEngine
 	if m.Vision.Model != "" {
-		client := ingestClient(m.Vision)
+		client := m.client("vision", m.Vision)
 		m.usageHook(client, "vision", m.Vision.Model)
 		// Every retry, recovery and give-up this client makes, attributed to the
 		// job in flight. The client has always reported them; nothing was
@@ -349,7 +385,7 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 		// capped by nothing, and a page over the endpoint's physical batch failed
 		// its whole document.
 		w.Frag.SegmentInputLimit = store.ChatInputLimitTokens(
-			context.Background(), client, m.Vision.Model, m.SegmentInputLimitTokens)
+			context.Background(), hostProber{client, probeHost(m.Vision.BaseURL)}, m.Vision.Model, m.SegmentInputLimitTokens)
 		// Counting is exact wherever the endpoint has a tokenizer. Without one,
 		// sizes are estimated from a ratio learned per document — which is still
 		// four times better than the constant it replaced, but is an estimate.
@@ -381,7 +417,7 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 		// Its own client, because the segmenter's job is a structured tool call
 		// over TEXT and the vision model is chosen for reading PIXELS.
 		seg := m.segmentRole()
-		segClient := ingestClient(seg)
+		segClient := m.client("segment", seg)
 		m.usageHook(segClient, "segment", seg.Model)
 		// The tally is chained here too. It was only ever on the vision client,
 		// so a segmentation that fought the endpoint for two minutes contributed

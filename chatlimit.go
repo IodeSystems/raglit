@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"context"
+	"log"
 	"strconv"
 	"time"
 )
@@ -79,6 +80,11 @@ func (s *Store) ChatInputLimitTokens(ctx context.Context, p ContextProber, model
 	}
 	n, ok := p.ContextWindow(ctx)
 	if !ok || n <= 0 {
+		host := "unknown host"
+		if h, ok := p.(interface{ ProbeHost() string }); ok {
+			host = h.ProbeHost()
+		}
+		log.Printf("raglit: probing chat input limit for %s at %s (word-repeat probe, O(log N) requests, max_tokens=1; an over-long request is the expected answer)", model, host)
 		probed, err := p.DiscoverContext(ctx)
 		if err != nil || probed <= 0 {
 			return 0
