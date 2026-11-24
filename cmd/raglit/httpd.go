@@ -353,6 +353,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("reread", http.MethodPost, "/api/reread", "Purge a document's cached page OCR and re-read it."), rereadOp(reg))
 	gat.Register(api, g, op("enqueueIdentity", http.MethodPost, "/api/identify/queue", "Queue documents for captioning; the daemon drains them at the endpoint's concurrency."), enqueueIdentityOp(reg))
 	gat.Register(api, g, op("identityJobs", http.MethodGet, "/api/identity-jobs", "The captioning queue: counts and rows."), identityJobsOp(reg))
+	gat.Register(api, g, op("cancelIdentityJob", http.MethodPost, "/api/identity-jobs/cancel", "Cancel a pending identity (captioning) job."), jobAction(reg, (*raglit.Store).CancelIdentityJob))
 	gat.Register(api, g, op("identify", http.MethodPost, "/api/identify", "Say what a document IS: generate a caption/summary/kind, or record a person's."), identifyOp(reg))
 	gat.Register(api, g, op("pauseIndex", http.MethodPost, "/api/index/pause", "Pause or resume an index: a paused index runs no work; jobs queue and run on resume."), pauseOp(reg))
 	gat.Register(api, g, op("scopeIndex", http.MethodPost, "/api/index/scope", "Set an index's scopes (the directories a search with no index named reads it from) and whether a global index is ambient."), scopeOp(reg))

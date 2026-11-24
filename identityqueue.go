@@ -423,6 +423,31 @@ func (s *Store) finishIdentityJob(id int64, err error) error {
 	return e
 }
 
+// CancelIdentityJob removes a PENDING identity job from the queue. Only a
+// pending row is removed — a running job is mid-flight (requeueIdentityJob
+// brings one back on a stop, which is a different decision), and a terminal
+// row is a fact, not work.
+//
+// The row is deleted, not marked, the way Store.CancelJob does it for ingest:
+// a pending caption is owed by the document, not by the row — EnqueueIdentity
+// is idempotent per path, so asking again makes a fresh row, and a dead 'canceled'
+// state would be a fourth terminal value every reader of the queue has to learn
+// to ignore.
+func (s *Store) CancelIdentityJob(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM identity_jobs WHERE id = ? AND state = 'pending'`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("raglit: identity job %d not cancelable (only pending jobs can be canceled)", id)
+	}
+	return nil
+}
+
 // requeueIdentityJob returns a claimed row to pending, unowned. For a job cut
 // off by a stop: the work was not done and not refused, so the next drain does
 // it. Only a 'running' row moves.

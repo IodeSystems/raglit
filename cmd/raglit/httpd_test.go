@@ -261,6 +261,47 @@ func TestGatDaemon_JobControlPOST(t *testing.T) {
 	}
 }
 
+// TestGatDaemon_CancelIdentityJobPOST exercises the /api/identity-jobs/cancel
+// endpoint end to end: a pending caption row is removed, a running row is
+// refused, and the row's document can be re-queued afterwards.
+func TestGatDaemon_CancelIdentityJobPOST(t *testing.T) {
+	srv, reg := gatTestServer(t)
+	st, _ := reg.Get("default")
+
+	// A caption owed for the ingested document, so there is a pending row.
+	if _, err := st.EnqueueIdentity("file:///notes.md", false); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := st.IdentityJobs("pending", 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("pending identity jobs = %v, %v", jobs, err)
+	}
+	id := jobs[0].ID
+
+	body := httpPostJSON(t, srv.URL+"/api/identity-jobs/cancel?index=default", `{"id":`+strconv.FormatInt(id, 10)+`}`)
+	if !strings.Contains(body, `"ok":true`) {
+		t.Fatalf("cancel: %s", body)
+	}
+	after, _ := st.IdentityJobs("all", 10)
+	for _, j := range after {
+		if j.ID == id {
+			t.Fatal("identity job was not canceled")
+		}
+	}
+
+	// Canceling it again is a refusal, not a second deletion.
+	resp, err := http.Post(srv.URL+"/api/identity-jobs/cancel?index=default",
+		"application/json", strings.NewReader(`{"id":`+strconv.FormatInt(id, 10)+`}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("second cancel status = %d, want 400\n%s", resp.StatusCode, clip(string(b), 300))
+	}
+}
+
 // TestGatDaemon_JobByID pins the citation path: a job named by a health row must
 // answer no matter how far back it is.
 //

@@ -208,6 +208,68 @@ func TestIdentityWorker_SkipsWhatIsAlreadyAnswered(t *testing.T) {
 }
 
 // A row left 'running' by a process that is gone is work nobody is doing.
+// CancelIdentityJob removes a pending row and refuses to touch any other state:
+// a running job is mid-flight and a terminal row is a fact, so neither is work.
+func TestCancelIdentityJob(t *testing.T) {
+	s := storeWithDocs(t, 3)
+	p0, p1, p2 := "/corpus/scan_000.pdf", "/corpus/scan_001.pdf", "/corpus/scan_002.pdf"
+	for _, p := range []string{p0, p1, p2} {
+		if _, err := s.EnqueueIdentity(p, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs, err := s.IdentityJobs("", 10)
+	if err != nil || len(jobs) != 3 {
+		t.Fatalf("jobs = %v, %v", jobs, err)
+	}
+	byPath := map[string]int64{}
+	for _, j := range jobs {
+		byPath[j.Path] = j.ID
+	}
+
+	// A pending job is removed, and its row is gone — not marked.
+	if err := s.CancelIdentityJob(byPath[p1]); err != nil {
+		t.Fatalf("cancel pending: %v", err)
+	}
+	after, err := s.IdentityJobs("", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range after {
+		if j.ID == byPath[p1] {
+			t.Fatal("pending job was not removed")
+		}
+	}
+	q, _ := s.IdentityQueue()
+	if q.Pending != 2 {
+		t.Fatalf("pending = %d, want 2", q.Pending)
+	}
+
+	// A running job is refused — it is mid-flight, and stopping it is a requeue,
+	// not a cancel.
+	job, err := s.claimNextIdentityJob()
+	if err != nil || job == nil {
+		t.Fatalf("claim = %v, %v", job, err)
+	}
+	if err := s.CancelIdentityJob(job.ID); err == nil {
+		t.Fatal("canceling a running job should error")
+	}
+
+	// A terminal job is refused — it is a fact, not work.
+	if err := s.finishIdentityJob(job.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CancelIdentityJob(job.ID); err == nil {
+		t.Fatal("canceling a done job should error")
+	}
+
+	// Asking again for the cancelled document is a fresh job, as before.
+	revived, err := s.EnqueueIdentity(p1, false)
+	if err != nil || !revived {
+		t.Fatalf("re-enqueue after cancel = %v, %v", revived, err)
+	}
+}
+
 func TestReclaimIdentityJobs_RequeuesOrphans(t *testing.T) {
 	s := storeWithDocs(t, 1)
 	if _, err := s.EnqueueIdentity("/corpus/scan_000.pdf", false); err != nil {
