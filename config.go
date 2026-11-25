@@ -154,6 +154,9 @@ type Config struct {
 	// `raglit watch`), the daemon re-scans the roots on an interval and re-ingests
 	// changed files / drops deleted ones. Needs `indexes` (the roots to watch).
 	Watch bool `json:"watch,omitempty"`
+	// QualityLog is this project's search/surfacing quality log (qualitylog.go).
+	// Absent (zero) is OFF and writes nothing — the default.
+	QualityLog QualityLog `json:"quality_log,omitempty"`
 
 	// WritebackTranscriptionMd materialises <doc>.raglit-transcription.md beside
 	// every ingested document, project-wide. A per-index setting of the same name
@@ -568,3 +571,19 @@ func Inited(h Home) bool {
 	_, ok, _ := LoadConfig(h)
 	return ok
 }
+
+// QualityLog is the per-project search/surfacing quality log: an opt-in local
+// JSONL event log (search calls, get_document fetches, hook surfacing) giving
+// real-world quality signal without documents leaving the machine. Absent
+// (the zero value) is OFF — the default, and it writes nothing.
+type QualityLog struct {
+	// On enables the log. Absent or false → nothing is written, ever.
+	On bool `json:"on"`
+	// MaxBytes is the size cap of one file; a file past it rotates to the next
+	// generation, so growth is bounded by the cap. 0 → 1 MiB.
+	MaxBytes int `json:"max_bytes,omitempty"`
+}
+
+// QualityLogPath is the quality log file under a project home:
+// <home>/quality-log.jsonl (rotations are quality-log.jsonl.1, .2, ...).
+func (h Home) QualityLogPath() string { return filepath.Join(string(h), "quality-log.jsonl") }

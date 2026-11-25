@@ -50,6 +50,11 @@ type watcher struct {
 	// beside an unsubscribe would never be ended.
 	refreshMu sync.Mutex
 
+	// The per-project quality log writers (qualitylog.go), keyed by project
+	// namespace. Set by the daemon after the watcher exists; nil in tests that
+	// do not log. searchOp and getDocumentOp record through it.
+	quality *qualityLogRegistry
+
 	// Event watching, set up by run. Nil hub: no watching (tests, and before
 	// run), and Add/AddDir index synchronously only.
 	ctx      context.Context
@@ -315,6 +320,35 @@ func (w *watcher) registered() []string {
 }
 
 // List reports the registered homes with their project + live file count.
+// QualityWriter returns the project's quality log writer, or nil when the
+// project has no registered home, no config, or the log is off (the default).
+// The search and get_document hooks record through this; nil means write
+// nothing, which is what "off by default" is on the daemon side.
+func (w *watcher) QualityWriter(ns string) *raglit.QualityLogWriter {
+	if w == nil || w.quality == nil {
+		return nil
+	}
+	return w.quality.Writer(ns)
+}
+
+// ProjectHome resolves a project namespace to its registered home. The daemon's
+// only project→home knowledge (the registration list): the quality log and the
+// projects API both key off it.
+func (w *watcher) ProjectHome(ns string) (raglit.Home, bool) {
+	w.mu.Lock()
+	homes := make([]string, 0, len(w.homes))
+	for h := range w.homes {
+		homes = append(homes, h)
+	}
+	w.mu.Unlock()
+	for _, h := range homes {
+		if cfg, ok, _ := raglit.LoadConfig(raglit.Home(h)); ok && cfg.Project == ns {
+			return raglit.Home(h), true
+		}
+	}
+	return "", false
+}
+
 func (w *watcher) List() []watchInfo {
 	w.mu.Lock()
 	homes := make([]string, 0, len(w.homes))

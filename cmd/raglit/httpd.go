@@ -157,6 +157,12 @@ func runHttpd(subcmd string, args []string) error {
 	// change. Registrations persist under the daemon root and reload here.
 	watch := newWatcher(reg, string(cfgHome), *watchInterval)
 	watch.load()
+	// The per-project quality log (F41): the watch registry is the daemon's only
+	// project→home knowledge, so it owns the log writers. A project with the log
+	// off (the default) gets no writer and nothing is ever written for it.
+	watch.quality = newQualityLogRegistry()
+	watch.quality.setHomeResolver(watch.ProjectHome)
+	defer watch.quality.Close()
 	migrateScopes(reg, watch.registered())
 	// Shutdown order: the watcher's hub stops and waits for its watchers and
 	// index runs before the registry closes (the deferred reg.Close runs after
@@ -323,7 +329,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("listProjects", http.MethodGet, "/api/projects", "Indexes grouped by the project namespace they carry, with branch lineage and watch state."), listProjectsOp(reg, watch))
 	gat.Register(api, g, op("emailThread", http.MethodGet, "/api/email", "A mail archive as a thread: messages, enclosure depth, every header, and its attachments."), emailThreadOp(reg))
 	gat.Register(api, g, op("modelChannels", http.MethodGet, "/api/channels", "Per-model admission channels: the learned width, what is in flight, and how much backpressure taught it."), modelChannelsOp(lf))
-	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, defLimit))
+	gat.Register(api, g, op("search", http.MethodGet, "/search", "Search index(es); RRF-merged, best first."), searchOp(reg, watch, defLimit))
 	gat.Register(api, g, op("searchFigures", http.MethodGet, "/search-figures", "Semantic search over figures (MCP search_figures)."), searchFiguresOp(reg, defLimit))
 	gat.Register(api, g, op("ingest", http.MethodPost, "/ingest", "Queue targets for lazy ingestion."), ingestOp(reg, fp))
 	gat.Register(api, g, op("syncProject", http.MethodPost, "/api/sync", "Bring a project's configured indexes in step with their roots: queue new and changed files, remove documents whose files are gone."), syncOp(reg))
@@ -341,7 +347,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("getDocReview", http.MethodGet, "/api/doc", "Per-page OCR review for a document."), docReviewOp(reg))
 	gat.Register(api, g, op("reocr", http.MethodPost, "/api/reocr", "Re-run the OCR cascade on a saved page image."), reocrOp(reg, lf, home))
 	gat.Register(api, g, op("findDocuments", http.MethodGet, "/api/find-documents", "Find documents by name substring (MCP list_documents)."), findDocumentsOp(reg))
-	gat.Register(api, g, op("getDocument", http.MethodGet, "/api/get-document", "Get a document's indexed text (MCP get_document)."), getDocumentOp(reg))
+	gat.Register(api, g, op("getDocument", http.MethodGet, "/api/get-document", "Get a document's indexed text (MCP get_document)."), getDocumentOp(reg, watch))
 	gat.Register(api, g, op("ocr", http.MethodPost, "/api/ocr", "Extract a document (path or base64 data) to paged text (MCP ocr)."), ocrToolOp(reg, lf, home))
 	gat.Register(api, g, op("getModelSettings", http.MethodGet, "/api/settings/models", "Model providers and the provider + model of each role. Admin only."), getModelSettingsOp(reg, home))
 	gat.Register(api, g, op("saveModelSettings", http.MethodPut, "/api/settings/models", "Save providers and roles to config.json; the daemon reloads when idle. Admin only."), saveModelSettingsOp(reg, home))
@@ -750,6 +756,10 @@ type searchIn struct {
 	Path     string `query:"path"`
 	Limit    int    `query:"n"`
 	Siblings string `query:"siblings" doc:"a branch also searches its readable sibling branches; \"false\" to search the branch alone"`
+	// Session joins a search to the fetches and citations that follow it in the
+	// quality log: the caller (an agent's dun session) names itself and the log
+	// can later say which hit was fetched, cited, or never touched.
+	Session string `query:"session"`
 }
 type searchOut struct {
 	Body struct {
@@ -777,7 +787,7 @@ type searchOut struct {
 	}
 }
 
-func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchIn) (*searchOut, error) {
+func searchOp(reg *raglit.Registry, watch *watcher, defLimit int) func(context.Context, *searchIn) (*searchOut, error) {
 	return func(ctx context.Context, in *searchIn) (*searchOut, error) {
 		if in.Query == "" {
 			return nil, huma.Error400BadRequest("q is required")
@@ -851,7 +861,8 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		// documents several times over.
 		views := map[string]*docView{}
 		idents := map[string]raglit.DocIdentity{}
-		for _, ih := range rrfMerge(lists, limit) {
+		merged := rrfMerge(lists, limit)
+		for _, ih := range merged {
 			h := ih.hit
 			title := h.Title
 			if title == "" {
@@ -890,6 +901,13 @@ func searchOp(reg *raglit.Registry, defLimit int) func(context.Context, *searchI
 		if len(out.Body.Hits) == 0 {
 			out.Body.Covers = coversFor(reg, plan.names, in.Path)
 		}
+		// Quality log (F41): the merged hits, in the order the caller sees them,
+		// for the project that owns the first searched index. Off by default.
+		var logHits []raglit.Hit
+		for _, ih := range merged {
+			logHits = append(logHits, ih.hit)
+		}
+		recordSearch(watch, ctx, "", in.Query, in.Mode, in.Index, in.Session, logHits, searched)
 		return out, nil
 	}
 }
@@ -1431,6 +1449,9 @@ type getDocumentIn struct {
 	Offset   int    `query:"offset"`
 	Query    string `query:"query"`
 	Index    string `query:"index"`
+	// Session joins this fetch to the search that produced its hit, in the
+	// quality log (F41): same session id as the search's ?session=.
+	Session string `query:"session"`
 }
 type getDocumentOut struct {
 	Body struct {
@@ -1439,7 +1460,7 @@ type getDocumentOut struct {
 	}
 }
 
-func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (*getDocumentOut, error) {
+func getDocumentOp(reg *raglit.Registry, watch *watcher) func(context.Context, *getDocumentIn) (*getDocumentOut, error) {
 	return func(ctx context.Context, in *getDocumentIn) (*getDocumentOut, error) {
 		if in.Path == "" {
 			return nil, huma.Error400BadRequest("path is required")
@@ -1482,6 +1503,9 @@ func getDocumentOp(reg *raglit.Registry) func(context.Context, *getDocumentIn) (
 		}
 		out := &getDocumentOut{}
 		out.Body.Index, out.Body.DocContent = cands[0].index, content
+		// Quality log (F41): what was fetched and how much came back, so a hit's
+		// fate (fetched, cited, never touched) can be joined back later.
+		recordGetDocument(watch, ctx, "", content.Path, content.Path, cands[0].index, in.Session, len(content.Text))
 		return out, nil
 	}
 }
