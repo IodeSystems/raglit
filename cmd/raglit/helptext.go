@@ -335,6 +335,15 @@ raglit marks --identical [--write] [--json]
               jobs the endpoint made fight for. Exits non-zero if anything is
               wrong, so it works as a check and not only as a page to read.
               (A withdrawal is a decision, not a fault, and never fails it.)`},
+		{"quality-log", "the search/surfacing quality log, and its export", `raglit quality-log --export [--home DIR] [--out FILE]
+              the ONE way the quality log leaves the machine: an anonymize
+              export. Paths, titles, query text and session ids become hashes
+              that are stable for THIS export (a session still joins its
+              search to its fetch) and per-export (no two exports share a
+              value, so none can be merged back). Ranks, scores, origins,
+              sizes and fetch/use flags are preserved. Shows what leaves
+              before it leaves: the bytes shown are the bytes written. The
+              local log is never modified.`},
 		{"demo", "self-contained offline tour", `raglit demo                                self-contained offline tour`},
 	}},
 }
