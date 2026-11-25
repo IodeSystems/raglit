@@ -221,6 +221,134 @@ func TestReembedPriority_MovesToFront(t *testing.T) {
 	}
 }
 
+// TestReembed_ThreeIndexes_ProgressAndPriorityAndPause is the F51 composition
+// test for the whole re-embed queue, the single test all three F51 specs are
+// judged by. It composes the parts tested elsewhere — Store.SetPaused/Paused
+// (indexcontrol_test.go), Store.BackfillVectors returning 0 while paused
+// (TestPausedIndexClaimsNothing) — into the queue behaviour the specs promise,
+// walking one re-embed run over 3 indexes in order A, B, C:
+//
+//   - Progress names the index currently re-embedding, states its remaining
+//     fragment count, and lists the indexes still waiting (spec: progress
+//     visible).
+//   - SetPriority(B) moves B to the front, making the order B, A, C (spec:
+//     an index can be given priority).
+//   - Pausing the current index stops its backfill — BackfillVectors returns
+//     0 and the queue HOLDS it at the front — and unpausing resumes it to
+//     completion (spec: pausing stops the re-embed).
+//
+// The registry always lists a "default" index (registry.go Names), so the
+// queue walks four names in sorted order: A, B, default, C. The three the test
+// created are what the specs name; the assertions check them in that order.
+func TestReembed_ThreeIndexes_ProgressAndPriorityAndPause(t *testing.T) {
+	ctx := context.Background()
+	reg, err := OpenScopedRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.SetEmbedder(NewEmbedder(&fakeVecClient{}, "m"))
+
+	// Three indexes, each with fragments that have no vector: a re-embed to do.
+	for _, n := range []string{"alpha", "beta", "gamma"} {
+		st, err := reg.Get(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Ingest(ctx, Document{Path: n + ".md", Title: n,
+			Fragments: []Fragment{{Text: "a"}, {Text: "b"}, {Text: "c"}}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DropVectors(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q := NewReembedQueue(reg)
+
+	// SPEC 1 — progress is visible: the answer names the index currently
+	// re-embedding, states its remaining fragment count, and names the indexes
+	// still waiting. alpha is first in sorted order, so it is current.
+	p := q.Progress()
+	if p.Current != "alpha" {
+		t.Fatalf("current = %q, want alpha", p.Current)
+	}
+	if p.Remaining != 3 {
+		t.Fatalf("alpha remaining = %d, want 3", p.Remaining)
+	}
+	// The waiting list names beta and gamma, in order (with the registry's
+	// default index among them).
+	if gi, bi := waitingIndex(p.Waiting, "gamma"), waitingIndex(p.Waiting, "beta"); bi < 0 || gi < 0 || bi > gi {
+		t.Fatalf("waiting = %v, want beta and gamma named, beta before gamma", p.Waiting)
+	}
+
+	// SPEC 2 — priority: giving index B (beta) priority moves it to the front,
+	// making the order B, A, C: beta is current, alpha and gamma are waiting,
+	// with alpha before gamma.
+	q.SetPriority("beta")
+	if p = q.Progress(); p.Current != "beta" {
+		t.Fatalf("after SetPriority(beta): current = %q, want beta", p.Current)
+	}
+	if p.Remaining != 3 {
+		t.Fatalf("beta remaining = %d, want 3", p.Remaining)
+	}
+	if ai, gi := waitingIndex(p.Waiting, "alpha"), waitingIndex(p.Waiting, "gamma"); ai < 0 || gi < 0 || ai > gi {
+		t.Fatalf("after SetPriority(beta): waiting = %v, want alpha and gamma, alpha before gamma", p.Waiting)
+	}
+
+	// SPEC 3 — pausing stops the re-embed: pausing the current index (beta)
+	// stops its backfill. BackfillVectors returns 0 for a paused index, and the
+	// queue HOLDS it: it is not advanced past, so it is still current and its
+	// remaining count is untouched.
+	beta, err := reg.Get("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := beta.SetPaused(true); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := beta.BackfillVectors(ctx, 8); err != nil || n != 0 {
+		t.Fatalf("beta BackfillVectors while paused = %d, %v; want 0 (stopped)", n, err)
+	}
+	if p = q.Progress(); p.Current != "beta" || p.Remaining != 3 {
+		t.Fatalf("progress while paused = %+v, want current=beta remaining=3 (held, not advanced)", p)
+	}
+	if ai, gi := waitingIndex(p.Waiting, "alpha"), waitingIndex(p.Waiting, "gamma"); ai < 0 || gi < 0 || ai > gi {
+		t.Fatalf("waiting while paused = %v, want alpha and gamma still waiting, alpha before gamma", p.Waiting)
+	}
+
+	// Unpausing RESUMES it: Backfill fills the held index and the run
+	// completes — the queue is empty and every index is fully re-embedded,
+	// none left in partial semantic search.
+	if err := beta.SetPaused(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Backfill(ctx, 8); err != nil {
+		t.Fatalf("backfill after unpause: %v", err)
+	}
+	if p = q.Progress(); p.Current != "" || len(p.Waiting) != 0 {
+		t.Fatalf("after resume = %+v, want the run finished, nothing waiting", p)
+	}
+	for _, n := range []string{"alpha", "beta", "gamma"} {
+		st, err := reg.Get(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mv, err := st.MissingVectors(); err != nil || mv != 0 {
+			t.Fatalf("%s missing vectors after resume = %d, %v; want 0", n, mv, err)
+		}
+	}
+}
+
+// waitingIndex returns the position of name in list, or -1.
+func waitingIndex(list []string, name string) int {
+	for i, n := range list {
+		if n == name {
+			return i
+		}
+	}
+	return -1
+}
+
 // blockingVecClient blocks Embed calls once armed, so a test can park the
 // backfill loop inside its slow step — the exact window the backfill race lives
 // in — and run SetPriority deterministically in that window. `blocked` is
