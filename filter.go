@@ -28,6 +28,21 @@ type SearchFilter struct {
 	// boolean in the record does not equal its spelling here. A document with
 	// no extraction matches no field constraint.
 	Fields map[string]string
+	// Kind keeps documents whose gen_kind equals it exactly. Empty matches all.
+	Kind string
+	// DocType keeps documents whose gen_doc_type equals it exactly. Empty matches all.
+	DocType string
+	// Origin keeps documents that have at least one fragment whose origin equals
+	// it exactly. Empty matches all. Origin is a fragment property (which model
+	// wrote the text), not a document column, so the predicate is an EXISTS.
+	Origin string
+	// RoleTag keeps documents that carry it as a whole tag in gen_role_tags.
+	// Compared the way Tags is: lowercased, whitespace collapsed, comma-joined.
+	// Empty matches all.
+	RoleTag string
+	// ContentTag keeps documents that carry it as a whole tag in gen_content_tags.
+	// Compared the way Tags is. Empty matches all.
+	ContentTag string
 }
 
 // filterPredicate returns a bare SQL predicate over the documents alias d and
@@ -54,6 +69,38 @@ func filterPredicate(f SearchFilter) (string, []any, error) {
 		  OR instr(','||lower(replace(d.gen_role_tags, ', ', ','))||',', ?) > 0)`)
 		needle := "," + t + ","
 		args = append(args, needle, needle, needle)
+	}
+	// Single-valued identity columns: exact comparison. The values come from the
+	// facet counts themselves (the same columns the count reads), so a chip for a
+	// value the corpus holds re-queries the exact set that value was counted over.
+	if f.Kind != "" {
+		preds = append(preds, "d.gen_kind = ?")
+		args = append(args, f.Kind)
+	}
+	if f.DocType != "" {
+		preds = append(preds, "d.gen_doc_type = ?")
+		args = append(args, f.DocType)
+	}
+	// Origin is a fragment property, not a document column: keep documents that
+	// have at least one fragment of that origin. The fragment need not match the
+	// query — the document qualifies, and the FTS match still scopes the hits.
+	if f.Origin != "" {
+		preds = append(preds, `EXISTS (SELECT 1 FROM fragments fr WHERE fr.doc_id = d.id AND fr.origin = ?)`)
+		args = append(args, f.Origin)
+	}
+	// Role and content tags: whole-tag in the column that carries them only, the
+	// way the facet CTE reads them (lowercased, space after a comma dropped).
+	// Unlike Tags, which spans all three columns, a role chip must not match a
+	// content tag of the same spelling and vice versa.
+	if f.RoleTag != "" {
+		needle := "," + normalizeContentTag(f.RoleTag) + ","
+		preds = append(preds, `instr(','||lower(replace(d.gen_role_tags, ', ', ','))||',', ?) > 0`)
+		args = append(args, needle)
+	}
+	if f.ContentTag != "" {
+		needle := "," + normalizeContentTag(f.ContentTag) + ","
+		preds = append(preds, `instr(','||lower(replace(d.gen_content_tags, ', ', ','))||',', ?) > 0`)
+		args = append(args, needle)
 	}
 	// Sorted, so the same filter always produces the same SQL text.
 	keys := make([]string, 0, len(f.Fields))

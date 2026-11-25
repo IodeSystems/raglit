@@ -148,6 +148,69 @@
   font: inherit;
 }
 
+/* Facet rail: server-side counts over the full matching set. Sits between the
+   searchbar and the results; one row per facet key, chips for each value.
+   The selection lives in the URL (?fkind= ?frole= ?fcontent= ?ftype= ?forigin=),
+   so a filtered search is a link, the same way DocumentList's ?type= works. */
+.sr-facets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-4);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.sr-facet-row {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.sr-facet-label {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sr-facet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: var(--fs-sm);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+}
+.sr-facet-chip:hover {
+  border-color: var(--accent);
+}
+.sr-facet-chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.sr-facet-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+  font-size: var(--fs-xs);
+}
+.sr-facet-clear {
+  font-size: var(--fs-sm);
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  margin-left: auto;
+}
+.sr-facet-clear:hover {
+  text-decoration: underline;
+}
+
 /* Loading placeholder: three grey cards in the shape of a result. */
 .sr-skel {
   padding: var(--sp-3) var(--sp-4);

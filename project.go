@@ -247,8 +247,15 @@ func (r *Registry) ensureLayer(ctx context.Context, name, base string, v Visibil
 // so searching a sibling's overlay again would return the parent twice.
 // mode is "" / "bm25", "vec" or "hybrid".
 func (s *Store) SearchOwnLayer(ctx context.Context, query, mode, pathPrefix string, limit int) ([]Hit, error) {
+	return s.SearchOwnLayerFiltered(ctx, query, mode, SearchFilter{PathPrefix: pathPrefix}, limit)
+}
+
+// SearchOwnLayerFiltered is SearchOwnLayer constrained by a SearchFilter: the
+// filter reaches this layer's WHERE the way it reaches the overlay path's, so a
+// sibling fan-out honors a facet selection, not just its path scope.
+func (s *Store) SearchOwnLayerFiltered(ctx context.Context, query, mode string, f SearchFilter, limit int) ([]Hit, error) {
 	lex := func(n int) ([]Hit, error) {
-		hits, err := s.searchLocal(query, SearchFilter{PathPrefix: pathPrefix}, n*2)
+		hits, err := s.searchLocal(query, f, n*2)
 		if err != nil {
 			return nil, err
 		}
@@ -263,7 +270,7 @@ func (s *Store) SearchOwnLayer(ctx context.Context, query, mode, pathPrefix stri
 		if err != nil {
 			return nil, err
 		}
-		return s.vecSearchLocal(qv, query, SearchFilter{PathPrefix: pathPrefix}, n)
+		return s.vecSearchLocal(qv, query, f, n)
 	}
 	switch mode {
 	case "vec":

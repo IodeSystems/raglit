@@ -765,6 +765,15 @@ type searchIn struct {
 	Path     string `query:"path"`
 	Limit    int    `query:"n"`
 	Siblings string `query:"siblings" doc:"a branch also searches its readable sibling branches; \"false\" to search the branch alone"`
+	// Facet selection from the UI rail: one value per facet, folded into the
+	// SearchFilter that scopes the search BEFORE the page limit, so selecting a
+	// value narrows both the hits and the other facets' counts (which the server
+	// computes over the full matching set under the active filter).
+	FKind    string `query:"fkind" doc:"keep documents of this gen_kind"`
+	FRole    string `query:"frole" doc:"keep documents carrying this role tag"`
+	FContent string `query:"fcontent" doc:"keep documents carrying this content tag"`
+	FType    string `query:"ftype" doc:"keep documents of this gen_doc_type"`
+	FOrigin  string `query:"forigin" doc:"keep documents with a fragment of this origin"`
 	// Session joins a search to the fetches and citations that follow it in the
 	// quality log: the caller (an agent's dun session) names itself and the log
 	// can later say which hit was fetched, cited, or never touched.
@@ -835,19 +844,31 @@ func searchOp(reg *raglit.Registry, watch *watcher, defLimit int) func(context.C
 			}
 			meaningful++
 			searched = append(searched, name)
+			// The active filter: path scope plus the facet selection from the UI
+			// rail. Both the hits path and the facet counts run under it, so a
+			// selected value narrows the hits AND the other facets' counts come
+			// back computed over the full set the value was counted from.
+			flt := raglit.SearchFilter{
+				PathPrefix: in.Path,
+				Kind:       in.FKind,
+				DocType:    in.FType,
+				Origin:     in.FOrigin,
+				RoleTag:    in.FRole,
+				ContentTag: in.FContent,
+			}
 			var hits []raglit.Hit
 			mode := searchMode(st, in.Mode)
 			if plan.own[name] {
-				hits, err = st.SearchOwnLayer(ctx, in.Query, mode, in.Path, limit*2)
+				hits, err = st.SearchOwnLayerFiltered(ctx, in.Query, mode, flt, limit*2)
 			} else {
-				hits, err = searchByMode(st, in.Query, mode, in.Path, limit*2)
+				hits, err = searchByFilter(ctx, st, in.Query, mode, flt, limit*2)
 			}
 			if err != nil {
 				return nil, huma.Error500InternalServerError("search", err)
 			}
 			lists[name] = hits
 			// Facets over the same set the search ranks, in the same mode and
-			// path scope: bm25 over its full FTS set, vec/hybrid over the
+			// filter scope: bm25 over its full FTS set, vec/hybrid over the
 			// candidate pool the mode itself ranks. The page limit is what the
 			// pool is relative to. Facet counting is a read of the same index
 			// the search just ran on; a failure here would make the whole
@@ -855,9 +876,9 @@ func searchOp(reg *raglit.Registry, watch *watcher, defLimit int) func(context.C
 			// tolerated — the facets come back absent and the hits stand.
 			var fs []raglit.Facet
 			if plan.own[name] {
-				fs, _ = st.FacetCountsOwnLayer(ctx, in.Query, mode, in.Path, raglit.SearchFilter{}, limit)
+				fs, _ = st.FacetCountsOwnLayer(ctx, in.Query, mode, in.Path, flt, limit)
 			} else {
-				fs, _ = st.FacetCountsMode(ctx, in.Query, raglit.SearchFilter{PathPrefix: in.Path}, mode, limit)
+				fs, _ = st.FacetCountsMode(ctx, in.Query, flt, mode, limit)
 			}
 			if len(fs) > 0 {
 				facetSum = mergeFacetSum(facetSum, fs)

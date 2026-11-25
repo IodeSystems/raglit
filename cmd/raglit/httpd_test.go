@@ -625,6 +625,57 @@ func TestSearchReturnsFacets(t *testing.T) {
 	}
 }
 
+// TestSearchFacetParamNarrowsHits proves the endpoint's narrowing half at the
+// HTTP level: a facet param in the request returns fewer hits than the
+// unfiltered query, and the facets come back recomputed under the filter.
+func TestSearchFacetParamNarrowsHits(t *testing.T) {
+	srv, _ := facetServer(t)
+	// Unfiltered: all three documents carry "token".
+	var unfiltered struct {
+		Hits   []struct{ Rel string `json:"rel"` }
+		Facets []struct {
+			Key   string
+			Value string
+			Count int
+		}
+	}
+	b := httpGet(t, srv.URL+"/search?index=default&q=token&n=10")
+	if err := json.Unmarshal([]byte(b), &unfiltered); err != nil {
+		t.Fatalf("unfiltered unmarshal:\n%s", clip(b, 400))
+	}
+	if len(unfiltered.Hits) != 3 {
+		t.Fatalf("unfiltered hits = %d, want 3", len(unfiltered.Hits))
+	}
+	// Filtered by kind=guide: only a.md matches.
+	var filtered struct {
+		Hits   []struct{ Rel string `json:"rel"` }
+		Facets []struct {
+			Key   string
+			Value string
+			Count int
+		}
+	}
+	b = httpGet(t, srv.URL+"/search?index=default&q=token&n=10&fkind=guide")
+	if err := json.Unmarshal([]byte(b), &filtered); err != nil {
+		t.Fatalf("filtered unmarshal:\n%s", clip(b, 400))
+	}
+	if len(filtered.Hits) != 1 {
+		t.Fatalf("filtered hits = %d, want 1 (fkind=guide)", len(filtered.Hits))
+	}
+
+	// Facets recomputed under the filter: only a.md's facets are present.
+	got := map[string]int{}
+	for _, f := range filtered.Facets {
+		got[f.Key+"="+f.Value] = f.Count
+	}
+	if got["kind=guide"] != 1 {
+		t.Errorf("filtered facet kind=guide = %d, want 1 (all: %v)", got["kind=guide"], got)
+	}
+	if _, ok := got["kind=reference"]; ok {
+		t.Errorf("filtered facet kind=reference present, want absent (b.md filtered out)")
+	}
+}
+
 // TestSearchFacetsOmittedWhenEmpty proves a search that matches no document
 // returns no facets (the field is omitted, not an empty array): there is
 // nothing to facet.

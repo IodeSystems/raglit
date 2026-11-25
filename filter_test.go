@@ -19,6 +19,7 @@ func filterFixture(t *testing.T, s *Store) {
 	must(t, s.Ingest(ctx, Document{Path: "quiet.md", Title: "Quiet", Fragments: []Fragment{
 		{Text: "token deploy rollback with several other filler words in between"}}}))
 	must(t, s.SetDocumentIdentity(ctx, "quiet.md", DocIdentity{
+		Kind:        "guide",
 		ContentTags: []string{"lead paint", "survey", "boundary line"},
 		RoleTags:    []string{"reference"},
 	}))
@@ -64,6 +65,20 @@ var filterCases = []struct {
 	{"absent field", SearchFilter{Fields: map[string]string{"owner": "x"}}, false},
 	{"tag and field", SearchFilter{Tags: []string{"survey"}, Fields: map[string]string{"county": "Kent"}}, true},
 	{"path excludes", SearchFilter{PathPrefix: "loud", Tags: []string{"survey"}}, false},
+	// New single-valued fields: kind, doc_type, origin, role_tag, content_tag.
+	// quiet.md has Kind "guide" (set in filterFixture), DocType "inspection"
+	// (set via SetDocumentFields), RoleTag "reference", ContentTag "lead paint".
+	// loud.md has none of these set, so a no-match case returns nothing.
+	{"kind match", SearchFilter{Kind: "guide"}, true},
+	{"kind no-match", SearchFilter{Kind: "reference"}, false},
+	{"doc_type match", SearchFilter{DocType: "inspection"}, true},
+	{"doc_type no-match", SearchFilter{DocType: "runbook"}, false},
+	{"origin no-match (fixture has no identity fragments)", SearchFilter{Origin: "identity"}, false},
+	{"origin none", SearchFilter{Origin: "nonexistent"}, false},
+	{"role_tag whole", SearchFilter{RoleTag: "reference"}, true},
+	{"role_tag partial", SearchFilter{RoleTag: "ref"}, false},
+	{"content_tag whole", SearchFilter{ContentTag: "lead paint"}, true},
+	{"content_tag partial", SearchFilter{ContentTag: "paint"}, false},
 }
 
 // check asserts a limit-1 filtered result: quiet.md alone when it qualifies,
@@ -71,7 +86,10 @@ var filterCases = []struct {
 func checkFiltered(t *testing.T, name string, f SearchFilter, want bool, hits []Hit) {
 	t.Helper()
 	got := hitPaths(hits)
-	noop := len(f.Fields) == 0 && f.PathPrefix == "" && normalizeContentTag(f.Tags[0]) == ""
+	noop := len(f.Fields) == 0 && f.PathPrefix == "" &&
+		f.Kind == "" && f.DocType == "" && f.Origin == "" &&
+		f.RoleTag == "" && f.ContentTag == "" &&
+		(len(f.Tags) == 0 || normalizeContentTag(f.Tags[0]) == "")
 	switch {
 	case noop:
 		if len(got) != 1 || got[0] != "loud.md" {

@@ -97,6 +97,21 @@ func searchByMode(st *raglit.Store, q, mode, pathPrefix string, limit int) ([]ra
 	}
 }
 
+// searchByFilter is searchByMode constrained by a SearchFilter (facet selection
+// from the UI rail plus the path scope). Each layer applies the filter in its
+// own WHERE, before the limit, so a selected facet value narrows both the hits
+// and the other facets' counts (which the server computes over the same set).
+func searchByFilter(ctx context.Context, st *raglit.Store, query, mode string, f raglit.SearchFilter, limit int) ([]raglit.Hit, error) {
+	switch mode {
+	case "vec":
+		return st.VecSearchFiltered(ctx, query, f, limit)
+	case "hybrid":
+		return st.HybridSearchFiltered(ctx, query, f, limit)
+	default:
+		return st.SearchFiltered(query, f, limit)
+	}
+}
+
 // aggregateStatus sums status across the named indexes.
 func aggregateStatus(reg *raglit.Registry, names []string) raglit.Status {
 	agg := raglit.NewStatus()

@@ -59,12 +59,24 @@ const rootRoute = createRootRoute({ component: RootShell });
 
 // A search is its query, its mode and the indexes it reads (`in`, a comma list;
 // absent is the scope's default, and leaves the ordinary search's link short).
-// All three are in the URL, so a search is a link.
-function searchParams(s: Record<string, unknown>): { q: string; mode: string; in?: string } {
+// All three are in the URL, so a search is a link. The facet params (fkind,
+// frole, fcontent, ftype, forigin) are the UI's facet-rail selection: one value
+// per facet, in the URL so a filtered search is a link, and passed to /search
+// as query params the server binds — selecting a facet value narrows the hits
+// and the other facets' counts come back recomputed under the active filter.
+function searchParams(s: Record<string, unknown>): {
+  q: string; mode: string; in?: string;
+  fkind?: string; frole?: string; fcontent?: string; ftype?: string; forigin?: string;
+} {
   return {
     q: typeof s.q === "string" ? s.q : "",
     mode: typeof s.mode === "string" ? s.mode : "",
     ...(typeof s.in === "string" && s.in ? { in: s.in } : {}),
+    ...(typeof s.fkind === "string" && s.fkind ? { fkind: s.fkind } : {}),
+    ...(typeof s.frole === "string" && s.frole ? { frole: s.frole } : {}),
+    ...(typeof s.fcontent === "string" && s.fcontent ? { fcontent: s.fcontent } : {}),
+    ...(typeof s.ftype === "string" && s.ftype ? { ftype: s.ftype } : {}),
+    ...(typeof s.forigin === "string" && s.forigin ? { forigin: s.forigin } : {}),
   };
 }
 

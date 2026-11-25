@@ -463,10 +463,24 @@ export const listDocuments = (index: string) =>
 // `searched` is every index the daemon actually read — after wildcards, access
 // and sibling branches — so "N results from M indexes" counts what was searched,
 // not only the indexes that happened to have hits. `skipped` sat out a search by
-// meaning because they have no embedding model.
-export type SearchResult = { hits: Hit[]; searched?: string[]; skipped?: string[] };
-export const search = (index: string, q: string, mode: string) =>
-  getJSON<SearchResult>("/search", { index, q, mode });
+// meaning because they have no embedding model. `facets` is the per-facet-value
+// count over the FULL matching set (server-side, not the truncated page), so a
+// UI rail shows a number the page limit cannot under-count.
+export type Facet = { key: string; value: string; count: number };
+// One facet value selected in the UI rail; the params are the query params the
+// daemon binds (fkind, frole, fcontent, ftype, forigin). Absent keys are not
+// sent: qs() skips undefined. The server narrows the hits and recomputes the
+// other facets' counts under the active filter.
+export type FacetFilter = {
+  fkind?: string;
+  frole?: string;
+  fcontent?: string;
+  ftype?: string;
+  forigin?: string;
+};
+export type SearchResult = { hits: Hit[]; searched?: string[]; skipped?: string[]; facets?: Facet[] };
+export const search = (index: string, q: string, mode: string, f?: FacetFilter) =>
+  getJSON<SearchResult>("/search", { index, q, mode, ...f });
 
 // One document, assembled server-side. cmd/raglit/docdetail.go explains why the
 // join happens there and not here: a UI stitching five responses together gets

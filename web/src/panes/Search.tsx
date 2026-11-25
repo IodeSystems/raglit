@@ -6,7 +6,14 @@ import {
 } from "@tanstack/react-router";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { listProjects, search, type Hit, type Project } from "../api";
+import {
+  listProjects,
+  search,
+  type Facet,
+  type FacetFilter,
+  type Hit,
+  type Project,
+} from "../api";
 import { ErrorText } from "../ui/Details";
 import { IndexPicker, inParam, searchable } from "../ui/IndexPicker";
 import { AISummaryLabel, AITitleLabel } from "../ui/Label";
@@ -154,6 +161,34 @@ function noMeaningSearch(err: string): boolean {
 // whole pool); `within` is the reader's choice from the URL. The daemon says
 // which indexes it actually read, and the results say so: "3 results from 2
 // indexes", the count opening the same picker as the gear by the search box.
+// One facet value per key, in the URL so a filtered search is a link. The
+// param names match the query params the daemon binds: selecting a facet value
+// narrows the hits and the other facets' counts come back recomputed under the
+// active filter.
+const FACET_LABELS: Record<string, string> = {
+  kind: "Kind",
+  role_tag: "Role",
+  content_tag: "Tag",
+  doc_type: "Type",
+  origin: "Origin",
+};
+const FACET_PARAM: Record<string, keyof FacetFilter> = {
+  kind: "fkind",
+  role_tag: "frole",
+  content_tag: "fcontent",
+  doc_type: "ftype",
+  origin: "forigin",
+};
+
+function facetKey(f?: FacetFilter): string {
+  if (!f) return "";
+  return Object.entries(f)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}=${v}`)
+    .sort()
+    .join("&");
+}
+
 function SearchPane({
   pool,
   defaults,
@@ -162,6 +197,9 @@ function SearchPane({
   mode,
   go,
   fallbackIndex,
+  facets: facetFilter,
+  onFacet,
+  onClearFacets,
 }: {
   pool: string;
   defaults?: string[];
@@ -174,10 +212,18 @@ function SearchPane({
   // sends one; this is what keeps an older daemon's results clickable rather
   // than routing them to `undefined`.
   fallbackIndex: string;
+  // The facet values selected in the URL (one per facet). Passed to /search
+  // as query params; the server binds them once the endpoint subtask lands.
+  facets?: FacetFilter;
+  // Toggle one facet value. `value` null clears the facet.
+  onFacet?: (key: string, value: string | null) => void;
+  // Clear every facet at once.
+  onClearFacets?: () => void;
 }) {
   const [hits, setHits] = useState<Hit[] | null>(null);
   const [searched, setSearched] = useState<string[]>([]);
   const [skipped, setSkipped] = useState<string[]>([]);
+  const [facets, setFacets] = useState<Facet[] | null>(null);
   const [error, setError] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [picking, setPicking] = useState(false);
@@ -185,22 +231,25 @@ function SearchPane({
   const onMode = (m: string) => go({ mode: m, in: within });
 
   const scope = within || (defaults ? defaults.join(",") : pool);
-  useResetOn([scope, q, mode], () => {
+  const fKey = facetKey(facetFilter);
+  useResetOn([scope, q, mode, fKey], () => {
     setOpen(new Set());
     setError("");
     setHits(null);
     setSearched([]);
     setSkipped([]);
+    setFacets(null);
   });
   useEffect(() => {
     if (!q) return;
     let live = true;
-    search(scope, q, mode)
+    search(scope, q, mode, facetFilter)
       .then((r) => {
         if (!live) return;
         setHits(r.hits ?? []);
         setSearched(r.searched ?? []);
         setSkipped(r.skipped ?? []);
+        setFacets(r.facets ?? []);
       })
       .catch(
         (e: unknown) =>
@@ -209,7 +258,7 @@ function SearchPane({
     return () => {
       live = false;
     };
-  }, [scope, q, mode]);
+  }, [scope, q, mode, fKey]);
 
   const groups = useMemo(
     () => (hits ? groupHits(hits, fallbackIndex) : []),
@@ -294,6 +343,21 @@ function SearchPane({
           </select>
         </label>
       </div>
+
+      {/* Facet rail: server-side counts over the full matching set. One value
+          per facet; clicking a chip re-queries with that value folded into the
+          search, and the other facets' counts come back updated from the
+          server. The selection lives in the URL (?fkind= etc.), so a filtered
+          search is a link. The rail renders only when the server returned
+          facets and the parent wired the facet callbacks. */}
+      {q && facets && facets.length > 0 && onFacet && (
+        <FacetRail
+          facets={facets}
+          selected={facetFilter}
+          onFacet={onFacet}
+          onClear={onClearFacets}
+        />
+      )}
 
       {!q && (
         <div className="sr-state">
@@ -501,9 +565,28 @@ function Passage({
 
 export function Search() {
   const { index } = useParams({ from: "/i/$index" });
-  const { q, mode, in: within = "" } = useSearch({ from: "/i/$index/search" });
+  const { q, mode, in: within = "", fkind, frole, fcontent, ftype, forigin } =
+    useSearch({ from: "/i/$index/search" });
   const navigate = useNavigate();
   const { project } = splitName(index);
+  const facetFilter: FacetFilter | undefined =
+    fkind || frole || fcontent || ftype || forigin
+      ? { fkind, frole, fcontent, ftype, forigin }
+      : undefined;
+  const setFacet = (key: string, value: string | null) =>
+    void navigate({
+      to: "/i/$index/search",
+      params: { index },
+      search: (s) => ({ ...s, [FACET_PARAM[key]]: value || undefined }),
+      replace: true,
+    });
+  const clearFacets = () =>
+    void navigate({
+      to: "/i/$index/search",
+      params: { index },
+      search: (s) => ({ ...s, fkind: undefined, frole: undefined, fcontent: undefined, ftype: undefined, forigin: undefined }),
+      replace: true,
+    });
   return (
     <SearchPane
       pool={project ? `${project}__*` : ""}
@@ -513,9 +596,74 @@ export function Search() {
       q={q}
       mode={mode}
       go={(next) =>
-        void navigate({ to: "/i/$index/search", params: { index }, search: { q, mode: next.mode, in: next.in || undefined } })
+        void navigate({ to: "/i/$index/search", params: { index }, search: (s) => ({ ...s, mode: next.mode, in: next.in || undefined }) })
       }
+      facets={facetFilter}
+      onFacet={setFacet}
+      onClearFacets={clearFacets}
     />
+  );
+}
+
+// The facet rail: one row per facet key, with chips for each value the server
+// counted. The counts are server-side (over the full matching set), so a
+// truncated page cannot under-count. Clicking a chip toggles it: the value
+// goes into the URL, the search re-queries with the value folded in, and the
+// other facets' counts come back updated from the server.
+function FacetRail({
+  facets,
+  selected,
+  onFacet,
+  onClear,
+}: {
+  facets: Facet[];
+  selected?: FacetFilter;
+  onFacet: (key: string, value: string | null) => void;
+  onClear?: () => void;
+}) {
+  // Group by key, preserving the server's order (which is the order the counts
+  // were computed in: kind, role_tag, content_tag, doc_type, origin).
+  const byKey = new Map<string, Facet[]>();
+  for (const f of facets) {
+    const arr = byKey.get(f.key);
+    if (arr) arr.push(f);
+    else byKey.set(f.key, [f]);
+  }
+  // The selected value per facet key, from the URL.
+  const sel: Record<string, string | undefined> = {};
+  if (selected) {
+    for (const [key, param] of Object.entries(FACET_PARAM)) {
+      const v = selected[param];
+      if (v) sel[key] = v;
+    }
+  }
+  const anySelected = Object.keys(sel).length > 0;
+
+  return (
+    <div className="sr-facets">
+      {[...byKey.entries()].map(([key, values]) => (
+        <div key={key} className="sr-facet-row">
+          <span className="sr-facet-label">{FACET_LABELS[key] ?? key}</span>
+          {values.map((f) => (
+            <button
+              key={f.value}
+              type="button"
+              className={"sr-facet-chip" + (sel[key] === f.value ? " on" : "")}
+              aria-pressed={sel[key] === f.value}
+              onClick={() => onFacet(key, sel[key] === f.value ? null : f.value)}
+            >
+              {f.value}
+              <span className="sr-facet-count">{f.count}</span>
+            </button>
+          ))}
+        </div>
+      ))}
+      {anySelected && onClear && (
+        <button type="button" className="sr-facet-clear" onClick={onClear}>
+          Clear all
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -524,8 +672,27 @@ export function Search() {
 // the same question the same way.
 export function ProjectSearch() {
   const { project } = useParams({ from: "/p/$project" });
-  const { q, mode, in: within = "" } = useSearch({ from: "/p/$project/search" });
+  const { q, mode, in: within = "", fkind, frole, fcontent, ftype, forigin } =
+    useSearch({ from: "/p/$project/search" });
   const navigate = useNavigate();
+  const facetFilter: FacetFilter | undefined =
+    fkind || frole || fcontent || ftype || forigin
+      ? { fkind, frole, fcontent, ftype, forigin }
+      : undefined;
+  const setFacet = (key: string, value: string | null) =>
+    void navigate({
+      to: "/p/$project/search",
+      params: { project },
+      search: (s) => ({ ...s, [FACET_PARAM[key]]: value || undefined }),
+      replace: true,
+    });
+  const clearFacets = () =>
+    void navigate({
+      to: "/p/$project/search",
+      params: { project },
+      search: (s) => ({ ...s, fkind: undefined, frole: undefined, fcontent: undefined, ftype: undefined, forigin: undefined }),
+      replace: true,
+    });
   return (
     <SearchPane
       pool={`${project}__*`}
@@ -534,8 +701,11 @@ export function ProjectSearch() {
       q={q}
       mode={mode}
       go={(next) =>
-        void navigate({ to: "/p/$project/search", params: { project }, search: { q, mode: next.mode, in: next.in || undefined } })
+        void navigate({ to: "/p/$project/search", params: { project }, search: (s) => ({ ...s, mode: next.mode, in: next.in || undefined }) })
       }
+      facets={facetFilter}
+      onFacet={setFacet}
+      onClearFacets={clearFacets}
     />
   );
 }
@@ -543,7 +713,8 @@ export function ProjectSearch() {
 // Every index on the daemon: the search box on the first page, for a reader
 // who does not know which project holds what they want.
 export function RootSearch() {
-  const { q, mode, in: within = "" } = useSearch({ from: "/find" });
+  const { q, mode, in: within = "", fkind, frole, fcontent, ftype, forigin } =
+    useSearch({ from: "/find" });
   const navigate = useNavigate();
   const { data } = usePoll<{ projects?: Project[] }>(listProjects, 15000, []);
   const operator = useOperator();
@@ -552,6 +723,22 @@ export function RootSearch() {
   // in "from N indexes".
   const info = useIndexInfo();
   const defaults = info.size ? [...info.values()].filter(searchable).map((i) => i.name) : undefined;
+  const facetFilter: FacetFilter | undefined =
+    fkind || frole || fcontent || ftype || forigin
+      ? { fkind, frole, fcontent, ftype, forigin }
+      : undefined;
+  const setFacet = (key: string, value: string | null) =>
+    void navigate({
+      to: "/find",
+      search: (s) => ({ ...s, [FACET_PARAM[key]]: value || undefined }),
+      replace: true,
+    });
+  const clearFacets = () =>
+    void navigate({
+      to: "/find",
+      search: (s) => ({ ...s, fkind: undefined, frole: undefined, fcontent: undefined, ftype: undefined, forigin: undefined }),
+      replace: true,
+    });
   return (
     <AppShell
       crumbs={[
@@ -570,7 +757,10 @@ export function RootSearch() {
         fallbackIndex="default"
         q={q}
         mode={mode}
-        go={(next) => void navigate({ to: "/find", search: { q, mode: next.mode, in: next.in || undefined } })}
+        go={(next) => void navigate({ to: "/find", search: (s) => ({ ...s, mode: next.mode, in: next.in || undefined }) })}
+        facets={facetFilter}
+        onFacet={setFacet}
+        onClearFacets={clearFacets}
       />
     </AppShell>
   );
