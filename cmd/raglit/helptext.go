@@ -344,6 +344,16 @@ raglit marks --identical [--write] [--json]
               sizes and fetch/use flags are preserved. Shows what leaves
               before it leaves: the bytes shown are the bytes written. The
               local log is never modified.`},
+		{"reembed", "re-embed progress and queue priority", `raglit reembed progress
+              the re-embed run: the index re-embedding now, how many of its
+              fragments still have no vector, and the indexes waiting in order.
+raglit reembed priority INDEX
+              move a waiting index to the front of the re-embed queue, so the
+              index you search most starts first. The index re-embedding now
+              finishes before the reorder takes effect.
+              The run happens when the daemon starts and the embed model is
+              new; a large corpus re-embeds one index at a time, so this is how
+              you see how far along it is and start the right one first.`},
 		{"demo", "self-contained offline tour", `raglit demo                                self-contained offline tour`},
 	}},
 }

@@ -7,20 +7,18 @@ import (
 	"github.com/iodesystems/raglit"
 )
 
-// reembedIndexes brings every index's vectors to the configured embed model:
-// an index whose vectors came from another model drops them, and every index
-// then embeds the fragments that have none — including any ingested while no
-// embedder was configured. One index at a time, in the background; the embed
-// model's own channel bounds the load. A failure stops that index until the
-// next start, rather than retrying a refusal in a loop.
+// The daemon's re-embed — bringing every index's vectors to the configured
+// embed model, one index at a time — is reembedBackfill below: the queue it
+// returns owns the order and the progress/priority surface. A failure stops
+// that index until the next start, rather than retrying a refusal in a loop.
 //
 // The model's vector length is learned from one probe embedding, so an index
 // whose vectors have another length is rebuilt even when the model id is the
 // same. A failed probe leaves the length unknown (0), and only the id is
 // compared.
-func reembedIndexes(ctx context.Context, reg *raglit.Registry, emb *raglit.Embedder) {
+func reembedBackfill(ctx context.Context, reg *raglit.Registry, emb *raglit.Embedder) *raglit.ReembedQueue {
 	if emb == nil || emb.Model == "" {
-		return
+		return nil
 	}
 	model := emb.Model
 	dim := 0
@@ -40,22 +38,14 @@ func reembedIndexes(ctx context.Context, reg *raglit.Registry, emb *raglit.Embed
 		} else if dropped {
 			log.Printf("raglit: %s: vectors were from another embed model or of another length — re-embedding with %s", name, model)
 		}
-		total := 0
-		for ctx.Err() == nil {
-			n, err := st.BackfillVectors(ctx, 64)
-			if err != nil {
-				log.Printf("raglit: %s: re-embed stopped after %d: %v", name, total, err)
-				break
-			}
-			if n == 0 {
-				break
-			}
-			total += n
-		}
-		if total > 0 {
-			log.Printf("raglit: %s: embedded %d fragments/figures that had no vector", name, total)
-		}
 	}
+	q := raglit.NewReembedQueue(reg)
+	go func() {
+		if err := q.Backfill(ctx, 64); err != nil && ctx.Err() == nil {
+			log.Printf("raglit: re-embed stopped: %v", err)
+		}
+	}()
+	return q
 }
 
 // backfillSourceStats records file size and modified time for documents

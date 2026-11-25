@@ -3,6 +3,7 @@ package raglit
 import (
 	"context"
 	"log"
+	"sync"
 )
 
 // Re-embed progress and ordering.
@@ -24,26 +25,36 @@ type ReembedProgress struct {
 	Waiting   []string `json:"waiting"`
 }
 
-// reembedQueue is the order a re-embed walks the registry's indexes: current
+// ReembedQueue is the order a re-embed walks the registry's indexes: current
 // first, the rest waiting in order. It is in the library layer because the
 // progress and priority surface (the HTTP API and the CLI) both read it, and
 // the backfill loop that fills it is here too — one place owns the order.
-type reembedQueue struct {
+//
+// It is owned by one daemon and read and reordered from HTTP handlers while
+// the backfill loop runs, so the mutex covers the whole order.
+type ReembedQueue struct {
+	mu    sync.Mutex
 	reg   *Registry
 	order []string
 }
 
-// newReembedQueue builds the queue from the registry's current index list, in
+// NewReembedQueue builds the queue from the registry's current index list, in
 // its (sorted) order.
-func newReembedQueue(reg *Registry) *reembedQueue {
-	return &reembedQueue{reg: reg, order: reg.Names()}
+func NewReembedQueue(reg *Registry) *ReembedQueue {
+	return &ReembedQueue{reg: reg, order: reg.Names()}
 }
 
 // Progress returns the current index, its remaining fragment count (fragments
 // with no vector), and the waiting list. A current index the registry cannot
 // open reports 0 remaining and is not advanced: a transient open failure must
-// not skip its re-embed.
-func (q *reembedQueue) Progress() ReembedProgress {
+// not skip its re-embed. A nil queue (a daemon with no indexes) reports an
+// empty run.
+func (q *ReembedQueue) Progress() ReembedProgress {
+	if q == nil {
+		return ReembedProgress{Waiting: []string{}}
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	p := ReembedProgress{Waiting: []string{}}
 	if len(q.order) == 0 {
 		return p
@@ -58,21 +69,25 @@ func (q *reembedQueue) Progress() ReembedProgress {
 	return p
 }
 
-// SetPriority moves a waiting index to the front of the queue. The current
-// index is unchanged: a re-embed already in flight finishes before the
-// operator's reorder takes effect. Unknown names are ignored.
-func (q *reembedQueue) SetPriority(name string) {
+// SetPriority moves an index to the front of the queue, making it the
+// current index. It does not interrupt the in-flight re-embed of the previous
+// current index: that one runs to completion, and the backfill loop picks up
+// the new front on its next iteration (its advance is skipped because the
+// front changed). Unknown names are ignored.
+func (q *ReembedQueue) SetPriority(name string) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	if len(q.order) == 0 || q.order[0] == name {
 		return
 	}
 	for i, n := range q.order {
 		if n == name {
-			// Build the new order without aliasing q.order's backing array: an
-			// append into it would overwrite the tail it is also reading from.
 			out := make([]string, 0, len(q.order))
-			out = append(out, q.order[0])
 			out = append(out, q.order[i])
-			out = append(out, q.order[1:i]...)
+			out = append(out, q.order[:i]...)
 			out = append(out, q.order[i+1:]...)
 			q.order = out
 			return
@@ -86,16 +101,34 @@ func (q *reembedQueue) SetPriority(name string) {
 // unpaused, rather than sitting in partial semantic search until the next
 // start. It returns when every index is fully re-embedded, the embedder is
 // gone, or ctx is done.
-func (q *reembedQueue) Backfill(ctx context.Context, batch int) error {
-	for len(q.order) > 0 {
+func (q *ReembedQueue) Backfill(ctx context.Context, batch int) error {
+	if q == nil {
+		return nil
+	}
+	// The lock is held only around the order's state, never across the slow
+	// BackfillVectors call, so a progress read or a priority reorder is never
+	// made to wait on an embed.
+	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		name := q.order[0]
+		var name string
+		q.mu.Lock()
+		if len(q.order) == 0 {
+			q.mu.Unlock()
+			break
+		}
+		name = q.order[0]
+		q.mu.Unlock()
+
 		st, err := q.reg.Get(name)
 		if err != nil {
 			log.Printf("raglit: re-embed: %s: %v", name, err)
-			q.order = q.order[1:]
+			q.mu.Lock()
+			if len(q.order) > 0 && q.order[0] == name {
+				q.order = q.order[1:]
+			}
+			q.mu.Unlock()
 			continue
 		}
 		// A paused index holds its place: nothing is embedded for it, and it
@@ -113,7 +146,11 @@ func (q *reembedQueue) Backfill(ctx context.Context, batch int) error {
 				break
 			}
 		}
-		q.order = q.order[1:]
+		q.mu.Lock()
+		if len(q.order) > 0 && q.order[0] == name {
+			q.order = q.order[1:]
+		}
+		q.mu.Unlock()
 	}
 	return nil
 }

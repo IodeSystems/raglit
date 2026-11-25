@@ -68,6 +68,7 @@ var commands = map[string]func([]string) error{
 	"health":              runHealth,
 	"doctor":              runDoctor,
 	"quality-log":         runQualityLog,
+	"reembed":             runReembed,
 }
 
 // aliases are older names a command still answers to. "serve" was the MCP

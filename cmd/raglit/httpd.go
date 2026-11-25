@@ -142,7 +142,8 @@ func runHttpd(subcmd string, args []string) error {
 	ctx, work := runner.Start(context.Background())
 	defer runner.CutOff()
 	// Vectors from another embed model are dropped and rebuilt (reembed.go).
-	go reembedIndexes(ctx, reg, emb)
+	// The queue owns the order and the progress/priority surface.
+	reembedQueue = reembedBackfill(ctx, reg, emb)
 	go backfillSourceStats(ctx, reg)
 	go reapSessionBranches(ctx, reg, cfgHome)
 	// Stay on the current source. Rebuilds immediately, then drains the queue
@@ -354,6 +355,8 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("saveModelSettings", http.MethodPut, "/api/settings/models", "Save providers and roles to config.json; the daemon reloads when idle. Admin only."), saveModelSettingsOp(reg, home))
 	gat.Register(api, g, op("listProviderModels", http.MethodPost, "/api/settings/models/list", "List a provider's models, with what each accepts where the provider says. Admin only."), listModelsOp(reg, home))
 	gat.Register(api, g, op("reembedImpact", http.MethodGet, "/api/settings/models/reembed-impact", "Indexes and fragments a change of embed model would re-embed. Admin only."), reembedImpactOp(reg))
+	gat.Register(api, g, op("reembedProgress", http.MethodGet, "/api/reembed/progress", "The re-embed run: the index re-embedding now, its remaining fragment count, and the indexes waiting. Admin only."), reembedProgressOp(reg))
+	gat.Register(api, g, op("reembedPriority", http.MethodPost, "/api/reembed/priority", "Move an index to the front of the re-embed queue. Admin only."), reembedPriorityOp(reg))
 	gat.Register(api, g, op("listRelations", http.MethodGet, "/api/relations", "Rulings on which documents are copies or versions."), listRelationsFor(reg))
 	gat.Register(api, g, op("listSlices", http.MethodGet, "/api/slices", "Declared sub-documents: page ranges of a bundle."), listSlicesFor(reg))
 	gat.Register(api, g, op("correctPage", http.MethodPost, "/api/transcribe/correct", "Record a corrected reading for one page."), correctPageOp(reg))
@@ -488,6 +491,11 @@ type healthOut struct {
 // adminTokenPath is the running daemon's admin token file.
 // Set once at startup, before the listeners open.
 var adminTokenPath string
+
+// reembedQueue is this daemon's re-embed queue, owned by the backfill goroutine
+// and read/reordered by the progress and priority handlers. Nil when no embed
+// model is configured (nothing is re-embedding).
+var reembedQueue *raglit.ReembedQueue
 
 // toolsOut is the daemon's OWN view of the external extractors.
 //
