@@ -50,6 +50,13 @@ type UnitStatus struct {
 	// named it. Not a demotion: the reviewer went through it, and the affirmation
 	// they signed says under what terms.
 	Swept bool `json:"swept,omitempty"`
+
+	// Party is the id of the confirmed party this unit is ABOUT, from the
+	// corpus's party-assignment log. Empty when no person has confirmed one.
+	// PartyName is the display name from the corpus's party registry for that
+	// id; it is empty when the id is unregistered in this corpus.
+	Party     string `json:"party,omitempty"`
+	PartyName string `json:"party_name,omitempty"`
 }
 
 // Corrected reports whether a person actually retyped this unit's words. The
@@ -303,6 +310,79 @@ func Load(assetPath string) (*State, error) {
 		return nil, err
 	}
 	return Resolve(r, log)
+}
+
+// ResolveWithParties resolves a reading and its verdict log, and layers the
+// corpus's confirmed party assignments on top of the result.
+//
+// It calls Resolve and then, for each unit, looks up the last PersonConfirmed
+// entry about it in the assignment log. A confirmed party id is stored on the
+// unit's Party field, and the display name for that id from the corpus's party
+// registry is stored on PartyName. A proposed-but-unconfirmed assignment is
+// not an assignment in force and is not reflected here: the unit's Party and
+// PartyName stay empty until a person confirms one.
+//
+// assignments is the corpus's party-assignment log, in the order the entries
+// were made (as Assignments returns it); parties is the corpus's party
+// registry (as Parties returns it). Both may be nil for a corpus with no
+// assignments or no registered parties.
+//
+// Resolve's signature is unchanged and Resolve remains the resolver for the
+// verdict log; this function adds the party dimension without disturbing it.
+func ResolveWithParties(r *Reading, log []Entry, assignments []Assignment, parties []Party) (*State, error) {
+	st, err := Resolve(r, log)
+	if err != nil {
+		return nil, err
+	}
+	if len(assignments) == 0 {
+		return st, nil
+	}
+	// Last confirmed entry per unit wins, mirroring the log's own ordering rule.
+	confirmed := make(map[string]string)
+	for _, a := range assignments {
+		if a.State == PersonConfirmed {
+			confirmed[a.Unit] = a.Party
+		}
+	}
+	name := make(map[string]string, len(parties))
+	for _, p := range parties {
+		name[p.ID] = p.Name
+	}
+	for i := range st.Units {
+		id, ok := confirmed[st.Units[i].Unit.ID]
+		if !ok {
+			continue
+		}
+		st.Units[i].Party = id
+		st.Units[i].PartyName = name[id]
+	}
+	return st, nil
+}
+
+// LoadWithParties resolves an asset's reading and log from disk and layers the
+// corpus's confirmed party assignments on the result. corpusRoot is the corpus
+// the asset belongs to, whose party.jsonl and party-assignment.jsonl it reads.
+func LoadWithParties(assetPath, corpusRoot string) (*State, error) {
+	r, ok, err := ReadReading(assetPath)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("attest: %s has no reading — nothing has read it yet", assetPath)
+	}
+	log, err := ReadLog(assetPath)
+	if err != nil {
+		return nil, err
+	}
+	assignments, err := Assignments(corpusRoot)
+	if err != nil {
+		return nil, err
+	}
+	parties, err := Parties(corpusRoot)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveWithParties(r, log, assignments, parties)
 }
 
 // Provenance is the sentence a consumer must print beside anything derived from

@@ -494,3 +494,102 @@ func TestReadOnlyPermitsOnlyReading(t *testing.T) {
 		t.Error("a read-only mount must still permit reading — that is the public case")
 	}
 }
+
+// A confirmed party assignment to party P (id P, display name D) must appear
+// on the unit's resolved fields: Party = P and PartyName = D. A unit with no
+// confirmed assignment, and a unit whose party is only proposed by a machine,
+// must have both fields empty.
+func TestResolveWithParties_ReturnsConfirmedPartyIdAndName(t *testing.T) {
+	r := sealed(t,
+		turn(0, 1, "SPK_0", "hello"),
+		turn(1, 2, "SPK_1", "hi there"),
+		turn(2, 3, "SPK_1", "goodbye"),
+	)
+	ids := []string{r.Units[0].ID, r.Units[1].ID, r.Units[2].ID}
+
+	// corpus: one party registered, two confirmed assignments, one proposal
+	// only.
+	const corpus = "/corpus"
+	assignments := []Assignment{
+		{Unit: ids[0], Party: "p1", State: PersonConfirmed, By: "carl"},
+		{Unit: ids[1], Party: "p2", State: MachineProposed, By: "agent-vision"},
+		{Unit: ids[2], Party: "p1", State: PersonConfirmed, By: "carl"},
+	}
+	parties := []Party{
+		{ID: "p1", Name: "D"},
+		{ID: "p2", Name: "E"},
+	}
+
+	st, err := ResolveWithParties(r, nil, assignments, parties)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ids[0]: confirmed to p1 → Party="p1", PartyName="D"
+	if st.Units[0].Party != "p1" || st.Units[0].PartyName != "D" {
+		t.Errorf("unit 0: Party=%q PartyName=%q, want p1 / D", st.Units[0].Party, st.Units[0].PartyName)
+	}
+	// ids[1]: only proposed by a machine → not an assignment in force
+	if st.Units[1].Party != "" || st.Units[1].PartyName != "" {
+		t.Errorf("unit 1 (proposed only): Party=%q PartyName=%q, want both empty", st.Units[1].Party, st.Units[1].PartyName)
+	}
+	// ids[2]: confirmed to p1 → Party="p1", PartyName="D"
+	if st.Units[2].Party != "p1" || st.Units[2].PartyName != "D" {
+		t.Errorf("unit 2: Party=%q PartyName=%q, want p1 / D", st.Units[2].Party, st.Units[2].PartyName)
+	}
+}
+
+// LoadWithParties is ResolveWithParties read from disk: the reading from the
+// asset's sidecar, the assignments and parties from the CORPUS root. The
+// pure-function test above pins the resolution rule; this pins the wiring,
+// which the other cannot see — if Assignments were read from the asset path
+// instead of the corpus root (or Parties mislocated), the confirmed party
+// would be missing here even with the resolution rule correct.
+func TestLoadWithParties_ReadsCorpusFilesAndResolves(t *testing.T) {
+	r := sealed(t,
+		turn(0, 1, "SPK_0", "hello"),
+		turn(1, 2, "SPK_1", "hi there"),
+		turn(2, 3, "SPK_1", "goodbye"),
+	)
+	ids := []string{r.Units[0].ID, r.Units[1].ID, r.Units[2].ID}
+
+	assetPath := filepath.Join(t.TempDir(), "interview.wav")
+	if _, err := WriteReading(assetPath, r); err != nil {
+		t.Fatalf("write reading: %v", err)
+	}
+
+	// The corpus root holds the two identity files, not the asset.
+	corpusRoot := filepath.Join(t.TempDir(), "corpus")
+	if err := os.MkdirAll(corpusRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterParty(corpusRoot, "p1", "D"); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendAssignment(corpusRoot,
+		Assignment{Unit: ids[0], Party: "p1", State: PersonConfirmed, By: "carl"},
+		Assignment{Unit: ids[1], Party: "p2", State: MachineProposed, By: "agent-vision"},
+		Assignment{Unit: ids[2], Party: "p3", State: PersonConfirmed, By: "carl"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	// Note: p3 is confirmed but NOT registered in the corpus registry.
+
+	st, err := LoadWithParties(assetPath, corpusRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ids[0]: confirmed to a registered party → id and name.
+	if st.Units[0].Party != "p1" || st.Units[0].PartyName != "D" {
+		t.Errorf("unit 0: Party=%q PartyName=%q, want p1 / D", st.Units[0].Party, st.Units[0].PartyName)
+	}
+	// ids[1]: machine-proposed only → not an assignment in force.
+	if st.Units[1].Party != "" || st.Units[1].PartyName != "" {
+		t.Errorf("unit 1 (proposed only): Party=%q PartyName=%q, want both empty", st.Units[1].Party, st.Units[1].PartyName)
+	}
+	// ids[2]: confirmed to an UNREGISTERED party → id in force, name empty.
+	if st.Units[2].Party != "p3" || st.Units[2].PartyName != "" {
+		t.Errorf("unit 2 (unregistered party): Party=%q PartyName=%q, want p3 / \"\"", st.Units[2].Party, st.Units[2].PartyName)
+	}
+}
