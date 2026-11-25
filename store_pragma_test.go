@@ -43,6 +43,39 @@ func TestForeignKeysOnEveryPooledConnection(t *testing.T) {
 	}
 }
 
+// synchronous must be NORMAL (1) on EVERY pooled connection, by the same
+// per-connection reason foreign_keys is: WAL defaults to FULL, so a pool
+// connection that does not carry the pragma fsyncs on every commit, and the
+// value is invisible at concurrency 1.
+func TestSynchronousNormalOnEveryPooledConnection(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	const n = 8
+	ctx := context.Background()
+	var conns []*sql.Conn
+	for range n {
+		c, err := s.db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sync int
+		if err := c.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&sync); err != nil {
+			t.Fatal(err)
+		}
+		if sync != 1 {
+			t.Fatalf("a pooled connection has synchronous=%d (1=NORMAL) — it will fsync on every commit", sync)
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
 // The cascade this protects: deleting a fragment must take its vector with it,
 // or a reused rowid collides on the next insert.
 func TestDeletingFragmentsCascadesToVectors(t *testing.T) {

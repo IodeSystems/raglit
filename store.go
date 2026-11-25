@@ -345,12 +345,23 @@ func Open(path string) (*Store, error) {
 	// SQLite runs the busy handler only for a connection with no transaction,
 	// so the write then failed with SQLITE_BUSY at once whenever another
 	// connection held the write lock. Every transaction here writes.
+	//
+	// synchronous=NORMAL rides the DSN for exactly the per-connection reason
+	// foreign_keys does. WAL's default is FULL: every commit fsyncs the log,
+	// and the suite and ingest paid it — an uncached ./... at 252 s wall, the
+	// same suite at 108 s with the index on tmpfs, and 2.4 s of
+	// TestAuth_AdminToken's 2.6 s in modernc's _unixSync under _vdbeCommit.
+	// NORMAL is SQLite-documented as safe from corruption in WAL: a power loss
+	// loses the last few commits, not the file. This index is rebuildable from
+	// its source documents, so a lost commit is a re-ingest, not data loss.
+	// (The owner chose this over test-only tmpfs: open question
+	// x_1m7fnvyb0cd68cd16y1ahe, answer 1, 2026-11-16.)
 	dsn := path
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"
 	}
-	dsn += sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(30000)&_txlock=immediate"
+	dsn += sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(30000)&_pragma=synchronous(1)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
