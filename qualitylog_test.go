@@ -248,9 +248,11 @@ func TestQualityLog_PerProject_OnlyLogsConfiguredProject(t *testing.T) {
 }
 
 // TestQualityLog_FetchJoinsToOriginatingSearch: a search event is written,
-// then some of its hits are fetched via get_document in the same session.
-// JoinFetchesToSearch resolves each hit's fate: fetched hits are marked
-// "fetched", the rest "never_touched".
+// then some of its hits are fetched via get_document and/or cited in the
+// same session. JoinFetchesToSearch resolves each hit's fate: "cited" (a
+// cite event for the same doc in the same session at/after the search,
+// taking precedence over fetched), "fetched" (a get_document event), or
+// "never_touched" (neither).
 func TestQualityLog_FetchJoinsToOriginatingSearch(t *testing.T) {
 	base := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
 
@@ -266,6 +268,7 @@ func TestQualityLog_FetchJoinsToOriginatingSearch(t *testing.T) {
 			{DocID: "agreement.md", Rank: 1, Score: 0.92, Origin: "body", Chars: 4500},
 			{DocID: "notes.md", Rank: 2, Score: 0.81, Origin: "identity", Chars: 200},
 			{DocID: "summary.md", Rank: 3, Score: 0.74, Origin: "generated question", Chars: 1200},
+			{DocID: "appendix.md", Rank: 4, Score: 0.61, Origin: "body", Chars: 800},
 		},
 	}
 
@@ -311,7 +314,36 @@ func TestQualityLog_FetchJoinsToOriginatingSearch(t *testing.T) {
 		Chars:   200,
 	}
 
-	events := []QualityEvent{search, fetch1, fetch2, fetchOther, fetchEarly}
+	// A cite event for summary.md in the same session after the search.
+	// This makes summary.md both fetched AND cited → fate "cited" (precedence).
+	cite1 := QualityEvent{
+		Type:    "cite",
+		Project: "proj",
+		Time:    base.Add(90 * time.Second),
+		Session: "sess-1",
+		DocID:   "summary.md",
+	}
+
+	// A cite event for notes.md in a DIFFERENT session must not join.
+	citeOther := QualityEvent{
+		Type:    "cite",
+		Project: "proj",
+		Time:    base.Add(30 * time.Second),
+		Session: "sess-other",
+		DocID:   "notes.md",
+	}
+
+	// A cite event for appendix.md in the same session — this doc was NOT
+	// fetched, so its fate is purely "cited" (not a precedence case).
+	cite2 := QualityEvent{
+		Type:    "cite",
+		Project: "proj",
+		Time:    base.Add(45 * time.Second),
+		Session: "sess-1",
+		DocID:   "appendix.md",
+	}
+
+	events := []QualityEvent{search, fetch1, fetch2, fetchOther, fetchEarly, cite1, citeOther, cite2}
 	joins := JoinFetchesToSearch(events)
 
 	// One search event → one join.
@@ -319,21 +351,28 @@ func TestQualityLog_FetchJoinsToOriginatingSearch(t *testing.T) {
 		t.Fatalf("want 1 search join, got %d", len(joins))
 	}
 	j := joins[0]
-	if len(j.Hits) != 3 {
-		t.Fatalf("want 3 hits in join, got %d", len(j.Hits))
+	if len(j.Hits) != 4 {
+		t.Fatalf("want 4 hits in join, got %d", len(j.Hits))
 	}
 
 	// agreement.md was fetched in the same session after the search → "fetched".
 	if j.Hits[0].Fate != "fetched" {
 		t.Errorf("agreement.md fate = %q, want fetched", j.Hits[0].Fate)
 	}
-	// notes.md was fetched in a different session and before the search → "never_touched".
+	// notes.md was fetched in a different session and before the search, and
+	// cited in a different session → "never_touched".
 	if j.Hits[1].Fate != "never_touched" {
 		t.Errorf("notes.md fate = %q, want never_touched", j.Hits[1].Fate)
 	}
-	// summary.md was fetched in the same session after the search → "fetched".
-	if j.Hits[2].Fate != "fetched" {
-		t.Errorf("summary.md fate = %q, want fetched", j.Hits[2].Fate)
+	// summary.md was both fetched and cited in the same session after the
+	// search → "cited" (cited takes precedence over fetched).
+	if j.Hits[2].Fate != "cited" {
+		t.Errorf("summary.md fate = %q, want cited", j.Hits[2].Fate)
+	}
+	// appendix.md was cited (not fetched) in the same session after the
+	// search → "cited" (pure cited case, no precedence involved).
+	if j.Hits[3].Fate != "cited" {
+		t.Errorf("appendix.md fate = %q, want cited", j.Hits[3].Fate)
 	}
 
 	// Hit metadata is preserved through the join.
