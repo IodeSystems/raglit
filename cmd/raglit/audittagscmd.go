@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -27,6 +28,7 @@ func runAuditTags(args []string) error {
 	var merges stringList
 	fs.Var(&merges, "merge", "collapse tags: \"old,other=>new\" (repeatable)")
 	docs := fs.Bool("documents", false, "list the documents under each tag")
+	by := fs.String("by", defaultWithdrawBy(), "who ruled the merge")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -35,7 +37,7 @@ func runAuditTags(args []string) error {
 		return err
 	}
 	if len(merges) > 0 {
-		return applyTagMerges(t, merges, *asJSON)
+		return applyTagMerges(t, merges, *by, *asJSON)
 	}
 	var audit struct {
 		Digest raglit.IndexDigest  `json:"digest"`
@@ -124,24 +126,32 @@ func runAuditTags(args []string) error {
 	return nil
 }
 
-// applyTagMerges runs the merges a person named, in the order they named them.
-func applyTagMerges(t target, specs []string, asJSON bool) error {
+// applyTagMerges runs the merges a person named, in the order they named them,
+// and reports that the ruling was recorded in the trail.
+func applyTagMerges(t target, specs []string, by string, asJSON bool) error {
 	for _, spec := range specs {
 		if _, err := raglit.ParseTagMerge(spec); err != nil {
 			return err
 		}
 	}
 	var out struct {
-		Merges []raglit.TagMergeResult `json:"merges"`
+		Merges    []raglit.TagMergeResult `json:"merges"`
+		Recorded  bool                    `json:"recorded"`
+		RecordErr string                  `json:"record_err"`
 	}
-	if err := t.post("/api/tags/merge", map[string]any{"merges": specs}, &out); err != nil {
+	if err := t.post("/api/tags/merge", map[string]any{
+		"merges": specs,
+		"by":     by,
+	}, &out); err != nil {
 		return err
 	}
 	results := out.Merges
 	if asJSON {
 		b, err := json.MarshalIndent(struct {
-			Merges []raglit.TagMergeResult `json:"merges"`
-		}{results}, "", "  ")
+			Merges    []raglit.TagMergeResult `json:"merges"`
+			Recorded  bool                    `json:"recorded"`
+			RecordErr string                  `json:"record_err,omitempty"`
+		}{results, out.Recorded, out.RecordErr}, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -153,6 +163,12 @@ func applyTagMerges(t target, specs []string, asJSON bool) error {
 		if len(r.Missing) > 0 {
 			fmt.Printf("  no document carried: %s\n", strings.Join(r.Missing, ", "))
 		}
+	}
+	if out.Recorded {
+		fmt.Printf("  ruling recorded in the trail\n")
+	}
+	if out.RecordErr != "" {
+		fmt.Fprintf(os.Stderr, "  warning: ruling not recorded: %s\n", out.RecordErr)
 	}
 	return nil
 }

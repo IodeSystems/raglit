@@ -116,6 +116,30 @@ func (s *Store) MergeTags(ctx context.Context, m TagMerge) (TagMergeResult, erro
 	return res, nil
 }
 
+// DocumentPathsCarryingTags returns the paths of all documents whose content
+// tags include any of the given tags, in index order. The route calls this
+// BEFORE MergeTags, because after the merge the from-tags are gone.
+func (s *Store) DocumentPathsCarryingTags(tags []string) ([]string, error) {
+	from := map[string]bool{}
+	for _, t := range tags {
+		from[t] = true
+	}
+	rows, err := s.digestRowsLocal("")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range rows {
+		for _, t := range r.content {
+			if from[t] {
+				out = append(out, r.path)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 // applyTagMerge rewrites one document's tags, reporting whether anything moved.
 // Order is preserved and the result is deduplicated — a document carrying both
 // "LBP" and "lead paint" ends with one tag, not two of the same.

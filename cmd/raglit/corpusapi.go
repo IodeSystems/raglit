@@ -414,12 +414,15 @@ type mergeTagsIn struct {
 	Index string `query:"index"`
 	Body  struct {
 		Merges []string `json:"merges" doc:"each \"old,other=>new\""`
+		By     string   `json:"by,omitempty" doc:"who ruled the merge"`
 	}
 }
 
 type mergeTagsOut struct {
 	Body struct {
-		Merges []raglit.TagMergeResult `json:"merges"`
+		Merges    []raglit.TagMergeResult `json:"merges"`
+		Recorded  bool                    `json:"recorded"`
+		RecordErr string                  `json:"record_err,omitempty"`
 	}
 }
 
@@ -429,18 +432,60 @@ func mergeTagsOp(reg *raglit.Registry) func(context.Context, *mergeTagsIn) (*mer
 		if err != nil {
 			return nil, err
 		}
+		// Resolve the corpus root so the ruling can be recorded in the trail
+		// beside the documents. The trail is the record: a merge applied only
+		// in the index is lost on the next re-derivation, because the index
+		// holds the rewritten state, not the fact that a ruling was made.
 		out := &mergeTagsOut{}
+		v, vErr := indexView(st)
+		var js *raglit.JudgementStore
+		if vErr == nil && v.Root != "" {
+			var jerr error
+			js, jerr = raglit.OpenJudgements(raglit.AuditPath(v.Root))
+			if jerr != nil {
+				out.Body.RecordErr = "cannot open the audit trail: " + jerr.Error()
+			}
+		} else if vErr == nil && v.Root == "" {
+			out.Body.RecordErr = "no corpus root to record the ruling against"
+		}
+
 		out.Body.Merges = []raglit.TagMergeResult{}
 		for _, spec := range in.Body.Merges {
 			m, err := raglit.ParseTagMerge(spec)
 			if err != nil {
 				return nil, huma.Error400BadRequest(err.Error())
 			}
+			// Capture which documents carry the from-tags BEFORE the merge
+			// rewrites them: after MergeTags the from-tags are gone and the
+			// trail entry would name no documents at all.
+			var docs []string
+			if js != nil {
+				docs, _ = st.DocumentPathsCarryingTags(m.From)
+			}
+
+			// Trail-first: record the ruling BEFORE applying the merge, so a
+			// crash between the two leaves a recorded ruling to re-apply —
+			// never a merge in the index that the record never received.
+			if js != nil {
+				ruling := raglit.TagMergeRuling{
+					From: m.From, To: m.To,
+					Documents: docs, By: in.Body.By,
+					At: time.Now().UTC().Format(time.RFC3339),
+				}
+				if err := js.RecordTagMerge(ruling); err != nil {
+					out.Body.RecordErr = err.Error()
+				} else {
+					out.Body.Recorded = true
+				}
+			}
 			res, err := st.MergeTags(ctx, m)
 			if err != nil {
 				return nil, huma.Error400BadRequest(fmt.Sprintf("merge %s: %v", m, err))
 			}
 			out.Body.Merges = append(out.Body.Merges, res)
+		}
+		if js != nil {
+			js.Close()
 		}
 		return out, nil
 	}
