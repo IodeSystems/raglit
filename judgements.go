@@ -36,6 +36,7 @@ type JudgementStore struct {
 	corrections map[string]PageCorrection // by doc\x00page
 	authority   map[string]ReadingAuthority // by source sha256
 	withdrawn   map[string]Withdrawal     // by path
+	tagMerges   map[string]TagMergeRuling // by normalized (From, To) key
 	history     map[string][]AuditEvent   // by subject, in order
 
 	// onChange fires when a page's ACTIVE reading changes. Registered by whoever
@@ -63,6 +64,7 @@ func OpenJudgements(auditPath string) (*JudgementStore, error) {
 		corrections: map[string]PageCorrection{},
 		authority:   map[string]ReadingAuthority{},
 		withdrawn:   map[string]Withdrawal{},
+		tagMerges:   map[string]TagMergeRuling{},
 		history:     map[string][]AuditEvent{},
 	}
 	events, err := ReadAudit(auditPath)
@@ -165,6 +167,28 @@ func (s *JudgementStore) apply(ev AuditEvent) error {
 		}
 		delete(s.withdrawn, ev.RestorePath)
 		s.remember("withdrawal", ev.RestorePath, ev)
+	case OpTagMerge:
+		if ev.TagMerge == nil {
+			return fmt.Errorf("tag.merge with no ruling")
+		}
+		r := *ev.TagMerge
+		if r.To == "" {
+			return fmt.Errorf("tag.merge with no target tag")
+		}
+		if len(r.From) == 0 {
+			return fmt.Errorf("tag.merge with no source tags")
+		}
+		if r.At == "" {
+			r.At = ev.At
+		}
+		if r.By == "" {
+			r.By = ev.By
+		}
+		// A changed mind is one fact with a trail: keep the LAST ruling for the
+		// normalized (From, To) key. The earlier entry stays in the log; this
+		// one is the answer the store now gives.
+		s.tagMerges[tagMergeKey(r.From, r.To)] = r
+		s.remember("tagmerge", tagMergeKey(r.From, r.To), ev)
 	default:
 		// An op from a newer raglit. Refused rather than skipped: quietly ignoring
 		// it answers questions from a corpus that is missing decisions somebody
@@ -398,6 +422,66 @@ func (s *JudgementStore) CoverageOf(parent string, pages int) (Coverage, error) 
 func JudgementsPath(projectDir string) string { return AuditPath(projectDir) }
 
 var _ = time.Now
+
+// ── tag merges ─────────────────────────────────────────────────────────
+
+// tagMergeKey is the normalized (From, To) identity of a tag-merge ruling: the
+// source tags in sorted order, then the target. "a,b=>c" and "b,a=>c" key
+// identically, so a changed mind on the same pair is one fact with a trail.
+func tagMergeKey(from []string, to string) string {
+	f := append([]string(nil), from...)
+	sort.Strings(f)
+	return strings.Join(f, "\x00") + "\x00" + to
+}
+
+// RecordTagMerge records a person's ruling that one content tag becomes
+// another, and the documents the applied merge rewrote.
+//
+// Log-first: the ruling is appended to the trail before it is folded in, so a
+// crash between the two leaves a recorded ruling to re-apply on the next open,
+// never a ruling in memory that the record never received. Re-ruling the same
+// normalized (From, To) pair replaces the answer; both entries stay in the log.
+func (s *JudgementStore) RecordTagMerge(r TagMergeRuling) error {
+	if r.To == "" {
+		return fmt.Errorf("raglit: a tag merge ruling needs the tag to merge into")
+	}
+	if len(r.From) == 0 {
+		return fmt.Errorf("raglit: a tag merge ruling needs at least one tag to merge from")
+	}
+	ev := AuditEvent{Op: OpTagMerge, At: time.Now().UTC().Format(time.RFC3339), By: r.By, TagMerge: &r}
+	if err := AppendAudit(s.audit, ev); err != nil {
+		return err
+	}
+	return s.apply(ev)
+}
+
+// TagMerge returns the CURRENT ruling for a normalized (From, To) pair, if a
+// person has made one. The last ruling for that pair wins; the earlier ones
+// stay in the trail and are reachable through History.
+func (s *JudgementStore) TagMerge(from []string, to string) (TagMergeRuling, bool) {
+	if s == nil {
+		return TagMergeRuling{}, false
+	}
+	r, ok := s.tagMerges[tagMergeKey(from, to)]
+	return r, ok
+}
+
+// TagMerges returns every tag-merge ruling, in a stable order, one entry per
+// normalized (From, To) pair. A re-derivation of the corpus reads its merges
+// back from here — it does not re-derive them.
+func (s *JudgementStore) TagMerges() []TagMergeRuling {
+	if s == nil {
+		return nil
+	}
+	out := make([]TagMergeRuling, 0, len(s.tagMerges))
+	for _, r := range s.tagMerges {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return tagMergeKey(out[i].From, out[i].To) < tagMergeKey(out[j].From, out[j].To)
+	})
+	return out
+}
 
 // Withdrawn reports the ruling that took a document out of the corpus, if any.
 func (s *JudgementStore) Withdrawn(path string) (Withdrawal, bool) {

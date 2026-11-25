@@ -2,6 +2,8 @@ package raglit
 
 import (
 	"context"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -134,4 +136,221 @@ func TestValidateTags_AListInOneStringIsSplit(t *testing.T) {
 	if strings.Join(ct, "|") != strings.Join(want, "|") {
 		t.Fatalf("tags = %v, want %v", ct, want)
 	}
+}
+
+// The trail stays additive: a tag.merge entry is appended to a trail that
+// already holds every other kind of ruling, and none of those rulings moves.
+// The store answers the SAME as before the merge, plus the new answer.
+func TestTagMergeEntryStaysAdditive(t *testing.T) {
+	dir := t.TempDir()
+	js := openJS(t, dir)
+
+	// Seed a trail with one of every other kind of entry.
+	if err := js.PutAuthority(ReadingAuthority{Source: "sha-source-1", Doc: "doc.pdf", Why: "attested", By: "carl"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := js.PutRelation(Mark{A: "a.pdf", B: "b.pdf", Kind: MarkCopy, By: "carl"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := js.PutSlice(Slice{ID: "s1", Parent: "scan.pdf", From: 1, To: 3, By: "carl"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := js.PutPageCorrection(PageCorrection{Doc: "doc.pdf", Page: 2, Text: "2015", By: "carl"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := js.Withdraw(Withdrawal{Path: "out.pdf", Reason: "draft, not record", By: "carl"}); err != nil {
+		t.Fatal(err)
+	}
+
+	before := snapshotAll(t, js)
+
+	// Apply a tag merge: it appends one entry.
+	if err := js.RecordTagMerge(TagMergeRuling{
+		From: []string{"lbp"}, To: "lead paint",
+		Documents: []string{"doc.pdf"}, By: "carl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every pre-existing entry is unchanged: the answers that existed before the
+	// merge are the same after it. The merge's own answer and the trail length
+	// are the things that are ALLOWED to change, so they are checked on their
+	// own, below.
+	after := snapshotAll(t, js)
+	if !reflect.DeepEqual(before.Relations, after.Relations) {
+		t.Errorf("the merge changed a relation: before %+v after %+v", before.Relations, after.Relations)
+	}
+	if !reflect.DeepEqual(before.Slices, after.Slices) {
+		t.Errorf("the merge changed a slice: before %+v after %+v", before.Slices, after.Slices)
+	}
+	if !reflect.DeepEqual(before.Authority, after.Authority) {
+		t.Errorf("the merge changed an authority: before %+v after %+v", before.Authority, after.Authority)
+	}
+	if !reflect.DeepEqual(before.Corrections, after.Corrections) {
+		t.Errorf("the merge changed a correction: before %+v after %+v", before.Corrections, after.Corrections)
+	}
+	if !reflect.DeepEqual(before.Withdrawals, after.Withdrawals) {
+		t.Errorf("the merge changed a withdrawal: before %+v after %+v", before.Withdrawals, after.Withdrawals)
+	}
+
+	// The new answer is present, and the trail holds one more event.
+	if _, ok := js.TagMerge([]string{"lbp"}, "lead paint"); !ok {
+		t.Error("the recorded tag merge is not answered")
+	}
+	events, err := ReadAudit(AuditPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != before.Events+1 {
+		t.Errorf("trail grew from %d to %d events, want +1", before.Events, len(events))
+	}
+	if events[len(events)-1].Op != OpTagMerge {
+		t.Errorf("last event is %q, want %q", events[len(events)-1].Op, OpTagMerge)
+	}
+}
+
+// A re-derivation finds the recorded ruling: close the trail, reopen it, and
+// TagMerges() answers the ruling the log recorded. A changed mind — a second
+// ruling for the same normalized pair — answers as the last one, while the
+// first stays in the trail.
+func TestReopenedTrailFindsTheTagMergeRuling(t *testing.T) {
+	dir := t.TempDir()
+	js := openJS(t, dir)
+	if err := js.RecordTagMerge(TagMergeRuling{
+		From: []string{"lbp"}, To: "lead paint",
+		Documents: []string{"doc.pdf", "scan.pdf"}, By: "carl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	js.Close()
+
+	// Reopen: the store must re-derive its answer from the trail, not from the
+	// in-memory state that is now gone.
+	back := openJS(t, dir)
+	defer back.Close()
+
+	r, ok := back.TagMerge([]string{"lbp"}, "lead paint")
+	if !ok {
+		t.Fatal("a re-derivation did not find the recorded ruling")
+	}
+	if r.To != "lead paint" || !containsTag(r.From, "lbp") {
+		t.Errorf("ruling came back wrong: %+v", r)
+	}
+	if !reflect.DeepEqual(sorted(r.Documents), []string{"doc.pdf", "scan.pdf"}) {
+		t.Errorf("documents = %v", r.Documents)
+	}
+
+	// A changed mind: a second ruling for the same pair.
+	if err := back.RecordTagMerge(TagMergeRuling{
+		From: []string{"lbp"}, To: "lead paint",
+		Documents: []string{"doc.pdf"}, By: "carl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The answer is the LAST one.
+	again, _ := back.TagMerge([]string{"lbp"}, "lead paint")
+	if !reflect.DeepEqual(sorted(again.Documents), []string{"doc.pdf"}) {
+		t.Errorf("after a second ruling the answer is %v, want the last one", again.Documents)
+	}
+	// TagMerges answers one fact per normalized pair, not two.
+	all := back.TagMerges()
+	if len(all) != 1 {
+		t.Fatalf("TagMerges = %d entries, want 1 (one fact per pair)", len(all))
+	}
+	// ...but the trail keeps both.
+	events, err := ReadAudit(AuditPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merges := 0
+	for _, e := range events {
+		if e.Op == OpTagMerge {
+			merges++
+		}
+	}
+	if merges != 2 {
+		t.Errorf("trail holds %d tag.merge entries, want 2 (the changed mind kept both)", merges)
+	}
+}
+
+// The store does not re-derive: TagMerges() answers what the trail recorded,
+// and the empty case answers empty.
+func TestTagMerges_AnswersOnlyWhatIsRecorded(t *testing.T) {
+	dir := t.TempDir()
+	js := openJS(t, dir)
+	if got := js.TagMerges(); len(got) != 0 {
+		t.Fatalf("an empty trail answers %d merges, want 0", len(got))
+	}
+	if _, ok := js.TagMerge([]string{"a"}, "b"); ok {
+		t.Error("an unrecorded merge was answered")
+	}
+
+	if err := js.RecordTagMerge(TagMergeRuling{From: []string{"z", "a"}, To: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	// The normalized key: "z,a=>k" is the same ruling as "a,z=>k".
+	if _, ok := js.TagMerge([]string{"a", "z"}, "k"); !ok {
+		t.Error("the ruling was not found under its normalized key")
+	}
+	all := js.TagMerges()
+	if len(all) != 1 {
+		t.Fatalf("TagMerges = %d, want 1", len(all))
+	}
+}
+
+// allAnswers captures every answer the store gives from a trail, so a test can
+// show that appending one entry changed nothing else.
+type allAnswers struct {
+	Relations   []Mark
+	Slices      []Slice
+	Authority   []ReadingAuthority
+	Corrections map[int]PageCorrection
+	Withdrawals []Withdrawal
+	TagMerges   []TagMergeRuling
+	Events      int
+}
+
+func snapshotAll(t *testing.T, js *JudgementStore) allAnswers {
+	t.Helper()
+	rels, err := js.Relations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sls, err := js.Slices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := js.Authorities()
+	corr, err := js.PageCorrections("doc.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadAudit(js.audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return allAnswers{
+		Relations:   rels,
+		Slices:      sls,
+		Authority:   auth,
+		Corrections: corr,
+		Withdrawals: js.Withdrawals(),
+		TagMerges:   js.TagMerges(),
+		Events:      len(events),
+	}
+}
+
+func sorted(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
+}
+
+func containsTag(tags []string, want string) bool {
+	for _, t := range tags {
+		if t == want {
+			return true
+		}
+	}
+	return false
 }

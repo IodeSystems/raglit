@@ -35,6 +35,11 @@ type Judgements interface {
 	PageCorrections(doc string) (map[int]PageCorrection, error)
 	PageReadings(doc string, page int) []PageCorrection
 
+	// Tag merges
+	RecordTagMerge(r TagMergeRuling) error
+	TagMerge(from []string, to string) (TagMergeRuling, bool)
+	TagMerges() []TagMergeRuling
+
 	// Provenance
 	History(kind, subject string) ([]AuditEvent, error)
 

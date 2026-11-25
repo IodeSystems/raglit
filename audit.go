@@ -53,6 +53,11 @@ const (
 	OpPageCorrect = "page.correct"
 	OpDocWithdraw = "doc.withdraw"
 	OpDocRestore  = "doc.restore"
+	// OpTagMerge — a person ruled that two content tags mean one thing, and the
+	// merge was applied across the corpus. The ruling is a decision, not a
+	// rewrite, so it lives in the trail: a re-derivation of the corpus reads the
+	// ruling back out of here rather than re-deriving it.
+	OpTagMerge = "tag.merge"
 )
 
 // AuditEvent is one recorded mutation.
@@ -75,6 +80,40 @@ type AuditEvent struct {
 	// ReadingAuthority — it is a ruling, so it lives in the trail rather than in
 	// the index, which is derived and thrown away by a reindex.
 	Authority *ReadingAuthority `json:"authority,omitempty"`
+	// TagMerge names a tag merge a person ruled on and that was applied. It is
+	// the trail-side record of a ruling the index alone cannot keep: a re-
+	// derivation of the corpus reads it back from the trail rather than re-
+	// deriving the merge.
+	TagMerge *TagMergeRuling `json:"tag_merge,omitempty"`
+}
+
+// TagMergeRuling is a person's ruling that one content tag becomes another,
+// and what the applied merge did.
+//
+// The index holds the REWRITTEN state — the tags as they stand after the merge.
+// It cannot say that the rewrite was ruled on, by whom, or which pair it
+// collapsed: a re-derivation of the corpus has no way to recover that from the
+// fragments. The trail does, because this entry names the pair and the
+// documents changed, and the store answers "was this merge recorded" from it
+// without re-deriving anything.
+//
+// A changed mind is one fact with a trail: a second ruling for the same
+// normalized (From, To) pair REPLACES the answer the store gives, while both
+// entries stay in the log. The pair is keyed in canonical order, so "a,b=>c"
+// and "b,a=>c" are the same ruling.
+type TagMergeRuling struct {
+	// From is the tag(s) collapsed, in normalized form. A merge is one collapse,
+	// so the trail keeps the pair as one fact; a multi-term From is stored as
+	// given, with the ruling keyed on its normalized form.
+	From []string `json:"from"`
+	// To is the tag they were merged into.
+	To string `json:"to"`
+	// Documents is the set of documents whose tags the applied merge rewrote.
+	Documents []string `json:"documents,omitempty"`
+	By        string   `json:"by,omitempty"`
+	// At is when the ruling was made — the same distinction AuditEvent.At draws
+	// for every other payload.
+	At string `json:"at,omitempty"`
 }
 
 // ReadingAuthority is a person's ruling that one reading of a source governs.
