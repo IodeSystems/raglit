@@ -45,6 +45,8 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 			v := url.Values{"q": {q}}
 			v.Set("index", cv.read(req.GetString("index", "")))
 			setIf(v, "path", req.GetString("path", ""))
+			setIf(v, "session", req.GetString("session", ""))
+			setIf(v, "trigger_step", req.GetString("trigger_step", ""))
 			if n := req.GetInt("limit", defLimit); n > 0 {
 				v.Set("n", strconv.Itoa(n))
 			}

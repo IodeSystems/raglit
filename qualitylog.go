@@ -33,7 +33,7 @@ type QualityHit struct {
 
 // QualityEvent is one line of the log.
 type QualityEvent struct {
-	Type    string    `json:"type"` // search | get_document | surface
+	Type    string    `json:"type"` // search | get_document | surface | cite
 	Project string    `json:"project"`
 	Time    time.Time `json:"time"`
 	Session string    `json:"session,omitempty"`
@@ -50,6 +50,9 @@ type QualityEvent struct {
 	IndexHit  string `json:"index_hit,omitempty"`
 	Chars     int    `json:"chars,omitempty"`
 	FetchedBy string `json:"fetched_by,omitempty"` // session that fetched it
+
+	// Surfacing: the step that caused the surfacing (prompt / tool use).
+	TriggerStep string `json:"trigger_step,omitempty"`
 }
 
 // qualityLogWriter appends JSONL events for one project, rotating at its size
@@ -154,4 +157,68 @@ func (w *QualityLogWriter) Close() error {
 	err := w.f.Close()
 	w.f = nil
 	return err
+}
+
+// HitFate is one hit from a search event, annotated with what happened to it:
+// "fetched" (a get_document event for the same doc in the same session),
+// "cited" (a cite event for the same doc in the same session — the answer
+// referenced it), or "never_touched".
+type HitFate struct {
+	DocID  string  `json:"doc_id"`
+	Rank   int     `json:"rank"`
+	Score  float64 `json:"score"`
+	Origin string  `json:"origin"`
+	Chars  int     `json:"chars"`
+	Fate   string  `json:"fate"` // fetched | cited | never_touched
+}
+
+// SearchJoin is one search event with its hits' fates resolved.
+type SearchJoin struct {
+	Event QualityEvent `json:"event"`
+	Hits  []HitFate    `json:"hits"`
+}
+
+// JoinFetchesToSearch resolves what happened to each hit in each search event.
+// A hit is "cited" if a cite event in the same session references the same
+// doc_id at or after the search event's time. Otherwise it is "fetched" if a
+// get_document event in the same session references the same doc_id at or
+// after the search event's time. Otherwise it is "never_touched".
+// Cited takes precedence over fetched: a document that was both fetched and
+// cited in the answer is "cited".
+func JoinFetchesToSearch(events []QualityEvent) []SearchJoin {
+	var joins []SearchJoin
+	for _, ev := range events {
+		if ev.Type != "search" {
+			continue
+		}
+		fetched := map[string]bool{}
+		cited := map[string]bool{}
+		for _, fe := range events {
+			if fe.Session == "" || fe.Session != ev.Session {
+				continue
+			}
+			if fe.Time.Before(ev.Time) {
+				continue
+			}
+			switch fe.Type {
+			case "get_document":
+				fetched[fe.DocID] = true
+			case "cite":
+				cited[fe.DocID] = true
+			}
+		}
+		hits := make([]HitFate, 0, len(ev.Hits))
+		for _, h := range ev.Hits {
+			fate := "never_touched"
+			if fetched[h.DocID] {
+				fate = "fetched"
+			}
+			if cited[h.DocID] {
+				fate = "cited"
+			}
+			hits = append(hits, HitFate{DocID: h.DocID, Rank: h.Rank, Score: h.Score, Origin: h.Origin, Chars: h.Chars, Fate: fate})
+		}
+		joins = append(joins, SearchJoin{Event: ev, Hits: hits})
+	}
+	return joins
 }

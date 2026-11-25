@@ -348,6 +348,7 @@ func buildGatHandler(reg *raglit.Registry, lf *llmFlags, home raglit.Home, defLi
 	gat.Register(api, g, op("reocr", http.MethodPost, "/api/reocr", "Re-run the OCR cascade on a saved page image."), reocrOp(reg, lf, home))
 	gat.Register(api, g, op("findDocuments", http.MethodGet, "/api/find-documents", "Find documents by name substring (MCP list_documents)."), findDocumentsOp(reg))
 	gat.Register(api, g, op("getDocument", http.MethodGet, "/api/get-document", "Get a document's indexed text (MCP get_document)."), getDocumentOp(reg, watch))
+	gat.Register(api, g, op("cite", http.MethodPost, "/api/cite", "Record that the answer cited a document (quality log)."), citeOp(watch))
 	gat.Register(api, g, op("ocr", http.MethodPost, "/api/ocr", "Extract a document (path or base64 data) to paged text (MCP ocr)."), ocrToolOp(reg, lf, home))
 	gat.Register(api, g, op("getModelSettings", http.MethodGet, "/api/settings/models", "Model providers and the provider + model of each role. Admin only."), getModelSettingsOp(reg, home))
 	gat.Register(api, g, op("saveModelSettings", http.MethodPut, "/api/settings/models", "Save providers and roles to config.json; the daemon reloads when idle. Admin only."), saveModelSettingsOp(reg, home))
@@ -760,6 +761,10 @@ type searchIn struct {
 	// quality log: the caller (an agent's dun session) names itself and the log
 	// can later say which hit was fetched, cited, or never touched.
 	Session string `query:"session"`
+	// TriggerStep records what caused this search to surface documents:
+	// "prompt" (the user's prompt triggered it) or "tool_use" (the agent
+	// chose to call the search tool). Empty means the caller did not name it.
+	TriggerStep string `query:"trigger_step"`
 }
 type searchOut struct {
 	Body struct {
@@ -908,6 +913,10 @@ func searchOp(reg *raglit.Registry, watch *watcher, defLimit int) func(context.C
 			logHits = append(logHits, ih.hit)
 		}
 		recordSearch(watch, ctx, "", in.Query, in.Mode, in.Index, in.Session, logHits, searched)
+		// The search surfaces documents to the caller: record the surfacing
+		// event with the trigger step (prompt / tool_use) so the quality log
+		// can say what caused the documents to appear.
+		recordSurface(watch, ctx, "", in.TriggerStep, in.Mode, in.Index, in.Session, logHits, searched)
 		return out, nil
 	}
 }
@@ -1506,6 +1515,38 @@ func getDocumentOp(reg *raglit.Registry, watch *watcher) func(context.Context, *
 		// Quality log (F41): what was fetched and how much came back, so a hit's
 		// fate (fetched, cited, never touched) can be joined back later.
 		recordGetDocument(watch, ctx, "", content.Path, content.Path, cands[0].index, in.Session, len(content.Text))
+		return out, nil
+	}
+}
+
+// citeIn is the body of POST /api/cite: the agent says the answer it is
+// writing referenced this document. doc_id is the document's path (what a
+// search hit's doc_id carries), index the index it came from, session the
+// session that ran the search.
+type citeIn struct {
+	Body struct {
+		DocID   string `json:"doc_id"`
+		Index   string `json:"index,omitempty"`
+		Session string `json:"session,omitempty"`
+	}
+}
+type citeOut struct {
+	Body struct {
+		Recorded bool `json:"recorded"`
+	}
+}
+
+// citeOp records a citation in the quality log. It does not touch the index:
+// the document is already there, this is the log line that lets
+// JoinFetchesToSearch mark the hit "cited" rather than "fetched".
+func citeOp(watch *watcher) func(context.Context, *citeIn) (*citeOut, error) {
+	return func(ctx context.Context, in *citeIn) (*citeOut, error) {
+		if in.Body.DocID == "" {
+			return nil, huma.Error400BadRequest("doc_id is required")
+		}
+		recordCite(watch, ctx, "", in.Body.DocID, in.Body.Index, in.Body.Session)
+		out := &citeOut{}
+		out.Body.Recorded = true
 		return out, nil
 	}
 }

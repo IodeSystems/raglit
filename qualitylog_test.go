@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestQualityLog_OffByDefault_WritesNothing: a zero Config has QualityLog.On
@@ -243,6 +244,121 @@ func TestQualityLog_PerProject_OnlyLogsConfiguredProject(t *testing.T) {
 	// Project B has no file.
 	if _, err := os.Stat(homeB.QualityLogPath()); !os.IsNotExist(err) {
 		t.Errorf("project B should have no quality log file; stat err=%v", err)
+	}
+}
+
+// TestQualityLog_FetchJoinsToOriginatingSearch: a search event is written,
+// then some of its hits are fetched via get_document in the same session.
+// JoinFetchesToSearch resolves each hit's fate: fetched hits are marked
+// "fetched", the rest "never_touched".
+func TestQualityLog_FetchJoinsToOriginatingSearch(t *testing.T) {
+	base := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	search := QualityEvent{
+		Type:    "search",
+		Project: "proj",
+		Time:    base,
+		Session: "sess-1",
+		Query:   "purchase agreement",
+		Mode:    "semantic",
+		Index:   "proj__main",
+		Hits: []QualityHit{
+			{DocID: "agreement.md", Rank: 1, Score: 0.92, Origin: "body", Chars: 4500},
+			{DocID: "notes.md", Rank: 2, Score: 0.81, Origin: "identity", Chars: 200},
+			{DocID: "summary.md", Rank: 3, Score: 0.74, Origin: "generated question", Chars: 1200},
+		},
+	}
+
+	// Two of the three hits are fetched in the same session, after the search.
+	fetch1 := QualityEvent{
+		Type:    "get_document",
+		Project: "proj",
+		Time:    base.Add(30 * time.Second),
+		Session: "sess-1",
+		Path:    "agreement.md",
+		DocID:   "agreement.md",
+		Chars:   4500,
+	}
+	fetch2 := QualityEvent{
+		Type:    "get_document",
+		Project: "proj",
+		Time:    base.Add(60 * time.Second),
+		Session: "sess-1",
+		Path:    "summary.md",
+		DocID:   "summary.md",
+		Chars:   1200,
+	}
+
+	// A fetch in a DIFFERENT session must not join.
+	fetchOther := QualityEvent{
+		Type:    "get_document",
+		Project: "proj",
+		Time:    base.Add(45 * time.Second),
+		Session: "sess-other",
+		Path:    "notes.md",
+		DocID:   "notes.md",
+		Chars:   200,
+	}
+
+	// A fetch BEFORE the search must not join.
+	fetchEarly := QualityEvent{
+		Type:    "get_document",
+		Project: "proj",
+		Time:    base.Add(-10 * time.Second),
+		Session: "sess-1",
+		Path:    "notes.md",
+		DocID:   "notes.md",
+		Chars:   200,
+	}
+
+	events := []QualityEvent{search, fetch1, fetch2, fetchOther, fetchEarly}
+	joins := JoinFetchesToSearch(events)
+
+	// One search event → one join.
+	if len(joins) != 1 {
+		t.Fatalf("want 1 search join, got %d", len(joins))
+	}
+	j := joins[0]
+	if len(j.Hits) != 3 {
+		t.Fatalf("want 3 hits in join, got %d", len(j.Hits))
+	}
+
+	// agreement.md was fetched in the same session after the search → "fetched".
+	if j.Hits[0].Fate != "fetched" {
+		t.Errorf("agreement.md fate = %q, want fetched", j.Hits[0].Fate)
+	}
+	// notes.md was fetched in a different session and before the search → "never_touched".
+	if j.Hits[1].Fate != "never_touched" {
+		t.Errorf("notes.md fate = %q, want never_touched", j.Hits[1].Fate)
+	}
+	// summary.md was fetched in the same session after the search → "fetched".
+	if j.Hits[2].Fate != "fetched" {
+		t.Errorf("summary.md fate = %q, want fetched", j.Hits[2].Fate)
+	}
+
+	// Hit metadata is preserved through the join.
+	if j.Hits[0].DocID != "agreement.md" || j.Hits[0].Rank != 1 || j.Hits[0].Score != 0.92 {
+		t.Errorf("hit[0] metadata = %+v", j.Hits[0])
+	}
+	if j.Hits[1].DocID != "notes.md" || j.Hits[1].Origin != "identity" {
+		t.Errorf("hit[1] metadata = %+v", j.Hits[1])
+	}
+
+	// Empty/absence case: a search with no fetches at all → all never_touched.
+	alone := QualityEvent{
+		Type:    "search",
+		Project: "proj",
+		Time:    base,
+		Session: "sess-2",
+		Query:   "lonely query",
+		Hits:    []QualityHit{{DocID: "x.md", Rank: 1, Score: 0.5, Origin: "body", Chars: 10}},
+	}
+	joins2 := JoinFetchesToSearch([]QualityEvent{alone})
+	if len(joins2) != 1 {
+		t.Fatalf("want 1 join for lone search, got %d", len(joins2))
+	}
+	if joins2[0].Hits[0].Fate != "never_touched" {
+		t.Errorf("lone search hit fate = %q, want never_touched", joins2[0].Hits[0].Fate)
 	}
 }
 

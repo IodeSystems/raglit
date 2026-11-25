@@ -141,3 +141,56 @@ func recordGetDocument(w *watcher, ctx context.Context, ns, path, docID, index, 
 		FetchedBy: session,
 	})
 }
+
+// recordSurface logs one surfacing event: a hook surfaced documents to the
+// user. triggerStep is the step that caused the surfacing (prompt / tool_use).
+// hits are the surfaced documents in order.
+func recordSurface(w *watcher, ctx context.Context, ns, triggerStep, mode, scope, session string, hits []raglit.Hit, searched []string) {
+	if w == nil {
+		return
+	}
+	if ns == "" {
+		ns = namespaceOf(searched)
+	}
+	log := w.QualityWriter(ns)
+	if log == nil {
+		return
+	}
+	qh := make([]raglit.QualityHit, 0, len(hits))
+	for i, h := range hits {
+		qh = append(qh, raglit.QualityHit{DocID: h.Path, Rank: i + 1, Score: h.Score, Origin: h.Origin, Chars: len(h.Text)})
+	}
+	_ = log.Record(raglit.QualityEvent{
+		Type:        "surface",
+		Project:     ns,
+		Session:     session,
+		Mode:        mode,
+		Index:       scope,
+		TriggerStep: triggerStep,
+		Hits:        qh,
+	})
+}
+
+// recordCite logs one citation: the agent's answer referenced this document.
+// A cited document was also fetched (you need the content to cite it), so the
+// get_document event is recorded separately; the cite event is what marks the
+// hit's fate as "cited" rather than "fetched" in JoinFetchesToSearch.
+func recordCite(w *watcher, ctx context.Context, ns, docID, index, session string) {
+	if w == nil {
+		return
+	}
+	if ns == "" {
+		ns = namespaceOf([]string{index})
+	}
+	log := w.QualityWriter(ns)
+	if log == nil {
+		return
+	}
+	_ = log.Record(raglit.QualityEvent{
+		Type:    "cite",
+		Project: ns,
+		Session: session,
+		DocID:   docID,
+		IndexHit: index,
+	})
+}

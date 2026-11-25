@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -117,5 +119,89 @@ func TestQualityLogRegistry_WriterGate(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], "doc-a.md") {
 		t.Errorf("event line should contain hit doc id; got %s", lines[0])
+	}
+}
+
+// TestQualityLog_HookSurfacing_LoggedWithTriggerStep: when a hook surfaces
+// documents, the event records the trigger step (prompt / tool_use), mode,
+// index scope, and each document's rank, score, origin, and size.
+func TestQualityLog_HookSurfacing_LoggedWithTriggerStep(t *testing.T) {
+	home := raglit.Home(t.TempDir())
+	if err := home.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, _ := raglit.LoadConfig(home)
+	cfg.Project = "surftest"
+	cfg.QualityLog.On = true
+	cfg.QualityLog.MaxBytes = 4096
+	if err := raglit.SaveConfig(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a watcher with the quality registry pointing at this home.
+	w := &watcher{quality: newQualityLogRegistry()}
+	w.quality.setHomeResolver(func(ns string) (raglit.Home, bool) {
+		if ns == "surftest" {
+			return home, true
+		}
+		return "", false
+	})
+	defer w.quality.Close()
+
+	// A hook surfaces three documents in response to a prompt step.
+	hits := []raglit.Hit{
+		{Path: "doc-alpha.md", Text: "alpha text", Score: 0.95, Origin: "body"},
+		{Path: "doc-beta.md", Text: "beta text here", Score: 0.83, Origin: "identity"},
+		{Path: "doc-gamma.md", Text: "gamma", Score: 0.71, Origin: "generated question"},
+	}
+	recordSurface(w, context.Background(), "surftest", "prompt", "semantic", "surftest__main", "sess-surf", hits, []string{"surftest__main"})
+
+	// Read the log file back.
+	data, err := os.ReadFile(home.QualityLogPath())
+	if err != nil {
+		t.Fatalf("expected quality log file: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("want 1 event line, got %d", len(lines))
+	}
+
+	var ev raglit.QualityEvent
+	if err := json.Unmarshal([]byte(lines[0]), &ev); err != nil {
+		t.Fatal(err)
+	}
+
+	// Event type and trigger step.
+	if ev.Type != "surface" {
+		t.Errorf("Type = %q, want surface", ev.Type)
+	}
+	if ev.TriggerStep != "prompt" {
+		t.Errorf("TriggerStep = %q, want prompt", ev.TriggerStep)
+	}
+	if ev.Mode != "semantic" {
+		t.Errorf("Mode = %q, want semantic", ev.Mode)
+	}
+	if ev.Index != "surftest__main" {
+		t.Errorf("Index = %q, want surftest__main", ev.Index)
+	}
+	if ev.Session != "sess-surf" {
+		t.Errorf("Session = %q, want sess-surf", ev.Session)
+	}
+
+	// Each surfaced document: rank, score, origin, size.
+	if len(ev.Hits) != 3 {
+		t.Fatalf("want 3 hits, got %d", len(ev.Hits))
+	}
+	wantHits := []raglit.QualityHit{
+		{DocID: "doc-alpha.md", Rank: 1, Score: 0.95, Origin: "body", Chars: len("alpha text")},
+		{DocID: "doc-beta.md", Rank: 2, Score: 0.83, Origin: "identity", Chars: len("beta text here")},
+		{DocID: "doc-gamma.md", Rank: 3, Score: 0.71, Origin: "generated question", Chars: len("gamma")},
+	}
+	for i, want := range wantHits {
+		g := ev.Hits[i]
+		if g.DocID != want.DocID || g.Rank != want.Rank || g.Score != want.Score ||
+			g.Origin != want.Origin || g.Chars != want.Chars {
+			t.Errorf("hit[%d] = %+v, want %+v", i, g, want)
+		}
 	}
 }
