@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,12 +63,13 @@ func runMark(args []string) error {
 	supersedes := fs.String("supersedes", "", "for a version pair: the path that GOVERNS")
 	note := fs.String("note", "", "why — the reasoning, for whoever reads this later")
 	by := fs.String("by", "", "who ruled (default $RAGLIT_BY, else the OS user)")
+	locator := fs.String("locator", "", "for corrected-by/invalidated-by at the part grain: a region id, page:N, or an attest unit id")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 3 {
-		return fmt.Errorf("mark: want <A> <B> <copy|version|unrelated>")
+		return fmt.Errorf("mark: want <A> <B> <copy|version|unrelated|corrected-by|invalidated-by>")
 	}
 	a, b, kind := pos[0], pos[1], raglit.MarkKind(pos[2])
 
@@ -83,9 +85,14 @@ func runMark(args []string) error {
 		fmt.Fprintf(os.Stderr, "note: this pair was already ruled %q%s — recording the new ruling over it\n",
 			prev.Kind, byline(prev))
 	}
+	loc, err := parseLocator(*locator, kind)
+	if err != nil {
+		return err
+	}
 	m := raglit.Mark{
 		A: a, B: b, Kind: kind,
 		Supersedes: *supersedes,
+		Locator:    loc,
 		Note:       *note,
 		By:         who(*by),
 		At:         time.Now().UTC().Format("2006-01-02"),
@@ -97,8 +104,48 @@ func runMark(args []string) error {
 	if m.Supersedes != "" {
 		fmt.Printf("  governed by %s\n", m.Supersedes)
 	}
+	if m.Locator.Count() > 0 {
+		fmt.Printf("  at %s\n", describeLocator(m.Locator))
+	}
 	fmt.Printf("  recorded in the judgement database\n")
 	return nil
+}
+
+// parseLocator reads the --locator flag into the grain vocabulary the
+// corrections already use: page:N is a page, anything else is a region id or an
+// attest unit id. It cannot tell those two apart from a string, and does not
+// try: both are ids in the same vocabulary, and the mark's Note carries what it
+// is for a person.
+func parseLocator(s string, kind raglit.MarkKind) (raglit.Locator, error) {
+	if s == "" {
+		return raglit.Locator{}, nil
+	}
+	if !kind.Directional() {
+		return raglit.Locator{}, fmt.Errorf("--locator is for corrected-by and invalidated-by, not %s", kind)
+	}
+	if i := strings.IndexByte(s, ':'); i > 0 && (s[:i] == "page" || s[:i] == "Page") {
+		n, err := strconv.Atoi(s[i+1:])
+		if err != nil || n < 1 {
+			return raglit.Locator{}, fmt.Errorf("--locator page: want page:N, got %q", s)
+		}
+		return raglit.Locator{Page: n}, nil
+	}
+	return raglit.Locator{Region: s}, nil
+}
+
+func describeLocator(l raglit.Locator) string {
+	switch l.Count() {
+	case 1:
+		switch {
+		case l.Page != 0:
+			return fmt.Sprintf("page %d", l.Page)
+		case l.Region != "":
+			return "region " + l.Region
+		case l.Unit != "":
+			return "unit " + l.Unit
+		}
+	}
+	return ""
 }
 
 func runMarks(args []string) error {
@@ -236,9 +283,18 @@ func runMarks(args []string) error {
 }
 
 func printMark(m raglit.Mark) {
-	fmt.Printf("%-10s %s\n%-10s %s\n", m.Kind, m.A, "", m.B)
+	if m.Kind.Directional() {
+		// The order IS the ruling here: say it, rather than leaving two paths
+		// on two lines to be read back for which is which.
+		fmt.Printf("%-15s %s  %s  %s\n", m.Kind, m.A, m.Kind, m.B)
+	} else {
+		fmt.Printf("%-10s %s\n%-10s %s\n", m.Kind, m.A, "", m.B)
+	}
 	if m.Supersedes != "" {
 		fmt.Printf("  governs: %s\n", m.Supersedes)
+	}
+	if d := describeLocator(m.Locator); d != "" {
+		fmt.Printf("  at %s\n", d)
 	}
 	if m.Note != "" {
 		fmt.Printf("  %s\n", m.Note)

@@ -49,7 +49,59 @@ const (
 	// a quoted paragraph, a common exhibit. Recorded rather than left blank so the
 	// pair stops coming back as an open question.
 	MarkUnrelated MarkKind = "unrelated"
+
+	// The two kinds below are DIRECTIONAL, and that is what sets them apart from
+	// the three above: copy, version and unrelated read the same either way, so
+	// a pair is one fact and the sides are stored in canonical order. corrected-
+	// by and invalidated-by do not: the later document says something about the
+	// earlier one, and which side is which IS the content. The pair is not
+	// sorted, and the store never collapses it.
+	//
+	// MarkCorrectedBy — the earlier document STANDS; a specific thing in it is
+	// wrong, and B states the right answer. A corrected document is still
+	// evidence — it is what the dispute is about — so it is never hidden or
+	// greyed out by this ruling.
+	MarkCorrectedBy MarkKind = "corrected-by"
+	// MarkInvalidatedBy — the earlier document NO LONGER GOVERNS AT ALL:
+	// rescinded, vacated. The stronger claim, and the one a machine may propose
+	// only from explicit words and never from supersession or overlap.
+	MarkInvalidatedBy MarkKind = "invalidated-by"
 )
+
+// Directional reports whether the kind's content lives in which side is which.
+// Those kinds are stored as given, never in canonical order.
+func (k MarkKind) Directional() bool {
+	return k == MarkCorrectedBy || k == MarkInvalidatedBy
+}
+
+// Locator names a PART of a document, in the grain vocabulary the corrections
+// already use: a region id (regionread's region labels), a page number
+// (page_readings), or an attest unit id (attest.Corrected). Empty is a whole-
+// document ruling.
+type Locator struct {
+	// Region is the region id of the part, when the grain is a region.
+	Region string `json:"region,omitempty"`
+	// Page is the page number, when the grain is a page (1, like PageCorrection).
+	Page int `json:"page,omitempty"`
+	// Unit is the attest unit id, when the grain is a claim unit.
+	Unit string `json:"unit,omitempty"`
+}
+
+// Count reports how many of the locator's fields are set. A part is one thing,
+// so a locator names at most one of them.
+func (l Locator) Count() int {
+	n := 0
+	if l.Region != "" {
+		n++
+	}
+	if l.Page != 0 {
+		n++
+	}
+	if l.Unit != "" {
+		n++
+	}
+	return n
+}
 
 // Mark is one ruling on a pair of documents.
 //
@@ -57,6 +109,11 @@ const (
 // is one fact rather than two and is found from either side. Supersedes is not
 // normalized — it names a side, and which side is the whole content of an
 // ordering.
+//
+// The directional kinds (corrected-by, invalidated-by) are the exception to the
+// normalization: for them A is the document that is corrected or invalidated
+// and B is the document that does it. The store keeps them as recorded, because
+// sorting the pair away would lose the whole content.
 type Mark struct {
 	A    string   `json:"a"`
 	B    string   `json:"b"`
@@ -65,9 +122,12 @@ type Mark struct {
 	// known. Empty means the pair is two versions with no ruling on precedence —
 	// a real and common state (two undated drafts), not a missing field.
 	Supersedes string `json:"supersedes,omitempty"`
-	Note       string `json:"note,omitempty"`
-	By         string `json:"by,omitempty"`
-	At         string `json:"at,omitempty"`
+	// Locator is where IN A the correction or invalidation bites, for a
+	// directional kind at the part grain. Empty is the whole document.
+	Locator Locator `json:"locator,omitempty"`
+	Note    string  `json:"note,omitempty"`
+	By      string  `json:"by,omitempty"`
+	At      string  `json:"at,omitempty"`
 
 	// The evidence as it stood when the ruling was made, so a later reader can
 	// see what was in front of the person. Not used for anything: a ruling is not
@@ -84,9 +144,16 @@ func pairKey(a, b string) string {
 	return a + "\x00" + b
 }
 
+// orderedPairKey identifies a pair the way it was given. A directional ruling
+// lives in this order: which side is which is the content.
+func orderedPairKey(a, b string) string { return a + "\x00" + b }
+
 // Normalize puts a mark's two sides in canonical order. Supersedes is untouched.
+//
+// A directional kind is returned UNCHANGED: its sides are not a pair to be
+// sorted, and sorting them would delete which document is the corrected one.
 func (m Mark) Normalize() Mark {
-	if m.B < m.A {
+	if !m.Kind.Directional() && m.B < m.A {
 		m.A, m.B = m.B, m.A
 	}
 	return m
@@ -164,9 +231,20 @@ func (m Mark) check() error {
 		return fmt.Errorf("a document cannot be a %s of itself", m.Kind)
 	}
 	switch m.Kind {
-	case MarkCopy, MarkVersion, MarkUnrelated:
+	case MarkCopy, MarkVersion, MarkUnrelated, MarkCorrectedBy, MarkInvalidatedBy:
 	default:
-		return fmt.Errorf("unknown kind %q (want copy, version or unrelated)", m.Kind)
+		return fmt.Errorf("unknown kind %q (want copy, version, unrelated, corrected-by or invalidated-by)", m.Kind)
+	}
+	if m.Kind.Directional() {
+		if m.Supersedes != "" {
+			return fmt.Errorf("a %s ruling carries its order in the sides; Supersedes is for versions", m.Kind)
+		}
+		if n := m.Locator.Count(); n > 1 {
+			return fmt.Errorf("a locator names ONE part — a region, a page or a unit — got %d", n)
+		}
+	}
+	if !m.Kind.Directional() && m.Locator.Count() > 0 {
+		return fmt.Errorf("only corrected-by and invalidated-by locate a part; %s rules on the whole document", m.Kind)
 	}
 	if m.Supersedes != "" {
 		if m.Kind != MarkVersion {

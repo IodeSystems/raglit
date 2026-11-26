@@ -32,6 +32,7 @@ type JudgementStore struct {
 	audit string
 
 	marks       map[string]Mark           // by normalized pair key
+	directional map[string]Mark           // by ORDERED pair key: A\x00B as given
 	slices      map[string]Slice          // by id
 	corrections map[string]PageCorrection // by doc\x00page
 	authority   map[string]ReadingAuthority // by source sha256
@@ -60,6 +61,7 @@ func OpenJudgements(auditPath string) (*JudgementStore, error) {
 	s := &JudgementStore{
 		audit:       auditPath,
 		marks:       map[string]Mark{},
+		directional: map[string]Mark{},
 		slices:      map[string]Slice{},
 		corrections: map[string]PageCorrection{},
 		authority:   map[string]ReadingAuthority{},
@@ -116,9 +118,26 @@ func (s *JudgementStore) apply(ev AuditEvent) error {
 		if ev.Relation == nil {
 			return fmt.Errorf("relation.put with no relation")
 		}
-		m := ev.Relation.Normalize()
-		s.marks[pairKey(m.A, m.B)] = m
-		s.remember("relation", pairKey(m.A, m.B), ev)
+		// The pair's subject is one fact either way, so the history is keyed on
+		// the unordered pair. The ANSWER is where the kind decides: a directional
+		// ruling lives in the ordered map as given, and it and a copy/version
+		// ruling on the same two documents are mutually exclusive — a person
+		// re-ruling the pair replaces whatever the store answered before.
+		m := *ev.Relation
+		subject := pairKey(m.A, m.B)
+		if m.Kind.Directional() {
+			// Both directions: recording A corrected-by B over an earlier B
+			// corrected-by A is a changed mind, one fact with a trail.
+			delete(s.directional, m.A+"\x00"+m.B)
+			delete(s.directional, m.B+"\x00"+m.A)
+			delete(s.marks, subject)
+			s.directional[orderedPairKey(m.A, m.B)] = m
+		} else {
+			delete(s.directional, m.A+"\x00"+m.B)
+			delete(s.directional, m.B+"\x00"+m.A)
+			s.marks[subject] = m
+		}
+		s.remember("relation", subject, ev)
 	case OpSlicePut:
 		if ev.Slice == nil {
 			return fmt.Errorf("slice.put with no slice")
@@ -217,8 +236,9 @@ func (s *JudgementStore) record(ev AuditEvent) error {
 
 // ── relations ──────────────────────────────────────────────────────────
 
-// PutRelation records a ruling on a pair, normalizing the sides so the pair is
-// one fact however it was given.
+// PutRelation records a ruling on a pair. An unordered kind is normalized so
+// the pair is one fact however it was given; a directional kind is stored as
+// given, because which side is the corrected one is the content.
 func (s *JudgementStore) PutRelation(m Mark) error {
 	if err := m.check(); err != nil {
 		return err
@@ -258,14 +278,24 @@ func (s *JudgementStore) Authorities() []ReadingAuthority {
 
 // Relation returns the ruling on a pair, in either order.
 func (s *JudgementStore) Relation(a, b string) (Mark, bool, error) {
-	m, ok := s.marks[pairKey(a, b)]
-	return m, ok, nil
+	if m, ok := s.marks[pairKey(a, b)]; ok {
+		return m, true, nil
+	}
+	for _, key := range []string{orderedPairKey(a, b), orderedPairKey(b, a)} {
+		if m, ok := s.directional[key]; ok {
+			return m, true, nil
+		}
+	}
+	return Mark{}, false, nil
 }
 
 // Relations returns every ruling, in a stable order.
 func (s *JudgementStore) Relations() ([]Mark, error) {
-	out := make([]Mark, 0, len(s.marks))
+	out := make([]Mark, 0, len(s.marks)+len(s.directional))
 	for _, m := range s.marks {
+		out = append(out, m)
+	}
+	for _, m := range s.directional {
 		out = append(out, m)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -287,6 +317,111 @@ func (s *JudgementStore) RelationsFor(doc string) ([]Mark, error) {
 		}
 	}
 	return out, nil
+}
+
+// DirectionalRelation is one recorded directional ruling (corrected-by or
+// invalidated-by) as it concerns doc: which side doc is, and the other side.
+//
+// The direction is stated, not left to be read off a letter. A is the document
+// that is corrected or invalidated; B is the one that does it. A reader asking
+// "what is true about this document" gets two different answers from the same
+// record, and both are needed: "what corrects it" and "what it corrects".
+type DirectionalRelation struct {
+	Mark `json:"mark"`
+	// DocIsA is true when doc is the corrected/invalidated side (A).
+	DocIsA bool `json:"doc_is_a"`
+}
+
+// DirectionalRelationsFor returns every directional ruling involving doc,
+// corrected-by first in the order recorded, each with its direction and
+// locator. Both the link going OUT of doc ("it corrects X") and the link
+// coming IN ("it is corrected by Y") are returned — collapsing them into a
+// single winner over the document would be the failure this shape exists to
+// avoid.
+func (s *JudgementStore) DirectionalRelationsFor(doc string) ([]DirectionalRelation, error) {
+	var out []DirectionalRelation
+	for _, m := range s.directional {
+		switch {
+		case m.A == doc:
+			out = append(out, DirectionalRelation{Mark: m, DocIsA: true})
+		case m.B == doc:
+			out = append(out, DirectionalRelation{Mark: m})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].A != out[j].A {
+			return out[i].A < out[j].A
+		}
+		return out[i].B < out[j].B
+	})
+	return out, nil
+}
+
+// CorrectionChain walks the corrected-by links through doc and answers with
+// EVERY link, each keeping its own direction, rather than collapsing the chain
+// into a single winner.
+//
+// The chain 2008 ← 2022-03 ← 2022-05 is three documents, each correcting the
+// last. Whatever is stored has to answer "what is current" without flattening
+// the chain, for the same reason page_readings keeps every version: the middle
+// links are facts, and a reader ruling on 2022-03 needs both that it corrects
+// 2008 and that 2022-05 corrects it.
+//
+// It walks out from doc in both directions — the documents doc corrects, and
+// the documents that correct doc, and on so on — and stops at each end. The
+// links come back as two lists, each in chain order.
+func (s *JudgementStore) CorrectionChain(doc string) (corrects, correctedBy []DirectionalRelation, err error) {
+	// follows maps the corrected side to the correcting side, as recorded.
+	follows := map[string]string{}
+	for _, m := range s.directional {
+		if m.Kind == MarkCorrectedBy {
+			follows[m.A] = m.B
+		}
+	}
+	by := func(a, b string) DirectionalRelation {
+		for _, m := range s.directional {
+			if m.A == a && m.B == b {
+				// DocIsA names doc's side in THIS link, not the link's A.
+				return DirectionalRelation{Mark: m, DocIsA: m.A == doc}
+			}
+		}
+		return DirectionalRelation{}
+	}
+
+	// Inverse maps the correcting side to the corrected side, so walking it
+	// from doc reaches the documents doc CORRECTS.
+	inverse := map[string]string{}
+	for a, b := range follows {
+		inverse[b] = a
+	}
+
+	// Outward: the documents doc corrects, one hop at a time, until there is no
+	// further link. A cycle in recorded rulings would loop this, so each side is
+	// followed at most once.
+	seen := map[string]bool{doc: true}
+	cur := doc
+	for {
+		next := inverse[cur]
+		if next == "" || seen[next] {
+			break
+		}
+		corrects = append(corrects, by(next, cur))
+		seen[next] = true
+		cur = next
+	}
+
+	// Inward: the documents that correct doc, up the chain the same way.
+	cur = doc
+	for {
+		prev := follows[cur]
+		if prev == "" || seen[prev] {
+			break
+		}
+		correctedBy = append(correctedBy, by(cur, prev))
+		seen[prev] = true
+		cur = prev
+	}
+	return corrects, correctedBy, nil
 }
 
 // ── slices ─────────────────────────────────────────────────────────────

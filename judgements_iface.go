@@ -20,6 +20,10 @@ type Judgements interface {
 	Relation(a, b string) (Mark, bool, error)
 	Relations() ([]Mark, error)
 	RelationsFor(doc string) ([]Mark, error)
+	DirectionalRelationsFor(doc string) ([]DirectionalRelation, error)
+	// CorrectionChain returns the corrected-by links through doc, both
+	// directions, every link keeping its own direction — never a single winner.
+	CorrectionChain(doc string) (corrects, correctedBy []DirectionalRelation, err error)
 
 	// Slices
 	PutSlice(sl Slice) error
