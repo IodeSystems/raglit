@@ -53,7 +53,11 @@ func daemonToolHandlersFor(base string, defLimit int, cv clientView) toolHandler
 			if !req.GetBool("siblings", true) {
 				v.Set("siblings", "false")
 			}
-			return proxyGet(base, "/search", v, ns)
+			b, err := daemonGet(base, "/search", v)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("daemon", err), nil
+			}
+			return mcp.NewToolResultText(string(trimSearchHits(stripNSJSON(stripSchema(b), ns)))), nil
 		},
 
 		searchFigures: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

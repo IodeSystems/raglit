@@ -99,15 +99,14 @@ func addRaglitTools(s *server.MCPServer, h toolHandlers) {
 		mcp.NewTool("search",
 			mcp.WithDescription(
 				"Search the document index(es). Returns ranked fragments as JSON "+
-					"{hits:[{index,doc_id,title,page,score,snippet,origin,similarity,matched_terms,query_terms}]}, "+
-					"best first. `score` is per mode (bm25, cosine, or a hybrid rank fusion) and not "+
-					"comparable across modes; `similarity` is the raw cosine when the vector side ranked "+
-					"the hit (use it for a fixed cut-off); `matched_terms` of `query_terms` is how many "+
-					"of the query's words (stopwords out) the fragment contains. A hit "+
+					"{hits:[{index,doc_id,title,page,snippet,rel,origin,similarity,summary}],caveats:[...]}, "+
+					"best first. `similarity` is the raw cosine when the vector side ranked "+
+					"the hit (use it for a fixed cut-off). A hit "+
 					"with origin=\"identity\" is the document's GENERATED caption/summary, and one "+
 					"with origin=\"fields\" is its document type's schema filled out FROM it — "+
 					"both are a model's reading, so use them to find the document and cite the "+
-					"document, never them (get_fields returns the whole record). When hits are "+
+					"document, never them (get_fields returns the whole record). `caveats` is a "+
+					"deduplicated list of caveats that apply to one or more hits. When hits are "+
 					"empty, the response carries a \"covers\" digest per index — {index, path, "+
 					"documents, kinds, content, roles}, counted from the documents themselves and "+
 					"scoped to the same `path` as the search — so you can tell the topic is ABSENT "+

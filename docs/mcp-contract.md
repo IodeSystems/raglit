@@ -15,17 +15,21 @@ client that lists documents dedupes by `doc_id`.
 
 | field | always | meaning |
 |---|---|---|
-| `doc_id` | yes | the document's path; pass it to `get_document` |
+| `doc_id` | yes | the document's root-relative path; pass it to `get_document` |
 | `index` | yes | the index, in this client's names |
 | `title` | yes | |
-| `score` | yes | per mode, higher is better, not comparable across modes |
 | `snippet` | yes | the fragment |
 | `rel` | yes | path relative to the corpus root, for showing and mapping |
 | `page` | yes | 0 when the document has no pages |
-| `matched_terms`, `query_terms` | yes | words of the query this fragment holds, of those in the query |
 | `similarity` | no | raw cosine, when the vector side ranked the hit |
 | `origin` | no | set when the text is not the document's body: `identity`, `fields`, `frontmatter` |
-| `caveat` | no | show this beside the snippet; it says why the text is not the record |
+| `summary` | no | the document's summary, when one was generated |
+| `caveats` | no | list; each entry is a caveat that applies to one or more hits |
+
+The MCP surface is economical: the path appears once per hit (root-relative),
+the caveat text appears once per response, and the internal fields
+(`score`, `matched_terms`, `query_terms`, `trust`, `root`) are absent.
+The daemon's HTTP `/search` keeps the full shape for the web UI.
 
 With no hits the reply also carries `covers`, what each index holds, so a client
 can tell a topic is absent.

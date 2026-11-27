@@ -715,7 +715,12 @@ func TestContract(t *testing.T) {
 		t.Fatalf("no hits: %s", out)
 	}
 	hit := hits[0].(map[string]any)
-	has("hit", hit, "doc_id", "index", "title", "score", "snippet", "rel", "page", "matched_terms", "query_terms")
+	has("hit", hit, "doc_id", "index", "title", "snippet", "rel", "page")
+	for _, k := range []string{"score", "matched_terms", "query_terms"} {
+		if _, ok := hit[k]; ok {
+			t.Errorf("hit has internal field %q: %s", k, out)
+		}
+	}
 	if hit["index"] != "secret" {
 		t.Errorf("index not in the client's names: %v", hit["index"])
 	}
@@ -1024,7 +1029,7 @@ func TestMCP_ReadSurfaceUntouched(t *testing.T) {
 	if len(s.Hits) == 0 {
 		t.Fatalf("no hits: %s", out)
 	}
-	for _, k := range []string{"doc_id", "index", "title", "score", "snippet"} {
+	for _, k := range []string{"doc_id", "index", "title", "snippet"} {
 		if _, ok := s.Hits[0][k]; !ok {
 			t.Errorf("search hit missing %q: %s", k, out)
 		}
