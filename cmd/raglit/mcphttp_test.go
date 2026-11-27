@@ -547,6 +547,146 @@ func TestWatch_StopsWithItsLastKey(t *testing.T) {
 	}
 }
 
+// A daemon search response with a corpus root: doc_id is the absolute path,
+// rel is the root-relative one, two hits carry the same caveat, and the
+// internal fields are set.
+func trimTestDaemonSearch() []byte {
+	const root = "/srv/corpus"
+	return []byte(`{
+		"$schema": "http://x/y.json",
+		"hits": [
+			{"index":"acme__notes","doc_id":"`+root+`/records/a.md","title":"A","page":2,
+			 "score":0.91,"snippet":"the alpha text","caveat":"a model's description, not the record",
+			 "trust":{"kind":"caption"},"rel":"records/a.md","root":"`+root+`",
+			 "matched_terms":["alpha"],"query_terms":2},
+			{"index":"acme__notes","doc_id":"`+root+`/records/b.md","title":"B","page":0,
+			 "score":0.55,"snippet":"the beta text","caveat":"a model's description, not the record",
+			 "rel":"records/b.md","root":"`+root+`","similarity":0.77,
+			 "matched_terms":["beta"],"query_terms":1},
+			{"index":"acme__notes","doc_id":"`+root+`/c.md","title":"C","page":0,
+			 "score":0.4,"snippet":"plain text","rel":"c.md","root":"`+root+`",
+			 "matched_terms":["plain"],"query_terms":1}
+		],
+		"searched":["acme__notes"]
+	}`)
+}
+
+func trimTestHits(t *testing.T, out []byte) []map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("not JSON: %s", out)
+	}
+	rows, _ := m["hits"].([]any)
+	hits := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		hits = append(hits, r.(map[string]any))
+	}
+	if len(hits) != 3 {
+		t.Fatalf("want 3 hits, got %d: %s", len(hits), out)
+	}
+	return hits
+}
+
+// F56: the path appears relative to the index root, and the document's
+// absolute path appears at most once in the whole response.
+func TestTrimSearchHits_RelativeUnrepeatedPaths(t *testing.T) {
+	out := trimSearchHits(trimTestDaemonSearch())
+	hits := trimTestHits(t, out)
+	if hits[0]["doc_id"] != "records/a.md" || hits[0]["rel"] != "records/a.md" {
+		t.Errorf("paths not root-relative: doc_id=%v rel=%v", hits[0]["doc_id"], hits[0]["rel"])
+	}
+	if n := strings.Count(string(out), "/srv/corpus"); n > 1 {
+		t.Errorf("the absolute root appears %d times in the response: %s", n, out)
+	}
+	if hits[0]["doc_id"] == hits[0]["rel"] && strings.Contains(string(out), "/srv/") {
+		t.Errorf("the absolute path is still in the response: %s", out)
+	}
+}
+
+// F56: the caveat text appears once per response, not once per hit.
+func TestTrimSearchHits_CaveatOncePerResponse(t *testing.T) {
+	out := trimSearchHits(trimTestDaemonSearch())
+	if n := strings.Count(string(out), "a model's description, not the record"); n != 1 {
+		t.Errorf("the caveat appears %d times, want 1: %s", n, out)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("not JSON: %s", out)
+	}
+	once, _ := m["caveats"].([]any)
+	if len(once) != 1 || once[0].(string) != "a model's description, not the record" {
+		t.Errorf("caveats = %v, want the one caveat", m["caveats"])
+	}
+	for i, h := range trimTestHits(t, out) {
+		if _, ok := h["caveat"]; ok {
+			t.Errorf("hit %d still carries a per-hit caveat: %v", i, h)
+		}
+	}
+	// No caveats, no field: the list is not an empty token.
+	out = trimSearchHits([]byte(`{"hits":[{"index":"i","doc_id":"x.md","title":"X","page":0,"score":1,"snippet":"s","rel":"x.md","root":"/r"}],"searched":["i"]}`))
+	var m2 map[string]any
+	if err := json.Unmarshal(out, &m2); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m2["caveats"]; ok {
+		t.Errorf("caveats present with no caveats: %s", out)
+	}
+}
+
+// F56: the internal fields are absent from the rendered hit.
+func TestTrimSearchHits_InternalFieldsAbsent(t *testing.T) {
+	out := trimSearchHits(trimTestDaemonSearch())
+	for _, k := range []string{"score", "matched_terms", "query_terms", "trust", "root"} {
+		if _, ok := trimTestHits(t, out)[0][k]; ok {
+			t.Errorf("internal field %q is present: %s", k, out)
+		}
+	}
+	if strings.Contains(string(out), "0.91") || strings.Contains(string(out), `"matched"`) {
+		t.Errorf("an internal value leaked: %s", out)
+	}
+}
+
+// F56: every stable field of the consumer hit contract survives the trim
+// unrenamed, with its value intact, and a consumer of the trimmed response
+// parses it unchanged.
+func TestTrimSearchHits_StableFieldsSurvive(t *testing.T) {
+	out := trimSearchHits([]byte(`{
+		"hits": [{
+			"index":"acme__notes","doc_id":"/srv/corpus/records/a.md","title":"A","page":2,
+			"score":0.91,"snippet":"the alpha text","origin":"ocr",
+			"similarity":0.81,"summary":"A page about alpha","rel":"records/a.md",
+			"root":"/srv/corpus","trust":{"kind":"ocr"},"matched_terms":["alpha"],"query_terms":2
+		}],
+		"searched":["acme__notes"]
+	}`))
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := m["hits"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("want 1 hit, got %d: %s", len(rows), out)
+	}
+	h, _ := rows[0].(map[string]any)
+	want := map[string]any{
+		"index":      "acme__notes",
+		"doc_id":     "records/a.md",
+		"title":      "A",
+		"page":       float64(2),
+		"snippet":    "the alpha text",
+		"rel":        "records/a.md",
+		"origin":     "ocr",
+		"similarity": float64(0.81),
+		"summary":    "A page about alpha",
+	}
+	for k, v := range want {
+		if h[k] != v {
+			t.Errorf("stable field %q = %v, want %v", k, h[k], v)
+		}
+	}
+}
+
 // docs/mcp-contract.md. dun and para read these; a failure here is a change to them.
 func TestContract(t *testing.T) {
 	d := newMCPDaemon(t)

@@ -336,6 +336,87 @@ func setIntIf(v url.Values, key string, n int) {
 	}
 }
 
+// trimSearchHits renders a daemon search response as the economical MCP hit
+// shape: the document's path appears once (doc_id is the root-relative path,
+// the absolute path is dropped), the caveat text appears once per response
+// (a caveats list, not once per hit), and the fields no MCP consumer reads
+// (score, matched_terms, query_terms, trust, root) are absent. The stable
+// fields — index, doc_id, title, page, snippet, rel, origin, similarity,
+// summary — survive unrenamed, so dun and agentkit's ragnotify.ParseHits read
+// the response unchanged.
+func trimSearchHits(b []byte) []byte {
+	var in struct {
+		Hits   []struct {
+			Index      string   `json:"index"`
+			DocID      string   `json:"doc_id"`
+			Title      string   `json:"title"`
+			Page       int      `json:"page"`
+			Snippet    string   `json:"snippet"`
+			Origin     string   `json:"origin"`
+			Caveat     string   `json:"caveat"`
+			Rel        string   `json:"rel"`
+			Similarity *float64 `json:"similarity"`
+			Summary    string   `json:"summary"`
+		} `json:"hits"`
+		Covers   json.RawMessage `json:"covers"`
+		Searched []string        `json:"searched"`
+		Skipped  []string        `json:"skipped"`
+		Facets   json.RawMessage `json:"facets"`
+	}
+	if err := json.Unmarshal(b, &in); err != nil {
+		return b
+	}
+	type mcpHit struct {
+		Index      string   `json:"index"`
+		DocID      string   `json:"doc_id"`
+		Title      string   `json:"title"`
+		Page       int      `json:"page"`
+		Snippet    string   `json:"snippet"`
+		Origin     string   `json:"origin,omitempty"`
+		Rel        string   `json:"rel"`
+		Similarity *float64 `json:"similarity,omitempty"`
+		Summary    string   `json:"summary,omitempty"`
+	}
+	hits := make([]mcpHit, 0, len(in.Hits))
+	caveats := []string{}
+	seen := map[string]bool{}
+	for _, h := range in.Hits {
+		// doc_id is the root-relative path: the path is in the response once,
+		// not once as an absolute path and once as a relative one.
+		id := h.DocID
+		if h.Rel != "" {
+			id = h.Rel
+		}
+		if h.Caveat != "" && !seen[h.Caveat] {
+			seen[h.Caveat] = true
+			caveats = append(caveats, h.Caveat)
+		}
+		hits = append(hits, mcpHit{
+			Index: h.Index, DocID: id, Title: h.Title, Page: h.Page,
+			Snippet: h.Snippet, Origin: h.Origin, Rel: h.Rel,
+			Similarity: h.Similarity, Summary: h.Summary,
+		})
+	}
+	out := map[string]any{"hits": hits, "searched": in.Searched}
+	if len(caveats) > 0 {
+		out["caveats"] = caveats
+	}
+	if len(in.Covers) > 0 {
+		out["covers"] = in.Covers
+	}
+	if len(in.Skipped) > 0 {
+		out["skipped"] = in.Skipped
+	}
+	if len(in.Facets) > 0 {
+		out["facets"] = in.Facets
+	}
+	res, err := json.Marshal(out)
+	if err != nil {
+		return b
+	}
+	return res
+}
+
 // stripSchema removes huma's injected "$schema" field so the proxied JSON matches
 // the embedded-mode tool output exactly.
 func stripSchema(b []byte) []byte {
