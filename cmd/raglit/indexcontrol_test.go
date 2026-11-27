@@ -2,6 +2,8 @@ package main
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -70,6 +72,36 @@ func TestIgnorePutKeepsTheOtherList(t *testing.T) {
 	_, body := doAs(t, "PUT", srv.URL+"/api/index/ignore?index=default", "", `{"allow":["**/Pods/**"]}`)
 	if !strings.Contains(body, `"patterns":["**/dist/**"]`) || !strings.Contains(body, `"allow":["**/Pods/**"]`) {
 		t.Fatalf("lists after two PUTs: %s", body)
+	}
+}
+
+// MCP manage_index prune with delete_originals=true removes dangling copies
+// under originals/; without it (or without confirm) they are reported but kept.
+func TestManageIndexPruneDeletesDanglingOriginals(t *testing.T) {
+	srv, home := settingsServer(t, `{}`)
+	stray := filepath.Join(home.OriginalsDir(), "dangling.bin")
+	must(t, os.MkdirAll(filepath.Dir(stray), 0o755))
+	must(t, os.WriteFile(stray, []byte("dangling"), 0o644))
+
+	h := daemonToolHandlers(srv.URL, 8, "", nil).manageIndex
+	// Dry run: the dangling original is reported.
+	if out := callTool(t, h, map[string]any{"action": "prune"}); !strings.Contains(out, `"dangling_originals":1`) {
+		t.Fatalf("dry run did not report the dangling original: %s", out)
+	}
+	// Confirm without delete_originals: documents and pages are removed but
+	// the dangling original is kept.
+	if out := callTool(t, h, map[string]any{"action": "prune", "confirm": true}); !strings.Contains(out, `"dangling_originals":1`) {
+		t.Fatalf("prune without delete_originals lost the count: %s", out)
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Fatalf("dangling original removed without delete_originals: %v", err)
+	}
+	// Confirm + delete_originals: the dangling original is removed.
+	if out := callTool(t, h, map[string]any{"action": "prune", "confirm": true, "delete_originals": true}); !strings.Contains(out, `"originals_removed":true`) {
+		t.Fatalf("prune with delete_originals did not report originals_removed: %s", out)
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatalf("dangling original %s survived MCP prune", stray)
 	}
 }
 

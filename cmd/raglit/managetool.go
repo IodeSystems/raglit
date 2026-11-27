@@ -32,7 +32,7 @@ type indexControls interface {
 	// setLists replaces the lists given; nil leaves one unchanged.
 	setLists(idx string, ignore, allow *[]string) error
 	purge(idx, pattern string, dry bool) (raglit.PurgeResult, error)
-	prune(idx string, dry bool) (raglit.PruneResult, error)
+	prune(idx string, dry, deleteOriginals bool) (raglit.PruneResult, error)
 }
 
 const manageIndexHelp = "Operate an index: pause/resume its work, edit the patterns refused at enqueue, " +
@@ -46,7 +46,8 @@ const manageIndexHelp = "Operate an index: pause/resume its work, edit the patte
 	"go). `prune` (no pattern) reports the documents whose local file is gone — a deleted directory or " +
 	"worktree — grouped by deleted directory: {documents, dirs:[{dir, documents}], removed, orphan_pages, " +
 	"dangling_originals}. They are already out of search; confirm=true removes them and the orphan page " +
-	"images. Dangling originals are removed only by the CLI's --delete-orphan-originals. list_indexes reports `prunable` per index. Every " +
+	"images. Dangling originals under originals/ are removed by delete_originals=true (confirm must also be " +
+	"true). list_indexes reports `prunable` per index. Every " +
 	"other action returns the index's resulting state."
 
 func manageIndexTool() mcp.Tool {
@@ -57,6 +58,7 @@ func manageIndexTool() mcp.Tool {
 		mcp.WithString("index", mcp.Description("index name (default \"default\")")),
 		mcp.WithString("pattern", mcp.Description("glob for ignore, unignore, allow, disallow and purge")),
 		mcp.WithBoolean("confirm", mcp.Description("purge and prune: true removes; false or omitted reports what would go")),
+		mcp.WithBoolean("delete_originals", mcp.Description("prune: also remove the dangling copies under originals/ (never an upload's); requires confirm=true")),
 	)
 }
 
@@ -91,7 +93,7 @@ func manageIndexHandler(c indexControls, resolve func(string) (string, error), d
 			return reply(map[string]any{"index": display(idx), "removed": req.GetBool("confirm", false), "purge": res})
 		}
 		if action == "prune" {
-			res, err := c.prune(idx, !req.GetBool("confirm", false))
+			res, err := c.prune(idx, !req.GetBool("confirm", false), req.GetBool("delete_originals", false))
 			if err != nil {
 				return fail(err)
 			}
@@ -193,10 +195,10 @@ func (c daemonControls) purge(idx, pattern string, dry bool) (raglit.PurgeResult
 	return res, json.Unmarshal(b, &res)
 }
 
-func (c daemonControls) prune(idx string, dry bool) (raglit.PruneResult, error) {
+func (c daemonControls) prune(idx string, dry, deleteOriginals bool) (raglit.PruneResult, error) {
 	var res raglit.PruneResult
 	b, err := daemonPostJSON(c.base, "/api/index/prune?"+urlValues("index", idx).Encode(),
-		map[string]any{"dry_run": dry})
+		map[string]any{"dry_run": dry, "delete_orphan_originals": deleteOriginals})
 	if err != nil {
 		return res, err
 	}
