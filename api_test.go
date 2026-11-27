@@ -115,7 +115,7 @@ var (
 	_ = raglit.Hit{}.ContentID
 
 	// R8: usage hook and code segmenter, nil by default.
-	_                  = raglit.Models{OnUsage: func(role, model string, u llm.Usage) {}, Code: nil}
+	_                  = raglit.Models{OnUsage: func(role, model string, u llm.Usage, estimated bool) {}, Code: nil}
 	_                  = raglit.ModelRole{BaseURL: "u", APIKey: "k", Model: "m"}
 	_                  = raglit.Models{Embed: raglit.ModelRole{}, Vision: raglit.ModelRole{}, Segment: raglit.ModelRole{}, Identity: raglit.ModelRole{}}
 	_ int64            = raglit.Hit{}.ID

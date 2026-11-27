@@ -49,6 +49,7 @@ func usageServer(t *testing.T) string {
 type usageRec struct {
 	role, model string
 	u           llm.Usage
+	estimated   bool
 }
 
 func drain(t *testing.T, c Chatter) {
@@ -75,10 +76,10 @@ func TestNewWorker_OnUsageReportsPerRole(t *testing.T) {
 		Embed:    ModelRole{BaseURL: base, Model: "emb"},
 		OCR:      noTesseract,
 		Channels: NewChannels(),
-		OnUsage: func(role, model string, u llm.Usage) {
+		OnUsage: func(role, model string, u llm.Usage, estimated bool) {
 			mu.Lock()
 			defer mu.Unlock()
-			got = append(got, usageRec{role, model, u})
+			got = append(got, usageRec{role, model, u, estimated})
 		},
 	}
 	s := testStore(t)
@@ -118,7 +119,7 @@ func TestUsageHook_ChainsAndNilIsNoop(t *testing.T) {
 	}
 	var order []string
 	c.OnUsage = func(llm.Usage) { order = append(order, "prev") }
-	hooked := Models{OnUsage: func(role, model string, u llm.Usage) {
+	hooked := Models{OnUsage: func(role, model string, u llm.Usage, estimated bool) {
 		order = append(order, role+"/"+model)
 	}}
 	hooked.usageHook(c, "vision", "mod")
@@ -134,7 +135,7 @@ func TestUsageVector_ReportsEmbed(t *testing.T) {
 	var got []usageRec
 	m := Models{
 		Embed:   ModelRole{BaseURL: base, Model: "emb"},
-		OnUsage: func(role, model string, u llm.Usage) { got = append(got, usageRec{role, model, u}) },
+		OnUsage: func(role, model string, u llm.Usage, estimated bool) { got = append(got, usageRec{role, model, u, estimated}) },
 	}
 	v := m.UsageVector(llm.NewClient(base, "", "emb"))
 	if _, err := v.Embed(context.Background(), "emb", []string{strings.Repeat("a", 10)}); err != nil {
@@ -142,6 +143,9 @@ func TestUsageVector_ReportsEmbed(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].role != "embed" || got[0].model != "emb" || got[0].u.PromptTokens != 3 || got[0].u.TotalTokens != 3 {
 		t.Errorf("got %+v, want one embed/emb report of 3 tokens", got)
+	}
+	if !got[0].estimated {
+		t.Error("embed estimate reported estimated=false")
 	}
 	// nil hook: the client comes back as it went in.
 	c := llm.NewClient(base, "", "emb")
@@ -161,10 +165,10 @@ func TestModelsEmbedder_IngestReportsEmbed(t *testing.T) {
 		EmbedLimitChars: 4000,
 		OCR:             noTesseract,
 		Channels:        NewChannels(),
-		OnUsage: func(role, model string, u llm.Usage) {
+		OnUsage: func(role, model string, u llm.Usage, estimated bool) {
 			mu.Lock()
 			defer mu.Unlock()
-			got = append(got, usageRec{role, model, u})
+			got = append(got, usageRec{role, model, u, estimated})
 		},
 	}
 	dir := t.TempDir()
@@ -196,4 +200,100 @@ func TestModelsEmbedder_IngestReportsEmbed(t *testing.T) {
 	if (Models{Channels: NewChannels()}).Embedder() != nil {
 		t.Error("Embedder without an Embed model is not nil")
 	}
+}
+
+// A host that enforces a per-role daily token budget can apply the budget only
+// to endpoint-reported counts (estimated=false) and treat embed estimates
+// (estimated=true) separately. This is the composition test: it exercises both
+// the UsageVector path (estimate) and the usageHook path (reported), then
+// checks a budget host separates them.
+func TestOnUsageEstimatedFlagDistinguishesEstimateFromReported(t *testing.T) {
+	base := usageServer(t)
+	var mu sync.Mutex
+	var got []usageRec
+	m := Models{
+		Vision: ModelRole{BaseURL: base, Model: "vis"},
+		Embed:  ModelRole{BaseURL: base, Model: "emb"},
+		OCR:    noTesseract,
+		Channels: NewChannels(),
+		OnUsage: func(role, model string, u llm.Usage, estimated bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, usageRec{role, model, u, estimated})
+		},
+	}
+
+	// 1. Endpoint-reported count: chat through the vision role (usageHook path).
+	c := llm.NewClient(base, "", "vis")
+	m.usageHook(c, "vision", "vis")
+	drain(t, c)
+
+	// 2. Embed estimate: embed through UsageVector (the estimate path).
+	v := m.UsageVector(llm.NewClient(base, "", "emb"))
+	if _, err := v.Embed(context.Background(), "emb", []string{strings.Repeat("x", 20)}); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("got %d reports, want 2 (one reported, one estimated): %+v", len(got), got)
+	}
+
+	// Find each.
+	var reported, estimate *usageRec
+	for i := range got {
+		if got[i].estimated {
+			estimate = &got[i]
+		} else {
+			reported = &got[i]
+		}
+	}
+
+	// F69 spec 1: embed estimate is marked.
+	if estimate == nil {
+		t.Fatal("no report with estimated=true")
+	}
+	if estimate.role != "embed" {
+		t.Errorf("estimated report has role %q, want embed", estimate.role)
+	}
+	if estimate.u.PromptTokens <= 0 {
+		t.Errorf("estimated report has zero tokens: %+v", estimate.u)
+	}
+
+	// F69 spec 2: endpoint-reported count is unmarked.
+	if reported == nil {
+		t.Fatal("no report with estimated=false")
+	}
+	if reported.role != "vision" {
+		t.Errorf("reported report has role %q, want vision", reported.role)
+	}
+	if reported.u.PromptTokens != 11 {
+		t.Errorf("reported report has PromptTokens %d, want 11", reported.u.PromptTokens)
+	}
+
+	// F69 spec 3: a budget host applies its budget only to unmarked reports.
+	const budget = 100
+	var budgetUsed int
+	for _, r := range got {
+		if !r.estimated {
+			budgetUsed += r.u.TotalTokens
+		}
+	}
+	// Only the vision report (16 tokens) counts against the budget.
+	if budgetUsed != 16 {
+		t.Errorf("budget used %d, want 16 (only the endpoint-reported count)", budgetUsed)
+	}
+	// The estimate is tracked separately.
+	var estTokens int
+	for _, r := range got {
+		if r.estimated {
+			estTokens += r.u.TotalTokens
+		}
+	}
+	if estTokens != 5 { // ceil(20/4) = 5
+		t.Errorf("estimate tokens %d, want 5", estTokens)
+	}
+	_ = budget
 }

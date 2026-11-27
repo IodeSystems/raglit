@@ -60,23 +60,26 @@ type Models struct {
 	// capacity between controllers that each learn it alone.
 	Channels *Channels
 	// OnUsage, when set, is called once per completed model response with the
-	// role ("vision", "segment", "identity", "embed"), that role's model id and
-	// the tokens the endpoint reported, so a host can total or cap spend per
-	// role. It runs on the calling goroutine of the request, possibly from many
-	// at once: it must be safe for concurrent use and must not block. An
-	// OnUsage already on a client is chained, not replaced. nil → no change.
+	// role ("vision", "segment", "identity", "embed"), that role's model id,
+	// the token count, and a flag saying whether that count is an estimate.
+	// A host can total or cap spend per role and treat estimated and
+	// endpoint-reported counts separately. It runs on the calling goroutine
+	// of the request, possibly from many at once: it must be safe for
+	// concurrent use and must not block. An OnUsage already on a client is
+	// chained, not replaced. nil → no change.
+	//
+	// estimated is true only for the "embed" role: agentkit's Client.Embed
+	// discards the response's usage, so UsageVector reports ceil(bytes/4) of
+	// input. Code often runs below four bytes per token, so the estimate can
+	// be low. Every other role reports the count the endpoint returned and
+	// passes estimated=false.
 	//
 	// Coverage: the four roles above only. STT, image embed and the OCR engine
 	// use plain HTTP clients and do not report usage. "embed" reports only
 	// through an Embedder from Models.Embedder (or a client wrapped with
 	// UsageVector): set that one on the Store or Registry. The embed limit
 	// probes NewWorker makes do not report.
-	//
-	// "embed" is an ESTIMATE, not a reported count: agentkit's Client.Embed
-	// discards the response's usage, so UsageVector reports ceil(bytes/4) of
-	// input. Code often runs below four bytes per token, so the estimate can
-	// be low.
-	OnUsage func(role, model string, u llm.Usage)
+	OnUsage func(role, model string, u llm.Usage, estimated bool)
 	// Code cuts source files at their declarations and Markdown at its
 	// headings (KindCode, codesegment.go). nil → both are read into windows,
 	// as before. Its Runtime() is in the KindCode pool key (poolRecipe).
@@ -117,7 +120,8 @@ type hostProber struct {
 func (h hostProber) ProbeHost() string { return h.host }
 
 // usageHook points c.OnUsage at m.OnUsage for one role, after any hook the
-// client already has. No-op when m.OnUsage is nil.
+// client already has. No-op when m.OnUsage is nil. Reports estimated=false:
+// the count comes from the endpoint's response.
 func (m Models) usageHook(c *llm.Client, role, model string) {
 	if m.OnUsage == nil {
 		return
@@ -127,12 +131,13 @@ func (m Models) usageHook(c *llm.Client, role, model string) {
 		if prev != nil {
 			prev(u)
 		}
-		on(role, model, u)
+		on(role, model, u, false)
 	}
 }
 
 // UsageVector wraps an embedding client so each successful call reports to
-// m.OnUsage as role "embed". Returns inner unchanged when OnUsage is nil.
+// m.OnUsage as role "embed" with estimated=true. Returns inner unchanged
+// when OnUsage is nil.
 //
 // The token count is an estimate (see Models.OnUsage): ceil(bytes/4) over the
 // inputs sent. The model id is the one the call names, else m.Embed.Model.
@@ -145,7 +150,7 @@ func (m Models) UsageVector(inner VectorClient) VectorClient {
 
 type usageVector struct {
 	inner VectorClient
-	on    func(role, model string, u llm.Usage)
+	on    func(role, model string, u llm.Usage, estimated bool)
 	model string
 }
 
@@ -162,7 +167,7 @@ func (v *usageVector) Embed(ctx context.Context, model string, input []string) (
 	if model == "" {
 		model = v.model
 	}
-	v.on("embed", model, llm.Usage{PromptTokens: n, TotalTokens: n})
+	v.on("embed", model, llm.Usage{PromptTokens: n, TotalTokens: n}, true)
 	return out, nil
 }
 
