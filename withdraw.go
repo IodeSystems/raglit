@@ -40,7 +40,11 @@ func (s *Store) Withdraw(w Withdrawal) error {
 	// The rows go last: the ruling is recorded even if the delete fails, which is
 	// the safe order — a withdrawn document still present is visible and fixable,
 	// a deleted document with no ruling is neither.
-	if err := s.DeleteDocument(w.Path); err != nil {
+	//
+	// RemoveDocument with stored=false removes the page and figure images under
+	// pages/<tag>/ but leaves the upload's source bytes under uploads/ so a
+	// Restore + re-ingest can regenerate page images from the original file.
+	if err := s.RemoveDocument(w.Path, false); err != nil {
 		return fmt.Errorf("raglit: withdraw %s: removing rows: %w", w.Path, err)
 	}
 	return nil

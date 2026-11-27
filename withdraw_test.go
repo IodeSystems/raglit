@@ -2,6 +2,8 @@ package raglit
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -168,5 +170,109 @@ func TestForgetJobRefusesLiveWork(t *testing.T) {
 	}
 	if stages != 0 {
 		t.Fatalf("%d stage row(s) orphaned by the delete", stages)
+	}
+}
+
+// Withdrawing a document that has page images removes them from disk under
+// pages/<tag>/, so a withdrawn document leaves no storage residue.
+func TestWithdrawRemovesPageImages(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenHome(Home(filepath.Join(dir, "home")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	up, err := s.SaveUpload("doc/scan.pdf", []byte("fake-pdf-bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docURL := UploadURL(up)
+	if err := s.Ingest(ctx, Document{Path: docURL, Fragments: []Fragment{{Text: "page one text"}}}); err != nil {
+		t.Fatal(err)
+	}
+	img, err := s.savePageImage(docURL, 1, "image/png", []byte("png-data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img == "" {
+		t.Fatal("savePageImage returned no path — no home?")
+	}
+	if _, err := os.Stat(img); err != nil {
+		t.Fatalf("premise broken: page image not on disk: %v", err)
+	}
+	var id int64
+	if err := s.db.QueryRow(`SELECT id FROM documents WHERE path = ?`, docURL).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recordPage(id, 1, "tesseract", img); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Withdraw(Withdrawal{Path: docURL, Reason: "superseded"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(img); !os.IsNotExist(err) {
+		t.Fatalf("page image survived withdraw: %s (err=%v)", img, err)
+	}
+}
+
+// Withdrawing a document removes its page images but keeps the source bytes
+// under uploads/, so a Restore + re-ingest can regenerate them.
+func TestWithdrawKeepsUploadBytesForReingest(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenHome(Home(filepath.Join(dir, "home")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	up, err := s.SaveUpload("report/q3.pdf", []byte("original-pdf-bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docURL := UploadURL(up)
+	if err := s.Ingest(ctx, Document{Path: docURL, Fragments: []Fragment{{Text: "q3 figures"}}}); err != nil {
+		t.Fatal(err)
+	}
+	img, err := s.savePageImage(docURL, 1, "image/png", []byte("png-data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := s.db.QueryRow(`SELECT id FROM documents WHERE path = ?`, docURL).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recordPage(id, 1, "tesseract", img); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Withdraw(Withdrawal{Path: docURL, Reason: "draft, not final"}); err != nil {
+		t.Fatal(err)
+	}
+	// Page image is gone.
+	if _, err := os.Stat(img); !os.IsNotExist(err) {
+		t.Fatalf("page image survived withdraw: %s (err=%v)", img, err)
+	}
+	// Source bytes remain.
+	if _, err := os.Stat(up); err != nil {
+		t.Fatalf("upload source bytes removed by withdraw: %s: %v", up, err)
+	}
+	// Restore and verify the ingest path accepts it again.
+	if err := s.Restore(docURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.WithdrawnReason(docURL); ok {
+		t.Fatal("still withdrawn after restore")
+	}
+	// Re-ingest: the source file is readable.
+	data, err := os.ReadFile(up)
+	if err != nil {
+		t.Fatalf("source bytes unreadable after restore: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("source bytes are empty after restore")
 	}
 }
