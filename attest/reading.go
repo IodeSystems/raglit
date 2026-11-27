@@ -125,6 +125,17 @@ type Area struct {
 	DPI      int  `json:"dpi,omitempty"`
 }
 
+// Binding addresses a (sentence, claim) pair in a legal document: the sentence
+// as it appears in the source text, and the claim the sentence makes.
+//
+// This is the locator for caselit, which reads case records and produces
+// bindings — one per claim a sentence makes. A verdict gate after the fact
+// uses the binding to locate the sentence in the claim body.
+type Binding struct {
+	Sentence string `json:"sentence"`
+	Claim    string `json:"claim"`
+}
+
 // Span addresses a range of an asset's canonical text, in BYTES from its start.
 //
 // Byte offsets into the whole text, never an index into a fragment or page list
@@ -152,12 +163,15 @@ type Span struct {
 // about the verdict algebra changes when they do, which is the property this
 // whole package is built to have.
 type Locator struct {
-	Time *TimeSpan `json:"time,omitempty"`
-	Area *Area     `json:"area,omitempty"`
-	Span *Span     `json:"span,omitempty"`
+	Time    *TimeSpan `json:"time,omitempty"`
+	Area    *Area     `json:"area,omitempty"`
+	Span    *Span     `json:"span,omitempty"`
+	Binding *Binding  `json:"binding,omitempty"`
 }
 
-func (l Locator) empty() bool { return l.Time == nil && l.Area == nil && l.Span == nil }
+func (l Locator) empty() bool {
+	return l.Time == nil && l.Area == nil && l.Span == nil && l.Binding == nil
+}
 
 // Unit is one machine claim about one piece of the asset.
 //

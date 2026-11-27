@@ -66,6 +66,10 @@ func UnitID(u Unit) string {
 		sp := u.Locator.Span
 		field(h, "span.from", strconv.Itoa(sp.From))
 		field(h, "span.to", strconv.Itoa(sp.To))
+	case u.Locator.Binding != nil:
+		b := u.Locator.Binding
+		field(h, "binding.sentence", b.Sentence)
+		field(h, "binding.claim", b.Claim)
 	}
 	field(h, "label", u.Label)
 	field(h, "text", u.Text)
@@ -100,6 +104,8 @@ func locatorPrefix(l Locator) string {
 		return "p" + strconv.Itoa(l.Area.Page) + "-"
 	case l.Span != nil:
 		return "b" + strconv.Itoa(l.Span.From) + "-"
+	case l.Binding != nil:
+		return "c-"
 	}
 	return "u-"
 }
