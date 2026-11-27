@@ -10,7 +10,7 @@ This block verifies, in the aw4 checkout at `~/local/src/iodesystems/aw4`, the t
 
 ```sh
 set -e
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 echo "== aw4 checkout =="
 git -C "$AW4" rev-parse --short HEAD
@@ -43,7 +43,7 @@ The checkout at `~/local/src/iodesystems/aw4` is at 555c40bab (2026-11-27). The 
 ```sh
 set -e
 set -o pipefail
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 echo "== locate claimed symbols in the current aw4 tree =="
 echo "--- gateCheck ---"
@@ -68,7 +68,7 @@ Block 2 found `gateCheck` in `internal/project/land.go:964`, `Project.Command` i
 ```sh
 set -e
 set -o pipefail
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 echo "== internal/command/land.go exists? what is it =="
 ls -la "$AW4/internal/command/land.go"
@@ -91,7 +91,7 @@ Writes the exact code spans to $OUT so the document can quote them: the `stale` 
 ```sh produces=stale-verbatim.txt,gate-callsite-verbatim.txt,gatecheck-verbatim.txt,project-command-verbatim.txt,feature-spec-verbatim.txt,specrec-spec-verbatim.txt
 set -e
 set -o pipefail
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 # The stale verdict's re-check note composition — the exact span the brief claims
 sed -n '780,940p' "$AW4/internal/command/transition.go" > "$OUT/stale-verbatim.txt"
@@ -129,7 +129,7 @@ The brief's three load-bearing claims, checked against aw4@555c40bab:
 ```sh
 set -e
 set -o pipefail
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 # 1. The brief's line-number claims, pinned
 grep -n 'func gateCheck' "$AW4/internal/project/land.go" | grep -F ':964:'
@@ -166,7 +166,7 @@ Re-runs the check the previous block intended: (1) `gateCheck` at `project/land.
 ```sh
 set -e
 set -o pipefail
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 # 1. Line-number claims, pinned (the previous block's single-quoted patterns
 #    were swallowed by the heredoc and matched nothing; pinned forms here)
@@ -197,7 +197,7 @@ Block 6 verified the line numbers and the `Spec` model, but its absence check ab
 
 ```sh
 set -e
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 # The absence claim, run without pipefail so grep's no-match exit
 # (the expected answer) cannot kill the block: each check must find ZERO.
@@ -219,7 +219,7 @@ Block 7 found 5 "removed line" matches in aw4 — all in `approvalclass`, a subs
 
 ```sh
 set -e
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 # The absence claim, scoped to the files that compose the re-check note and
 # the landing gate — the approvalclass "removed line" hits are a different
@@ -249,7 +249,7 @@ Block 8 showed all per-file counts are 0 but the integer test choked on the mult
 
 ```sh
 set -e
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4=$HOME/local/src/iodesystems/aw4
 
 # Same scope as block 8, with the counts summed so the integer test works.
 SCOPE="$AW4/internal/command/transition.go $AW4/internal/project/rebase.go $AW4/internal/project/land.go"
