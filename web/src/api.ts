@@ -584,6 +584,31 @@ export type AttestSummary = {
   untouched?: number;
 };
 
+// A part of a document: a region id, a page number, or an attest unit id.
+// At most one field is set; none is a whole-document ruling.
+export type DocLocator = {
+  region?: string;
+  page?: number;
+  unit?: string;
+};
+
+// One recorded directional ruling (corrected-by or invalidated-by) that
+// involves the document. `doc_is_a` is true when THIS document is the
+// corrected/invalidated side: "it is corrected by B". When false, this
+// document is B: "it corrects A". The store keeps the direction as recorded —
+// a corrected document is never hidden, and a chain comes back as every link
+// with its own direction, not one collapsed winner.
+export type DirectionalRelation = {
+  a: string;
+  b: string;
+  kind: "corrected-by" | "invalidated-by";
+  doc_is_a: boolean;
+  locator?: DocLocator;
+  note?: string;
+  by?: string;
+  at?: string;
+};
+
 export type DocDetail = {
   // Display path, relative to `root` (or "@…" for raglit's storage).
   path: string;
@@ -608,6 +633,9 @@ export type DocDetail = {
   // buttons: the queue does not dedupe, so a button that stays live while a job
   // runs is an invitation to start the same minutes-long VLM pass three times.
   in_flight?: DocJob[];
+  // Corrected-by and invalidated-by rulings involving this document, each with
+  // its direction. Rendered at the top of the document, before its text.
+  directional_relations?: DirectionalRelation[];
 };
 
 export const docDetail = (index: string, path: string) =>

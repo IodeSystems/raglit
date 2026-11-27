@@ -92,6 +92,51 @@ type DocDetail struct {
 	// and it is exactly the case where a person should see what is already
 	// running before adding to it.
 	InFlight []DocJob `json:"in_flight,omitempty"`
+
+	// DirectionalRelations is every corrected-by and invalidated-by ruling that
+	// involves this document, each with its direction (DocIsA: true when THIS
+	// document is the corrected/invalidated side) and its locator. Surfaced
+	// before the document's text so a person ruling on it sees the relation
+	// first. Empty when no such ruling has been recorded.
+	DirectionalRelations []DocDirectionalRelation `json:"directional_relations,omitempty"`
+}
+
+// docDetailLocator mirrors raglit.Locator's JSON shape (region / page / unit,
+// at most one set) under a name the huma schema registry does not collide with
+// attest.Locator, which is also part of this answer's type graph.
+type docDetailLocator struct {
+	Region string `json:"region,omitempty"`
+	Page   int    `json:"page,omitempty"`
+	Unit   string `json:"unit,omitempty"`
+}
+
+// DocDirectionalRelation is one corrected-by or invalidated-by ruling as it
+// appears in the detail payload: the two sides as DISPLAY paths (relative to
+// the index root, the way every other path in this answer is spelled), the
+// kind, the direction, and the locator when the ruling is at the part grain.
+//
+// The direction is stated, not derived: DocIsA is true when the document the
+// payload is about is the corrected/invalidated side (A), false when it is the
+// side doing the correcting/invalidating (B). A reader asking "what is true
+// about this document" needs both answers from the same record, and a chain of
+// three documents comes back as two links, each keeping its own direction,
+// rather than one collapsed winner.
+type DocDirectionalRelation struct {
+	// A is the corrected/invalidated document, as a display path.
+	A string `json:"a"`
+	// B is the document that does the correcting/invalidating, as a display path.
+	B string `json:"b"`
+	// Kind is "corrected-by" or "invalidated-by".
+	Kind string `json:"kind"`
+	// DocIsA is true when the payload's document is A (the corrected side).
+	DocIsA bool `json:"doc_is_a"`
+	// Locator names a part of A when the ruling is at the part grain.
+	Locator docDetailLocator `json:"locator,omitempty"`
+	// Note is the person's note, if any.
+	Note string `json:"note,omitempty"`
+	// By and At are who recorded it and when.
+	By string `json:"by,omitempty"`
+	At string `json:"at,omitempty"`
 }
 
 // DocJob is one queued or running ingest job for this document.
@@ -365,6 +410,33 @@ func docDetailOp(reg *raglit.Registry) func(context.Context, *docDetailIn) (*doc
 					})
 				}
 				d.SeenIn = append(d.SeenIn, si)
+			}
+		}
+
+		// Directional relations: corrected-by and invalidated-by, each with its
+		// direction (which side is the corrected/invalidated one) and locator.
+		// Surfaced in the detail payload so the UI can render them above the
+		// document's text. Empty when no such ruling has been recorded.
+		if js, jerr := raglit.OpenJudgements(raglit.AuditPath(root)); jerr == nil {
+			if drs, derr := js.DirectionalRelationsFor(abs); derr == nil && len(drs) > 0 {
+				out := make([]DocDirectionalRelation, 0, len(drs))
+				for _, dr := range drs {
+					out = append(out, DocDirectionalRelation{
+						A:      view.rel(dr.A),
+						B:      view.rel(dr.B),
+						Kind:   string(dr.Kind),
+						DocIsA: dr.DocIsA,
+						Locator: docDetailLocator{
+							Region: dr.Locator.Region,
+							Page:   dr.Locator.Page,
+							Unit:   dr.Locator.Unit,
+						},
+						Note: dr.Note,
+						By:   dr.By,
+						At:   dr.At,
+					})
+				}
+				d.DirectionalRelations = out
 			}
 		}
 

@@ -2,7 +2,7 @@ import { Link, Outlet, useNavigate, useParams, useRouter } from "@tanstack/react
 import { useEffect, useState } from "react";
 
 import { DocProvider, useDocDetail } from "../useDocDetail";
-import { isMailArchive } from "../api";
+import { isMailArchive, type DirectionalRelation } from "../api";
 import { Retitle } from "../panes/Retitle";
 import { DocActions } from "../panes/DocActions";
 import { ErrorText } from "../ui/Details";
@@ -127,6 +127,10 @@ export function DocShell() {
         {detail && <DocActions index={index} doc={doc} detail={detail} onDone={reload} />}
       </div>
 
+      {detail?.directional_relations && detail.directional_relations.length > 0 && (
+        <DirectionalBanner rels={detail.directional_relations} index={index} />
+      )}
+
       <div className="panel" style={{ marginTop: 12 }}>
         <nav className="subtabs">
           {/* Counts in the labels, as the page this replaces had them: they are
@@ -203,4 +207,51 @@ function addedFmt(at: string): string {
 // parenthesis costs a reader a glance to work that out.
 function count(n?: number): string {
   return n ? ` (${n})` : "";
+}
+
+// One directional ruling, rendered as "corrects / corrected by" (or the
+// invalidated-by equivalent) with the other document's display path.
+// The direction is stated from the record, not derived: doc_is_a tells us
+// which side THIS document is, so the wording follows.
+function DirectionalRow({ rel, index }: { rel: DirectionalRelation; index: string }) {
+  // The other side's display path is what we link to and show.
+  const otherPath = rel.doc_is_a ? rel.b : rel.a;
+  const verb =
+    rel.kind === "corrected-by"
+      ? rel.doc_is_a
+        ? "corrected by"
+        : "corrects"
+      : rel.doc_is_a
+        ? "invalidated by"
+        : "invalidates";
+  const part = rel.locator?.region
+    ? ` (region ${rel.locator.region})`
+    : rel.locator?.page
+      ? ` (page ${rel.locator.page})`
+      : rel.locator?.unit
+        ? ` (unit ${rel.locator.unit})`
+        : "";
+  return (
+    <div className="dr-row">
+      <span className="dr-verb">{verb}</span>{" "}
+      <Link to="/i/$index/d/$doc/transcript" params={{ index, doc: otherPath }}>
+        {otherPath}
+      </Link>
+      {part && <span className="muted">{part}</span>}
+      {rel.note && <span className="muted"> — {rel.note}</span>}
+    </div>
+  );
+}
+
+// Renders at the top of the document, before the sub-tab bar: the person
+// ruling on this document sees the relation before its text.
+function DirectionalBanner({ rels, index }: { rels: DirectionalRelation[]; index: string }) {
+  if (!rels || rels.length === 0) return null;
+  return (
+    <div className="dr-banner">
+      {rels.map((r, i) => (
+        <DirectionalRow key={`${r.a}|${r.b}|${r.kind}|${i}`} rel={r} index={index} />
+      ))}
+    </div>
+  );
 }

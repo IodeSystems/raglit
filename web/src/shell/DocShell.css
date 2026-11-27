@@ -6,3 +6,9 @@
 .docshell-error { display:flex; flex-direction:column; align-items:center; gap:var(--sp-2); }
 .docshell-error .errline { text-align:left; max-width:var(--measure); }
 .doctitle .docshell-edit { font-size:var(--fs-md); padding:3px 10px; }
+/* Directional relations banner: rendered at the top of the document, before
+   the sub-tab bar, so a person ruling on it sees the relation before its text. */
+.dr-banner { margin-top:var(--sp-2); padding:var(--sp-1) var(--sp-2); border-left:3px solid var(--accent, #c94);
+  display:flex; flex-direction:column; gap:2px; font-size:var(--fs-sm); }
+.dr-row { display:flex; align-items:baseline; gap:2px; flex-wrap:wrap; }
+.dr-verb { font-weight:600; }
