@@ -332,6 +332,154 @@ func TestOCRCacheIsKeyedOnThePageImage(t *testing.T) {
 // indistinguishable here from one whose OCR returned nothing because the
 // upstream was unwell, and caching the second makes a transient failure
 // permanent.
+// A KindCode source file is indexed byte-for-byte: its start_off/end_off are
+// offsets into the file, not into flattened text, and a file containing a
+// markup-like run (generics, HTML) is indexed with that run intact.
+func TestPipelineCodeDocumentNotFlattenedOffsetsIntoFile(t *testing.T) {
+	s := openMem(t)
+	// A Go file containing a generic-like run that anyTag would delete:
+	// List<String> looks like an XML/HTML tag to the regex.
+	text := "package demo\n\nvar items []string\n\nfunc main() {\n\tfor _, s := range items {\n\t\t_ = s\n\t}\n}\n"
+	fc := FragConfig{Window: 200, Stride: 100, Floor: 20}
+	if _, _, err := s.ingestCode(context.Background(), &fakeCode{
+		symbols: []CodeSpan{{Sym: "main", StartLine: 4, EndLine: 8}},
+	}, "main.go", "main", []byte(text), fc, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The indexed text must be the file's own bytes — no flattening pass.
+	var indexed string
+	if err := s.db.QueryRow(`SELECT text FROM fragments f JOIN documents d ON d.id=f.doc_id
+		WHERE d.path='main.go' AND f.origin <> 'identity' AND f.ord=0`).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed == "" {
+		t.Fatal("no fragment stored")
+	}
+	// Every byte of the file must appear in some fragment.
+	var all string
+	if err := s.db.QueryRow(`SELECT GROUP_CONCAT(text, '') FROM fragments f
+		JOIN documents d ON d.id=f.doc_id WHERE d.path='main.go' AND f.origin <> 'identity'`).Scan(&all); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(all, "items []string") {
+		t.Errorf("generic run deleted from indexed text: %.60q", all)
+	}
+	// start_off/end_off are offsets into the file.
+	rows, err := s.db.Query(`SELECT f.start_off, f.end_off FROM fragments f
+		JOIN documents d ON d.id=f.doc_id WHERE d.path='main.go' AND f.origin <> 'identity' ORDER BY f.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var so, eo int
+		if rows.Scan(&so, &eo) != nil {
+			t.Fatal("scan")
+		}
+		if so < 0 || eo > len(text) || eo <= so {
+			t.Fatalf("offset [%d,%d) not within file of %d bytes", so, eo, len(text))
+		}
+	}
+}
+
+// A Markdown file containing a table is indexed verbatim: the table's rule
+// rows are present in the indexed text, and fragments covering the table
+// carry line spans that map to the file's own lines.
+func TestPipelineMarkdownTableKeepsRowsAndLineSpans(t *testing.T) {
+	s := openMem(t)
+	// A Markdown file with a table. The rule row |---|---| would be dropped
+	// by FlattenMarkdownForIndex.
+	md := "# Title\n\nintro line\n\n| name | value |\n|---|---|\n| alpha | 1 |\n| beta | 2 |\n\noutro line\n"
+	fc := FragConfig{Window: 500, Stride: 400, Floor: 20}
+	if _, _, err := s.ingestText(context.Background(), "table.md", "Table", md, true, fc, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Rule rows must be in the indexed text.
+	var all string
+	if err := s.db.QueryRow(`SELECT GROUP_CONCAT(text, '') FROM fragments f
+		JOIN documents d ON d.id=f.doc_id WHERE d.path='table.md' AND f.origin <> 'identity'`).Scan(&all); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(all, "|---|---|") {
+		t.Errorf("table rule row missing from indexed text: %.80q", all)
+	}
+	// Fragments covering the table must carry 1-based line spans.
+	rows, err := s.db.Query(`SELECT f.start_line, f.end_line, f.text FROM fragments f
+		JOIN documents d ON d.id=f.doc_id WHERE d.path='table.md' AND f.origin <> 'identity' ORDER BY f.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var found int
+	for rows.Next() {
+		var sl, el int
+		var text string
+		if rows.Scan(&sl, &el, &text) != nil {
+			t.Fatal("scan")
+		}
+		if !strings.Contains(text, "|") {
+			continue
+		}
+		found++
+		if sl < 1 || el < sl {
+			t.Fatalf("table fragment has bad line span [%d,%d)", sl, el)
+		}
+		// The span must cover a table line in the file.
+		fileLines := strings.Split(md, "\n")
+		covered := false
+		for ln := sl; ln < el && ln-1 < len(fileLines); ln++ {
+			if strings.Contains(fileLines[ln-1], "|") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			t.Errorf("table fragment span [%d,%d) does not cover any table line in the file", sl, el)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no fragments covering the table found")
+	}
+}
+
+// A text file containing a markup-like run (Java generics, HTML) is indexed
+// verbatim: the run is intact in the indexed text, and fragments carry
+// start_line >= 1 / end_line pointing at the file's own lines.
+func TestPipelineTextFileIndexedVerbatimCarriesLineSpans(t *testing.T) {
+	s := openMem(t)
+	// A text file with markup-like runs: Java generics and an HTML tag.
+	text := "package demo\n\nimport java.util.List;\n\npublic class Foo {\n    private List<String> names;\n\n    public String render() {\n        return \"<b>hello</b>\";\n    }\n}\n"
+	fc := FragConfig{Window: 300, Stride: 200, Floor: 20}
+	if _, _, err := s.ingestText(context.Background(), "Foo.java", "Foo", text, true, fc, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The markup-like runs must be intact in the indexed text.
+	var all string
+	if err := s.db.QueryRow(`SELECT GROUP_CONCAT(text, '') FROM fragments f
+		JOIN documents d ON d.id=f.doc_id WHERE d.path='Foo.java' AND f.origin <> 'identity'`).Scan(&all); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(all, "List<String>") {
+		t.Errorf("Java generic run deleted from indexed text: %.80q", all)
+	}
+	if !strings.Contains(all, "<b>hello</b>") {
+		t.Errorf("HTML run deleted from indexed text: %.80q", all)
+	}
+	// Every fragment must carry a real line span (no 0/0).
+	var n, bad int
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(start_line = 0 OR end_line = 0), 0)
+		FROM fragments f JOIN documents d ON d.id=f.doc_id
+		WHERE d.path='Foo.java' AND f.origin <> 'identity'`).Scan(&n, &bad); err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("no fragments stored")
+	}
+	if bad != 0 {
+		t.Errorf("%d of %d fragments have 0/0 line spans", bad, n)
+	}
+}
+
 func TestOCRCacheDoesNotStoreAnEmptyTranscription(t *testing.T) {
 	s, err := Open(":memory:")
 	if err != nil {

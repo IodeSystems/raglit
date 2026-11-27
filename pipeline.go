@@ -412,6 +412,13 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		if pages[i].code != nil {
 			continue
 		}
+		// A text file's own bytes are kept verbatim: a markup-like run
+		// (generics, HTML, XML) and Markdown table rows are content, not
+		// layout markup, and flattening would delete them and shift the line
+		// spans fragmentOverlap computes from the file's bytes.
+		if pages[i].fileText {
+			continue
+		}
 		// A frontmatter block is kept verbatim: its fragment's offsets are the
 		// file's own, and flattening must not shift them.
 		fm := pages[i].frontmatter

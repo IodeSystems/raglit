@@ -437,8 +437,11 @@ func TestSplitForEmbed_PiecesGetTheirOwnLines(t *testing.T) {
 	}
 }
 
-// Text derived from a file (pandoc output, a transcript) has no lines in it,
-// and neither does text that flattening rewrote: 0/0.
+// Text derived from a file (pandoc output, a transcript) has no lines in it:
+// its fragments stay 0/0. A text file's own bytes are kept verbatim, so its
+// fragments carry the file's lines even where a markup-like run would look
+// like layout markup (generics, HTML, XML) or a Markdown table would be
+// flattened.
 func TestLines_OnlyForTheFilesOwnText(t *testing.T) {
 	s := openMem(t)
 	ctx := context.Background()
@@ -447,18 +450,28 @@ func TestLines_OnlyForTheFilesOwnText(t *testing.T) {
 	if _, _, err := s.ingestText(ctx, "a.docx", "A", text, false, fc, nil); err != nil {
 		t.Fatal(err)
 	}
-	// A Markdown table: flattening drops the rule line, so src's lines are not
-	// the file's.
 	md := "# T\n\n| a | b |\n|---|---|\n| 1 | 2 |\n" + strings.Repeat("walrus prose here\n", 20)
 	if _, _, err := s.ingestText(ctx, "t.md", "T", md, true, fc, nil); err != nil {
 		t.Fatal(err)
 	}
+	// Derived text: no lines.
 	var n, bad int
-	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(start_line != 0 OR end_line != 0), 0) FROM fragments`).Scan(&n, &bad); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(start_line != 0 OR end_line != 0), 0)
+		FROM fragments f JOIN documents d ON d.id=f.doc_id WHERE d.path='a.docx'`).Scan(&n, &bad); err != nil {
 		t.Fatal(err)
 	}
-	if n < 4 || bad != 0 {
-		t.Fatalf("%d of %d derived fragment(s) have lines", bad, n)
+	if n < 2 || bad != 0 {
+		t.Fatalf("%d of %d derived fragment(s) have lines, want 0", bad, n)
+	}
+	// A text file's own bytes: every fragment carries the file's lines, even
+	// with a Markdown table in the document.
+	var nmd, goodmd int
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(start_line >= 1 AND end_line >= 1), 0)
+		FROM fragments f JOIN documents d ON d.id=f.doc_id WHERE d.path='t.md'`).Scan(&nmd, &goodmd); err != nil {
+		t.Fatal(err)
+	}
+	if nmd < 2 || goodmd != nmd {
+		t.Fatalf("%d of %d file-text fragment(s) have lines, want all", goodmd, nmd)
 	}
 }
 
