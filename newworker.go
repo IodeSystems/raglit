@@ -46,6 +46,9 @@ type Models struct {
 	OCR OCRConfig
 	// Fragmenter parameters. Zero → the defaults (ResolveFragParams).
 	FragWindow, FragStride, FragFloor int
+	// CodeCeiling caps a code/section fragment in characters, below the embed
+	// limit (0 → unset: up to the embed limit, the window when that is unknown).
+	CodeCeiling int
 	// Configured input limits. Zero → probed from the endpoint and cached on
 	// the index.
 	EmbedLimitChars, EmbedLimitTokens, SegmentInputLimitTokens int
@@ -363,6 +366,7 @@ func NewWorker(store *Store, m Models, pool *Pool) *Worker {
 		Window:            m.FragWindow,
 		Stride:            m.FragStride,
 		Floor:             m.FragFloor,
+		CodeCeiling:       m.CodeCeiling,
 		EmbedLimit:        embedLimit,
 		EmbedLimitTokens:  embedLimitTokens,
 		EmbedTokenCounter: embedCounter,

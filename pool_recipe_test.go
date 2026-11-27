@@ -48,6 +48,38 @@ func TestKindNamesArePinned(t *testing.T) {
 	}
 }
 
+// A code ceiling sizes code/section fragments, so the KindCode pool key must
+// change when it does — a pooled cut at N would otherwise replay into the index
+// under M. An unset ceiling keeps the old key, so the pool keeps hitting.
+func TestCodeCeilingIsInTheKindCodePoolKey(t *testing.T) {
+	w := &Worker{RecipeHash: "abc123", Code: &fakeCode{}}
+	noCeiling := w.poolRecipe(KindCode)
+
+	w.Frag.CodeCeiling = 600
+	withCeiling := w.poolRecipe(KindCode)
+	if withCeiling == noCeiling {
+		t.Fatal("a code ceiling does not change the KindCode pool key — a pooled cut would survive the change")
+	}
+	w.Frag.CodeCeiling = 300
+	if w.poolRecipe(KindCode) == withCeiling {
+		t.Error("two ceilings produce the same KindCode pool key")
+	}
+
+	// Unset → the old key.
+	w.Frag.CodeCeiling = 0
+	if got := w.poolRecipe(KindCode); got != noCeiling {
+		t.Errorf("an unset ceiling re-keyed KindCode: %q != %q — the pool would miss for nothing", got, noCeiling)
+	}
+
+	// The ceiling is code-fragment sizing: it does not re-key the other kinds.
+	// (KindText has a |lines=1 suffix tested in TestTextKindsRekeyedForLines.)
+	for _, k := range []DocKind{KindPDF, KindImage, KindOffice, KindEmail, KindSpreadsheet} {
+		if w.poolRecipe(k) != HashHex([]byte("abc123|kind="+k.String())) {
+			t.Errorf("%s: the ceiling re-keyed a non-code kind", k)
+		}
+	}
+}
+
 // A text file's pool key changed when fragments gained line spans, so a payload
 // pooled before them (0/0) is a miss; other kinds keep their key.
 func TestTextKindsRekeyedForLines(t *testing.T) {

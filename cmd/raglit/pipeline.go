@@ -191,6 +191,7 @@ func (f *llmFlags) models(home raglit.Home) raglit.Models {
 		FragWindow:              cfg.FragWindow,
 		FragStride:              cfg.FragStride,
 		FragFloor:               cfg.FragFloor,
+		CodeCeiling:             cfg.CodeCeiling,
 		EmbedLimitChars:         cfg.EmbedLimitChars,
 		EmbedLimitTokens:        cfg.EmbedLimitTokens,
 		SegmentInputLimitTokens: cfg.SegmentInputLimitTokens,

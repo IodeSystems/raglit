@@ -111,6 +111,99 @@ var goSpans = []CodeSpan{
 	{Sym: "Server.Start", Class: "method", StartLine: 13, EndLine: 16, CommentStartLine: 12, BodyStartLine: 13},
 }
 
+// F68: a code ceiling bounds code/section fragments below the embed limit,
+// splits an oversize declaration at it, clamps to the embed limit, preserves
+// today's behaviour when unset, and joins frag_recipe and the KindCode pool key
+// so a ceiling change re-cuts the code documents (F67).
+func TestCodeCeilingSplitsOversizeAndJoinsRecipe(t *testing.T) {
+	// One declaration with no nested spans — the nested-declaration cut has
+	// nothing to cut at, so only the ceiling can split it. The body is short
+	// lines, so the overlap windower can snap at a line break. src is 796
+	// bytes: over the ceiling (600), under the default window (1000) and
+	// under the embed limit, so without a ceiling it is one fragment; srcBig
+	// is 2316 bytes, over the embed limit, for the clamp case.
+	const srcHead = "function big() {\n  // a does a.\n" // 34
+	const srcTail = "}\n"                               // 2
+	src := srcHead + strings.Repeat("aaaaaaaaaaaaaaaaaaaa\n", 40) + srcTail      // 876
+	srcBig := srcHead + strings.Repeat("aaaaaaaaaaaaaaaaaaaa\n", 120) + srcTail  // 2556
+	// EndLine is the line AFTER the last; the span runs to the end of the file.
+	spans := func(lines int) []CodeSpan {
+		return []CodeSpan{{Sym: "big", StartLine: 1, EndLine: lines, CommentStartLine: 2}}
+	}
+	ingest := func(data []byte, sp []CodeSpan, fc FragConfig) []codeFrag {
+		s := openMem(t)
+		if _, _, err := s.ingestCode(context.Background(), &fakeCode{symbols: sp}, "big.go", "big",
+			data, fc, nil); err != nil {
+			t.Fatal(err)
+		}
+		return docFrags(t, s, "big.go")
+	}
+
+	// A ceiling splits the oversize declaration: multiple fragments, each at
+	// most the ceiling.
+	got := ingest([]byte(src), spans(44), FragConfig{EmbedLimit: 2000, CodeCeiling: 600})
+	if len(got) < 2 {
+		t.Fatalf("ceiling 600 did not split the oversize declaration: %+v", got)
+	}
+	for _, f := range got {
+		if len(f.Text) > 600 {
+			t.Errorf("fragment exceeds the ceiling: %d > 600", len(f.Text))
+		}
+	}
+
+	// A ceiling above the embed limit is clamped to it: on a declaration past
+	// the embed limit the pieces are at most the embed limit, not the ceiling.
+	got = ingest([]byte(srcBig), spans(124), FragConfig{EmbedLimit: 2000, CodeCeiling: 9000})
+	if len(got) < 2 {
+		t.Fatalf("clamped ceiling did not split: %+v", got)
+	}
+	for _, f := range got {
+		if len(f.Text) > 2000 {
+			t.Errorf("fragment exceeds the embed limit: %d > 2000", len(f.Text))
+		}
+	}
+
+	// Unset ceiling: one fragment up to the embed limit, exactly as today.
+	if got = ingest([]byte(src), spans(44), FragConfig{EmbedLimit: 2000}); len(got) != 1 {
+		t.Errorf("unset ceiling changed today's cut: %d fragment(s)", len(got))
+	}
+	// ... and with no embed limit either, the window is the bound, as before.
+	if got = ingest([]byte(src), spans(44), FragConfig{}); len(got) != 1 {
+		t.Errorf("no ceiling, no embed limit: %d fragment(s), want 1", len(got))
+	}
+
+	// The ceiling joins frag_recipe: N and M hash differently, and 0 matches
+	// today's hash exactly, so an unset ceiling re-keys nothing.
+	rN := fragRecipe(fragModeCode, 1000, 750, 300, 1, 600)
+	rM := fragRecipe(fragModeCode, 1000, 750, 300, 1, 300)
+	r0 := fragRecipe(fragModeCode, 1000, 750, 300, 1, 0)
+	if rN == rM {
+		t.Error("a ceiling change does not change frag_recipe — F67 would not re-cut")
+	}
+	if r0 != HashHex([]byte("mode=code|w=1000|s=750|f=300|fig=1|ceiling=0")) {
+		t.Errorf("unset ceiling changed the recipe: %s", r0)
+	}
+	// ... and the text recipe is untouched by the ceiling.
+	if fragRecipe(fragModeOverlap, 1000, 750, 300, 1, 600) !=
+		HashHex([]byte("mode=text-overlap|w=1000|s=750|f=300|fig=1")) {
+		t.Error("the ceiling leaked into the text recipe")
+	}
+
+	// And the KindCode pool key: set → includes the value (N and M differ);
+	// unset → the old key, so the pool keeps hitting.
+	w := &Worker{RecipeHash: "abc123", Code: &fakeCode{}}
+	kN := w.poolRecipe(KindCode)
+	w.Frag.CodeCeiling = 300
+	kM := w.poolRecipe(KindCode)
+	if kN == kM {
+		t.Error("a ceiling change does not change the KindCode pool key — a pooled N-cut would replay under M")
+	}
+	w.Frag.CodeCeiling = 0
+	if w.poolRecipe(KindCode) != kN {
+		t.Error("an unset ceiling re-keyed KindCode — the pool would miss for nothing")
+	}
+}
+
 // One fragment per top-level declaration, from its doc comment; the package
 // clause and imports are their own fragment; blank lines join the fragment
 // before them; the fragments tile the file.

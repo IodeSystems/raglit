@@ -121,8 +121,14 @@ type stagedMedia struct {
 // change marks affected documents stale.
 type FragConfig struct {
 	Window, Stride, Floor int
-	EmbedLimit            int
-	FigurePrompt          int
+	// CodeCeiling caps a code or Markdown section fragment (KindCode) in
+	// characters, below the embed limit. 0 → unset: today's behaviour, one
+	// fragment up to the embed limit (the window when that is unknown). A value
+	// above the embed limit is clamped to it. It is in frag_recipe and the
+	// KindCode pool key, so a change re-cuts the code documents (F67/F68).
+	CodeCeiling  int
+	EmbedLimit   int
+	FigurePrompt int
 	// SegmentInputLimit caps ONE segmentation request — prompt, carried-over
 	// fragment and page text together — at what the chat endpoint accepts, IN
 	// TOKENS, which is the unit the endpoint counts in. Distinct from EmbedLimit,
@@ -162,9 +168,17 @@ const (
 // narrower than the pool recipe (which also mixes in the embed model + OCR
 // engine) — so it answers "which documents need re-fragmenting after a stride
 // change" without dragging in unrelated model swaps.
-func fragRecipe(mode string, window, stride, floor, figPrompt int) string {
+func fragRecipe(mode string, window, stride, floor, figPrompt, codeCeiling int) string {
 	if mode == fragModeLLM {
 		return HashHex([]byte(fmt.Sprintf("mode=%s|fig=%d", mode, figPrompt)))
+	}
+	if mode == fragModeCode || mode == fragModeSections {
+		// The ceiling is the code fragmenter's sizing input, so a change must
+		// mark the code documents for re-cut — for the same reason w/s/f do.
+		// A 0 ceiling renders exactly as today's recipe, so leaving it unset
+		// re-keys nothing.
+		return HashHex([]byte(fmt.Sprintf("mode=%s|w=%d|s=%d|f=%d|fig=%d|ceiling=%d",
+			mode, window, stride, floor, figPrompt, codeCeiling)))
 	}
 	return HashHex([]byte(fmt.Sprintf("mode=%s|w=%d|s=%d|f=%d|fig=%d", mode, window, stride, floor, figPrompt)))
 }
@@ -580,13 +594,45 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 		if cu.sections {
 			fragMode = fragModeSections
 		}
+		// The code ceiling (F68): without it a declaration or section is one
+		// fragment up to the embed limit — tens of KB at an nomic endpoint —
+		// while the text path cuts at the window. It clamps the character side
+		// to the embed limit, so a ceiling above the limit changes nothing;
+		// the token side is the embedder's own, and the ceiling never loosens it.
+		ceiling := 0
+		if fc.CodeCeiling > 0 {
+			ceiling = fc.CodeCeiling
+			if fc.EmbedLimit > 0 && ceiling > fc.EmbedLimit {
+				ceiling = fc.EmbedLimit
+			}
+		}
 		oversize := func(t string) bool {
 			if fc.EmbedLimit <= 0 && embedBudget.Unlimited() {
+				if ceiling > 0 {
+					return len(t) > ceiling
+				}
 				return len(t) > window
 			}
-			return (fc.EmbedLimit > 0 && len(t) > fc.EmbedLimit) || !embedBudget.Fits(ctx, t)
+			return (fc.EmbedLimit > 0 && len(t) > fc.EmbedLimit) ||
+				(ceiling > 0 && len(t) > ceiling) || !embedBudget.Fits(ctx, t)
 		}
-		fragmentCode(pages[0], oversize, window, stride, floor, sink)
+		// A piece the ceiling calls oversize is windowed AT the ceiling (and a
+		// walk cut is checked against it), so no fragment can grow past it: the
+		// windower's own bound is max(window, floor), which the ceiling must not
+		// exceed.
+		cwin := window
+		cstride, cfloor := stride, floor
+		if ceiling > 0 && cwin > ceiling {
+			cwin = ceiling
+			// Re-resolve the windower's stride and floor against the shrunken
+			// window: the original stride is larger than the ceiling, so the
+			// windower cannot step past its first window and folds the whole
+			// piece into one fragment (the ceiling never engages). The embed
+			// limit is 0 here — it only widens the windower's bound, and the
+			// ceiling has already clamped the character side.
+			cwin, cstride, cfloor = ResolveFragParams(cwin, stride, floor, 0)
+		}
+		fragmentCode(pages[0], oversize, cwin, cstride, cfloor, sink)
 		sl.Done("segment", fragMode+":"+cu.lang, fmt.Sprintf("%d fragment(s) from %d span(s)", len(frags), len(cu.spans)))
 	} else {
 		fragmentOverlap(pages, window, stride, floor, sink)
@@ -609,7 +655,7 @@ func (s *Store) ingestUnits(ctx context.Context, sg *Segmenter, ocr *OCR, docPat
 
 	media := extractMedia(frags, provenance)
 	s.embedMedia(ctx, emb, media) // figure embeddings (image-or-description); best-effort
-	recipe := fragRecipe(fragMode, window, stride, floor, fc.FigurePrompt)
+	recipe := fragRecipe(fragMode, window, stride, floor, fc.FigurePrompt, fc.CodeCeiling)
 	if err := s.commitDoc(docPath, title, fragMode, recipe, frags, provenance, media, vecs, st, nil); err != nil {
 		sl.Fail("commit", "", err)
 		return 0, "", err

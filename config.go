@@ -71,6 +71,14 @@ type Config struct {
 	FragWindow int `json:"frag_window,omitempty"`
 	FragStride int `json:"frag_stride,omitempty"`
 	FragFloor  int `json:"frag_floor,omitempty"`
+	// CodeCeiling caps a code or Markdown section fragment (KindCode) in
+	// characters, below the embed limit: without it a declaration or heading
+	// section is ONE fragment up to the embed limit — tens of KB at an nomic
+	// endpoint — while the text path cuts at the window. 0 → unset: today's
+	// behaviour (up to the embed limit, the window when that is unknown). A
+	// value above the embed limit is clamped to it. It feeds frag_recipe and
+	// the KindCode pool key, so a change re-cuts the code documents.
+	CodeCeiling int `json:"code_ceiling,omitempty"`
 	// TranscriptionModel and DescribeModel are the per-kind ingest models (F11):
 	// when ingest descends a page into zones, it reads each zone with the model
 	// for its KIND — text zones go to the transcription model, diagram/figure

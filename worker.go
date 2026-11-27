@@ -9,6 +9,7 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -573,6 +574,13 @@ func (w *Worker) poolRecipe(kind DocKind) string {
 	// whenever the segmenter is turned on or its version changes.
 	if kind == KindCode && w.Code != nil {
 		key += "|segmenter=" + w.Code.Runtime()
+		// The code ceiling sizes code fragments, so a change to it must be a
+		// miss: a pooled cut at N would replay into the index under M (F68).
+		// 0 → today's behaviour, the old key, so an unset ceiling re-keys
+		// nothing.
+		if w.Frag.CodeCeiling > 0 {
+			key += "|ceiling=" + strconv.Itoa(w.Frag.CodeCeiling)
+		}
 	}
 	return HashHex([]byte(key))
 }
