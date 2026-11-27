@@ -24,6 +24,7 @@ func runDoctor(args []string) error {
 	daemonFlag := fs.String("daemon", "", "ask this daemon what IT can see (default $RAGLIT_DAEMON, config, else the shared daemon)")
 	localOnly := fs.Bool("local", false, "report only this shell's environment; do not ask the daemon")
 	fixUnit := fs.Bool("fix-unit", false, "rewrite a stale systemd unit the way `raglit service install` writes it")
+	fixPlist := fs.Bool("fix-plist", false, "rewrite a stale launchd plist the way `raglit service install` writes it")
 	asJSON := fs.Bool("json", false, "print capabilities, roles, extractors and update status as JSON (for tools such as dun)")
 	fs.Parse(args)
 	home := raglit.DiscoverHome()
@@ -220,6 +221,7 @@ func runDoctor(args []string) error {
 		fmt.Println("  ✗ OCR unavailable: configure a vision_model and/or a cheap_engine")
 	}
 	doctorUnit(*fixUnit)
+	doctorPlist(*fixPlist)
 	return nil
 }
 
