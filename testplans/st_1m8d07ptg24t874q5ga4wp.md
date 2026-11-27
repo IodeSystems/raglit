@@ -4,7 +4,7 @@ Verify the aw4 KPI report implementation locations and the ordering problem: the
 
 ```sh
 set -e
-AW4=/home/nthalk/local/src/iodesystems/aw4
+AW4="$HOME/local/src/iodesystems/aw4"
 
 # Verify the aw4 checkout exists and the specific files are at the claimed paths
 [ -f "$AW4/internal/command/improvements.go" ]
