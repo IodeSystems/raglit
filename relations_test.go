@@ -398,3 +398,146 @@ func TestCorrectionChainKeepsLinks(t *testing.T) {
 		t.Errorf("forward links not in chain order: %+v", startBy)
 	}
 }
+
+// ── directional proposals from the document's own wording ─────────────
+
+// sp: corrected-by is proposed from the wording and ruled by a person.
+//
+// Composition test: it reads the document's text (the read that yields the
+// candidate), checks the candidate's kind and its quoted phrase, and checks
+// the ABSENCE case — wording without the characteristic phrases yields no
+// corrected-by candidate. It also checks the boundary of the split: the
+// proposal carries a Kind, but nothing in this path writes it — a
+// DirectionalProposal is not a Mark, and the store is empty after the
+// read, so the ruling can only arrive from a person.
+func TestCorrectedByWordingProposal(t *testing.T) {
+	// The case the feature exists for, in the document's own voice: a later
+	// survey that states on its face what it corrects.
+	const text = `
+THIS SURVEY IS A CORRECTION TO THE BOUNDARY OF LOT 'I' AS ORIGINALLY
+RECORDED. FIELD WORK AND DEED RESEARCH HAVE CORRECTED THE INTENDED
+LOCATION, WHICH IN FACT IS 25 FEET EAST.
+`
+	props := ProposeDirectional(text)
+	var corr *DirectionalProposal
+	for i := range props {
+		if props[i].Kind == MarkCorrectedBy {
+			corr = &props[i]
+		}
+	}
+	if corr == nil {
+		t.Fatalf("characteristic wording found no corrected-by candidate: %+v", props)
+	}
+	if corr.Phrase == "" {
+		t.Error("the candidate must quote the wording that triggered it")
+	}
+	if !strings.Contains(strings.ToLower(corr.Why), "correction") {
+		t.Errorf("the why must say what the document states: %s", corr.Why)
+	}
+	// The correction wording is not the invalidation wording: no stronger
+	// candidate may ride along.
+	for _, p := range props {
+		if p.Kind == MarkInvalidatedBy {
+			t.Errorf("corrected-by wording proposed invalidated-by: %+v", p)
+		}
+	}
+
+	// Absence case: text that overlaps heavily with another document but
+	// states nothing about correcting it yields no corrected-by candidate.
+	plain := `
+DEED OF CONVEYANCE. THIS INDENTURE made this 4th day of March, 2008,
+between the undersigned parties of the first part and the grantee of the
+second part, WITNESSETH: that the grantor has sold and conveyed a certain
+lot in Havern County for the consideration of ten dollars.
+`
+	if props := ProposeDirectional(plain); len(props) != 0 {
+		t.Errorf("plain deed wording must propose nothing: %+v", props)
+	}
+
+	// The ruling is a person's: the proposal is not a stored Mark, and the
+	// read writes nothing to the judgement store.
+	js := tmpJudgements(t)
+	const earlier, later = "2008-survey.pdf", "2022-survey.pdf"
+	_ = ProposeDirectional(text) // the read, as above
+	rels, err := js.RelationsFor(earlier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 0 {
+		t.Fatalf("the machine's read recorded a ruling: %+v", rels)
+	}
+	// A person's ruling, recorded separately, is the only way the store learns
+	// the kind.
+	if err := js.PutRelation(Mark{A: earlier, B: later, Kind: MarkCorrectedBy}); err != nil {
+		t.Fatal(err)
+	}
+	rels, err = js.RelationsFor(earlier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 1 || rels[0].Kind != MarkCorrectedBy {
+		t.Fatalf("the person's ruling did not land: %+v", rels)
+	}
+}
+
+// sp: invalidated-by comes only from explicit words.
+//
+// Composition test: explicit words ('rescinded', 'vacated') yield the
+// candidate; supersession wording, overlap wording and bare inference yield
+// none. The person stores the direction, and the store keeps it.
+func TestInvalidatedByExplicitWordsOnly(t *testing.T) {
+	for _, word := range []string{"rescinded", "vacated", "of no further force and effect"} {
+		props := ProposeDirectional(word)
+		var inv *DirectionalProposal
+		for i := range props {
+			if props[i].Kind == MarkInvalidatedBy {
+				inv = &props[i]
+			}
+		}
+		if inv == nil {
+			t.Errorf("explicit word %q found no invalidated-by candidate: %+v", word, props)
+			continue
+		}
+		if inv.Phrase == "" {
+			t.Errorf("the candidate must quote %q", word)
+		}
+	}
+
+	// The traps: supersession is not explicit invalidation, overlap is not,
+	// and a document that merely names an earlier one is not.
+	for _, text := range []string{
+		`THIS DEED SUPERSEDES THE PRIOR DEED OF THE SAME DATE.`,
+		`THIS IS A REPLACEMENT FOR THE FORMERLY RECORDED INSTRUMENT.`,
+		`THE PARTIES TO THE AGREEMENT, AS SET FORTH ABOVE.`,
+		`THIS DOCUMENT REPRODUCES THE EXHIBIT FILED THERETOFORE.`,
+	} {
+		for _, p := range ProposeDirectional(text) {
+			if p.Kind == MarkInvalidatedBy {
+				t.Errorf("invalidated-by proposed without explicit words: %q → %+v", text, p)
+			}
+		}
+	}
+
+	// The person stores the direction, and the store keeps it: the later
+	// document is the B side, and the read alone stores nothing.
+	js := tmpJudgements(t)
+	const earlier, later = "2008-order.pdf", "2022-vacatur.pdf"
+	_ = ProposeDirectional("THE 2008 ORDER IS RESCINDED.")
+	rels, err := js.RelationsFor(earlier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 0 {
+		t.Fatalf("the machine's read recorded a ruling: %+v", rels)
+	}
+	if err := js.PutRelation(Mark{A: earlier, B: later, Kind: MarkInvalidatedBy}); err != nil {
+		t.Fatal(err)
+	}
+	m, ok, err := js.Relation(earlier, later)
+	if err != nil || !ok {
+		t.Fatalf("ruling not found (%v)", err)
+	}
+	if m.A != earlier || m.B != later || m.Kind != MarkInvalidatedBy {
+		t.Errorf("direction not kept as the person stored it: %+v", m)
+	}
+}

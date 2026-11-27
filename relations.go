@@ -280,6 +280,72 @@ var (
 	dateRe = regexp.MustCompile(`^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$`)
 )
 
+// DirectionalProposal is a candidate directional ruling read from the
+// document's own words, as opposed to Propose, which reads the overlap. The two
+// answer different questions — Propose says what a pair IS, and this says what
+// one document STATES about another — and a document can state one while the
+// overlap says nothing: the correcting survey and the survey it corrects share
+// a paragraph of recitals, not an alignment.
+//
+// Like Proposal it is never stored: it is the argument a person is put in front
+// of. Recording the MarkKind is a person's action (the `mark` command), and
+// nothing in this package writes a directional ruling on a machine's say-so.
+type DirectionalProposal struct {
+	Kind MarkKind `json:"kind"`
+	// Phrase is the wording that triggered the candidate, quoted, so the person
+	// ruling sees what the document says.
+	Phrase string `json:"phrase"`
+	// Why is one line for the person: what the document states, and that it is
+	// a candidate, not a ruling.
+	Why string `json:"why"`
+}
+
+// The two phrase sets are deliberately different in strength, and the
+// distinction is the whole of invalidated-by's guard.
+//
+// Corrected-by wording is characteristic and mild: a document announces that it
+// corrects something. The surveyor's note "is not correct with respect to the
+// neighbor's shed" is in this set — it says a specific thing in a standing
+// document is wrong, which is exactly what corrected-by records.
+var correctedByPhraseRe = regexp.MustCompile(`(?i)\b(?:is a correction to|is a corrected version of|has corrected|this .{0,30}?survey corrects|is not correct with respect to)\b`)
+
+// Invalidated-by is the stronger claim — the earlier document no longer governs
+// at all — and it comes only from explicit words that say so: rescinded,
+// vacated. "Superseded" is deliberately NOT here: two surveys of the same
+// ground do not invalidate each other by existing, and supersession says the
+// later one governs, not that the earlier one is dead. "Of no further force
+// and effect" is included because it states the consequence in words rather
+// than leaving it to inference.
+var invalidatedByPhraseRe = regexp.MustCompile(`(?i)\b(?:rescinded|vacated|of no further force and effect)\b`)
+
+// ProposeDirectional reads a document's own text and yields the directional
+// candidates its wording states. Supersession, overlap and inference produce
+// none: the function looks only at the phrases above, and nothing else in the
+// package calls it on anything but the document's text.
+//
+// A document may state both (it corrects one instrument and rescinds
+// another), so the result is a list, and both kinds are returned when both
+// wordings are present. A document that states neither yields an empty list,
+// which is the normal case.
+func ProposeDirectional(text string) []DirectionalProposal {
+	var out []DirectionalProposal
+	if m := correctedByPhraseRe.FindString(text); m != "" {
+		out = append(out, DirectionalProposal{
+			Kind:   MarkCorrectedBy,
+			Phrase: m,
+			Why:    fmt.Sprintf("the document states it is a correction: %q — a candidate for corrected-by; a person records the ruling", m),
+		})
+	}
+	if m := invalidatedByPhraseRe.FindString(text); m != "" {
+		out = append(out, DirectionalProposal{
+			Kind:   MarkInvalidatedBy,
+			Phrase: m,
+			Why:    fmt.Sprintf("the document says so in explicit words: %q — a candidate for invalidated-by; a person records the ruling", m),
+		})
+	}
+	return out
+}
+
 // Propose reads a computed match and says what the pair probably is.
 //
 // The rule, and why it is this rule.
