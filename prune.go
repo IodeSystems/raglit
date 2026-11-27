@@ -146,6 +146,12 @@ type PruneResult struct {
 	DanglingOriginalBytes int64 `json:"dangling_original_bytes"`
 	// OriginalsRemoved is true when deleteOriginals removed them.
 	OriginalsRemoved bool `json:"originals_removed"`
+	// Source bytes under uploads/ (Home.UploadsDir) that no document row names:
+	// an upload that wrote its file and was forgotten. Named in the report so it
+	// can be acted on.
+	OrphanUploads     int      `json:"orphan_uploads"`
+	OrphanUploadBytes int64    `json:"orphan_upload_bytes"`
+	OrphanUploadFiles []string `json:"orphan_upload_files"`
 }
 
 // Prune removes every document whose local source file is gone, with its
@@ -154,6 +160,10 @@ type PruneResult struct {
 // reports the same and removes nothing. deleteOriginals removes the dangling
 // copies under originals/, dry or not: they are reported always and removed
 // only when asked.
+//
+// Source bytes under uploads/ that no document names are REPORTED in the
+// result, never removed: an upload's bytes are the document's only home, and
+// deleting them silently is the one thing prune must not do.
 //
 // Dirs groups by the top-most directory that is gone, so a deleted worktree is
 // one line however deep its tree was; a file deleted from a directory that
@@ -172,6 +182,10 @@ func (s *Store) Prune(dry, deleteOriginals bool) (PruneResult, error) {
 	if err != nil {
 		return res, err
 	}
+	uploads, err := s.orphanUploads()
+	if err != nil {
+		return res, err
+	}
 	res.OrphanPages = len(pages)
 	for _, p := range pages {
 		res.OrphanPageBytes += fileSize(p)
@@ -179,6 +193,11 @@ func (s *Store) Prune(dry, deleteOriginals bool) (PruneResult, error) {
 	res.DanglingOriginals = len(originals)
 	for _, p := range originals {
 		res.DanglingOriginalBytes += fileSize(p)
+	}
+	res.OrphanUploads = len(uploads)
+	res.OrphanUploadFiles = uploads
+	for _, p := range uploads {
+		res.OrphanUploadBytes += fileSize(p)
 	}
 	if deleteOriginals {
 		for _, p := range originals {
@@ -325,6 +344,52 @@ func (s *Store) danglingOriginals() ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// orphanUploads is every file under uploads/ that no document row names: an
+// upload that wrote its file and was forgotten before it was indexed. uploads/
+// holds the source bytes — the document's only home — so these are reported
+// in the result, never removed.
+func (s *Store) orphanUploads() ([]string, error) {
+	if !s.withHome {
+		return nil, nil
+	}
+	root := s.home.UploadsDir()
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	// The set of on-disk paths that at least one document row names.
+	named := map[string]bool{}
+	paths, err := s.documentPaths()
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range paths {
+		if s.inOwnStorage(p) {
+			if abs, ok := s.StoragePath(p); ok {
+				named[abs] = true
+			}
+		}
+	}
+	var out []string
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		abs, _ := filepath.Abs(p)
+		if !named[abs] {
+			out = append(out, p)
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out, err
 }
 
 // documentTags is the Home.PageDir name of every document in this layer.

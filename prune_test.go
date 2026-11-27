@@ -8,6 +8,41 @@ import (
 	"testing"
 )
 
+// A file under uploads/ that no document row names is named in the report as
+// an orphan upload, on both a dry run and a real one. A file a document names
+// is not an orphan.
+func TestPruneReportsOrphanUploads(t *testing.T) {
+	home := Home(filepath.Join(t.TempDir(), "home"))
+	s, err := OpenHome(home)
+	must(t, err)
+	defer s.Close()
+
+	orphan := filepath.Join(home.UploadsDir(), "stray.md")
+	must(t, os.MkdirAll(filepath.Dir(orphan), 0o755))
+	must(t, os.WriteFile(orphan, []byte("x"), 0o644))
+	kept, err := s.SaveUpload("notes/kept.md", []byte("x"))
+	must(t, err)
+	must(t, s.Ingest(context.Background(), Document{
+		Path: UploadURL(kept), Fragments: []Fragment{{Text: "kept upload"}},
+	}))
+
+	res, err := s.Prune(true, true)
+	must(t, err)
+	if res.OrphanUploads != 1 || res.OrphanUploadBytes == 0 ||
+		len(res.OrphanUploadFiles) != 1 || res.OrphanUploadFiles[0] != orphan {
+		t.Fatalf("dry run = %+v, want orphan upload %s named", res, orphan)
+	}
+
+	res, err = s.Prune(false, true)
+	must(t, err)
+	if res.OrphanUploads != 1 || len(res.OrphanUploadFiles) != 1 || res.OrphanUploadFiles[0] != orphan {
+		t.Fatalf("prune = %+v, want orphan upload %s named", res, orphan)
+	}
+	if st, _ := s.IndexStatus(); st.Documents != 1 {
+		t.Fatalf("documents = %d, want the kept upload", st.Documents)
+	}
+}
+
 // A document whose file is gone drops out of search at once and is listed,
 // grouped by the top-most deleted directory, until Prune removes it. A document
 // a library caller ingested under a name, not a file, is never prunable.
@@ -66,6 +101,43 @@ func TestPruneMissingFiles(t *testing.T) {
 	}
 	if n := s.MissingCount(); n != 0 {
 		t.Fatalf("MissingCount after prune = %d", n)
+	}
+}
+
+// A document in raglit's own storage whose source bytes live under uploads/:
+// when prune removes dangling originals/ copies, the upload's source bytes are
+// left on disk. prune has no delete path for an upload's bytes.
+func TestPruneNeverRemovesUploadBytes(t *testing.T) {
+	home := Home(filepath.Join(t.TempDir(), "home"))
+	s, err := OpenHome(home)
+	must(t, err)
+	defer s.Close()
+
+	up, err := s.SaveUpload("notes/doc.md", []byte("source bytes"))
+	must(t, err)
+	doc := UploadURL(up)
+	must(t, s.Ingest(context.Background(), Document{
+		Path: doc, Fragments: []Fragment{{Text: "upload doc"}},
+	}))
+	// A dangling copy under originals/ that no document names — the kind of file
+	// --delete-orphan-originals removes.
+	stray := filepath.Join(home.OriginalsDir(), "dangling-original.bin")
+	must(t, os.MkdirAll(filepath.Dir(stray), 0o755))
+	must(t, os.WriteFile(stray, []byte("dangling"), 0o644))
+
+	res, err := s.Prune(false, true)
+	must(t, err)
+	if !res.OriginalsRemoved {
+		t.Fatalf("prune = %+v, want originals removed", res)
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatalf("dangling original %s survived prune", stray)
+	}
+	if b, err := os.ReadFile(up); err != nil || string(b) != "source bytes" {
+		t.Fatalf("upload's source bytes removed by prune: %v %q", err, b)
+	}
+	if res.OrphanUploads != 0 {
+		t.Fatalf("prune = %+v, want the named upload not counted orphan", res)
 	}
 }
 
