@@ -149,6 +149,162 @@ func LayoutClustersPNG(data []byte, o LayoutOpts) []Rect {
 	return LayoutClusters(img, o)
 }
 
+// PageMeasure is what a page's PIXELS say about it, as physical measurements:
+// the page's size in inches, and the predicates a strategy's when-clauses route
+// on. It is produced by MeasurePage, which decides every predicate by
+// arithmetic on the page's pixels — the same discipline as low-resolution
+// (regions.go) and the cluster finding above. A predicate that would need to
+// know what the page IS is not one of these.
+type PageMeasure struct {
+	// WIn, HIn are the page's physical size in inches, as given.
+	WIn, HIn float64
+	// DPI the image was rendered at; 0 means the base render resolution.
+	DPI int
+	// LowResolution is the same test the descent applies internally: below
+	// half a letter page's token density, a single-shot read of the whole
+	// sheet is unlikely to work.
+	LowResolution bool
+	// RuledTable is a measured grid of drawn rules: at least RuledMinLines
+	// rows AND at least RuledMinLines columns holding a solid run long enough
+	// to be a rule. Text lines break at every word, so they do not count.
+	RuledTable bool
+	// MultiColumn is a vertical gutter: a strip, wide enough to hold nothing,
+	// that is empty through most of the page's height. One gutter is two
+	// columns, which is the case the predicate names.
+	MultiColumn bool
+}
+
+// Measure decides the predicates from the page's pixels.
+//
+// The argument list is the proof of the class: there is no model, encoder or
+// client to call. Everything here is a count on a coarse grid of the image's
+// own pixels.
+func MeasurePage(img image.Image, wIn, hIn float64, dpi int) PageMeasure {
+	m := PageMeasure{WIn: wIn, HIn: hIn, DPI: dpi}
+	if dpi <= 0 {
+		m.DPI = baseRenderDPI
+	}
+	if wIn <= 0 || hIn <= 0 {
+		return m
+	}
+	b := img.Bounds()
+	cell := max(4, m.DPI/25) // the working resolution LayoutClusters derives
+	cw, ch := b.Dx()/cell, b.Dy()/cell
+	if cw < 4 || ch < 4 {
+		return m
+	}
+	// No linework is dropped: a rule is what a ruled table IS, and a frame
+	// contributes two rows and two columns, far below the RuledMinLines bar.
+	ink := inkGrid(img, cell, cw, ch)
+	if !anyInk(ink) {
+		return m // nothing to measure
+	}
+
+	// low_resolution: the tokens per square inch the whole page gets, against
+	// the letter-page baseline. The descent's own test, applied to the page.
+	whole := Rect{X: 0, Y: 0, W: 1, H: 1}
+	m.LowResolution = resolutionOf(whole, wIn, hIn, m.DPI) < letterTokensPerSqIn*lowResolutionRatio
+
+	// ruled_table: rows and columns whose ink runs long enough to be a drawn
+	// rule. A line of text breaks at every word gap — that is the difference
+	// the coarse grid can see, and the one dropLinework relies on.
+	const minRun = 0.3 // fraction of the page's span that is one solid run
+	const solid = 0.90 // fraction of the row/column that must be inked
+	rows, cols := 0, 0
+	for cy := 0; cy < ch; cy++ {
+		n, run, best := 0, 0, 0
+		for cx := 0; cx <= cw; cx++ {
+			on := cx < cw && ink[cy*cw+cx]
+			if on {
+				n++
+				run++
+				if run > best {
+					best = run
+				}
+			} else {
+				run = 0
+			}
+		}
+		if float64(n) >= solid*float64(cw) && float64(best) >= minRun*float64(cw) {
+			rows++
+		}
+	}
+	for cx := 0; cx < cw; cx++ {
+		n, run, best := 0, 0, 0
+		for cy := 0; cy <= ch; cy++ {
+			on := cy < ch && ink[cy*cw+cx]
+			if on {
+				n++
+				run++
+				if run > best {
+					best = run
+				}
+			} else {
+				run = 0
+			}
+		}
+		if float64(n) >= solid*float64(ch) && float64(best) >= minRun*float64(ch) {
+			cols++
+		}
+	}
+	m.RuledTable = rows >= RuledMinLines && cols >= RuledMinLines
+
+	// multi_column: a vertical strip, at least GutterMinWidth wide as a
+	// fraction of the page, whose columns are nearly empty. Text does not
+	// qualify — its rows are inked through most of their width — and a gutter
+	// that only exists where there is no text is where a column break is.
+	const wide = 0.08 // gutter width as a fraction of the page's width
+	if m.RuledTable {
+		return m // the rules own this page; a table's grid is not columns
+	}
+	// A line of TEXT has clear cells — word gaps — so a gutter is judged by
+	// how much of each column's HEIGHT is inked, not by cell emptiness: a real
+	// gutter's columns are near-empty over the whole page, and a word gap's
+	// are not. And it must be INTERIOR — clear columns running to the edge are
+	// a page margin, and a margin is not a column break.
+	const colInk = 0.15 // how much of a column's height may be inked to be a gutter
+	const inset = 0.05  // a gutter this close to an edge is a margin
+	dens := make([]float64, cw)
+	for cx := 0; cx < cw; cx++ {
+		n := 0
+		for cy := 0; cy < ch; cy++ {
+			if ink[cy*cw+cx] {
+				n++
+			}
+		}
+		dens[cx] = float64(n) / float64(ch)
+	}
+	start := -1
+	for cx := 0; cx <= cw; cx++ {
+		gutter := cx == cw || dens[cx] < colInk
+		if gutter && start < 0 {
+			start = cx
+		}
+		if !gutter && start >= 0 {
+			if float64(cx-start) >= wide*float64(cw) &&
+				float64(start) > inset*float64(cw) && float64(cx) < (1-inset)*float64(cw) {
+				m.MultiColumn = true
+				break
+			}
+			start = -1
+		}
+	}
+	return m
+}
+
+// RuledMinLines is how many rows of rules, and how many columns, before a page
+// is a ruled table. Two is a frame; four each way is a grid.
+const RuledMinLines = 4
+
+func anyInk(ink []bool) bool {
+	for _, on := range ink {
+		if on {
+			return true
+		}
+	}
+	return false
+}
+
 // inkGrid reduces the image to a coarse boolean grid. A cell is inked when ANY
 // sampled pixel in it is darker than mid-grey — any, not a majority, because a
 // 6pt label is a few dark pixels in an otherwise white cell and losing it here

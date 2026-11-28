@@ -113,6 +113,49 @@ func TestLineworkDoesNotConnectLabels(t *testing.T) {
 	}
 }
 
+// The extra predicates are arithmetic, not model calls. MeasurePage's
+// signature admits no model, encoder or client — deciding them is a count on
+// the page's own pixels, which this test checks by construction: it feeds
+// synthetic pages and asserts what the pixels say.
+func TestMeasurePagePredicatesAreArithmetic(t *testing.T) {
+	// A ruled table: a 4x4 grid of solid rules with text in the cells.
+	tbl := canvas(800, 800)
+	for i := 1; i <= 4; i++ {
+		solidLine(tbl, 40, i*160, 760, i*160) // rows
+		solidLine(tbl, i*160, 40, i*160, 760) // columns
+	}
+	for i := 0; i < 4; i++ {
+		for j := 0; j < 4; j++ {
+			textBlock(tbl, 70+i*160, 80+j*160, 100, 60, 20)
+		}
+	}
+	if m := MeasurePage(tbl, 8.5, 11, 200); !m.RuledTable || m.MultiColumn {
+		t.Errorf("ruled table: want RuledTable, not MultiColumn: %+v", m)
+	}
+
+	// Two columns of text: a genuine vertical gutter down the middle.
+	cols := canvas(800, 800)
+	textBlock(cols, 40, 60, 300, 640, 20)
+	textBlock(cols, 460, 60, 300, 640, 20)
+	if m := MeasurePage(cols, 8.5, 11, 200); !m.MultiColumn || m.RuledTable {
+		t.Errorf("two columns: want MultiColumn, not RuledTable: %+v", m)
+	}
+
+	// Plain prose: neither predicate, and the low-resolution test says a
+	// letter page at 200 DPI is readable.
+	prose := canvas(800, 800)
+	textBlock(prose, 100, 60, 600, 640, 20)
+	if m := MeasurePage(prose, 8.5, 11, 200); m.RuledTable || m.MultiColumn || m.LowResolution {
+		t.Errorf("plain prose: want all three false: %+v", m)
+	}
+
+	// The same sheet of pixels at a much bigger physical size is a low-
+	// resolution read: the measurement is the physical size, not the pixels.
+	if m := MeasurePage(prose, 27, 36.7, 200); !m.LowResolution {
+		t.Errorf("big sheet at 200 DPI: want LowResolution: %+v", m)
+	}
+}
+
 // The lines of ONE paragraph must merge into one block rather than coming back
 // as a comb of separate lines — otherwise every line becomes its own region and
 // the budget is spent on twenty crops of one paragraph.
