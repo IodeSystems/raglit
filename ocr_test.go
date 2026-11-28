@@ -7,10 +7,14 @@ import (
 	"errors"
 	"image"
 	"image/png"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/iodesystems/agentkit/llm"
+	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
 // stubChatter records what the OCR path sent and returns a canned transcription.
@@ -233,4 +237,132 @@ func TestSpellingAssist_KeepsWordsAndRemovesNumbers(t *testing.T) {
 	if spellingAssist("20123164 201907220015 05/23/2022") != "" {
 		t.Error("a page of nothing but numbers offers no spellings, so it should offer no assist")
 	}
+}
+
+// The born-digital half of the figure gate: a PDF page carrying an embedded
+// image XObject is escalated to the VLM when DescribeFigures is on, even
+// though the raster heuristic (figureLikeImage) does NOT flag the render —
+// a modest image on a mostly-text page is exactly the class the XObject
+// trigger exists for.
+//
+// The fixture is built with the same pdfcpu ImportImagesFile pattern as
+// pagify_test.go, but sized so figureLikeImage returns false (a small white
+// image). The test then exercises the gate at the PageAsSeen level with
+// HasEmbeddedImage set, and the threading at the pdfUnits → unitsToPageText
+// level.
+func TestFigureGateBornDigitalEmbeddedImageEscalates(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "small.png")
+	writePNG(t, pngPath, 64, 64) // small white image — not figure-like
+
+	pdfPath := filepath.Join(dir, "doc.pdf")
+	if err := api.ImportImagesFile(context.Background(), []string{pngPath}, pdfPath,
+		pdfcpu.DefaultImportConfig(), model.NewDefaultConfiguration()); err != nil {
+		t.Fatalf("build fixture pdf: %v", err)
+	}
+
+	// The extracted image must NOT be figure-like by the raster heuristic —
+	// that is the precondition for the XObject path to be the only trigger.
+	pages, err := Pagify(pdfPath, "")
+	if err != nil {
+		t.Fatalf("pagify: %v", err)
+	}
+	if len(pages) != 1 {
+		t.Fatalf("want 1 extracted page, got %d", len(pages))
+	}
+	if fig, _, _ := figureLikeImage(pages[0].Data); fig {
+		t.Fatal("fixture image is figure-like by the raster heuristic — the XObject " +
+			"trigger cannot be tested in isolation")
+	}
+
+	cleanPO := PageOCR{Text: "Quarterly report.", MeanConfidence: 0.97, BoxCount: 3}
+
+	t.Run("Xobject flag escalates when DescribeFigures on", func(t *testing.T) {
+		vlm := &stubChatter{reply: "[FIGURE: small embedded diagram]"}
+		o := &OCR{Client: vlm, Cheap: stubEngine{"tesseract", cleanPO, nil}, DescribeFigures: true}
+		text, engine, _, err := o.PageAsSeen(t.Context(), PageImage{
+			Page: 1, Mime: "image/png", Data: pages[0].Data, HasEmbeddedImage: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if engine != "vision" {
+			t.Errorf("engine = %q, want vision (vlm called %v)", engine, vlm.called)
+		}
+		if !vlm.called {
+			t.Error("VLM was not called despite the XObject flag")
+		}
+		if text != "[FIGURE: small embedded diagram]" {
+			t.Errorf("text = %q, want the VLM's figure description", text)
+		}
+	})
+
+	t.Run("Xobject flag does not escalate when DescribeFigures off", func(t *testing.T) {
+		vlm := &stubChatter{reply: "[FIGURE: small embedded diagram]"}
+		o := &OCR{Client: vlm, Cheap: stubEngine{"tesseract", cleanPO, nil}, DescribeFigures: false}
+		_, engine, _, err := o.PageAsSeen(t.Context(), PageImage{
+			Page: 1, Mime: "image/png", Data: pages[0].Data, HasEmbeddedImage: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if engine != "tesseract" {
+			t.Errorf("engine = %q, want tesseract (flag off)", engine)
+		}
+		if vlm.called {
+			t.Error("VLM was called despite DescribeFigures off")
+		}
+	})
+
+	t.Run("no Xobject flag does not escalate even with DescribeFigures on", func(t *testing.T) {
+		vlm := &stubChatter{reply: "[FIGURE: small embedded diagram]"}
+		o := &OCR{Client: vlm, Cheap: stubEngine{"tesseract", cleanPO, nil}, DescribeFigures: true}
+		_, engine, _, err := o.PageAsSeen(t.Context(), PageImage{
+			Page: 1, Mime: "image/png", Data: pages[0].Data, HasEmbeddedImage: false,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if engine != "tesseract" {
+			t.Errorf("engine = %q, want tesseract (no XObject flag)", engine)
+		}
+		if vlm.called {
+			t.Error("VLM was called despite no XObject flag")
+		}
+	})
+
+	// Threading: pdfUnits sets hasEmbeddedImage on the ingestUnit, and
+	// unitsToPageText copies it into the PageImage it hands to the cascade.
+	// Exercised via the Pagify path (no poppler required): every unit
+	// Pagify extracts is by definition an image page, so the flag is set.
+	t.Run("pdfUnits sets hasEmbeddedImage and unitsToPageText threads it", func(t *testing.T) {
+		if HavePoppler() {
+			t.Skip("poppler available — the Pagify path is not taken; threading is covered by the direct PageAsSeen cases above")
+		}
+		units, err := pdfUnits(t.Context(), pdfPath, true, stubEngine{"tesseract", cleanPO, nil}, RenderPolicy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(units) != 1 {
+			t.Fatalf("want 1 unit, got %d", len(units))
+		}
+		if !units[0].hasEmbeddedImage {
+			t.Fatal("pdfUnits did not set hasEmbeddedImage on the extracted unit")
+		}
+		vlm := &stubChatter{reply: "[FIGURE: small embedded diagram]"}
+		o := &OCR{Client: vlm, Cheap: stubEngine{"tesseract", cleanPO, nil}, DescribeFigures: true}
+		pageTexts, err := unitsToPageText(t.Context(), units, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pageTexts) != 1 {
+			t.Fatalf("want 1 page text, got %d", len(pageTexts))
+		}
+		if pageTexts[0].Engine != "vision" {
+			t.Errorf("engine = %q, want vision (vlm called %v)", pageTexts[0].Engine, vlm.called)
+		}
+		if !vlm.called {
+			t.Error("VLM was not called — the XObject flag was not threaded through unitsToPageText")
+		}
+	})
 }

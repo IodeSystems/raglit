@@ -417,6 +417,12 @@ func HEICToPNG(ctx context.Context, path string) ([]byte, error) {
 	return out, nil
 }
 func pdfUnits(ctx context.Context, pdfPath string, canOCR bool, cheap PageEngine, rp RenderPolicy) ([]ingestUnit, error) {
+	// The born-digital half of the figure gate: which pages carry an embedded
+	// image XObject. Called once per PDF, before the branch that renders pages,
+	// so both extraction paths get the flag. Best-effort (same stance the
+	// pagesWithImages comment states): an unreadable-PDF error means "no
+	// figure pages" — the gate stays inert, never a reason to fail the document.
+	figPages, _ := pagesWithImages(pdfPath)
 	if !HavePoppler() {
 		pages, err := Pagify(pdfPath, "")
 		if err != nil {
@@ -424,7 +430,9 @@ func pdfUnits(ctx context.Context, pdfPath string, canOCR bool, cheap PageEngine
 		}
 		units := make([]ingestUnit, 0, len(pages))
 		for _, p := range pages {
-			units = append(units, ingestUnit{page: p.Page, mime: p.Mime, data: p.Data})
+			// Pagify only extracts pages that HAVE an embedded image — an
+			// extracted unit is by definition a figure page.
+			units = append(units, ingestUnit{page: p.Page, mime: p.Mime, data: p.Data, hasEmbeddedImage: true})
 		}
 		return units, nil
 	}
@@ -452,7 +460,8 @@ func pdfUnits(ctx context.Context, pdfPath string, canOCR bool, cheap PageEngine
 		if err != nil {
 			return nil, err
 		}
-		u := ingestUnit{page: page, mime: mime, data: img, dpi: rp.resolved().BaseDPI}
+		u := ingestUnit{page: page, mime: mime, data: img, dpi: rp.resolved().BaseDPI,
+			hasEmbeddedImage: figPages[page]}
 		areaSqIn := pageAreaSqIn(ctx, pdfPath, page)
 		// A page whose own text is too small to read at 200 is re-rendered
 		// larger, once, before any reader sees it. The measurement costs about a
@@ -701,7 +710,8 @@ func unitsToPageText(ctx context.Context, units []ingestUnit, ocr *OCR) ([]PageT
 		if ocr == nil {
 			return nil, fmt.Errorf("page %d is a scanned image but no OCR/vision model is configured", u.page)
 		}
-		text, engine, err := ocr.PageWithEngine(ctx, PageImage{Page: u.page, Mime: u.mime, Data: u.data})
+		text, engine, err := ocr.PageWithEngine(ctx, PageImage{Page: u.page, Mime: u.mime, Data: u.data,
+			HasEmbeddedImage: u.hasEmbeddedImage})
 		if err != nil {
 			// SALVAGE. This used to return nil and lose the document, which on a
 			// two-page survey meant one looping bearing table discarded a page

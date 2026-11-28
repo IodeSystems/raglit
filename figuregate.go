@@ -8,9 +8,12 @@ import (
 	_ "golang.org/x/image/tiff"
 )
 
-// The raster figure gate (§3a, scanned half): a page image is "figure-like"
+// The raster half of the figure gate (§3a): a page image is "figure-like"
 // when its ink is both plentiful and spatially concentrated — the signature
-// of a diagram, chart or photo on the page, as opposed to text.
+// of a diagram, chart or photo on the page, as opposed to text. Wired into
+// the cascade in PageAsSeen (ocr.go) under OCR.DescribeFigures; the
+// born-digital half is the separate PageImage.HasEmbeddedImage trigger
+// (extract.go / pagify.go), which this heuristic does not cover.
 //
 // Measured rationale: a full text page at 200 DPI carries roughly 5-15% ink
 // spread in regular line rhythm; a page holding a large diagram exceeds that

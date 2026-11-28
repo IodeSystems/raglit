@@ -94,13 +94,15 @@ type OCR struct {
 	//   - SCANNED: a raster page whose image the heuristic (figureLikeImage)
 	//     flags as figure-like — enough ink, concentrated in a large block — is
 	//     escalated to the VLM even when the cheap read is clean, so the diagram
-	//     gets described inline. Wired in the cascade (PageAsSeen).
-	//   - BORN-DIGITAL: a PDF page carrying an embedded image XObject — the
-	//     detection (pagesWithImages) exists but is not wired into a call path
-	//     yet; when it is, this flag covers it the same way.
-	// Orthogonal to the gibberish gate (which judges TEXT quality); OFF by
-	// default because it flips such pages to the (costly) vision path and thus
-	// to llm-seg, and false positives cost one vision call each.
+	//     gets described inline.
+	//   - BORN-DIGITAL: a PDF page carrying an embedded image XObject
+	//     (PageImage.HasEmbeddedImage) is escalated the same way. The flag is
+	//     threaded from pagesWithImages by pdfUnits (extract.go) through
+	//     ingestUnit into unitsToPageText.
+	// Both triggers are consulted in the cascade (PageAsSeen). Orthogonal to
+	// the gibberish gate (which judges TEXT quality); OFF by default because it
+	// flips such pages to the (costly) vision path and thus to llm-seg, and
+	// false positives cost one vision call each.
 	DescribeFigures bool
 
 	// MaxTokens caps one page transcription; 0 → defaultOCRMaxTokens. See
@@ -184,29 +186,42 @@ func (o *OCR) PageAsSeen(ctx context.Context, img PageImage) (text, engine strin
 				return strings.TrimSpace(po.Text), o.Cheap.Name(), 0, nil
 			}
 			escalate := false
-			// The figure gate (§3a, scanned half): a cheap read that is CLEAN
-			// can still be sitting on a diagram the cheap engine never saw.
-			// When the flag is on and the raster heuristic says the page
-			// carries a figure, pay the VLM so figureInstruction describes it
-			// inline — the description is the whole point of the call.
+			// The figure gate (§3a): a cheap read that is CLEAN can still be
+			// sitting on a figure the cheap engine never saw. Two triggers fire
+			// it, both under the flag:
+			//   - born-digital: the PDF page carries an embedded image XObject
+			//     (img.HasEmbeddedImage, set from pagesWithImages by pdfUnits) —
+			//     the page class the raster heuristic is tuned to miss, a modest
+			//     figure on a mostly-text page.
+			//   - scanned: the raster heuristic (figureLikeImage) flags the
+			//     render — enough ink, concentrated in a large block. It covers
+			//     standalone scanned pages (KindImage), which have no PDF.
+			// When either fires, pay the VLM so figureInstruction describes the
+			// figure inline — the description is the whole point of the call.
 			// The flag is OFF by default, so every page the gate does not flag
 			// is handled exactly as before.
 			if o.DescribeFigures {
 				if fig, inkFrac, block := figureLikeImage(img.Data); fig {
-					o.tracef("cascade: figure gate — ink %.0f%%, %d-row block — VLM called for figure description",
+					o.tracef("cascade: figure gate — raster ink %.0f%%, %d-row block — VLM called for figure description",
 						inkFrac*100, block)
 					o.event("figure.gate", map[string]any{
-						"img_sha": sha, "ink_pct": math.Round(inkFrac*10000) / 100, "block_rows": block,
+						"img_sha": sha, "trigger": "raster", "ink_pct": math.Round(inkFrac*10000) / 100, "block_rows": block,
 					})
 					escalate = true
-					if o.Assist {
-						assist = spellingAssist(po.Text)
-						o.tracef("assist: ON — %d chars of digit-masked words appended to the prompt", len(assist))
-					}
+				} else if img.HasEmbeddedImage {
+					o.tracef("cascade: figure gate — embedded image XObject on PDF page — VLM called for figure description")
+					o.event("figure.gate", map[string]any{
+						"img_sha": sha, "trigger": "xobject",
+					})
+					escalate = true
 				}
 			}
 			if escalate {
 				// figure gate: fall through to the VLM for the description.
+				if o.Assist {
+					assist = spellingAssist(po.Text)
+					o.tracef("assist: ON — %d chars of digit-masked words appended to the prompt", len(assist))
+				}
 			} else if o.Assist {
 				assist = spellingAssist(po.Text)
 				o.tracef("assist: ON — %d chars of digit-masked words appended to the prompt", len(assist))

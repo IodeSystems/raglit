@@ -51,6 +51,11 @@ type ingestUnit struct {
 	// page's provenance: it decides what any reader could possibly see, and
 	// without it "why is this page wrong" cannot be answered afterwards.
 	dpi int
+	// hasEmbeddedImage is true when the source PDF page carries an embedded
+	// image XObject — the born-digital half of the figure gate. Set from
+	// pagesWithImages in pdfUnits; carried to PageImage.HasEmbeddedImage in
+	// unitsToPageText so the gate in PageAsSeen can consult it.
+	hasEmbeddedImage bool
 	// code is what a CodeSegmenter found in a text file's own bytes. Set → the
 	// unit is cut at those spans (fragmentCode) and not flattened, since its
 	// spans are lines of the file as read.

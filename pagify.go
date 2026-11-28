@@ -27,6 +27,11 @@ type PageImage struct {
 	Path string // where it was written (empty when outDir == "")
 	Mime string // "image/png", "image/jpeg", …
 	Data []byte // raw image bytes
+	// HasEmbeddedImage is true when the source PDF page carried an embedded
+	// image XObject (born-digital figure). Set by the extract path from
+	// pagesWithImages; consulted by the figure gate in PageAsSeen (ocr.go).
+	// A standalone image file (KindImage) has no PDF, so it is always false.
+	HasEmbeddedImage bool
 }
 
 // Pagify extracts embedded page images from an image/scanned PDF, in page
