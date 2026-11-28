@@ -63,6 +63,8 @@ github.com/iodesystems/poly-lsp-mcp v0.5.2 h1:8VYJplejGWXc7DQAdKmY+tB6+dz4m7P2n9
 github.com/iodesystems/poly-lsp-mcp v0.5.2/go.mod h1:i0jMICFPI69rCrno7zh8YQ+9EVHeviZ3ZhvVC7p0sow=
 github.com/iodesystems/poly-lsp-mcp v0.5.4 h1:t7YwSw337ZZ3t2Us7HjLaOFUQDc4hStUdFLJjwCBLtc=
 github.com/iodesystems/poly-lsp-mcp v0.5.4/go.mod h1:i0jMICFPI69rCrno7zh8YQ+9EVHeviZ3ZhvVC7p0sow=
+github.com/iodesystems/poly-lsp-mcp v0.5.5 h1:rwoScEVGqS21LsikmYOLFt9ws7LGKgQ9bPUYKX047s0=
+github.com/iodesystems/poly-lsp-mcp v0.5.5/go.mod h1:i0jMICFPI69rCrno7zh8YQ+9EVHeviZ3ZhvVC7p0sow=
 github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0 h1:Hs4F5H+x/KWuX9N0/K1rQ812xYz8f4E+luXk1KtJQ4o=
 github.com/iodesystems/sqlc-go-codegen-metaquery v1.7.0/go.mod h1:wrk1YFVXQlFNMUsrBcn9sCWUiey1i4EdEMhR47+BU7I=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
