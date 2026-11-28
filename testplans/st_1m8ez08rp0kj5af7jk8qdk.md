@@ -27,7 +27,7 @@ silently. Those 4 are the parked rows below.
 Per loaded task: `id, title, status, executor, activeMin, openToCloseMin,
 blocking gate/input, closed`. A loaded task is **parked** when, at sprint end,
 it is in a non-executed state (draft / feasible / blocked) with no executor
-having run on it during the window. The four parked rows of
+having run on it during the window. The three parked rows of
 sprint_raglit_236:
 
 | id | title | status | executor | activeMin | openToClose | blocking gate/input | closed |
@@ -35,7 +35,6 @@ sprint_raglit_236:
 | `st_1m7xnkc2rcpqxg4nft36ep` | F35 wire | `draft` | none | 0 | (never closed) | **planning/gating gap**: loaded in `draft`, never promoted to `feasible`; carries `plan.requires` on `st_1m7xnkbhgad9b43rvabjzg` (F35 probe) | no |
 | `st_1m7fwnst62zv2bnk53jyxx` | sync(NORMAL) DSN | `feasible` | (ran 11-25) | 1.2 | ~8.3 days | feasible, **undispatched ~10 days** (see finding b) | 11-25, merged `06ff8a8eb71b` |
 | `st_1m7qgbn0949r2b5t9j3t4z` | OSD-confidence | `blocked` | none | 0 | ~5.4 days | **out-of-band inputs**: RFX `x_1m83cwzk6252tcgev8my1m` opt 1 + 8 human OSD readings | (not in window) |
-| `st_1m7jjghkz6tq1b8npj0bwq` | F28 Relations | `feasible` | (ran) | 4.2 | ~7.1 days | feasible, **undispatched ~7.1 days** (same class as DSN) | (not in window) |
 
 ## Findings, each resolved
 
@@ -74,18 +73,29 @@ appears as a refusal event on this node.)
 opt 1 + 8 human OSD readings). This responds to the fix differently from (a)/(b):
 it is a genuine external-input block, not a scheduler or planning gap.
 
-### (d) F28 Relations `st_1m7jjghkz6tq1b8npj0bwq` — **CONFIRMED as a fourth parked row, same class as (b).**
+### (d) F28 Relations `st_1m7jjghkz6tq1b8npj0bwq` — **DISPROVED as a parked row; it was actively executed and closed.**
 
-`feasible`, 4.2 active min, open-to-close ~7.1 days, undispatched. Same class as
-the DSN park: a feasible node sitting undispatched, no gate-refusal logged. It
-rounds out the 4 parked rows the observable must surface.
+The earlier draft of this observable listed F28 as a fourth parked row
+(`feasible`, 4.2 active min, "undispatched ~7.1 days"). A node_history
+re-run (reviewer s_1m8gv1502dyeqp6b9wqahp, channel msg 4057238; carried here
+at `accepted`, as with the rest of the log facts — this session has no aw4
+access) contradicts that: `draft→feasible` 11-16 12:22, `feasible→active` 11-23 18:24
+(5 sessions dispatched across 11-23), `in_review→closed` 11-23 22:50 (delivered
+by the reviewer), landings 11-23 22:52 (NOT merged, auth gate) and 11-24 20:14
+merged `97a950146022`. It was **executed and closed before the sprint window
+loaded at 2026-11-23T23:19:54Z** — so it is not a parked row at all. The
+discriminating facts are the dispatched-session count (5, not 0) and the
+closed-before-load timestamp: a parked row has 0 dispatched sessions in the
+window; F28 has 5 and had already closed. The original issue names exactly 3
+parked tasks (F35, DSN, OSD); the 4-row table was an over-count, and the
+correct observable has **3** parked rows.
 
 ## The material finding for the fork
 
 RFX `x_1m8eytq2e06q83fkwzbw7h` was answered **option 3 ("Both")**. But the
 verified diagnosis shows **there is no "dispatch gate-free ready work" scheduler
-bug to fix**: F35 was `draft` (not ready), and the two feasible-parked nodes (DSN,
-F28 Relations) had no logged gate refusal. So "Both" decomposes into:
+bug to fix**: F35 was `draft` (not ready), and the one feasible-parked node (DSN)
+had no logged gate refusal. So "Both" decomposes into:
 
 1. **A planning-discipline fix** (the F35 class): don't load `draft` nodes into a
    sprint, or promote on load — so a loaded task is always in a state the
@@ -144,13 +154,17 @@ echo "PASS: deliverable present, $(wc -l < "$DOC") lines"
 ```
 
 ```sh
-# All four parked task ids are present in the observable, each once as a row.
+# The three parked task ids are present as rows, and F28 (the disproved 4th
+# row) appears only in the disproof, not as a parked row. F28's id is in the
+# doc (finding d) but must NOT appear in a table row of the observable.
 set -e
 DOC="testplans/st_1m8ez08rp0kj5af7jk8qdk.md"
-for id in st_1m7xnkc2rcpqxg4nft36ep st_1m7fwnst62zv2bnk53jyxx st_1m7qgbn0949r2b5t9j3t4z st_1m7jjghkz6tq1b8npj0bwq; do
+for id in st_1m7xnkc2rcpqxg4nft36ep st_1m7fwnst62zv2bnk53jyxx st_1m7qgbn0949r2b5t9j3t4z; do
   grep -q "$id" "$DOC" || { echo "MISSING parked row: $id"; exit 1; }
 done
-echo "PASS: all 4 parked task ids present (F35, DSN, OSD, F28 Relations)"
+# F28 must not appear as a markdown table row (a row starts with '| `id`').
+grep -Eq '^\| `st_1m7jjghkz6tq1b8npj0bwq`' "$DOC" && { echo "F28 present as a parked table row"; exit 1; }
+echo "PASS: 3 parked rows present (F35, DSN, OSD); F28 not a parked row"
 ```
 
 ```sh
@@ -162,8 +176,8 @@ DOC="testplans/st_1m8ez08rp0kj5af7jk8qdk.md"
 grep -q "DISPROVED as a dispatch bug" "$DOC" || { echo "finding (a) verdict missing"; exit 1; }
 grep -q "the F314 attribution is NOT" "$DOC" || { echo "finding (b) F314 disproof missing"; exit 1; }
 grep -q "CONFIRMED as an out-of-band block" "$DOC" || { echo "finding (c) verdict missing"; exit 1; }
-grep -q "CONFIRMED as a fourth parked row" "$DOC" || { echo "finding (d) verdict missing"; exit 1; }
-echo "PASS: all 4 findings resolved; F314 attribution correctly left unverified"
+grep -q "DISPROVED as a parked row" "$DOC" || { echo "finding (d) F28 disproof missing"; exit 1; }
+echo "PASS: all 4 findings resolved; F314 attribution left unverified; F28 disproved"
 ```
 
 ```sh
