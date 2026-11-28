@@ -169,6 +169,53 @@ def mean(xs):
     return statistics.mean(xs) if xs else 0
 
 
+LEDGER_BOUND = 2.0
+
+
+def ledger_path():
+    return HERE / "ledger.jsonl"
+
+
+def arm_ratios(a, rows):
+    """Per-arm mean tool_result_chars over completed runs, and the raglit-to-grep
+    ratio (None if either arm has no completed runs)."""
+    perarm = {}
+    for arm in a.arms:
+        rs = [r for r in rows if r["arm"] == arm and r["ok"]]
+        if rs:
+            perarm[arm] = mean([r["tool_result_chars"] for r in rs])
+    ratio = None
+    if "raglit" in perarm and "grep" in perarm and perarm["grep"] > 0:
+        ratio = perarm["raglit"] / perarm["grep"]
+    return perarm, ratio
+
+
+def ledger_record(a, out, rows, nfiles, ratio):
+    """Append one row to bench/agent-ab/ledger.jsonl: per-arm mean
+    tool_result_chars, the raglit-to-grep ratio, and the corpus size.
+    Skipped with --no-ledger. The duplicate guard keys on
+    (out, model, reps, corpus_files): a row for the same run is recorded
+    once, no matter how many times it is rescored."""
+    if a.no_ledger:
+        return
+    key = [str(Path(a.out).resolve()), a.model, a.reps, nfiles]
+    existing = []
+    p = ledger_path()
+    if p.exists():
+        existing = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+    for r in existing:
+        if [r.get("out"), r.get("model"), r.get("reps"), r.get("corpus_files")] == key:
+            print("ledger: already recorded for this run; not appending again")
+            return
+    perarm, _ = arm_ratios(a, rows)
+    row = {"out": key[0], "model": a.model, "reps": a.reps, "corpus_files": nfiles,
+           "mean_tool_result_chars": perarm, "ratio": ratio,
+           "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    with open(p, "a") as fh:
+        fh.write(json.dumps(row) + "\n")
+    print(f"ledger: appended {p.name}")
+
+
 def summarize(a, out, qs, rows, probes, nfiles, nbytes):
     byid = {q["id"]: q for q in qs}
     L = [f"# agent A/B: grep vs raglit", "",
@@ -223,6 +270,8 @@ def main():
     ap.add_argument("--max-usd", type=float, default=1.0)
     ap.add_argument("--rescore", action="store_true",
                     help="score OUT/results.jsonl again against questions.json; run nothing")
+    ap.add_argument("--no-ledger", action="store_true",
+                    help="do not append a row to bench/agent-ab/ledger.jsonl")
     a = ap.parse_args()
     a.arms = a.arms.split(",")
     if "raglit" in a.arms and not a.llm_url and not a.rescore:
@@ -246,6 +295,11 @@ def main():
         for r in rows:
             r["correct"] = r["ok"] and score(byid[r["id"]], r["answer"])
         summarize(a, out, qs, rows, meta["probes"], meta["nfiles"], meta["nbytes"])
+        _, ratio = arm_ratios(a, rows)
+        ledger_record(a, out, rows, meta["nfiles"], ratio)
+        if ratio is not None and ratio > LEDGER_BOUND:
+            sys.exit(f"raglit arm's mean tool result size is {ratio:.2f}x the grep arm's, "
+                     f"over the {LEDGER_BOUND}x bound")
         return
     corpus, nfiles, nbytes = prepare(a, out)
 
@@ -271,6 +325,11 @@ def main():
         for r in rows:
             fh.write(json.dumps(r) + "\n")
     summarize(a, out, qs, rows, probes, nfiles, nbytes)
+    _, ratio = arm_ratios(a, rows)
+    ledger_record(a, out, rows, nfiles, ratio)
+    if ratio is not None and ratio > LEDGER_BOUND:
+        sys.exit(f"raglit arm's mean tool result size is {ratio:.2f}x the grep arm's, "
+                 f"over the {LEDGER_BOUND}x bound")
 
 
 if __name__ == "__main__":
