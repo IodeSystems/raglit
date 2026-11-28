@@ -554,6 +554,9 @@ func docTypeBlock(types []DocType) string {
 		if d := strings.TrimSpace(t.Description); d != "" {
 			b.WriteString(" — " + oneLineTag(d))
 		}
+		if rf := t.RequiredFields(); len(rf) > 0 {
+			b.WriteString(" [required: " + strings.Join(rf, ", ") + "]")
+		}
 		b.WriteString("\n")
 	}
 	return b.String()

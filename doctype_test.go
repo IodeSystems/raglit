@@ -64,7 +64,11 @@ func TestSetDocType_RefusesASchemaThatIsNotOne(t *testing.T) {
 // may answer with is not known until the call — and an answer outside them is
 // refused, because it would resolve to no schema.
 func TestIdentify_ResolvesADocumentTypeOrNone(t *testing.T) {
-	types := []DocType{{Name: "work order", Description: "a garage's repair order"}}
+	types := []DocType{{
+		Name:        "work order",
+		Description: "a garage's repair order",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"order_number":{"type":"string"}},"required":["order_number"]}`),
+	}}
 
 	c := &identityChatter{replies: []string{
 		`{"name":"2021-05-25 repair order 4471 (Ardley)","summary":"A repair order for the vehicle, dated May 2021, listing parts and labour at sufficient length.","kind":"commercial","content_tags":["repair order","vehicle service","parts billing"],"role_tags":["reference"],"doc_type":"Work Order"}`,
@@ -81,6 +85,12 @@ func TestIdentify_ResolvesADocumentTypeOrNone(t *testing.T) {
 	// model is being asked to pick from a list it was not shown.
 	if !strings.Contains(c.prompts[0], "a garage's repair order") {
 		t.Errorf("the type list is not in the prompt:\n%s", c.prompts[0])
+	}
+	// The type's required field names must also reach the prompt: the model
+	// is asked to choose a type, and the field names are part of what makes
+	// a type recognisable beyond its one-line description.
+	if !strings.Contains(c.prompts[0], "order_number") {
+		t.Errorf("the type's required field names are not in the prompt:\n%s", c.prompts[0])
 	}
 
 	// A type nobody registered is refused and re-prompted, not recorded: a

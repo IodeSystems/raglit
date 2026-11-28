@@ -95,6 +95,19 @@ func (t DocType) Hash() string {
 	}, "\x00")))
 }
 
+// RequiredFields returns the schema's top-level `required` field names, in
+// schema order. A schema with no `required` array (or no schema at all)
+// returns nil.
+func (t DocType) RequiredFields() []string {
+	var s struct {
+		Required []string `json:"required"`
+	}
+	if json.Unmarshal(t.Schema, &s) != nil {
+		return nil
+	}
+	return s.Required
+}
+
 // FieldNames lists the schema's top-level properties, in schema order where the
 // JSON preserves it and alphabetically otherwise. For a summary line.
 func (t DocType) FieldNames() []string {
