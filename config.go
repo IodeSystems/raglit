@@ -474,6 +474,40 @@ type StrategyConfig struct {
 	// in a way "descend everything" is not, and it targets exactly the sheets a
 	// single-shot read fails on. Off by default; Descend still bounds it.
 	AutoDescend bool `json:"auto_descend,omitempty"`
+
+	// When is the clause list, in the order the operator wrote them. The first
+	// clause whose predicate the page measures selects its policy; a page
+	// measuring none falls to this block as-is. Empty (the live default)
+	// changes nothing: StrategyForPage returns the block byte-for-byte.
+	When []StrategyWhenClause `json:"when,omitempty"`
+}
+
+// StrategyWhenClause selects a policy for a page that measures one of its
+// predicates. It carries NO budget fields by construction: budgets
+// (MaxCalls / MaxChildren / MaxTransforms / MaxEscalations / MinRegionIn)
+// stay operator-owned on the block, so a clause can change how a page is read
+// but never how much it is allowed to cost.
+type StrategyWhenClause struct {
+	// Predicates. A clause matches a page that measures ANY of the ones set
+	// here; a clause with none set matches nothing.
+	LowResolution bool `json:"low_resolution,omitempty"`
+	RuledTable    bool `json:"ruled_table,omitempty"`
+	MultiColumn   bool `json:"multi_column,omitempty"`
+
+	// Policy is the read policy the clause selects — the block's policy minus
+	// its budgets, which the block keeps.
+	Policy StrategyPolicy `json:"policy"`
+}
+
+// StrategyPolicy is a read policy with the budget fields removed. A clause
+// selects one of these; StrategyForPage merges it back over the block, which
+// is what keeps the budgets on the block.
+type StrategyPolicy struct {
+	Descend     int          `json:"descend,omitempty"`
+	Tile        bool         `json:"tile,omitempty"`
+	Hint        string       `json:"hint,omitempty"`
+	Render      RenderPolicy `json:"render,omitempty"`
+	AutoDescend bool         `json:"auto_descend,omitempty"`
 }
 
 // RenderPolicy is the automatic per-page resolution rule, which was four package
@@ -525,6 +559,36 @@ func (c Config) StrategyFor(index string) StrategyConfig {
 	}
 	s, _ := c.StrategyNamed(c.OCR.Strategy)
 	return s
+}
+
+// StrategyForPage selects the read policy in force for one page: the first
+// clause in block.When whose predicate the page measures, else the block.
+//
+// First-written wins, in the order the clauses appear in the config, so the
+// choice is deterministic and the operator can reason about it by reading the
+// config top to bottom. A page measuring no predicate gets the block exactly
+// as written, which is today's behavior; a block with no clauses is the live
+// default and is returned byte-for-byte unchanged.
+//
+// The budgets (MaxCalls / MaxChildren / MaxTransforms / MaxEscalations /
+// MinRegionIn) always come from the block: a clause selects a policy, never a
+// budget, and a page exceeding the block's budget stops at it exactly as it
+// does today.
+func (b StrategyConfig) StrategyForPage(m PageMeasure) StrategyConfig {
+	out := b
+	for _, cl := range b.When {
+		if (cl.LowResolution && m.LowResolution) ||
+			(cl.RuledTable && m.RuledTable) ||
+			(cl.MultiColumn && m.MultiColumn) {
+			out.Descend = cl.Policy.Descend
+			out.Tile = cl.Policy.Tile
+			out.Hint = cl.Policy.Hint
+			out.Render = cl.Policy.Render
+			out.AutoDescend = cl.Policy.AutoDescend
+			break
+		}
+	}
+	return out
 }
 
 // StrategyNamed looks a strategy up by name. ok=false for an empty or unknown

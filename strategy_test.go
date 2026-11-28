@@ -1,6 +1,11 @@
 package raglit
 
-import "testing"
+import (
+	"os"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 // The property that makes this section safe to add to an existing config: with
 // nothing declared, every knob resolves to what the code did before. A read
@@ -68,6 +73,136 @@ func TestUnknownStrategyDegradesAndIsReportable(t *testing.T) {
 	}
 	if s, ok := c.StrategyNamed("flat"); !ok || s.Descend != 3 {
 		t.Errorf("StrategyNamed must find a declared strategy, got %+v ok=%v", s, ok)
+	}
+}
+
+// A page measuring a clause's predicate follows that clause's policy, and a
+// page measuring none follows the block exactly.
+func TestStrategyForPageSelectsClausePolicy(t *testing.T) {
+	block := StrategyConfig{
+		Descend: 0, Tile: false, Hint: "block hint",
+		MaxCalls: 8, MaxChildren: 2, MaxTransforms: 40, MaxEscalations: 4, MinRegionIn: 0.5,
+		When: []StrategyWhenClause{
+			{LowResolution: true, Policy: StrategyPolicy{Descend: 2, Tile: true, Hint: "monument calls"}},
+		},
+	}
+	low := block.StrategyForPage(PageMeasure{LowResolution: true})
+	if low.Descend != 2 || !low.Tile || low.Hint != "monument calls" {
+		t.Errorf("low-resolution page must follow the clause's policy, got %+v", low)
+	}
+	none := block.StrategyForPage(PageMeasure{})
+	if !reflect.DeepEqual(none, block) {
+		t.Errorf("a page measuring no predicate must follow the block exactly, got %+v", none)
+	}
+}
+
+// A page measuring no clause's predicate falls to the block default, field for
+// field.
+func TestStrategyForPageNoMatchFallsToBlockDefault(t *testing.T) {
+	block := StrategyConfig{
+		Descend: 1, Tile: true, Hint: "block",
+		MaxCalls: 5, MaxChildren: 3, MaxTransforms: 20, MaxEscalations: 2, MinRegionIn: 1,
+		Render:      RenderPolicy{BaseDPI: 150},
+		AutoDescend: true,
+		When: []StrategyWhenClause{
+			{RuledTable: true, Policy: StrategyPolicy{Descend: 3, Hint: "ruled"}},
+			{MultiColumn: true, Policy: StrategyPolicy{Descend: 4, Tile: true}},
+		},
+	}
+	got := block.StrategyForPage(PageMeasure{LowResolution: true})
+	if !reflect.DeepEqual(got, block) {
+		t.Errorf("a page measuring none of the predicates must equal the block, got %+v", got)
+	}
+}
+
+// No clauses is the live default: the resolved policy is byte-for-byte the
+// block, whatever the page measures.
+func TestStrategyForPageNoClausesIsUnchanged(t *testing.T) {
+	block := StrategyConfig{
+		Descend: 2, Tile: true, Hint: "monument calls",
+		MaxCalls: 40, MaxChildren: 1, MaxTransforms: 10, MaxEscalations: 1, MinRegionIn: 2,
+		Render:      RenderPolicy{BaseDPI: 300, MaxDPI: 900},
+		AutoDescend: true,
+	}
+	for _, m := range []PageMeasure{{}, {LowResolution: true}, {RuledTable: true, MultiColumn: true}} {
+		if got := block.StrategyForPage(m); !reflect.DeepEqual(got, block) {
+			t.Errorf("no-clause block must resolve to itself for measure %+v, got %+v", m, got)
+		}
+	}
+}
+
+// A page measuring several predicates follows the first written clause, and the
+// choice is deterministic.
+func TestStrategyForPageFirstWrittenClauseWins(t *testing.T) {
+	both := PageMeasure{LowResolution: true, RuledTable: true, MultiColumn: true}
+	lo := StrategyPolicy{Descend: 2, Hint: "low"}
+	ru := StrategyPolicy{Descend: 4, Hint: "ruled"}
+	firstLow := StrategyConfig{
+		When: []StrategyWhenClause{
+			{LowResolution: true, Policy: lo},
+			{RuledTable:    true, Policy: ru},
+		},
+	}
+	for i := 0; i < 2; i++ {
+		if got := firstLow.StrategyForPage(both); got.Hint != "low" || got.Descend != 2 {
+			t.Fatalf("run %d: low-resolution first must win, got %+v", i, got)
+		}
+	}
+	firstRuled := StrategyConfig{
+		When: []StrategyWhenClause{
+			{RuledTable:    true, Policy: ru},
+			{LowResolution: true, Policy: lo},
+		},
+	}
+	for i := 0; i < 2; i++ {
+		if got := firstRuled.StrategyForPage(both); got.Hint != "ruled" || got.Descend != 4 {
+			t.Fatalf("run %d: ruled-table first must win, got %+v", i, got)
+		}
+	}
+}
+
+// A clause selects a policy, never a budget: every budget field of the
+// resolved page comes from the block.
+func TestStrategyForPageBudgetsStayOnBlock(t *testing.T) {
+	block := StrategyConfig{
+		MaxCalls: 5, MaxChildren: 3, MaxTransforms: 20, MaxEscalations: 2, MinRegionIn: 1,
+		When: []StrategyWhenClause{
+			{RuledTable: true, Policy: StrategyPolicy{Descend: 3, Hint: "ruled"}},
+		},
+	}
+	got := block.StrategyForPage(PageMeasure{RuledTable: true})
+	if got.MaxCalls != 5 || got.MaxChildren != 3 || got.MaxTransforms != 20 ||
+		got.MaxEscalations != 2 || got.MinRegionIn != 1 {
+		t.Errorf("budgets must stay on the block, got %+v", got)
+	}
+}
+
+// The selection's inputs carry no model-detected kind: PageMeasure is built
+// from pixels-only fields, StrategyWhenClause carries no budget fields, and the
+// selector names no drawing-kind gate — the one F10 removed.
+func TestStrategyForPageNamesNoModelDetectedKind(t *testing.T) {
+	// Built from pixels-only fields; selection works with them and nothing else.
+	b := StrategyConfig{
+		When: []StrategyWhenClause{{MultiColumn: true, Policy: StrategyPolicy{Hint: "columns"}}},
+	}
+	if got := b.StrategyForPage(PageMeasure{MultiColumn: true}); got.Hint != "columns" {
+		t.Errorf("pixels-only measure must drive selection, got %+v", got)
+	}
+	if src, err := os.ReadFile("config.go"); err == nil {
+		src := string(src)
+		fn := ""
+		if i := strings.Index(src, "func (b StrategyConfig) StrategyForPage("); i >= 0 {
+			fn = src[i:]
+			if j := strings.Index(fn, "\n}\n"); j >= 0 {
+				fn = fn[:j]
+			}
+		}
+		if fn == "" {
+			t.Fatal("StrategyForPage not found in config.go")
+		}
+		if strings.Contains(strings.ToLower(fn), "kind") || strings.Contains(strings.ToLower(fn), "drawing") {
+			t.Errorf("the selection must name no model-detected kind:\n%s", fn)
+		}
 	}
 }
 
