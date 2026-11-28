@@ -2,6 +2,7 @@ package raglit
 
 import (
 	"encoding/json"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -503,11 +504,14 @@ type StrategyWhenClause struct {
 // selects one of these; StrategyForPage merges it back over the block, which
 // is what keeps the budgets on the block.
 type StrategyPolicy struct {
-	Descend     int          `json:"descend,omitempty"`
-	Tile        bool         `json:"tile,omitempty"`
-	Hint        string       `json:"hint,omitempty"`
-	Render      RenderPolicy `json:"render,omitempty"`
-	AutoDescend bool         `json:"auto_descend,omitempty"`
+	Descend int          `json:"descend,omitempty"`
+	Tile    bool         `json:"tile,omitempty"`
+	Hint    string       `json:"hint,omitempty"`
+	Render  RenderPolicy `json:"render,omitempty"`
+	// AutoDescend is accepted for config compatibility but never applied:
+	// auto-descent is the BLOCK's rule (StrategyConfig.AutoDescend), and a
+	// clause selecting a policy must not decide whether descent is automatic.
+	AutoDescend bool `json:"auto_descend,omitempty"`
 }
 
 // RenderPolicy is the automatic per-page resolution rule, which was four package
@@ -584,11 +588,23 @@ func (b StrategyConfig) StrategyForPage(m PageMeasure) StrategyConfig {
 			out.Tile = cl.Policy.Tile
 			out.Hint = cl.Policy.Hint
 			out.Render = cl.Policy.Render
-			out.AutoDescend = cl.Policy.AutoDescend
+			// AutoDescend is NOT one of the clause's fields: it is the block's
+			// rule that descent is automatic, and out was copied from the block,
+			// so it stays. A clause selects how deep a page goes; it does not
+			// decide whether descent is automatic at all.
 			break
 		}
 	}
 	return out
+}
+
+// PolicyForPage is the composition entry: it measures the page's pixels
+// (MeasurePage) and selects the read policy in force for them
+// (StrategyForPage), so the ingest path gets one call from a rendered page to
+// the strategy a page follows — clause honored, budgets on the block, no
+// manual `raglit regions` invocation in between.
+func (b StrategyConfig) PolicyForPage(img image.Image, wIn, hIn float64, dpi int) StrategyConfig {
+	return b.StrategyForPage(MeasurePage(img, wIn, hIn, dpi))
 }
 
 // StrategyNamed looks a strategy up by name. ok=false for an empty or unknown

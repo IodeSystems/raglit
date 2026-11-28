@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"image"
 	"image/png"
 	"os"
 	"os/exec"
@@ -397,5 +398,71 @@ func TestXLSToPagesEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(pages[1].Text, "escrow deadline") {
 		t.Errorf("page 2 missing expected content: %q", pages[1].Text)
+	}
+}
+
+// lowResPage is a sheet whose PIXELS measure low-resolution: the same ink at a
+// much bigger physical size than a letter page, so MeasurePage flags it.
+func lowResPage() *image.RGBA {
+	p := canvas(800, 800)
+	textBlock(p, 100, 60, 600, 640, 20)
+	return p
+}
+
+// The whole's test through one call: measure the page's pixels, then select
+// its policy. A page measuring a clause's predicate follows that clause's
+// policy; a page measuring none follows the block.
+func TestPolicyForPageEndToEnd(t *testing.T) {
+	block := StrategyConfig{
+		Descend: 0, Tile: false, Hint: "block hint",
+		When: []StrategyWhenClause{
+			{LowResolution: true, Policy: StrategyPolicy{Descend: 2, Tile: true, Hint: "monument calls"}},
+		},
+	}
+	low := block.PolicyForPage(lowResPage(), 27, 36.7, 200)
+	if low.Descend != 2 || !low.Tile || low.Hint != "monument calls" {
+		t.Errorf("a low-resolution page must follow the clause's policy, got %+v", low)
+	}
+	normal := block.PolicyForPage(lowResPage(), 8.5, 11, 200)
+	if normal.Descend != 0 || normal.Tile || normal.Hint != "block hint" {
+		t.Errorf("a normal page must follow the block, got %+v", normal)
+	}
+}
+
+// A clause selecting descent is honored by measurement: the resolved policy
+// carries descent (and tiling) for the page the pixels flag, with AutoDescend
+// on — the descent is automatic, no manual `raglit regions` invocation.
+func TestPolicyForPageClauseSelectsDescentWithAutoDescend(t *testing.T) {
+	block := StrategyConfig{
+		AutoDescend: true,
+		When: []StrategyWhenClause{
+			{LowResolution: true, Policy: StrategyPolicy{Descend: 3, Tile: true}},
+		},
+	}
+	got := block.PolicyForPage(lowResPage(), 27, 36.7, 200)
+	if got.Descend != 3 {
+		t.Errorf("descent must be the clause's, got %+v", got)
+	}
+	if !got.Tile {
+		t.Errorf("tiling must be the clause's, got %+v", got)
+	}
+	if !got.AutoDescend {
+		t.Errorf("AutoDescend must stay on the block, got %+v", got)
+	}
+}
+
+// The budgets stay operator-owned on the block: a page that exceeds the
+// block's budget stops at it, whatever policy the clause selects for it.
+func TestPolicyForPageBudgetsBoundClausePolicy(t *testing.T) {
+	block := StrategyConfig{
+		MaxCalls: 5, MaxChildren: 3, MaxTransforms: 20, MaxEscalations: 2, MinRegionIn: 1,
+		When: []StrategyWhenClause{
+			{LowResolution: true, Policy: StrategyPolicy{Descend: 2, Tile: true}},
+		},
+	}
+	got := block.PolicyForPage(lowResPage(), 27, 36.7, 200)
+	if got.MaxCalls != 5 || got.MaxChildren != 3 || got.MaxTransforms != 20 ||
+		got.MaxEscalations != 2 || got.MinRegionIn != 1 {
+		t.Errorf("the block's budgets must bound the clause's policy, got %+v", got)
 	}
 }
