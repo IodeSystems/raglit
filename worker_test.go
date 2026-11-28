@@ -339,3 +339,162 @@ func TestWorker_LearnsTheEmbedBatchAndRetries(t *testing.T) {
 		t.Errorf("%d fragment(s) without a vector", n)
 	}
 }
+
+// seedZeroSpanTextDoc writes a text file, ingests it with 0/0 line spans
+// (pre-R8), and records the document hash so the worker's fast path would
+// normally skip it.
+func seedZeroSpanTextDoc(t *testing.T, s *Store, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(src, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	url := "file://" + src
+	hash := sha256hex([]byte(content))
+	if err := s.Ingest(context.Background(), Document{
+		Path: url, Title: "note.md",
+		Fragments: []Fragment{{Page: 0, Ord: 0, Text: content, StartLine: 0, EndLine: 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDocumentHash(url, hash); err != nil {
+		t.Fatal(err)
+	}
+	return url
+}
+
+func zeroSpanCount(t *testing.T, s *Store, url string) (int, int) {
+	t.Helper()
+	var zero, total int
+	if err := s.db.QueryRow(
+		`SELECT SUM(f.start_line = 0 AND f.end_line = 0), COUNT(*)
+		   FROM fragments f JOIN documents d ON d.id = f.doc_id
+		  WHERE d.path = ? AND f.origin NOT IN ('identity','fields')`, url).
+		Scan(&zero, &total); err != nil {
+		t.Fatal(err)
+	}
+	return zero, total
+}
+
+// A text document whose fragments all have 0/0 line spans (pre-R8 ingest) is
+// re-fragmented on the next unchanged ingest, producing real line spans.
+// A document whose fragments already carry real spans is skipped as unchanged.
+func TestWorkerBackfillReFragmentsZeroLineSpanTextDocs(t *testing.T) {
+	content := "alpha bravo\n\ncharlie delta\necho foxtrot"
+
+	t.Run("zero-span doc is re-fragmented", func(t *testing.T) {
+		s := testStore(t)
+		url := seedZeroSpanTextDoc(t, s, content)
+
+		zero, total := zeroSpanCount(t, s, url)
+		if total == 0 || zero != total {
+			t.Fatalf("precondition: want all 0/0, got %d/%d", zero, total)
+		}
+
+		if _, err := s.Enqueue(url, ""); err != nil {
+			t.Fatal(err)
+		}
+		w := &Worker{Store: s}
+		if _, err := w.ProcessOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+
+		jobs, _ := s.Jobs("all", 10)
+		if len(jobs) == 0 {
+			t.Fatal("no job recorded")
+		}
+		if jobs[0].Mode == "unchanged" {
+			t.Fatal("a 0/0 text doc was skipped as unchanged; it must be re-fragmented")
+		}
+
+		zero, total = zeroSpanCount(t, s, url)
+		if total == 0 {
+			t.Fatal("no fragments after backfill")
+		}
+		if zero != 0 {
+			t.Fatalf("after backfill: %d of %d fragments still have 0/0 line spans", zero, total)
+		}
+	})
+
+	t.Run("real-span doc is skipped", func(t *testing.T) {
+		s := testStore(t)
+		url := seedZeroSpanTextDoc(t, s, content)
+
+		// Simulate a doc that already has real spans: overwrite with a real
+		// ingest first, so the fragments carry line numbers.
+		if _, err := s.Enqueue(url, ""); err != nil {
+			t.Fatal(err)
+		}
+		w := &Worker{Store: s}
+		if _, err := w.ProcessOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+
+		zero, total := zeroSpanCount(t, s, url)
+		if total == 0 || zero != 0 {
+			t.Fatalf("after first backfill: %d/%d zero-span, want 0/%d", zero, total, total)
+		}
+
+		// Second unchanged ingest: must skip.
+		if _, err := s.Enqueue(url, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.ProcessOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		jobs, _ := s.Jobs("all", 10)
+		if len(jobs) == 0 || jobs[0].Mode != "unchanged" {
+			t.Fatalf("second ingest mode = %q, want unchanged", jobs[0].Mode)
+		}
+	})
+}
+
+// After the backfill re-fragments a doc to real line spans, a subsequent
+// unchanged ingest skips it: the fast path sees real spans and does not
+// re-fragment, so the backfill is one-time, not a per-run cost.
+func TestWorkerBackfillIsOneTime(t *testing.T) {
+	content := "one two three\n\nfour five six"
+	s := testStore(t)
+	url := seedZeroSpanTextDoc(t, s, content)
+	w := &Worker{Store: s}
+
+	// First run: backfill.
+	if _, err := s.Enqueue(url, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ProcessOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ := s.Jobs("all", 10)
+	if len(jobs) == 0 || jobs[0].Mode == "unchanged" {
+		t.Fatalf("first run mode = %q, want re-fragmentation", jobs[0].Mode)
+	}
+
+	// Second run: skip.
+	if _, err := s.Enqueue(url, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ProcessOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ = s.Jobs("all", 10)
+	if len(jobs) == 0 {
+		t.Fatal("no job on second run")
+	}
+	if jobs[0].Mode != "unchanged" {
+		t.Fatalf("second run mode = %q, want unchanged (backfill is one-time)", jobs[0].Mode)
+	}
+
+	// Third run: still skip.
+	if _, err := s.Enqueue(url, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ProcessOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ = s.Jobs("all", 10)
+	if len(jobs) == 0 || jobs[0].Mode != "unchanged" {
+		t.Fatalf("third run mode = %q, want unchanged", jobs[0].Mode)
+	}
+}

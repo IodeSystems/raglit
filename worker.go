@@ -354,8 +354,23 @@ func (w *Worker) ingest(ctx context.Context, job *Job, sl *StageLog) (int, strin
 	// re-reading a document already knows and is overriding.
 	if !job.Fresh {
 		if prev, _ := w.Store.DocumentHash(job.URL); prev != "" && prev == hash {
-			sl.Skip("extract", "unchanged — source hash match")
-			return 0, "unchanged", nil
+			// One-time backfill: a text document ingested before line spans
+			// existed (R8) carries 0/0 on every fragment, and "unchanged"
+			// would keep it there forever. Fall through and re-fragment it
+			// once; the re-ingest stores real spans, so the next run skips
+			// again and this check stops costing anything (a hash match plus
+			// one count query).
+			if kind == KindText {
+				if allZero, zerr := w.Store.HasAllZeroLineSpans(job.URL); zerr == nil && allZero {
+					sl.Record("extract", "", "done", "unchanged text doc with 0/0 line spans — re-fragmenting for real line numbers")
+				} else {
+					sl.Skip("extract", "unchanged — source hash match")
+					return 0, "unchanged", nil
+				}
+			} else {
+				sl.Skip("extract", "unchanged — source hash match")
+				return 0, "unchanged", nil
+			}
 		}
 	}
 

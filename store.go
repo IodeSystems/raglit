@@ -35,8 +35,8 @@
 //   - Store vectors: EmbedModel, SyncEmbedModel(model, dim), MissingVectors,
 //     BackfillVectors, DropVectors; index metadata: Meta, SetMeta.
 //   - Store documents: Documents (DocSummary, with ContentHash and AddedAt),
-//     DocumentHash, RemoveDocument, Prune(dry, deleteOriginals) to collect
-//     originals, Close.
+//     DocumentHash, HasAllZeroLineSpans, RemoveDocument,
+//     Prune(dry, deleteOriginals) to collect originals, Close.
 //   - Branch: SetParent, BranchDiff. Jobs: Jobs, Job, ClaimNext; Hit, Job and
 //     JobInfo; Runner (Start, Drain, CutOff, Done).
 //   - Worktree branch: OpenBranch, BranchMeta (Root, ParentRoot), WorktreeOf,
@@ -181,6 +181,28 @@ func (s *Store) DocumentHash(path string) (string, error) {
 // ingest, so an unchanged re-ingest can be skipped.
 func (s *Store) SetDocumentHash(path, hash string) error {
 	return s.q.SetDocumentHash(context.Background(), gen.SetDocumentHashParams{ContentHash: hash, Path: path})
+}
+
+// HasAllZeroLineSpans reports whether a document's own fragments (identity and
+// fields excluded) all carry 0/0 line spans, the signature of a pre-R8 text
+// ingest. It returns false for a document with no fragments or one that has
+// any fragment with a real line span. The one-time backfill uses this to
+// decide whether the unchanged-bytes fast path should skip or fall through to
+// re-ingest.
+func (s *Store) HasAllZeroLineSpans(path string) (bool, error) {
+	doc, err := s.q.GetDocumentByPath(context.Background(), path)
+	if err != nil {
+		return false, err
+	}
+	var zero, total int
+	err = s.db.QueryRow(
+		`SELECT SUM(f.start_line = 0 AND f.end_line = 0), COUNT(*)
+		   FROM fragments f WHERE f.doc_id = ? AND `+SQLOwnWordsF, doc.ID).
+		Scan(&zero, &total)
+	if err != nil {
+		return false, err
+	}
+	return total > 0 && zero == total, nil
 }
 
 // FindPathByHash returns the path of a DIFFERENT document row that stores the
