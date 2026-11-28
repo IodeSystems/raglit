@@ -96,11 +96,23 @@ export interface Span {
   to: number
 }
 
+/**
+ * A (sentence, claim) pair in a legal document: the sentence as it appears in
+ * the source text, and the claim the sentence makes. The locator for caselit
+ * bindings — a verdict gate after the fact uses it to find the sentence in the
+ * claim body.
+ */
+export interface Binding {
+  sentence: string
+  claim: string
+}
+
 /** Exactly one field is set. */
 export interface Locator {
   time?: TimeSpan
   area?: Area
   span?: Span
+  binding?: Binding
 }
 
 /**

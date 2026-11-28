@@ -1,11 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -408,6 +411,190 @@ func TestStateCarriesProvenance(t *testing.T) {
 	if !strings.Contains(p, "WORDS are unverified") {
 		t.Errorf("provenance dropped the wording axis: %q", p)
 	}
+}
+
+// TestBindingUnitRendersSentenceBesideClaimBody is the F48 rendering test: a
+// unit whose locator is a Binding{sentence, claim} must show the sentence in
+// its label, and the three existing locator renderings must come out exactly
+// as they did before the branch was added.
+//
+// The functions are pulled out of the embedded page rather than re-implemented
+// here, because a copy in the test would prove the copy. locatorLabel calls
+// mmss (for the time branch) and esc (for the binding branch), so all three
+// are extracted from the same script and put in the eval's scope, with a
+// minimal DOM stub standing in for document.
+func TestBindingUnitRendersSentenceBesideClaimBody(t *testing.T) {
+	page, err := os.ReadFile("ui.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const scriptOpen, scriptClose = "<script>", "</script>"
+	i := strings.Index(string(page), scriptOpen)
+	e := strings.LastIndex(string(page), scriptClose)
+	if i < 0 || e < 0 || e < i+len(scriptOpen) {
+		t.Fatal("no script block in the page")
+	}
+	js := string(page)[i+len(scriptOpen) : e]
+	// The two helpers locatorLabel depends on.
+	mmssSrc, err := extractFn(js, "mmss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	labelSrc, err := extractFn(js, "locatorLabel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	escSrc, err := extractFn(js, "esc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stub := documentStub{}
+	code := "var document=" + stub.js() + ";\n" +
+		mmssSrc + "\n" + escSrc + "\n" + labelSrc +
+		"\nvar out=[];" +
+		`out.push(locatorLabel({locator:{time:{start:52, end:95}}}));` +
+		`out.push(locatorLabel({locator:{area:{page:3, bbox:{w:0.4, h:0.15}, rotation:90}}}));` +
+		`out.push(locatorLabel({locator:{area:{page:1, bbox:{w:0.5, h:0.5}}}}));` +
+		`out.push(locatorLabel({locator:{span:{from:120, to:340}}}));` +
+		`out.push(locatorLabel({locator:{binding:{sentence:"the court found that the defendant acted negligently", claim:"defendant was negligent"}}}));` +
+		`console.log(JSON.stringify(out))`
+	vals := jsEval(t, code)
+	var out []string
+	if err := json.Unmarshal([]byte(vals), &out); err != nil {
+		t.Fatalf("labels: %v %q", err, vals)
+	}
+	if len(out) != 5 {
+		t.Fatalf("got %d labels, want 5", len(out))
+	}
+
+	// The unchanged branches, asserted against the strings they produced
+	// before the binding branch existed: a change to any of them is a
+	// regression the spec forbids.
+	if out[0] != "0:52–1:35" {
+		t.Errorf("time locator = %q, want 0:52–1:35", out[0])
+	}
+	wantRot := "p3 40×15% @90°"
+	if out[1] != wantRot {
+		t.Errorf("area locator (rotated) = %q, want %q", out[1], wantRot)
+	}
+	wantArea := "p1 50×50%"
+	if out[2] != wantArea {
+		t.Errorf("area locator = %q, want %q", out[2], wantArea)
+	}
+	if out[3] != "b120–340 (220 B)" {
+		t.Errorf("span locator = %q, want b120–340 (220 B)", out[3])
+	}
+
+	// The new branch: the sentence is shown, beside the claim.
+	if !strings.Contains(out[4], "the court found that the defendant acted negligently") {
+		t.Errorf("binding label does not show the sentence: %q", out[4])
+	}
+	if !strings.Contains(out[4], "defendant was negligent") {
+		t.Errorf("binding label does not show the claim: %q", out[4])
+	}
+}
+
+// extractFn returns the source of a named top-level definition in the page
+// script: `function name(...) { ... }` or `const name = (...) => ...`. The
+// body is brace-matched from its opening brace, so a string literal containing
+// braces does not end the match early; an arrow with no block body (a bare
+// template literal, like mmss) ends at its semicolon.
+func extractFn(js, name string) (string, error) {
+	i := indexDef(js, "function "+name)
+	block := true
+	if i < 0 {
+		// A const/let arrow: `const mmss = (t) => ...`.
+		for _, pre := range []string{"const " + name + " = ", "let " + name + " = "} {
+			if i = indexDef(js, pre); i >= 0 {
+				block = false
+				break
+			}
+		}
+	}
+	if i < 0 {
+		return "", fmt.Errorf("no definition of %s in the page script", name)
+	}
+	if block {
+		open := strings.IndexByte(js[i:], '{')
+		if open < 0 {
+			return "", fmt.Errorf("no body for %s", name)
+		}
+		end, ok := matchBrace(js, i+open)
+		if !ok {
+			return "", fmt.Errorf("unbalanced braces in %s", name)
+		}
+		return js[i : end+1], nil
+	}
+	// Arrow with no block body: to the statement's semicolon.
+	end := strings.IndexByte(js[i:], ';')
+	if end < 0 {
+		return "", fmt.Errorf("no end for %s", name)
+	}
+	return js[i : i+end+1], nil
+}
+
+// indexDef finds a definition site, skipping a bare word occurrence: the
+// marker must be preceded by a line start, `;`, or `}` so `function foo` is
+// not matched inside a string or a longer identifier.
+func indexDef(js, marker string) int {
+	for i := strings.Index(js, marker); i >= 0; {
+		if i == 0 || js[i-1] == '\n' || js[i-1] == ';' || js[i-1] == '}' || js[i-1] == '{' {
+			return i
+		}
+		i = strings.Index(js[i+1:], marker)
+		if i >= 0 {
+			i += 1
+		}
+	}
+	return -1
+}
+
+// matchBrace returns the index of the `}` matching the `{` at start.
+func matchBrace(js string, start int) (int, bool) {
+	depth := 0
+	for j := start; j < len(js); j++ {
+		switch js[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return j, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// documentStub is the minimum the page functions touch: an element factory
+// good enough for createElement/textContent, nothing more.
+type documentStub struct{}
+
+func (documentStub) js() string {
+	return `{createElement: () => ({style:{}, set textContent(v){}, set innerHTML(v){}})}`
+}
+
+// jsEval runs code in node and returns its stdout. The page is plain
+// JavaScript with no modules, so the extracted functions run as-is. Node is
+// the tool the project already uses for its web build, so no new dependency is
+// added to a test that must run on a Go-only machine: when node is absent the
+// caller skips, which is the same stance `make test` takes (the placeholder
+// bundle compiles and passes without node; `make web` needs it).
+func jsEval(t *testing.T, code string) string {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not on PATH — the page functions cannot be run without a JS engine")
+	}
+	cmd := exec.Command(node, "-e", code)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("node: %v\n%s", err, buf.String())
+	}
+	return buf.String()
 }
 
 func TestRegisterRefusesToGuessAnIdentity(t *testing.T) {

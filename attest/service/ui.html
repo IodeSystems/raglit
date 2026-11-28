@@ -350,6 +350,10 @@ const mmss = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart
 function locatorLabel(u) {
   const l = u.locator;
   if (l.time) return `${mmss(l.time.start)}–${mmss(l.time.end)}`;
+  // The binding's sentence is the locator: a claim is addressed by the
+  // sentence that makes it, and that sentence is what the reviewer reads
+  // beside the claim body. Quoted, because it is source text, not a label.
+  if (l.binding) return `${l.binding.claim} \u2014 ${esc(l.binding.sentence)}`;
   if (l.area) {
     const a = l.area, b = a.bbox;
     const rot = a.rotation ? ` @${a.rotation}°` : "";
